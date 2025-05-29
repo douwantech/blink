@@ -175,7 +175,8 @@ void *run_session(void *sessionData)
   _argv = NULL;
 }
 
-- (id)initWithDevice:(TermDevice *)device andParams:(SessionParams *)params
+- (id)initWithDevice:(TermDevice *)device
+            andParams:(BKSessionParams)params
 {
   self = [super init];
 
@@ -228,9 +229,6 @@ void *run_session(void *sessionData)
 
 - (void)handleControl:(NSString *)control
 {
-}
-
-- (void)setActiveSession {
 }
 
 - (void)dealloc {

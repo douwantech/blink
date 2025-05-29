@@ -94,7 +94,7 @@ enum MoshError: Error, LocalizedError {
     session.onStateEncoded(data)
   }
 
-  @objc init!(mcpSession: MCPSession, device: TermDevice!, andParams params: SessionParams!) {
+  @objc init!(mcpSession: MCPSession, device: TermDevice!, andParams params: MoshParams!) {
     if let escapeKey = ProcessInfo.processInfo.environment["MOSH_ESCAPE_KEY"],
        escapeKey.count == 1 {
       self.escapeKey = escapeKey
@@ -117,8 +117,7 @@ enum MoshError: Error, LocalizedError {
     // In ObjC, sessionParams is a covariable for MoshParams.
     // In Swift we need to cast.
     if let initialMoshParams = self.sessionParams as? MoshParams,
-       let _ = initialMoshParams.encodedState {
-      //print("Init mosh from Params")
+       initialMoshParams.hasEncodedState() {
       return moshMain(initialMoshParams)
     } else {
       let command: MoshCommand
@@ -149,8 +148,9 @@ enum MoshError: Error, LocalizedError {
     let hostName: String
     let log = logger.log("startMoshServer")
 
-    host = try BKConfig().bkSSHHost(command.hostAlias, extending: command.bkSSHHost())
-    hostName = host.hostName ?? command.hostAlias
+    let resolved = try BKConfig().resolveHost(alias: command.hostAlias, extending: command.bkSSHHost())
+    host = resolved.host
+    hostName = resolved.hostName
     config = try SSHClientConfigProvider.config(host: host, using: device)
 
     let moshClientParams = MoshClientParams(extending: command)
@@ -254,14 +254,12 @@ enum MoshError: Error, LocalizedError {
     }
 
     let _selfRef = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-    let encodedState = [UInt8](moshParams.encodedState ?? Data())
+    let encodedState = [UInt8](moshParams.takeEncodedState() ?? Data())
 
     if let localesPath = Bundle.main.path(forResource: "locales", ofType: "bundle"),
        let ccharLocalesPath = localesPath.cString(using: .utf8) {
       setenv("PATH_LOCALE", ccharLocalesPath, 1)
     }
-
-    self.sessionParams.cleanEncodedState()
 
     mosh_main(
       self.stdin.file,
@@ -455,10 +453,9 @@ enum MoshError: Error, LocalizedError {
       }
       proxyCommand = try SSHCommand.parse(Array(argv[1...]))
       stdioHostAndPort = proxyCommand.stdioHostAndPort!
-      let commandHost = try proxyCommand.bkSSHHost()
-      let host = try BKConfig().bkSSHHost(proxyCommand.hostAlias, extending: commandHost)
-      hostName = host.hostName ?? proxyCommand.hostAlias
-      config = try SSHClientConfigProvider.config(host: host, using: device)
+      let resolved = try proxyCommand.resolveHost()
+      hostName = resolved.hostName
+      config = try SSHClientConfigProvider.config(host: resolved.host, using: device)
     } catch {
       print("Configuration error - \(error)", to: &stderr)
       shutdown(sockIn, SHUT_RDWR)
@@ -530,7 +527,7 @@ enum MoshError: Error, LocalizedError {
   }
 
   func onStateEncoded(_ encodedState: Data) {
-    self.sessionParams.encodedState = encodedState
+    self.sessionParams.putEncodedState(encodedState)
     print("Encoding session")
     if let sema = suspendSemaphore {
       sema.signal()

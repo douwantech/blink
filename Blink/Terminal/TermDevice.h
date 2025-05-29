@@ -46,14 +46,16 @@
 
 @end
 
+@protocol TermDeviceReadlineListener
+- (void)lineSubmitted:(NSString *)line;
+- (void)handleControl:(NSString *)control;
+@end
 
 @protocol TermDeviceDelegate
 
 - (void)deviceIsReady;
 - (void)deviceSizeChanged;
 - (void)viewFontSizeChanged:(NSInteger)size;
-- (void)handleControl:(NSString *)control;
-- (void)lineSubmitted:(NSString *)line;
 - (void)deviceFocused;
 - (void)apiCall:(NSString *)api andRequest:(NSString *)request;
 - (void)viewNotify:(NSDictionary *)data;
@@ -71,10 +73,12 @@
 @property (readonly) TermView *view;
 @property (readonly) UIView<TermInput> *input;
 @property id<TermDeviceDelegate> delegate;
+@property id<TermDeviceReadlineListener> readlineListener;
 @property (nonatomic) BOOL rawMode;
 @property (nonatomic) BOOL autoCR;
 @property (nonatomic) BOOL secureTextEntry;
 @property (nonatomic) BOOL shouldBlockFirstResponder;
+@property (nonatomic) BOOL isReady;
 @property (nonatomic) NSInteger rows;
 @property (nonatomic) NSInteger cols;
 

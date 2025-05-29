@@ -171,7 +171,8 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   self = [super init];
   
   if (self) {
-    
+    _isReady = FALSE;
+
     pipe(_pinput);
     pipe(_poutput);
     pipe(_perror);
@@ -226,7 +227,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
     }
       //}
     // NOTE This should send specific signals instead of handling the control openly, but won't change for now.
-    [self.delegate handleControl: input];
+    [self.readlineListener handleControl: input];
     return;
   }
   
@@ -262,6 +263,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)close
 {
+  _delegate = NULL;
+  _readlineListener = NULL;
+  
   // Closing the Device streams. These are the main device, usually duped in Sessions.
   [_stream close];
   [_outStream close];
@@ -438,6 +442,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)viewIsReady
 {
+  _isReady = TRUE;
   [_delegate deviceIsReady];
 }
 
@@ -465,7 +470,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
     _readlineSema = nil;
     return;
   }
-  [_delegate lineSubmitted:line];
+  [_readlineListener lineSubmitted:line];
 }
 
 - (void)viewSendString:(NSString *)data

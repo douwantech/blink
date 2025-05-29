@@ -103,14 +103,14 @@ public func blink_ssh_main(argc: Int32, argv: Argv) -> Int32 {
       print("\(message)", to: &stderr)
       return -1
     }
-    
+
     let host: BKSSHHost
     let hostName: String
     let config: SSHClientConfig
     do {
-      let commandHost = try cmd.bkSSHHost()
-      host = try BKConfig().bkSSHHost(cmd.hostAlias, extending: commandHost)
-      hostName = host.hostName ?? cmd.hostAlias
+      let resolved = try cmd.resolveHost()
+      host = resolved.host
+      hostName = resolved.hostName
       config = try SSHClientConfigProvider.config(host: host, using: device)
     } catch {
       print("Configuration error - \(error)", to: &stderr)
@@ -185,12 +185,12 @@ public func blink_ssh_main(argc: Int32, argv: Argv) -> Int32 {
          !banner.isEmpty {
         print(banner, to: &self.stdout)
       }
-      
+
       conn.handleSessionException = { error in
         print("Exception received \(error)", to: &self.stderr)
         self.kill()
       }
-      
+
       if cmd.startsSession {
         if let addr = conn.clientAddressIP() {
           print("Connected to \(addr)", to: &self.stdout)

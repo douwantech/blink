@@ -300,7 +300,7 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
     setupKeyboardLayoutGuide()
     
     if _viewportsKeys.isEmpty {
-      _createShell(userActivity: nil, animated: false)
+      _newShellAction(animated: false)
     } else if let key = _currentKey {
       let term: TermController = SessionRegistry.shared[key]
       term.delegate = self
@@ -375,7 +375,7 @@ Please go to your subscriptions and cancel one of them!
     
     nc.addObserver(self, selector: #selector(_UISceneWillEnterForegroundNotification(_:)),
                    name: UIScene.willEnterForegroundNotification, object: nil)
-    
+
   }
                    
   @objc func _UISceneDidEnterBackgroundNotification(_ n: Notification) {
@@ -454,12 +454,13 @@ Please go to your subscriptions and cancel one of them!
     _focusOnShell()
   }
   
-  func _createShell(
+  func _createTerminal(
     userActivity: NSUserActivity?,
     animated: Bool,
+    sessionPayload: TermSessionPayload,
     completion: ((Bool) -> Void)? = nil)
   {
-    let term = TermController(sceneRole: sceneRole)
+    let term = TermController(sceneRole: sceneRole, sessionPayload: sessionPayload)
     term.delegate = self
     term.layoutProvider = self
     term.userActivity = userActivity
@@ -499,7 +500,7 @@ Please go to your subscriptions and cancel one of them!
     SessionRegistry.shared.remove(forKey: currentKey)
     _viewportsKeys.remove(at: idx)
     if _viewportsKeys.isEmpty {
-      _createShell(userActivity: nil, animated: true)
+      _newShellAction(animated: false)
       return
     }
 
@@ -556,7 +557,7 @@ Please go to your subscriptions and cancel one of them!
       return
     }
     
-    let params = term.sessionParams
+    let termUIState = term.termUIState
     
     if let bgColor = term.view.backgroundColor, bgColor != .clear {
       view.backgroundColor = bgColor
@@ -584,11 +585,11 @@ Please go to your subscriptions and cancel one of them!
     
     var sceneTitle = "[\(pageNum == nil ? 1 : pageNum! + 1) of \(_viewportsKeys.count)] \(title ?? "blink")"
     
-    if params.rows == 0 && params.cols == 0 {
+    if termUIState.rows == 0 && termUIState.cols == 0 {
       hud.label.numberOfLines = 1
       hud.label.text = title ?? "blink"
     } else {
-      let geometry = "\(params.cols)×\(params.rows)"
+      let geometry = "\(termUIState.cols)×\(termUIState.rows)"
       hud.label.numberOfLines = 2
       hud.label.text = "\(title ?? "blink")\n\(geometry)"
       
@@ -798,7 +799,7 @@ extension SpaceController {
     case .tabClose: _closeCurrentSpace()
     case .tabMoveToOtherWindow: _moveToOtherWindowAction()
     case .toggleKeyCast: _toggleKeyCast()
-    case .tabNew: newShellAction()
+    case .tabNew: _newShellAction()
     case .tabNext: _advanceShell(by: 1)
     case .tabPrev: _advanceShell(by: -1)
     case .tabNextCycling: _advanceShellCycling(by: 1)
@@ -830,10 +831,17 @@ extension SpaceController {
     currentTerm()?.scaleWithPich(pinch)
   }
   
-  @objc func newShellAction() {
-    _createShell(userActivity: nil, animated: true)
+  private func _newShellAction(command: String = "", animated: Bool = true) {
+    let payload: MCPSessionPayload = if command.isEmpty {
+      MCPSessionPayload(params: MCPParams())
+    } else {
+      // TODO Pass command
+      MCPSessionPayload(params: MCPParams())
+    }
+
+    _createTerminal(userActivity: nil, animated: animated, sessionPayload: payload)
   }
-  
+
   @objc func closeShellAction() {
     _closeCurrentSpace()
   }
@@ -1313,6 +1321,16 @@ extension SpaceController: SnippetContext {
   func providerSnippetReceiver() -> (any SnippetReceiver)? {
     self.focusOnShellAction()
     return self.currentDevice
+  }
+
+}
+
+// MARK: SceneIntent handlers
+extension SpaceController {
+  @objc func runShellSessionIntent(command: String = "") {
+    DispatchQueue.main.sync {      
+      self._newShellAction(command: command)
+    }
   }
 
 }

@@ -35,7 +35,7 @@
 @class TermView;
 @class TermDevice;
 @class TermInput;
-@class MCPParams;
+@class TermUIState;
 
 extern NSString * TermViewReadyNotificationKey;
 extern NSString * TermViewBrowserReadyNotificationKey;
@@ -79,8 +79,8 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 - (void)setCmdKeyPressed:(BOOL)pressed;
 
 - (CGRect)webViewFrame;
-- (void)loadWith:(MCPParams *)params;
-- (void)reloadWith:(MCPParams *)params;
+- (void)loadWithTermUIState:(TermUIState *)params;
+- (void)reloadWithTermUIState:(TermUIState *)params;
 - (void)clear;
 - (void)setWidth:(NSInteger)count;
 - (void)setFontSize:(NSNumber *)newSize;

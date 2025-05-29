@@ -280,12 +280,12 @@ const CGFloat MENU_PADDING = 10.0;
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
       [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeSafeFit;
+      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeSafeFit;
       [self.superview setNeedsLayout];
       
     }
     ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   if (elementID == BlinkActionLayoutFill) {
@@ -294,11 +294,11 @@ const CGFloat MENU_PADDING = 10.0;
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
       [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeFill;
+      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeFill;
       [self.superview setNeedsLayout];
     }
     ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   
@@ -308,11 +308,11 @@ const CGFloat MENU_PADDING = 10.0;
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
       [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeCover;
+      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeCover;
       [self.superview setNeedsLayout];
     }
     ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   
@@ -320,7 +320,7 @@ const CGFloat MENU_PADDING = 10.0;
     return [UIAction
             actionWithTitle:noTitle ? @"" : @"Create"
             image:[UIImage systemImageNamed:@"plus.rectangle.on.rectangle"] identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [[delegate spaceController] newShellAction];
+      [[delegate spaceController] runShellSessionIntentWithCommand:@""];
     }];
   }
   
@@ -360,7 +360,7 @@ const CGFloat MENU_PADDING = 10.0;
       [delegate.currentTerm toggleLayoutLock];
       [self.superview setNeedsLayout];
     }];
-    action.state = delegate.currentTerm.sessionParams.layoutLocked ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = delegate.currentTerm.termUIState.layoutLocked ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   

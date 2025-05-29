@@ -35,7 +35,18 @@
 
 #import "TermDevice.h"
 
-@class SessionParams;
+/// Minimal snapshot contract used by Session.
+/// - hasEncodedState: quick guard
+/// - takeEncodedState: returns bytes and CLEARS them (consume-on-read)
+/// - putEncodedState: overwrites bytes
+@protocol BKSessionParamsSnapshotting <NSObject>
+- (BOOL)hasEncodedState;
+- (nullable NSData *)takeEncodedState;
+- (void)putEncodedState:(NSData *)data;
+@end
+
+/// Typealias for session parameter objects that can be snapshotted and securely coded
+typedef id<BKSessionParamsSnapshotting, NSSecureCoding> BKSessionParams;
 
 @protocol SessionDelegate
 
@@ -49,15 +60,18 @@
   TermDevice *_device;
 }
 
-@property (strong, atomic) SessionParams *sessionParams;
+// NOTE: Now protocol-typed (no concrete base class).
+@property (strong, atomic) BKSessionParams sessionParams;
 @property (strong) TermStream *stream;
 @property (strong) TermDevice *device;
 @property (readonly) pthread_t tid;
 
 @property (weak) id<SessionDelegate> delegate;
 
-- (id)init __unavailable;
-- (id)initWithDevice:(TermDevice *)device andParams:(SessionParams *)params;
+- (id)init NS_UNAVAILABLE;
+- (id)initWithDevice:(TermDevice *)device
+            andParams:(BKSessionParams)params;
+
 - (void)executeWithArgs:(NSString *)args;
 - (void)executeAttachedWithArgs:(NSString *)args;
 - (int)main:(int)argc argv:(char **)argv;
@@ -66,6 +80,5 @@
 - (void)kill;
 - (void)suspend;
 - (void)handleControl:(NSString *)control;
-- (void)setActiveSession;
 
 @end

@@ -320,6 +320,7 @@ void __setupProcessEnv(void) {
 configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
                                options:(UISceneConnectionOptions *)options {
   for (NSUserActivity * activity in options.userActivities) {
+    // TODO I think this is dead code from when we implemented "whatsnew" as a separate scene.
     if ([activity.activityType isEqual:@"com.blink.whatsnew"]) {
       return [UISceneConfiguration configurationWithName:@"whatsnew"
                                              sessionRole:connectingSceneSession.role];

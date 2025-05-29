@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 54;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -30,7 +30,7 @@
 		07FAB8F125C8E6C500E1CC2C /* CopyFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8EB25C8E6C500E1CC2C /* CopyFiles.swift */; };
 		07FAB8F225C8E6C500E1CC2C /* ssh.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8EC25C8E6C500E1CC2C /* ssh.swift */; };
 		07FAB8F325C8E6C500E1CC2C /* SSHPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8ED25C8E6C500E1CC2C /* SSHPool.swift */; };
-		07FAB8F425C8E6C500E1CC2C /* SSHConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8EE25C8E6C500E1CC2C /* SSHConfig.swift */; };
+		07FAB8F425C8E6C500E1CC2C /* SSHCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8EE25C8E6C500E1CC2C /* SSHCommand.swift */; };
 		07FAB8F525C8E6C500E1CC2C /* SSHConfigProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FAB8EF25C8E6C500E1CC2C /* SSHConfigProvider.swift */; };
 		07FAB90F25C8E94E00E1CC2C /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = 07FAB90E25C8E94E00E1CC2C /* ArgumentParser */; };
 		07FABB8D25C9AEC100E1CC2C /* SSH.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 07FABB8425C9AEC000E1CC2C /* SSH.framework */; };
@@ -89,6 +89,7 @@
 		BD11E9E6270CD0FD003EA5AE /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2F64C9425CA99AD00F2225D /* openssl.xcframework */; };
 		BD1758AC26EA8C5400AEC545 /* MenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1758AB26EA8C5400AEC545 /* MenuController.swift */; };
 		BD19DB412B056E9C003A4367 /* SSHCommandTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD19DB402B056E9C003A4367 /* SSHCommandTest.swift */; };
+		BD1FFF702E4A10C600DB5AF9 /* TermSessionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */; };
 		BD23B6E12CB0585B0041C38D /* ios_patches.m in Sources */ = {isa = PBXBuildFile; fileRef = BD23B6E02CB0585B0041C38D /* ios_patches.m */; };
 		BD2C754E2D75FA85007BFE77 /* Walkthrough.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2C754D2D75FA7F007BFE77 /* Walkthrough.swift */; };
 		BD33F7822AAA426D00CD16EE /* MoshBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD33F7802AAA426D00CD16EE /* MoshBootstrap.swift */; };
@@ -114,14 +115,11 @@
 		BD801D202C9352E800556515 /* curl_ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BDF2B8D62BC481F000B9C7EA /* curl_ios.xcframework */; };
 		BD801D212C9352E800556515 /* curl_ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BDF2B8D62BC481F000B9C7EA /* curl_ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BD81522027387D1F002BB169 /* Certificates.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD81521C27387D1F002BB169 /* Certificates.swift */; };
-		BD81522D2739A91D002BB169 /* BlinkLogging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20A271F62ED00874007 /* BlinkLogging.swift */; };
-		BD81522E2739A91D002BB169 /* Publisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20C271F664D00874007 /* Publisher.swift */; };
 		BD8152542743FF84002BB169 /* skstore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8152532743FF84002BB169 /* skstore.swift */; };
 		BD818A052AAFC18400956488 /* mosh.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A042AAFC18400956488 /* mosh.swift */; };
 		BD818A0C2AB120B800956488 /* MoshServerParams.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A0B2AB120B800956488 /* MoshServerParams.swift */; };
 		BD818A132AB3865F00956488 /* MoshCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A122AB3865F00956488 /* MoshCommand.swift */; };
 		BD818A152AB3A40100956488 /* MoshClientParams.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A142AB3A40100956488 /* MoshClientParams.swift */; };
-		BD835DD427A0BD19002C37D7 /* ReplaySubject.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD835DD027A0BD19002C37D7 /* ReplaySubject.swift */; };
 		BD88697B2CF4DDAD00F71119 /* 1810Migration.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD88697A2CF4DD9A00F71119 /* 1810Migration.swift */; };
 		BD8BBF5525F829B00084705F /* SEKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8BBF0825F819970084705F /* SEKeyTests.swift */; };
 		BD8BBFB025F947710084705F /* Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8BBFAF25F947710084705F /* Keys.swift */; };
@@ -141,7 +139,6 @@
 		BD9513EB2B4F5A7A00A7BEBE /* BlinkFileProvider.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD9513E12B4F5A7A00A7BEBE /* BlinkFileProvider.framework */; };
 		BD9513F22B4F5A7A00A7BEBE /* BlinkFileProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9513F12B4F5A7A00A7BEBE /* BlinkFileProviderTests.swift */; };
 		BD9513F32B4F5A7A00A7BEBE /* BlinkFileProvider.h in Headers */ = {isa = PBXBuildFile; fileRef = BD9513E32B4F5A7A00A7BEBE /* BlinkFileProvider.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		BD9514002B4F5B5600A7BEBE /* ReplaySubject.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9513FF2B4F5B5600A7BEBE /* ReplaySubject.swift */; };
 		BD95140A2B4F5B9400A7BEBE /* SSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514022B4F5B9400A7BEBE /* SSHClient.swift */; };
 		BD95140C2B4F5B9400A7BEBE /* NSFileProviderError.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514042B4F5B9400A7BEBE /* NSFileProviderError.swift */; };
 		BD9514112B4F5F0800A7BEBE /* BlinkConfig.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BDCB715E268E1577007D7047 /* BlinkConfig.framework */; };
@@ -150,8 +147,6 @@
 		BD95141F2B4F5F4000A7BEBE /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD95141E2B4F5F4000A7BEBE /* main.swift */; };
 		BD9514202B4F600800A7BEBE /* BlinkFileProvider.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD9513E12B4F5A7A00A7BEBE /* BlinkFileProvider.framework */; };
 		BD9514272B4F606500A7BEBE /* SSHClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514262B4F606500A7BEBE /* SSHClient.swift */; };
-		BD9514282B4F60F600A7BEBE /* BlinkLogging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20A271F62ED00874007 /* BlinkLogging.swift */; };
-		BD9514292B4F60F600A7BEBE /* Publisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20C271F664D00874007 /* Publisher.swift */; };
 		BD9514312B4F660B00A7BEBE /* FileProviderReplicatedExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514302B4F660B00A7BEBE /* FileProviderReplicatedExtension.swift */; };
 		BD9514332B4F661600A7BEBE /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514322B4F661600A7BEBE /* FileProviderItem.swift */; };
 		BD9514352B4F662100A7BEBE /* FileProviderReplicatedEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9514342B4F662100A7BEBE /* FileProviderReplicatedEnumerator.swift */; };
@@ -165,11 +160,7 @@
 		BD9EA1FE271A148700874007 /* Migrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA1F9271A148700874007 /* Migrator.swift */; };
 		BD9EA1FF271A148700874007 /* 1400Migration.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA1FD271A148700874007 /* 1400Migration.swift */; };
 		BD9EA203271A3EFE00874007 /* Media.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BD9EA202271A3EFE00874007 /* Media.xcassets */; };
-		BD9EA211271F824500874007 /* BlinkLogging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20A271F62ED00874007 /* BlinkLogging.swift */; };
-		BD9EA212271F824900874007 /* Publisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20C271F664D00874007 /* Publisher.swift */; };
 		BD9EA216271F83B400874007 /* BlinkLoggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA215271F83B400874007 /* BlinkLoggingTests.swift */; };
-		BD9EA217271F846100874007 /* BlinkLogging.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20A271F62ED00874007 /* BlinkLogging.swift */; };
-		BD9EA218271F846400874007 /* Publisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9EA20C271F664D00874007 /* Publisher.swift */; };
 		BDACC7752A6F100D00D0B261 /* TrialNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDACC7742A6F100D00D0B261 /* TrialNotification.swift */; };
 		BDB129F32D077EB3006970A1 /* BookmarkedLocationsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB129F22D077EB3006970A1 /* BookmarkedLocationsManager.swift */; };
 		BDB129FA2D08B4DE006970A1 /* BookmarkedLocationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB129F82D08B4DE006970A1 /* BookmarkedLocationsView.swift */; };
@@ -354,7 +345,6 @@
 		D25D58102358897B00D1BCAE /* Complete.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25D580F2358897B00D1BCAE /* Complete.swift */; };
 		D25DE9C02939EB36008246EB /* NonStdIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25DE9BD2939EB36008246EB /* NonStdIO.swift */; };
 		D25DE9C12939EB36008246EB /* NonStdIO+ArgumentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25DE9BE2939EB36008246EB /* NonStdIO+ArgumentParser.swift */; };
-		D25DE9C22939EB36008246EB /* NonStdIO+Spinner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25DE9BF2939EB36008246EB /* NonStdIO+Spinner.swift */; };
 		D263A7682AA9AFE7001C6CFC /* device_info.m in Sources */ = {isa = PBXBuildFile; fileRef = D263A7672AA9AFE7001C6CFC /* device_info.m */; };
 		D264D2B428F84592002B1B14 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D264D2B128F84592002B1B14 /* Models.swift */; };
 		D264D2B628F84724002B1B14 /* whatsnew.m in Sources */ = {isa = PBXBuildFile; fileRef = D264D2B528F84724002B1B14 /* whatsnew.m */; };
@@ -795,7 +785,7 @@
 		07FAB8EB25C8E6C500E1CC2C /* CopyFiles.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CopyFiles.swift; sourceTree = "<group>"; };
 		07FAB8EC25C8E6C500E1CC2C /* ssh.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ssh.swift; sourceTree = "<group>"; };
 		07FAB8ED25C8E6C500E1CC2C /* SSHPool.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SSHPool.swift; sourceTree = "<group>"; };
-		07FAB8EE25C8E6C500E1CC2C /* SSHConfig.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SSHConfig.swift; sourceTree = "<group>"; };
+		07FAB8EE25C8E6C500E1CC2C /* SSHCommand.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SSHCommand.swift; sourceTree = "<group>"; };
 		07FAB8EF25C8E6C500E1CC2C /* SSHConfigProvider.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SSHConfigProvider.swift; sourceTree = "<group>"; };
 		07FAB90925C8E94200E1CC2C /* swift-argument-parser */ = {isa = PBXFileReference; lastKnownFileType = text; name = "swift-argument-parser"; path = "xcfs/.build/checkouts/swift-argument-parser"; sourceTree = SOURCE_ROOT; };
 		07FABB8425C9AEC000E1CC2C /* SSH.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SSH.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -863,6 +853,7 @@
 		BD028AF22A8EC509002F5F54 /* TrialSupportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrialSupportView.swift; sourceTree = "<group>"; };
 		BD1758AB26EA8C5400AEC545 /* MenuController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuController.swift; sourceTree = "<group>"; };
 		BD19DB402B056E9C003A4367 /* SSHCommandTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHCommandTest.swift; sourceTree = "<group>"; };
+		BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermSessionPayload.swift; sourceTree = "<group>"; };
 		BD23B6DF2CB058550041C38D /* ios_patches.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ios_patches.h; sourceTree = "<group>"; };
 		BD23B6E02CB0585B0041C38D /* ios_patches.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ios_patches.m; sourceTree = "<group>"; };
 		BD2C754D2D75FA7F007BFE77 /* Walkthrough.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Walkthrough.swift; sourceTree = "<group>"; };
@@ -884,7 +875,6 @@
 		BD818A0B2AB120B800956488 /* MoshServerParams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshServerParams.swift; sourceTree = "<group>"; };
 		BD818A122AB3865F00956488 /* MoshCommand.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MoshCommand.swift; sourceTree = "<group>"; };
 		BD818A142AB3A40100956488 /* MoshClientParams.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MoshClientParams.swift; sourceTree = "<group>"; };
-		BD835DD027A0BD19002C37D7 /* ReplaySubject.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReplaySubject.swift; sourceTree = "<group>"; };
 		BD88697A2CF4DD9A00F71119 /* 1810Migration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = 1810Migration.swift; sourceTree = "<group>"; };
 		BD8BBF0825F819970084705F /* SEKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SEKeyTests.swift; sourceTree = "<group>"; };
 		BD8BBFAF25F947710084705F /* Keys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keys.swift; sourceTree = "<group>"; };
@@ -904,7 +894,6 @@
 		BD9513E32B4F5A7A00A7BEBE /* BlinkFileProvider.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BlinkFileProvider.h; sourceTree = "<group>"; };
 		BD9513EA2B4F5A7A00A7BEBE /* BlinkFileProviderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BlinkFileProviderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD9513F12B4F5A7A00A7BEBE /* BlinkFileProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkFileProviderTests.swift; sourceTree = "<group>"; };
-		BD9513FF2B4F5B5600A7BEBE /* ReplaySubject.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ReplaySubject.swift; sourceTree = "<group>"; };
 		BD9514022B4F5B9400A7BEBE /* SSHClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SSHClient.swift; sourceTree = "<group>"; };
 		BD9514042B4F5B9400A7BEBE /* NSFileProviderError.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NSFileProviderError.swift; sourceTree = "<group>"; };
 		BD95141E2B4F5F4000A7BEBE /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -923,8 +912,6 @@
 		BD9EA1F9271A148700874007 /* Migrator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Migrator.swift; sourceTree = "<group>"; };
 		BD9EA1FD271A148700874007 /* 1400Migration.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = 1400Migration.swift; sourceTree = "<group>"; };
 		BD9EA202271A3EFE00874007 /* Media.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Media.xcassets; sourceTree = "<group>"; };
-		BD9EA20A271F62ED00874007 /* BlinkLogging.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BlinkLogging.swift; sourceTree = "<group>"; };
-		BD9EA20C271F664D00874007 /* Publisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Publisher.swift; sourceTree = "<group>"; };
 		BD9EA215271F83B400874007 /* BlinkLoggingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkLoggingTests.swift; sourceTree = "<group>"; };
 		BDACC7742A6F100D00D0B261 /* TrialNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrialNotification.swift; sourceTree = "<group>"; };
 		BDB129F22D077EB3006970A1 /* BookmarkedLocationsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkedLocationsManager.swift; sourceTree = "<group>"; };
@@ -1104,7 +1091,6 @@
 		D25D580F2358897B00D1BCAE /* Complete.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Complete.swift; sourceTree = "<group>"; };
 		D25DE9BD2939EB36008246EB /* NonStdIO.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NonStdIO.swift; sourceTree = "<group>"; };
 		D25DE9BE2939EB36008246EB /* NonStdIO+ArgumentParser.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "NonStdIO+ArgumentParser.swift"; sourceTree = "<group>"; };
-		D25DE9BF2939EB36008246EB /* NonStdIO+Spinner.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "NonStdIO+Spinner.swift"; sourceTree = "<group>"; };
 		D263A7672AA9AFE7001C6CFC /* device_info.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = device_info.m; sourceTree = "<group>"; };
 		D264D2B128F84592002B1B14 /* Models.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		D264D2B528F84724002B1B14 /* whatsnew.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = whatsnew.m; sourceTree = "<group>"; };
@@ -1231,6 +1217,48 @@
 		D2FCB4DC2339F9DB00A88108 /* UIScrollView+Paging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIScrollView+Paging.swift"; sourceTree = "<group>"; };
 		EA0BA18B1C0CC57B00719C1A /* Blink.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blink.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BDEC85752E8398940096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BlinkLogging/BlinkLogging.swift,
+				BlinkLogging/BlinkLoggingConnectors.swift,
+				Publisher/ReplaySubject.swift,
+			);
+			target = BDBFA3042728914F00C77798 /* BlinkCode */;
+		};
+		BDEC85792E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BlinkLogging/BlinkLogging.swift,
+				BlinkLogging/BlinkLoggingConnectors.swift,
+				Publisher/ReplaySubject.swift,
+			);
+			target = EA0BA18A1C0CC57B00719C1A /* Blink */;
+		};
+		BDEC857A2E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BlinkLogging/BlinkLogging.swift,
+				BlinkLogging/BlinkLoggingConnectors.swift,
+				Publisher/ReplaySubject.swift,
+			);
+			target = BD9513E02B4F5A7A00A7BEBE /* BlinkFileProvider */;
+		};
+		BDEC85862E839B280096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BlinkLogging/BlinkLogging.swift,
+				BlinkLogging/BlinkLoggingConnectors.swift,
+			);
+			target = D265FBB92317DD3C0017EAC4 /* BlinkTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		BDEC856B2E8397520096BF4C /* Common */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (BDEC85792E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC85862E839B280096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC85752E8398940096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC857A2E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = Common; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		07FABB8125C9AEC000E1CC2C /* Frameworks */ = {
@@ -1434,6 +1462,7 @@
 				D265FBC7231904B50017EAC4 /* Foundation */,
 				D2A52225231304A90010AC04 /* UIKit */,
 				D241CB93230406E2003D64A5 /* SmarterKeys */,
+				BD1FFF752E4B466500DB5AF9 /* Terminal */,
 				D2A0C63E20AAD98D001CF38F /* ios_error.h */,
 				D2F330C520A6C8E20074ADD7 /* Commands */,
 				0795F29B1DC11C6B00CC8B83 /* Blink.entitlements */,
@@ -1443,24 +1472,14 @@
 				0716B5291CFFAB9300268B5B /* AppDelegate.h */,
 				0716B52A1CFFAB9300268B5B /* AppDelegate.m */,
 				0716B52C1CFFAB9300268B5B /* LaunchScreen.storyboard */,
-				079635831D0E6602000473B1 /* TermView.h */,
-				079635841D0E6602000473B1 /* TermView.m */,
-				D215E59B2010C77E00D893EB /* TermJS.h */,
-				D2D6D78420527651003CBEC4 /* TermDevice.h */,
-				D2D6D78520527651003CBEC4 /* TermDevice.m */,
-				D27BBA1A20529FFF00AEA303 /* TermStream.h */,
-				D27BBA1B20529FFF00AEA303 /* TermStream.m */,
 				D2179F2B2136A5DC00B0850A /* GeoManager.h */,
 				D2179F2C2136A5DC00B0850A /* GeoManager.m */,
-				D28F301821AD8A6B00E5259F /* DeviceInfo.h */,
-				D28F301921AD8A6B00E5259F /* DeviceInfo.m */,
 				D2D75EDE21AFDA10007336B6 /* LayoutManager.h */,
 				D2D75EDF21AFDA10007336B6 /* LayoutManager.m */,
 				D29568B721BE629100480A83 /* bk_getopts.h */,
 				D29568B821BE629100480A83 /* bk_getopts.c */,
 				D235579622CE07D20094AADB /* Blink-bridge.h */,
 				D2AD9ADD22DB80DE00861F66 /* SessionRegistry.swift */,
-				D29D6C3022DB9CA700A84173 /* TermController.swift */,
 				D2887A5522DC676F00701BD5 /* SpaceController.swift */,
 				D2887A5D22DCA6D500701BD5 /* SceneDelegate.swift */,
 				D248E67522DDDF130057FE67 /* UIStateRestorable.swift */,
@@ -1600,7 +1619,7 @@
 				07FAB8EB25C8E6C500E1CC2C /* CopyFiles.swift */,
 				07FAB8EC25C8E6C500E1CC2C /* ssh.swift */,
 				07FAB8ED25C8E6C500E1CC2C /* SSHPool.swift */,
-				07FAB8EE25C8E6C500E1CC2C /* SSHConfig.swift */,
+				07FAB8EE25C8E6C500E1CC2C /* SSHCommand.swift */,
 				07FAB8EF25C8E6C500E1CC2C /* SSHConfigProvider.swift */,
 				BD98AC83260BD8DC00B4E6A1 /* SSHAgentAdd.swift */,
 				BD98AC94260BE20000B4E6A1 /* SSHDefaultAgent.swift */,
@@ -1737,6 +1756,24 @@
 			path = Security;
 			sourceTree = "<group>";
 		};
+		BD1FFF752E4B466500DB5AF9 /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				D28F301821AD8A6B00E5259F /* DeviceInfo.h */,
+				D28F301921AD8A6B00E5259F /* DeviceInfo.m */,
+				D29D6C3022DB9CA700A84173 /* TermController.swift */,
+				D2D6D78420527651003CBEC4 /* TermDevice.h */,
+				D2D6D78520527651003CBEC4 /* TermDevice.m */,
+				D215E59B2010C77E00D893EB /* TermJS.h */,
+				BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */,
+				D27BBA1A20529FFF00AEA303 /* TermStream.h */,
+				D27BBA1B20529FFF00AEA303 /* TermStream.m */,
+				079635831D0E6602000473B1 /* TermView.h */,
+				079635841D0E6602000473B1 /* TermView.m */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
 		BD33F77F2AAA426D00CD16EE /* mosh */ = {
 			isa = PBXGroup;
 			children = (
@@ -1747,14 +1784,6 @@
 				BD818A0B2AB120B800956488 /* MoshServerParams.swift */,
 			);
 			path = mosh;
-			sourceTree = "<group>";
-		};
-		BD835DCF27A0BD19002C37D7 /* Publisher */ = {
-			isa = PBXGroup;
-			children = (
-				BD835DD027A0BD19002C37D7 /* ReplaySubject.swift */,
-			);
-			path = Publisher;
 			sourceTree = "<group>";
 		};
 		BD8D898025DC535600E55D9E /* keys */ = {
@@ -1774,7 +1803,6 @@
 			isa = PBXGroup;
 			children = (
 				BD9514012B4F5B9400A7BEBE /* SSH */,
-				BD9513FE2B4F5B5600A7BEBE /* Publisher */,
 				BD9514342B4F662100A7BEBE /* FileProviderReplicatedEnumerator.swift */,
 				BD9514322B4F661600A7BEBE /* FileProviderItem.swift */,
 				BD9514302B4F660B00A7BEBE /* FileProviderReplicatedExtension.swift */,
@@ -1796,15 +1824,6 @@
 			);
 			path = BlinkFileProviderTests;
 			sourceTree = "<group>";
-		};
-		BD9513FE2B4F5B5600A7BEBE /* Publisher */ = {
-			isa = PBXGroup;
-			children = (
-				BD9513FF2B4F5B5600A7BEBE /* ReplaySubject.swift */,
-			);
-			name = Publisher;
-			path = BlinkCode/Publisher;
-			sourceTree = SOURCE_ROOT;
 		};
 		BD9514012B4F5B9400A7BEBE /* SSH */ = {
 			isa = PBXGroup;
@@ -1845,15 +1864,6 @@
 			path = Migrator;
 			sourceTree = "<group>";
 		};
-		BD9EA209271F62ED00874007 /* BlinkLogging */ = {
-			isa = PBXGroup;
-			children = (
-				BD9EA20A271F62ED00874007 /* BlinkLogging.swift */,
-				BD9EA20C271F664D00874007 /* Publisher.swift */,
-			);
-			path = BlinkLogging;
-			sourceTree = "<group>";
-		};
 		BDB129F92D08B4DE006970A1 /* BookmarkedLocations */ = {
 			isa = PBXGroup;
 			children = (
@@ -1866,7 +1876,6 @@
 			isa = PBXGroup;
 			children = (
 				BD9514252B4F606500A7BEBE /* SSH */,
-				BD835DCF27A0BD19002C37D7 /* Publisher */,
 				BD81521C27387D1F002BB169 /* Certificates.swift */,
 				BD8DB645279B512900497C88 /* CodeFileSystem.swift */,
 				BD8DB646279B512900497C88 /* CodeFileSystemService.swift */,
@@ -2182,7 +2191,6 @@
 			children = (
 				D25DE9BD2939EB36008246EB /* NonStdIO.swift */,
 				D25DE9BE2939EB36008246EB /* NonStdIO+ArgumentParser.swift */,
-				D25DE9BF2939EB36008246EB /* NonStdIO+Spinner.swift */,
 			);
 			path = NonStdIO;
 			sourceTree = "<group>";
@@ -2391,7 +2399,6 @@
 				D265FBBB2317DD3C0017EAC4 /* BlinkTests */,
 				07FABB8525C9AEC000E1CC2C /* SSH */,
 				07FABB9225C9AEC100E1CC2C /* SSHTests */,
-				BD9EA209271F62ED00874007 /* BlinkLogging */,
 				07FABBB025C9AECF00E1CC2C /* BlinkFiles */,
 				07FABBBD25C9AECF00E1CC2C /* BlinkFilesTests */,
 				D218068825CC277900B98902 /* AppKitBridge */,
@@ -2413,6 +2420,7 @@
 				07E4C5201C935E28000C571A /* Media.xcassets */,
 				07F670621D05EEE200C0A53C /* Sessions */,
 				0716B5231CFFAB9300268B5B /* Blink */,
+				BDEC856B2E8397520096BF4C /* Common */,
 				EA0BA18C1C0CC57B00719C1A /* Products */,
 			);
 			indentWidth = 2;
@@ -3290,14 +3298,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BD9514282B4F60F600A7BEBE /* BlinkLogging.swift in Sources */,
 				BD9514312B4F660B00A7BEBE /* FileProviderReplicatedExtension.swift in Sources */,
-				BD9514292B4F60F600A7BEBE /* Publisher.swift in Sources */,
 				BD9514332B4F661600A7BEBE /* FileProviderItem.swift in Sources */,
 				BDBA46CD2CD2EDD900AB44A0 /* FileProviderReplicatedExtension+Helpers.swift in Sources */,
 				BD4DBAFC2CADB3AF00538194 /* WorkingSetDatabase.swift in Sources */,
 				BD9514352B4F662100A7BEBE /* FileProviderReplicatedEnumerator.swift in Sources */,
-				BD9514002B4F5B5600A7BEBE /* ReplaySubject.swift in Sources */,
 				BDF041142CA363F0005B7138 /* FilesTranslatorConnection.swift in Sources */,
 				BD95140C2B4F5B9400A7BEBE /* NSFileProviderError.swift in Sources */,
 				BD95140A2B4F5B9400A7BEBE /* SSHClient.swift in Sources */,
@@ -3326,10 +3331,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BD81522D2739A91D002BB169 /* BlinkLogging.swift in Sources */,
-				BD81522E2739A91D002BB169 /* Publisher.swift in Sources */,
 				BD8DB648279B512900497C88 /* CodeFileSystemService.swift in Sources */,
-				BD835DD427A0BD19002C37D7 /* ReplaySubject.swift in Sources */,
 				BD67FC79272B30F300C1EE75 /* Messages.swift in Sources */,
 				BD9514272B4F606500A7BEBE /* SSHClient.swift in Sources */,
 				BDBFA3212728925C00C77798 /* WebSocketServer.swift in Sources */,
@@ -3412,12 +3414,10 @@
 			files = (
 				BD74A7C22905BD5800ED01CF /* WhatsNewModelTests.swift in Sources */,
 				BDE7C45C29DCAEFA005E033E /* FileLocationPathTests.swift in Sources */,
-				BD9EA217271F846100874007 /* BlinkLogging.swift in Sources */,
 				D20CBA4F2360319600D93301 /* NSCoder+CodingKey.swift in Sources */,
 				D243F17E2602438D00097A2F /* XCTestCase.swift in Sources */,
 				D2CB059A273BBB0800394A4F /* SEKey.swift in Sources */,
 				D265FBC52317E5090017EAC4 /* SessionParamsTests.swift in Sources */,
-				BD9EA218271F846400874007 /* Publisher.swift in Sources */,
 				BD8BBF5525F829B00084705F /* SEKeyTests.swift in Sources */,
 				BD33F7872AAA7C4300CD16EE /* MoshBootstrapTests.swift in Sources */,
 				BD9EA216271F83B400874007 /* BlinkLoggingTests.swift in Sources */,
@@ -3435,7 +3435,6 @@
 				BD23B6E12CB0585B0041C38D /* ios_patches.m in Sources */,
 				D2AD8E7527A2BAFA00DED28D /* PurchasesUserModel.swift in Sources */,
 				BDFA97352D959BC90020BBF2 /* TypingText.swift in Sources */,
-				BD9EA212271F824900874007 /* Publisher.swift in Sources */,
 				D241CBDF23040734003D64A5 /* KBKeyAccessibilityElement.swift in Sources */,
 				D2DE0DDE260331F300A69B6F /* NewKeyView.swift in Sources */,
 				D27C4DA42987F124008427F2 /* BuildHelp.swift in Sources */,
@@ -3480,7 +3479,7 @@
 				D2F330D420A6F1DF0074ADD7 /* clear.m in Sources */,
 				C94437571D8311960096F84E /* BKResource.m in Sources */,
 				D27D0118261202A400128C23 /* KeyUIError.swift in Sources */,
-				07FAB8F425C8E6C500E1CC2C /* SSHConfig.swift in Sources */,
+				07FAB8F425C8E6C500E1CC2C /* SSHCommand.swift in Sources */,
 				D2CF27292428A791009885ED /* KBTracker.swift in Sources */,
 				07F670771D05EEE200C0A53C /* SSHSession.m in Sources */,
 				07F670761D05EEE200C0A53C /* SSHCopyIDSession.m in Sources */,
@@ -3533,6 +3532,7 @@
 				D2C24419238E44AB0082C69C /* KeyConfigPairView.swift in Sources */,
 				D2AB611E23AB5ACD00BE6585 /* UIApplication+Version.m in Sources */,
 				07FAB8F525C8E6C500E1CC2C /* SSHConfigProvider.swift in Sources */,
+				BD1FFF702E4A10C600DB5AF9 /* TermSessionPayload.swift in Sources */,
 				BD2C754E2D75FA85007BFE77 /* Walkthrough.swift in Sources */,
 				D241CBD523040734003D64A5 /* KBKey.swift in Sources */,
 				D215AC30233521B600E164C3 /* WKWebView.swift in Sources */,
@@ -3563,7 +3563,6 @@
 				D26A37F026A0AB7000534A4D /* facecam.swift in Sources */,
 				D21DEE41260C9A3D00D8E640 /* ImportKeyView.swift in Sources */,
 				D242157822E878950037E5A6 /* UIColor+Codable.swift in Sources */,
-				D25DE9C22939EB36008246EB /* NonStdIO+Spinner.swift in Sources */,
 				07FAB8F125C8E6C500E1CC2C /* CopyFiles.swift in Sources */,
 				07F670751D05EEE200C0A53C /* Session.m in Sources */,
 				C989E5581D6CC4A1003E0079 /* BKThemeCreateViewController.m in Sources */,
@@ -3571,7 +3570,6 @@
 				07E3AEB61D8F6E2E007BC086 /* BKLinkActions.m in Sources */,
 				D2ED4A6F239BB12E000DC67F /* KeyCaptureView.swift in Sources */,
 				D29D6C3122DB9CA700A84173 /* TermController.swift in Sources */,
-				BD9EA211271F824500874007 /* BlinkLogging.swift in Sources */,
 				D2D6D78620527651003CBEC4 /* TermDevice.m in Sources */,
 				D2D8DD8523C71CC500BFF223 /* LocalAuth.swift in Sources */,
 				D2C24424238E44AB0082C69C /* KBWebViewBase.m in Sources */,

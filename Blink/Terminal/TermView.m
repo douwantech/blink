@@ -375,20 +375,19 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   }
 }
 
-                         
-- (void)loadWith:(MCPParams *)params;
+- (void)loadWithTermUIState:(TermUIState *)termUIState;
 {
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWith:params]];
-  
+  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:termUIState]];
+
   NSString *path = [[NSBundle mainBundle] pathForResource:@"term" ofType:@"html"];
   NSURL *url = [NSURL fileURLWithPath:path];
   [_webView loadFileURL:url allowingReadAccessToURL:url];
 }
 
-- (void)reloadWith:(MCPParams *)params;
+- (void)reloadWithTermUIState:(TermUIState *)termUIState;
 {
   [_webView.configuration.userContentController removeAllUserScripts];
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWith:params]];
+  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:termUIState]];
   [_webView reload];
 }
 
@@ -885,11 +884,11 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   return result;
 }
 
-- (WKUserScript *)_termInitScriptWith:(MCPParams *)params;
+- (WKUserScript *)_termInitScriptWithTermUIState:(TermUIState *)termUIState;
 {
   NSMutableArray *script = [[NSMutableArray alloc] init];
   BOOL lockdownMode = [[NSUserDefaults.standardUserDefaults objectForKey:@"LDMGlobalEnabled"] boolValue];
-  BKFont *selectedFont = [BKFont withName: params.fontName ?: [BLKDefaults selectedFontName]];
+  BKFont *selectedFont = [BKFont withName: termUIState.fontName ?: [BLKDefaults selectedFontName]];
   // In Lockdown mode, keep bundled fonts but disable non-bundled ones.
   BKFont *font = (lockdownMode && selectedFont.isCustom) ? nil : selectedFont;
   NSString *fontFamily = font.name ?: (lockdownMode ? @"monospace" : nil);
@@ -905,15 +904,15 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
       [script addObject: term_setFontFamily(fontFamily, font.systemWide ? @"dom" : @"canvas")];
     }
     
-    [script addObject:term_setBoldEnabled(params.enableBold)];
-    [script addObject:term_setBoldAsBright(params.boldAsBright)];
+    [script addObject:term_setBoldEnabled(termUIState.enableBold)];
+    [script addObject:term_setBoldAsBright(termUIState.boldAsBright)];
     
-    NSString *themeContent = [[BKTheme withName: params.themeName ?: [BLKDefaults selectedThemeName]] content];
+    NSString *themeContent = [[BKTheme withName: termUIState.themeName ?: [BLKDefaults selectedThemeName]] content];
     if (themeContent) {
       [script addObject:themeContent];
     }
     
-    [script addObject:term_setFontSize(params.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(params.fontSize))];
+    [script addObject:term_setFontSize(termUIState.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(termUIState.fontSize))];
     
     [script addObject: term_setCursorBlink([BLKDefaults isCursorBlink])];
   }
@@ -1077,7 +1076,7 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 - (bool)_isLayoutLocked {
   SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  return sp.currentTerm.sessionParams.layoutLocked;
+  return sp.currentTerm.termUIState.layoutLocked;
 }
 
 -(void)_setLayoutModeFill {
@@ -1097,7 +1096,7 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 -(BKLayoutMode)_currentLayoutMode {
   SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  return sp.currentTerm.sessionParams.layoutMode;
+  return sp.currentTerm.termUIState.layoutMode;
 }
 
 -(void)_closeCurrentTab {
@@ -1107,7 +1106,7 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 -(void)_createNewTab {
   SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp newShellAction];
+  [sp runShellSessionIntentWithCommand: @""];
 }
 
 - (void)setCmdKeyPressed:(BOOL)pressed {

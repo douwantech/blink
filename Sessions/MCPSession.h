@@ -31,7 +31,7 @@
 
 #import <Foundation/Foundation.h>
 
-
+#import "TermDevice.h"
 #import "Session.h"
 #import "TokioSignals.h"
 
@@ -39,7 +39,7 @@
 @class MCPParams;
 @class BlinkSSH;
 
-@interface MCPSession : Session
+@interface MCPSession : Session <TermDeviceReadlineListener>
 
 @property (strong) MCPParams *sessionParams;
 @property (readonly) dispatch_queue_t cmdQueue;
@@ -54,5 +54,6 @@
 - (bool)isRunningCmd;
 
 - (void)updateAllowedPaths;
+- (void)setActiveSession;
 
 @end

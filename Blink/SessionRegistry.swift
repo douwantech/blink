@@ -41,8 +41,8 @@ class SessionMeta: Codable {
 protocol SuspendableSession: class {
   var meta: SessionMeta { get }
   init(meta: SessionMeta?)
-  func resume(with unarchiver: NSKeyedUnarchiver)
-  func suspendedSession(with archiver: NSKeyedArchiver)
+  func resume(with unarchiver: NSKeyedUnarchiver) -> NSKeyedArchiver?
+  func suspendSession(with archiver: NSKeyedArchiver)
 }
 
 extension SuspendableSession {
@@ -150,7 +150,7 @@ extension SuspendableSession {
     }
     
     let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-    session.suspendedSession(with: archiver)
+    session.suspendSession(with: archiver)
     _fsWrite(archiver.encodedData, forKey: session.meta.key)
     session.meta.isSuspended = true
   }
@@ -164,6 +164,7 @@ extension SuspendableSession {
     session.meta.isSuspended = false
   }
   
+  
   private func _resume(forKey key: UUID) {
     guard
       let session = _sessionsIndex[key],
@@ -172,8 +173,11 @@ extension SuspendableSession {
     else {
       return
     }
-    
-    session.resume(with: unarchiver)
+
+    // Resume the session and get updated state if needed
+    if let updatedArchiver = session.resume(with: unarchiver) {
+      _fsWrite(updatedArchiver.encodedData, forKey: key)
+    }
     session.meta.isSuspended = false
   }
   

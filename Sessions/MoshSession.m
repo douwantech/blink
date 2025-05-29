@@ -279,7 +279,7 @@ void __state_callback(const void *context, const void *buffer, size_t size) {
     }
   }
   
-  NSData *encodedState = self.sessionParams.encodedState;
+  NSData *encodedState = [self.sessionParams takeEncodedState];
   if (encodedState == nil) {
     int code = [self initParamaters:argc argv:argv];
     if ( code < 0) {
@@ -291,8 +291,6 @@ void __state_callback(const void *context, const void *buffer, size_t size) {
   setenv("PATH_LOCALE", [locales_path cStringUsingEncoding:1], 1);
   
   [_device setRawMode:YES];
-
-  [self.sessionParams cleanEncodedState];
   
   _selfRef = CFBridgingRetain(self);
   mosh_main(
@@ -606,7 +604,7 @@ void __state_callback(const void *context, const void *buffer, size_t size) {
 
 - (void)onStateEncoded: (NSData *) encodedState
 {
-  self.sessionParams.encodedState = encodedState;
+  [self.sessionParams putEncodedState:encodedState];
   if (_sema) {
     dispatch_semaphore_signal(_sema);
   }

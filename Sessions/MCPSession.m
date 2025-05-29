@@ -70,6 +70,7 @@
     _cmdQueue = dispatch_queue_create("mcp.command.queue", DISPATCH_QUEUE_SERIAL);
     _sshQueue = dispatch_queue_create("mcp.sshclients.queue", DISPATCH_QUEUE_SERIAL);
     [self setActiveSession];
+    device.readlineListener = self;
   }
   
   return self;
@@ -86,7 +87,9 @@
 
     // We are restoring mosh session if possible first.
     if ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
-      BlinkMosh *mosh = [[BlinkMosh alloc] initWithMcpSession: self device:_device andParams:self.sessionParams.childSessionParams];
+      MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
+
+      BlinkMosh *mosh = [[BlinkMosh alloc] initWithMcpSession: self device:_device andParams:moshParams];
       _childSession = mosh;
       [_childSession executeAttachedWithArgs:@""];
       _childSession = nil;
@@ -395,7 +398,6 @@
   }
   
   ios_closeSession(_sessionUUID.UTF8String);
-  
   [_device close];
   _device = NULL;
 }
@@ -415,6 +417,8 @@
     if (_sshClients.count > 0) {
       dispatch_sync(_sshQueue, ^{
         for (id client in _sshClients) {
+          // TODO We need the kill here because of the Proxy connections, but if we simplify, SSH will just be a
+          // regular child session.
           [client kill];
         }
       });
@@ -470,5 +474,8 @@
   thread_stderr = NULL;
 }
 
+- (void)lineSubmitted:(NSString *)line { 
+  [self enqueueCommand:line];
+}
 
 @end

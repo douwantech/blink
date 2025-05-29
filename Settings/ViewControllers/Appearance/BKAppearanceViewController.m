@@ -114,7 +114,7 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
   _termView.backgroundColor = UIColor.systemGroupedBackgroundColor;
   _termView.userInteractionEnabled = NO;
   _termView.device = self;
-  [_termView loadWith:nil];
+  [_termView loadWithTermUIState:nil];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -487,7 +487,7 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
       [[tableView cellForRowAtIndexPath:indexPath] setAccessoryType:UITableViewCellAccessoryCheckmark];
       BKTheme *theme = [[BKTheme all] objectAtIndex:_selectedThemeIndexPath.row];
       [BLKDefaults setThemeName:[theme name]];
-      [_termView reloadWith:nil];
+      [_termView reloadWithTermUIState:nil];
     }
   } else if (indexPath.section == BKAppearance_Fonts) {
     if (indexPath.row == [[BKFont all] count]) {
@@ -502,7 +502,7 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
       [[tableView cellForRowAtIndexPath:indexPath] setAccessoryType:UITableViewCellAccessoryCheckmark];
       BKFont *font = [[BKFont all] objectAtIndex:_selectedFontIndexPath.row];
       [BLKDefaults setFontName:[font name]];
-      [_termView reloadWith:nil];
+      [_termView reloadWithTermUIState:nil];
     }
   }
 }

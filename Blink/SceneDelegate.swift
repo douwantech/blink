@@ -510,7 +510,10 @@ extension SceneDelegate {
       return
     }
 
-    _spCtrl.newShellAction()
+    // If a SSH/mosh connection is already open in the current terminal shell
+    // create a new one and then write the command
+    // TODO Why not passing the command?
+    _spCtrl.runShellSessionIntent()
 
     guard let newTerm = _spCtrl.currentTerm() else {
       return
@@ -613,7 +616,7 @@ extension SceneDelegate {
 
     // If a SSH/mosh connection is already open in the current terminal shell
     // create a new one and then write the command
-    _spCtrl.newShellAction()
+    _spCtrl.runShellSessionIntent()
 
     guard let newTerm = _spCtrl.currentTerm() else {
        return
@@ -676,7 +679,7 @@ extension SceneDelegate {
       return
     }
 
-    _spCtrl.newShellAction()
+    _spCtrl.runShellSessionIntent()
     guard let newTerm = _spCtrl.currentTerm() else {
       return
     }
@@ -688,7 +691,7 @@ extension SceneDelegate {
   }
 
   private func _handleHttpUrlScheme(with url: URL) {
-    _spCtrl.newShellAction()
+    _spCtrl.runShellSessionIntent()
     guard let newTerm = _spCtrl.currentTerm() else {
       return
     }

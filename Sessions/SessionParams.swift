@@ -33,37 +33,148 @@
 import Foundation
 import UIKit
 
+/// Typealias for session parameter objects that can be snapshotted and securely coded
+public typealias BKSessionParams = (any NSSecureCoding & BKSessionParamsSnapshotting)
 
-@objc class SessionParams: NSObject, NSSecureCoding {
-
-  @objc var encodedState: Data? = nil
-  
-  @objc func cleanEncodedState() {
-    encodedState = nil
-  }
-  
-  override init() {
-    super.init()
-  }
-  
-  private enum Key: CodingKey {
-    case encodedState
-  }
-  
-  func encode(with coder: NSCoder) {
-    coder.bk_encode(encodedState, for: Key.encodedState)
-  }
-  
-  required init?(coder: NSCoder) {
-    super.init()
-    encodedState = coder.bk_decode(for: Key.encodedState)
-  }
-  
-  static var secureCoding1 = true
-  class var supportsSecureCoding: Bool { return secureCoding1 }
+/// Opt-in storage hook for params that want a built-in Data backing.
+@objc public protocol EncodedStateBacked {
+  @objc dynamic var encodedStateStorage: Data? { get set }
 }
 
-@objc class MoshParams: SessionParams {
+/// Default behavior for snapshot methods when the type provides storage.
+public extension EncodedStateBacked {
+  @inlinable func _hasEncodedStateDefault() -> Bool {
+    return encodedStateStorage != nil
+  }
+
+  @inlinable @discardableResult
+  func _takeEncodedStateDefault() -> Data? {
+    let data = encodedStateStorage
+    encodedStateStorage = nil
+    return data
+  }
+
+  @inlinable func _putEncodedStateDefault(_ data: Data) {
+    encodedStateStorage = data
+  }
+}
+
+@objc class TermUIState: NSObject, NSSecureCoding {
+    @objc var viewSize: CGSize = .zero
+    @objc var rows: Int = 0
+    @objc var cols: Int = 0
+    @objc var themeName: String? = nil
+    @objc var fontName: String? = nil
+    @objc var fontSize: Int = 16
+    @objc var layoutMode: Int = 0
+    @objc var boldAsBright: Bool = false
+    @objc var enableBold: UInt = 0
+    @objc var layoutLocked: Bool = false
+    @objc var layoutLockedFrame: CGRect = .zero
+
+    private enum Key: CodingKey {
+        case viewSize
+        case rows
+        case cols
+        case themeName
+        case fontName
+        case fontSize
+        case layoutMode
+        case boldAsBright
+        case enableBold
+        case layoutLocked
+        case layoutLockedFrame
+    }
+
+    override init() {
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init()
+        self.viewSize = coder.bk_decode(for: Key.viewSize)
+        self.rows = coder.bk_decode(for: Key.rows)
+        self.cols = coder.bk_decode(for: Key.cols)
+        self.themeName = coder.bk_decode(for: Key.themeName)
+        self.fontName = coder.bk_decode(for: Key.fontName)
+        self.fontSize = coder.bk_decode(for: Key.fontSize)
+        self.layoutMode = coder.bk_decode(for: Key.layoutMode)
+        self.boldAsBright = coder.bk_decode(for: Key.boldAsBright)
+        self.enableBold = coder.bk_decode(for: Key.enableBold)
+        self.layoutLocked = coder.bk_decode(for: Key.layoutLocked)
+        self.layoutLockedFrame = coder.bk_decode(for: Key.layoutLockedFrame)
+    }
+
+    func encode(with coder: NSCoder) {
+        coder.bk_encode(viewSize, for: Key.viewSize)
+        coder.bk_encode(rows, for: Key.rows)
+        coder.bk_encode(cols, for: Key.cols)
+        coder.bk_encode(themeName, for: Key.themeName)
+        coder.bk_encode(fontName, for: Key.fontName)
+        coder.bk_encode(fontSize, for: Key.fontSize)
+        coder.bk_encode(layoutMode, for: Key.layoutMode)
+        coder.bk_encode(boldAsBright, for: Key.boldAsBright)
+        coder.bk_encode(enableBold, for: Key.enableBold)
+        coder.bk_encode(layoutLocked, for: Key.layoutLocked)
+        coder.bk_encode(layoutLockedFrame, for: Key.layoutLockedFrame)
+    }
+
+    static var supportsSecureCoding: Bool { true }
+}
+
+@objc class TermParams: NSObject, NSSecureCoding {
+  // Protocol-typed: matches Session.sessionParams
+  @objc var sessionParams: BKSessionParams?
+  @objc var sessionType: String?
+  @objc var termUIState: TermUIState?
+
+  private enum Key: CodingKey {
+    case sessionParams
+    case sessionType
+    case termUIState
+  }
+
+  @objc init(
+    sessionParams: BKSessionParams,
+    sessionType: String,
+    termUIState: TermUIState
+  ) {
+    self.sessionParams = sessionParams
+    self.sessionType = sessionType
+    self.termUIState = termUIState
+    super.init()
+  }
+
+  // MARK: - NSSecureCoding
+  static var supportsSecureCoding: Bool { true }
+
+  func encode(with coder: NSCoder) {
+    coder.bk_encode(sessionParams, for: Key.sessionParams)
+    coder.bk_encode(sessionType, for: Key.sessionType)
+    coder.bk_encode(termUIState, for: Key.termUIState)
+  }
+
+  required init?(coder: NSCoder) {
+    super.init()
+    // IMPORTANT: include all concrete param types you support here
+    // (extend this list as you add new SessionParams types)
+    self.sessionParams = coder.bk_decode(of: [MCPParams.self], for: Key.sessionParams)
+    self.sessionType = coder.bk_decode(for: Key.sessionType)
+    self.termUIState = coder.bk_decode(of: [TermUIState.self], for: Key.termUIState)
+  }
+
+  // MARK: - Utility
+  @objc func deepCopy() -> TermParams? {
+    let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+    archiver.encode(self, forKey: "params")
+    let data = archiver.encodedData
+    guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
+    unarchiver.requiresSecureCoding = true
+    return unarchiver.decodeObject(of: TermParams.self, forKey: "params")
+  }
+}
+
+@objc class MoshParams: NSObject, NSSecureCoding, BKSessionParamsSnapshotting, EncodedStateBacked {
   @objc var ip: String? = nil
   @objc var port: String? = nil
   @objc var key: String? = nil
@@ -73,24 +184,22 @@ import UIKit
   @objc var serverPath: String? = nil
   @objc var experimentalRemoteIp: String? = nil
   
-  override init() {
-    super.init()
+  // Snapshot storage (backing for the default behavior)
+  @objc dynamic public var encodedStateStorage: Data? = nil
+  
+  override init() { super.init() }
+  
+  private enum Key: String, CodingKey {
+    case ip, port, key, predictionMode, predictOverwrite, startupCmd, serverPath, experimentalRemoteIp
+    case encodedState
   }
   
-  private enum Key: CodingKey {
-    case ip
-    case port
-    case key
-    case predictionMode
-    case predictOverwrite
-    case startupCmd
-    case serverPath
-    case experimentalRemoteIp
-  }
+  // Satisfy @objc protocol by forwarding to helpers:
+  @objc func hasEncodedState() -> Bool { _hasEncodedStateDefault() }
+  @objc func takeEncodedState() -> Data? { _takeEncodedStateDefault() }
+  @objc func putEncodedState(_ data: Data) { _putEncodedStateDefault(data) }
   
-  override func encode(with coder: NSCoder) {
-    super.encode(with: coder)
-    
+  func encode(with coder: NSCoder) {
     coder.bk_encode(ip, for: Key.ip)
     coder.bk_encode(port, for: Key.port)
     coder.bk_encode(key, for: Key.key)
@@ -99,10 +208,11 @@ import UIKit
     coder.bk_encode(startupCmd, for: Key.startupCmd)
     coder.bk_encode(serverPath, for: Key.serverPath)
     coder.bk_encode(experimentalRemoteIp, for: Key.experimentalRemoteIp)
+    coder.bk_encode(encodedStateStorage, for: Key.encodedState)
   }
   
   required init?(coder: NSCoder) {
-    super.init(coder: coder)
+    super.init()
     
     self.ip = coder.bk_decode(for: Key.ip)
     self.port = coder.bk_decode(for: Key.port)
@@ -112,11 +222,11 @@ import UIKit
     self.startupCmd = coder.bk_decode(for: Key.startupCmd)
     self.serverPath = coder.bk_decode(for: Key.serverPath)
     self.experimentalRemoteIp = coder.bk_decode(for: Key.experimentalRemoteIp)
+    self.encodedStateStorage = coder.bk_decode(for: Key.encodedState)
   }
   
-  
   static var secureCoding2 = true
-  override class var supportsSecureCoding: Bool { secureCoding2 }
+  static var supportsSecureCoding: Bool { true }
   
   public func copy(from params: MoshParams) {
     self.ip = params.ip
@@ -130,87 +240,31 @@ import UIKit
   }
 }
 
-@objc class MCPParams: SessionParams {
+@objc class MCPParams: NSObject, NSSecureCoding, BKSessionParamsSnapshotting {
   @objc var childSessionType: String? = nil
-  @objc var childSessionParams: SessionParams? = nil
-  
-  // TODO: Move to UIState?
-  @objc var viewSize: CGSize = .zero
-  @objc var rows: Int = 0
-  @objc var cols: Int = 0
-  @objc var themeName: String? = nil
-  @objc var fontName: String? = nil
-  @objc var fontSize: Int = 16
-  @objc var layoutMode: Int = 0
-  @objc var boldAsBright: Bool = false
-  @objc var enableBold: UInt = 0
-  @objc var layoutLocked: Bool = false
-  @objc var layoutLockedFrame: CGRect = .zero
-  
-  @objc func hasEncodedState() -> Bool {
-    childSessionParams?.encodedState != nil
-  }
-  
-  override func cleanEncodedState() {
-    childSessionParams?.cleanEncodedState()
-    super.cleanEncodedState()
-  }
-  
-  override init() {
-    super.init()
-  }
-  
-  private enum Key: CodingKey {
-    case childSessionType
-    case childSessionParams
-    case viewSize
-    case rows
-    case cols
-    case themeName
-    case fontName
-    case fontSize
-    case layoutMode
-    case boldAsBright
-    case enableBold
-    case layoutLocked
-    case u
-  }
-  
-  override func encode(with coder: NSCoder) {
-    super.encode(with: coder)
+  @objc var childSessionParams: BKSessionParams?
 
+  private enum Key: CodingKey { case childSessionType, childSessionParams }
+
+  override init() { super.init() }
+
+  // MARK: - NSSecureCoding
+  static var supportsSecureCoding: Bool { true }
+
+  func encode(with coder: NSCoder) {
     coder.bk_encode(childSessionType, for: Key.childSessionType)
     coder.bk_encode(childSessionParams, for: Key.childSessionParams)
-    coder.bk_encode(viewSize, for: Key.viewSize)
-    coder.bk_encode(rows, for: Key.rows)
-    coder.bk_encode(cols, for: Key.cols)
-    coder.bk_encode(themeName, for: Key.themeName)
-    coder.bk_encode(fontName, for: Key.fontName)
-    coder.bk_encode(fontSize, for: Key.fontSize)
-    coder.bk_encode(layoutMode, for: Key.layoutMode)
-    coder.bk_encode(boldAsBright, for: Key.boldAsBright)
-    coder.bk_encode(enableBold, for: Key.enableBold)
-    coder.bk_encode(layoutLocked, for: Key.layoutLocked)
-    coder.bk_encode(layoutLockedFrame, for: Key.u)
   }
-  
+
   required init?(coder: NSCoder) {
-    super.init(coder: coder)
+    super.init()
     self.childSessionType = coder.bk_decode(for: Key.childSessionType)
-    self.childSessionParams = coder.bk_decode(of: [MoshParams.self, SessionParams.self], for: Key.childSessionParams)
-    self.viewSize = coder.bk_decode(for: Key.viewSize)
-    self.rows = coder.bk_decode(for: Key.rows)
-    self.cols = coder.bk_decode(for: Key.cols)
-    self.themeName = coder.bk_decode(for: Key.themeName)
-    self.fontName = coder.bk_decode(for: Key.fontName)
-    self.fontSize = coder.bk_decode(for: Key.fontSize)
-    self.layoutMode = coder.bk_decode(for: Key.layoutMode)
-    self.boldAsBright = coder.bk_decode(for: Key.boldAsBright)
-    self.enableBold = coder.bk_decode(for: Key.enableBold)
-    self.layoutLocked = coder.bk_decode(for: Key.layoutLocked)
-    self.layoutLockedFrame = coder.bk_decode(for: Key.u)
+    // NOTE: include all known MCP children subclasses here for secure decoding
+    self.childSessionParams = coder.bk_decode(of: [MoshParams.self], for: Key.childSessionParams)
   }
-  
-  static var secureCoding2 = true
-  override class var supportsSecureCoding: Bool { secureCoding2 }
+
+  // MARK: - BKSessionParamsSnapshotting (forward)
+  @objc func hasEncodedState() -> Bool { childSessionParams?.hasEncodedState() ?? false }
+  @objc func takeEncodedState() -> Data? { childSessionParams?.takeEncodedState() }
+  @objc func putEncodedState(_ data: Data) { childSessionParams?.putEncodedState(data) }
 }
