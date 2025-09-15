@@ -46,6 +46,10 @@ import AVFoundation
   func currentTerm() -> TermController!
 }
 
+protocol LayoutInsetsProvider: AnyObject {
+  func provideInsets(for controller: TermController) -> UIEdgeInsets
+}
+
 private class ProxyView: UIView {
   var controlledView: UIView? = nil
   private var _cancelable: AnyCancellable? = nil
@@ -148,10 +152,24 @@ class TermController: UIViewController {
   @objc public var activityKey: String? = nil
   @objc public var termDevice: TermDevice { _termDevice }
   @objc weak var delegate: TermControlDelegate? = nil
+  weak var layoutProvider: LayoutInsetsProvider? = nil
   @objc var sessionParams: MCPParams { _sessionParams }
   @objc var bgColor: UIColor? {
     get { _bgColor }
     set { _bgColor = newValue }
+  }
+  
+  // State Properties for Input Management
+  var isReady: Bool {
+    _termDevice.view?.isReady ?? false
+  }
+  
+  var isAttached: Bool {
+    KBTracker.shared.input == _termDevice.view?.webView
+  }
+  
+  override var isFirstResponder: Bool {
+    _termDevice.view?.webView.isFirstResponder ?? false
   }
   
   
@@ -199,6 +217,12 @@ class TermController: UIViewController {
     }
 
     super.viewWillTransition(to: size, with: coordinator)
+    
+    // MARK: - Orientation Change Layout Update
+    // Orientation changes affect safe area calculations - need to trigger coordination
+    coordinator.animate(alongsideTransition: nil) { _ in
+      NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
+    }
   }
   
   public override func loadView() {
@@ -219,12 +243,22 @@ class TermController: UIViewController {
     
     _termView.load(with: _sessionParams)
     
+    let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
+    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
+    print("🔧 termView initialInsets: \(_termView.additionalInsets)")
+    
+    // MARK: - Layout Coordination System
+    // LayoutManagerBottomInsetDidUpdate coordinates layout between SpaceController and TermController
+    // Triggered by: keyboard changes, orientation changes, layout mode changes, lock/unlock
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(_relayout),
       name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
+    
   }
   
+  // MARK: - Layout Coordination
+  // Triggers viewWillLayoutSubviews() → LayoutManager.buildSafeInsets() → _termView.additionalInsets
   @objc func _relayout() {
     guard
       let window = view.window,
@@ -246,8 +280,16 @@ class TermController: UIViewController {
       return
     }
     
+    // MARK: - Safe Area Integration
+    // LayoutManager.buildSafeInsets() calls spaceCtrl.bottomInset() to get keyboard height
+    // Then combines it with device margins + layout mode rules
     let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
-    _termView.additionalInsets = LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
+    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
+    // print("🔧 termView initialInsets: \(_termView.additionalInsets)")
+    // let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
+    // print("🔧 Layout Mode: \(layoutMode)")
+    // _termView.additionalInsets = LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
+    print("🔧 termView additionalInsets: \(_termView.additionalInsets)")
     _termView.layoutLockedFrame = _sessionParams.layoutLockedFrame
     _termView.layoutLocked = _sessionParams.layoutLocked
     _termView.setNeedsLayout()
@@ -406,19 +448,62 @@ extension TermController: TermDeviceDelegate {
   
   public func deviceIsReady() {
     startSession()
-
-    guard
-      let input = KBTracker.shared.input,
-      input == _termDevice.view.webView,
-      _termDevice.view.browserView == nil
-    else {
-      return
+    
+    // Input progression. When device becomes ready, check if we need to become first responder
+    if isAttached {
+      //_becomeFirstResponder()
     }
-    _termDevice.attachInput(input)
-    _termDevice.focus()
-    input.reportFocus(true)
   }
   
+  func activateInput() {
+    if !isAttached {
+      _attachInput()
+    }
+    
+    if isReady {
+      //_becomeFirstResponder()
+    }
+    // If not ready, wait for isReady call to trigger _becomeFirstResponder()
+  }
+  
+  private func _attachInput() {
+    guard let deviceView = _termDevice.view else { return }
+    
+    let input = KBTracker.shared.input
+    
+//    if deviceView.browserView != nil {
+//      KBTracker.shared.attach(input: deviceView.browserView)
+//      //_termDevice.attachInput(deviceView.browserView)
+//      //_ = deviceView.browserView.becomeFirstResponder()
+//      if input != KBTracker.shared.input {
+//        input?.reportFocus(false)
+//      }
+//      return
+//    }
+
+    KBTracker.shared.attach(input: deviceView.webView)
+    _termDevice.attachInput(deviceView.webView)
+    
+  }
+  
+  private func _becomeFirstResponder() {
+    guard let deviceView = _termDevice.view else { return }
+    
+    // Only proceed if attached
+    if !isAttached && !isReady{ return }
+    
+    deviceView.webView.reportFocus(true)
+    _termDevice.focus()
+    
+    let input = KBTracker.shared.input
+
+    if input != KBTracker.shared.input {
+      input?.reportFocus(false)
+    }
+    // Become first responder
+    //_ = _termDevice.view?.webView.becomeFirstResponder()
+  }
+    
   public func deviceSizeChanged() {
     _sessionParams.rows = _termDevice.rows
     _sessionParams.cols = _termDevice.cols
@@ -454,6 +539,11 @@ extension TermController: TermDeviceDelegate {
   
   @objc public func setLayoutMode(layoutMode: BKLayoutMode) {
     self.sessionParams.layoutMode = layoutMode.rawValue
+    
+    // MARK: - Layout Mode Change Update
+    // Layout mode changes affect safe area calculations - need to trigger coordination
+    NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
+    
     if (self.sessionParams.layoutLocked) {
       self.unlockLayout()
     }

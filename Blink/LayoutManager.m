@@ -56,7 +56,7 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
 + (UIEdgeInsets) buildSafeInsetsForController:(UIViewController *)ctrl andMode:(BKLayoutMode) mode {
   UIWindow *window = ctrl.view.window;
   
-  if (window == ShadowWindow.shared || window.windowScene.session.role == UIWindowSceneSessionRoleExternalDisplayNonInteractive) {
+  if ((window != NULL) && (window == ShadowWindow.shared || window.windowScene.session.role == UIWindowSceneSessionRoleExternalDisplayNonInteractive)) {
     // we are on external monitor, so we use device margins to accomodate overscan and ignore mode
     // it is like BKLayoutModeSafeFit mode
     return ShadowWindow.shared.refWindow.safeAreaInsets;
@@ -66,12 +66,12 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
   
   // We are on external display with stage mode on.
   // Fix for #1621
-  if (mainScreen != window.screen) {
+  if ((window != NULL) && (mainScreen != window.screen)) {
     return window.safeAreaInsets;
   }
   
   SpaceController *spaceCtrl = nil;
-  UIViewController *parent = ctrl.parentViewController;
+  UIViewController *parent = ctrl;
   while (parent) {
     if ([parent isKindOfClass:[SpaceController class]]) {
       spaceCtrl = (SpaceController *)parent;
@@ -155,6 +155,9 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
     }
   }
   
+  // MARK: - Keyboard Height Integration
+  // LayoutManager combines: device margins + keyboard height + layout mode rules
+  // spaceCtrl.bottomInset() now uses UIKeyboardLayoutGuide height
   result.bottom = MAX(result.bottom, [spaceCtrl bottomInset]);
     
   return result;

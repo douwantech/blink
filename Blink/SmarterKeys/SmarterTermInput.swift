@@ -256,23 +256,24 @@ class CaretHider {
     }
     return res
   }
-  
+
   func _setupAccessoryView() {
     if isHardwareKB {
       return
     }
     inputAssistantItem.leadingBarButtonGroups = []
     inputAssistantItem.trailingBarButtonGroups = []
+
     if let _ = _inputAccessoryView as? KBAccessoryView {
     } else {
       _inputAccessoryView = KBAccessoryView(kbView: kbView)
     }
   }
-  
+
   override var inputAccessoryView: UIView? {
-    _inputAccessoryView
+    return _inputAccessoryView
   }
-  
+
   func sync(traits: KBTraits, device: KBDevice, hideSmartKeysWithHKB: Bool) {
     kbView.kbDevice = device
     
@@ -339,23 +340,9 @@ class CaretHider {
     setNeedsLayout()
   }
   
-  override func _keyboardDidChangeFrame(_ notification: Notification) {
-  }
-  
-  override func _keyboardWillChangeFrame(_ notification: Notification) {
-  }
-  
-  override func _keyboardWillShow(_ notification: Notification) {
-  }
-  
-  override func _keyboardWillHide(_ notification: Notification) {
-  }
-  
-  override func _keyboardDidHide(_ notification: Notification) {
-  }
-  
-  override func _keyboardDidShow(_ notification: Notification) {
-  }
+  // MARK: - Legacy Keyboard Methods Removed
+  // These empty override methods have been removed as keyboard tracking
+  // is now handled by UIKeyboardLayoutGuide in SpaceController
   
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
     super.pressesBegan(presses, with: event)
