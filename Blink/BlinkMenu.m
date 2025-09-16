@@ -279,10 +279,7 @@ const CGFloat MENU_PADDING = 10.0;
             actionWithTitle:noTitle ? @"" : @"Fit"
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
       delegate.currentTerm.termUIState.layoutMode = BKLayoutModeSafeFit;
-      [self.superview setNeedsLayout];
-      
     }
     ];
     action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -293,9 +290,7 @@ const CGFloat MENU_PADDING = 10.0;
             actionWithTitle:noTitle ? @"" : @"Fill"
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
       delegate.currentTerm.termUIState.layoutMode = BKLayoutModeFill;
-      [self.superview setNeedsLayout];
     }
     ];
     action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -307,9 +302,7 @@ const CGFloat MENU_PADDING = 10.0;
             actionWithTitle:noTitle ? @"" : @"Cover"
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
       delegate.currentTerm.termUIState.layoutMode = BKLayoutModeCover;
-      [self.superview setNeedsLayout];
     }
     ];
     action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -357,8 +350,7 @@ const CGFloat MENU_PADDING = 10.0;
                         actionWithTitle:noTitle ? @"" : @"Lock"
             image:[UIImage systemImageNamed:@"lock.rectangle"]
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm toggleLayoutLock];
-      [self.superview setNeedsLayout];
+      [delegate.currentTerm.termDevice.view toggleLayoutLock];
     }];
     action.state = delegate.currentTerm.termUIState.layoutLocked ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;

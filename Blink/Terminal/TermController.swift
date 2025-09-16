@@ -46,10 +46,6 @@ import AVFoundation
   func currentTerm() -> TermController!
 }
 
-protocol LayoutInsetsProvider: AnyObject {
-  func provideInsets(for controller: TermController) -> UIEdgeInsets
-}
-
 private class ProxyView: UIView {
   var controlledView: UIView? = nil
   private var _cancelable: AnyCancellable? = nil
@@ -171,7 +167,6 @@ class TermController: UIViewController {
   @objc public var activityKey: String? = nil
   @objc public var termDevice: TermDevice { _termDevice }
   @objc weak var delegate: TermControlDelegate? = nil
-  weak var layoutProvider: LayoutInsetsProvider? = nil
 
   // Control whether terminal can become first responder (e.g., during Snips Input Mode)
   var shouldBlockFirstResponder: Bool = false {
@@ -221,14 +216,6 @@ class TermController: UIViewController {
     fatalError("init(coder:) has not been implemented")
   }
 
-  @objc public func toggleLayoutLock() {
-    if _termUIState.layoutLocked == true {
-      self.unlockLayout()
-    } else {
-      self.lockLayout()
-    }
-  }
-
   func placeToContainer() {
     _proxyView.placeControlledView()
   }
@@ -252,10 +239,6 @@ class TermController: UIViewController {
     }
 
     super.viewWillTransition(to: size, with: coordinator)
-    
-    coordinator.animate(alongsideTransition: nil) { _ in
-      NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    }
   }
 
   public override func loadView() {
@@ -263,6 +246,7 @@ class TermController: UIViewController {
     _termDevice.delegate = self
     _termDevice.attachView(_termView)
     _termView.backgroundColor = _bgColor
+    _termView.termController = self
     _proxyView.controlledView = _termView;
     _proxyView.isUserInteractionEnabled = false
     view = _proxyView
@@ -275,27 +259,6 @@ class TermController: UIViewController {
     // resumeIfNeeded()
 
     _termView.load(with: _termUIState)
-
-    let layoutMode = BKLayoutMode(rawValue: _termUIState.layoutMode) ?? BKLayoutMode.default
-    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    print("termView initialInsets: \(_termView.additionalInsets)")
-
-    NotificationCenter.default.addObserver(
-      self,
-      selector: #selector(_relayout),
-      name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil
-    )
-  }
-
-  @objc func _relayout() {
-    guard
-      let window = view.window,
-      window.screen === UIScreen.main
-    else {
-      return
-    }
-
-    view.setNeedsLayout()
   }
 
   public override func viewWillLayoutSubviews() {
@@ -307,17 +270,6 @@ class TermController: UIViewController {
     else {
       return
     }
-
-    let layoutMode = BKLayoutMode(rawValue: _termUIState.layoutMode) ?? BKLayoutMode.default
-    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    // print("🔧 termView initialInsets: \(_termView.additionalInsets)")
-    // let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
-    // print("🔧 Layout Mode: \(layoutMode)")
-    // _termView.additionalInsets = LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    //print("🔧 termView additionalInsets: \(_termView.additionalInsets)")
-    _termView.layoutLockedFrame = _termUIState.layoutLockedFrame
-    _termView.layoutLocked = _termUIState.layoutLocked
-    _termView.setNeedsLayout()
   }
 
   public override func viewDidLayoutSubviews() {
@@ -333,16 +285,6 @@ class TermController: UIViewController {
     _session?.kill()
   }
 
-  @objc public func lockLayout() {
-    _termUIState.layoutLocked = true
-    _termUIState.layoutLockedFrame = _termView.webViewFrame()
-  }
-
-  @objc public func unlockLayout() {
-    _termUIState.layoutLocked = false
-    view.setNeedsLayout()
-  }
-
   @objc public func isRunningCmd() -> Bool {
     return true
     //return _session?.isRunningCmd() ?? false
@@ -350,7 +292,7 @@ class TermController: UIViewController {
 
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
     // Block font resize when layout is locked
-    guard !_sessionParams.layoutLocked else {
+    guard !_termUIState.layoutLocked else {
       return
     }
 
@@ -583,17 +525,6 @@ extension TermController: TermDeviceDelegate {
 
   public func xCallbackLineSubmitted(_ line: String, _ successUrl: URL? = nil) {
     //_session?.enqueueXCallbackCommand(line, xCallbackSuccessUrl: successUrl)
-  }
-
-  @objc public func setLayoutMode(layoutMode: BKLayoutMode) {
-    _termUIState.layoutMode = layoutMode.rawValue
-    
-    NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    
-    if (_termUIState.layoutLocked) {
-      self.unlockLayout()
-    }
-    self.view?.setNeedsLayout()
   }
 }
 

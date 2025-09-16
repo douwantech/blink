@@ -34,7 +34,7 @@
 #import "UIDevice+DeviceName.h"
 #import "BlinkPaths.h"
 #import "DeviceInfo.h"
-#import "LayoutManager.h"
+#import "LayoutConstraintManager.h"
 
 
 BLKDefaults *defaults;
@@ -205,7 +205,7 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   }
   
   if (defaults.layoutMode == BKLayoutModeDefault) {
-    defaults.layoutMode = [LayoutManager deviceDefaultLayoutMode];
+    defaults.layoutMode = [LayoutConstraintManager deviceDefaultLayoutMode];
   }
 
   if (!defaults.fontName) {

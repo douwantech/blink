@@ -39,7 +39,7 @@ import SwiftUI
 
 
 // MARK: UIViewController
-class SpaceController: UIViewController, LayoutInsetsProvider {
+class SpaceController: UIViewController {
   
   struct UIState: UserActivityCodable {
     var keys: [UUID] = []
@@ -120,11 +120,6 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
       }
     }
   }
-
-  // UIKeyboardLayoutGuide Integration
-  private var keyboardLayoutGuide: UIKeyboardLayoutGuide?
-  private var overlayBottomConstraint: NSLayoutConstraint?
-  private var _lastKnownKeyboardHeight: CGFloat = 0
   
   var safeFrame: CGRect {
     _overlay.frame
@@ -139,13 +134,6 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
     }
     
     _snippetsVC?.view.frame = _overlay.frame
-    
-    // Keyboard Height Detection
-    let currentKeyboardHeight = keyboardLayoutGuide?.layoutFrame.height ?? 0
-    if currentKeyboardHeight != _lastKnownKeyboardHeight {
-      _lastKnownKeyboardHeight = currentKeyboardHeight
-      NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    }
     
     if let menu = _blinkMenu {
       let size = _overlay.frame.size;
@@ -211,44 +199,17 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
     #endif
   }
   
-  @objc func _relayout() {
-    guard
-      let window = view.window,
-      window.screen === UIScreen.main
-    else {
-      return
-    }
+  private func setupOverlayConstraints() {
+    // Overlay positioning to wrap safe areas and keyboard.
+    let keyboardGuide = view.keyboardLayoutGuide
     
-    view.setNeedsLayout()
-  }
-  
-  @objc public func bottomInset() -> CGFloat {
-    // LayoutManager.buildSafeInsets() calls this to get keyboard height
-    // Read directly from UIKeyboardLayoutGuide layoutFrame for real-time accuracy
-    let height = keyboardLayoutGuide?.layoutFrame.height ?? 0
-    return height
-  }
-  
-  // MARK: - LayoutInsetsProvider
-  func provideInsets(for controller: TermController) -> UIEdgeInsets {
-    let layoutMode = BKLayoutMode(rawValue: controller.sessionParams.layoutMode) ?? BKLayoutMode.default
-    return LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-  }
-  
-  private func setupKeyboardLayoutGuide() {
-    guard keyboardLayoutGuide == nil else { return }
-    
-    keyboardLayoutGuide = view.keyboardLayoutGuide
-    
-    // Setup overlay constraints
     _overlay.translatesAutoresizingMaskIntoConstraints = false
-    overlayBottomConstraint = _overlay.bottomAnchor.constraint(equalTo: keyboardLayoutGuide!.topAnchor)
-    
+
     NSLayoutConstraint.activate([
       _overlay.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-      _overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-      _overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      overlayBottomConstraint!
+      _overlay.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+      _overlay.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+      _overlay.bottomAnchor.constraint(equalTo: keyboardGuide.topAnchor)
     ])
   }
   
@@ -296,21 +257,18 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
     
     _registerForNotifications()
     
-    // Setup UIKeyboardLayoutGuide
-    setupKeyboardLayoutGuide()
+    setupOverlayConstraints()
     
     if _viewportsKeys.isEmpty {
       _newShellAction(animated: false)
     } else if let key = _currentKey {
       let term: TermController = SessionRegistry.shared[key]
       term.delegate = self
-      term.layoutProvider = self
+      // term.layoutProvider = self
       term.bgColor = view.backgroundColor ?? .black
       _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     }
-    
-    // KBObserver interaction removed - using UIKeyboardLayoutGuide instead
-    
+        
     self.view.addSubview(_bottomTapAreaView)
     
     let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleQuickActionsAction))
@@ -356,19 +314,9 @@ Please go to your subscriptions and cancel one of them!
     
     nc.addObserver(self, selector:#selector(_didBecomeKeyWindow), name: UIApplication.didBecomeActiveNotification, object: nil)
     
-    // LayoutManagerBottomInsetDidUpdate coordinates layout between SpaceController and TermController
-    // Triggered by: UIKeyboardLayoutGuide changes, orientation changes, layout mode changes, scene transitions
-    nc.addObserver(self, selector: #selector(_relayout),
-                   name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate),
-                   object: nil)
-    
     nc.addObserver(self, selector: #selector(_setupAppearance),
                    name: NSNotification.Name(rawValue: BKAppearanceChanged),
                    object: nil)
-    
-    
-    
-    
     
     nc.addObserver(self, selector: #selector(_UISceneDidEnterBackgroundNotification(_:)),
                    name: UIScene.didEnterBackgroundNotification, object: nil)
@@ -429,9 +377,6 @@ Please go to your subscriptions and cancel one of them!
     }
    
     currentTerm()?.resumeIfNeeded()
-    
-    // Scene changes (external display, etc.) need to trigger layout updates
-    NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
    
     #if targetEnvironment(macCatalyst)
     #else
@@ -462,7 +407,7 @@ Please go to your subscriptions and cancel one of them!
   {
     let term = TermController(sceneRole: sceneRole, sessionPayload: sessionPayload)
     term.delegate = self
-    term.layoutProvider = self
+    //term.layoutProvider = self
     term.userActivity = userActivity
     term.bgColor = view.backgroundColor ?? .black
     
@@ -676,7 +621,7 @@ extension SpaceController: UIPageViewControllerDataSource {
     let newKey = _viewportsKeys[idx]
     let newCtrl: TermController = SessionRegistry.shared[newKey]
     newCtrl.delegate = self
-    newCtrl.layoutProvider = self
+    //newCtrl.layoutProvider = self
     newCtrl.bgColor = view.backgroundColor ?? .black
     return newCtrl
   }

@@ -31,11 +31,13 @@
 
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
+#import "BLKDefaults.h"
 
 @class TermView;
 @class TermDevice;
 @class TermInput;
 @class TermUIState;
+@class LayoutConstraintManager;
 
 extern NSString * TermViewReadyNotificationKey;
 extern NSString * TermViewBrowserReadyNotificationKey;
@@ -71,10 +73,14 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 @property (nonatomic) UIEdgeInsets additionalInsets;
 @property (nonatomic) BOOL layoutLocked;
 @property (nonatomic) CGRect layoutLockedFrame;
+
+@property (nonatomic, strong) LayoutConstraintManager *constraintManager;
 @property (nonatomic, readonly) BOOL isReady;
 @property (nonatomic, readonly) CGRect selectionRect;
 @property (nonatomic, readonly) SmarterTermInput *webView;
 @property (nonatomic, readonly) SmarterTermInput *browserView;
+@property (nonatomic, strong) TermUIState *termUIState;
+@property (nonatomic, weak) id termController;
 
 - (void)setCmdKeyPressed:(BOOL)pressed;
 
@@ -115,4 +121,12 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 - (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity;
 
 - (void)pasteString:(NSString *)str;
+
+// Layout mode control methods
+- (void)setLayoutModeFill;
+- (void)setLayoutModeFit;
+- (void)setLayoutModeCover;
+- (BKLayoutMode)currentLayoutMode;
+- (BOOL)isLayoutLocked;
+- (void)toggleLayoutLock;
 @end

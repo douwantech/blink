@@ -48,7 +48,7 @@ typedef void (*mosh_state_callback) (const void *context, const void *buffer, si
 #import "BKHosts.h"
 #import "BlinkPaths.h"
 #import "DeviceInfo.h"
-#import "LayoutManager.h"
+#import "LayoutConstraintManager.h"
 #import "BKUserConfigurationManager.h"
 #import "Session.h"
 #import "MCPSession.h"
