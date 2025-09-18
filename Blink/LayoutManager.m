@@ -41,7 +41,7 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
 
 + (BKLayoutMode) deviceDefaultLayoutMode {
   DeviceInfo *device = [DeviceInfo shared];
-  if (device.hasNotch) {
+  if (device.hasNotch || device.hasDynamicIsland) {
     return BKLayoutModeSafeFit;
   }
   
@@ -112,7 +112,7 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
         break;
       }
       
-      if (!deviceInfo.hasNotch) {
+      if (!deviceInfo.hasNotch && !deviceInfo.hasDynamicIsland) {
         if ([DeviceInfo.shared.marketingName containsString:@"M4"]) {
           result.top = 8;
           result.left = 8;
@@ -125,39 +125,38 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
           result.bottom = fullScreen ? 5 : 10;
         }
         break;
-      }
-      
-      UIInterfaceOrientation orientation = window.windowScene.interfaceOrientation;
-      
-      if (UIInterfaceOrientationIsPortrait(orientation)) {
-        result.top = deviceMargins.top - 10;
-        result.bottom = deviceMargins.bottom - 10;
-        break;
-      }
-      
-      if (orientation == UIInterfaceOrientationLandscapeRight) {
-        result.left = deviceMargins.left - 4; // notch
-        result.right = 10;
-        result.top = 10;
-        result.bottom = 8;
-        break;
-      }
-      
-      if (orientation == UIInterfaceOrientationLandscapeLeft) {
-        result.right = deviceMargins.right - 4;  // notch
-        result.left = 10;
-        result.top = 10;
-        result.bottom = 8;
-        break;
+      } else {
+        
+        UIInterfaceOrientation orientation = window.windowScene.interfaceOrientation;
+        
+        if (UIInterfaceOrientationIsPortrait(orientation)) {
+          result.top = deviceMargins.top - 10;
+          result.bottom = deviceMargins.bottom - 10;
+          break;
+        }
+        
+        if (orientation == UIInterfaceOrientationLandscapeRight) {
+          result.left = deviceMargins.left - 4; // notch
+          result.right = 10;
+          result.top = 10;
+          result.bottom = 8;
+          break;
+        }
+        
+        if (orientation == UIInterfaceOrientationLandscapeLeft) {
+          result.right = deviceMargins.right - 4;  // notch
+          result.left = 10;
+          result.top = 10;
+          result.bottom = 8;
+          break;
+        }
       }
       
       result = deviceMargins;
     }
   }
   
-  // MARK: - Keyboard Height Integration
-  // LayoutManager combines: device margins + keyboard height + layout mode rules
-  // spaceCtrl.bottomInset() now uses UIKeyboardLayoutGuide height
+  // spaceCtrl now uses keyboardGuidelines.bottom
   result.bottom = MAX(result.bottom, [spaceCtrl bottomInset]);
     
   return result;

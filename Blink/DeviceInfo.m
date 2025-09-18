@@ -70,9 +70,12 @@
 
     _hasDynamicIsland = [marketingName hasPrefix:@"iPhone 14"]
       || [marketingName hasPrefix:@"iPhone 15"]
-      || [marketingName hasPrefix:@"iPhone 16"];
+      || [marketingName hasPrefix:@"iPhone 16"]
+      || [marketingName hasPrefix:@"iPhone 17"]
+      || [marketingName hasPrefix:@"iPhone Air"];
 
-    _hasCorners = _hasNotch || [_machine hasPrefix:@"iPad8"]
+    _hasCorners = (_hasNotch || _hasDynamicIsland)
+      || [_machine hasPrefix:@"iPad8"]
       || [_machine hasPrefix:@"iPad13"]
       || [_machine hasPrefix:@"iPad14"]
       || [_machine hasPrefix:@"iPad16"]
@@ -128,7 +131,7 @@
   // actual device list can be fetched via sql query:
   // sqlite3 /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/usr/standalone/device_traits.db \
      "select ProductType, ProductDescription from Devices where ProductType like \"iPad%\"";
-  
+  // https://gist.github.com/adamawolf/3048717
   NSDictionary * codes =
   @{
     @"i386"      : @"Simulator",
@@ -205,8 +208,13 @@
     @"iPhone17,2":  @"iPhone 16 Pro Max",
     @"iPhone17,3":  @"iPhone 16",
     @"iPhone17,4":  @"iPhone 16 Plus",
+    @"iPhone17,5":  @"iPhone 16e",
     
-                       
+    @"iPhone18,1": @"iPhone 17 Pro",
+    @"iPhone18,2": @"iPhone 17 Pro Max",
+    @"iPhone18,3": @"iPhone 17",
+    @"iPhone18,4": @"iPhone Air",
+    
     @"iPad4,1"   : @"iPad Air",          // 5th Generation iPad (iPad Air) - Wifi
     @"iPad4,2"   : @"iPad Air",          // 5th Generation iPad (iPad Air) - Cellular
     @"iPad4,4"   : @"iPad Mini",         // (2nd Generation iPad Mini - Wifi)
