@@ -39,8 +39,18 @@ class KBAccessoryView: UIInputView {
     super.init(frame: .zero, inputViewStyle: .keyboard)
     translatesAutoresizingMaskIntoConstraints = false
     allowsSelfSizing = true
-    
+
+    self.frame.size.height = _kbView.intrinsicContentSize.height
     addSubview(_kbView)
+
+    _kbView.translatesAutoresizingMaskIntoConstraints = false
+    let margin: CGFloat = 0.0
+    NSLayoutConstraint.activate([
+      _kbView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: margin),
+      _kbView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -margin),
+      //_kbView.topAnchor.constraint(equalTo: topAnchor),
+      _kbView.bottomAnchor.constraint(equalTo: bottomAnchor)
+    ])
   }
   
   required init?(coder: NSCoder) {
@@ -49,13 +59,9 @@ class KBAccessoryView: UIInputView {
   
   override func layoutSubviews() {
     super.layoutSubviews()
-    // Simplified: Let the KBView size itself naturally within the bounds
-    _kbView.frame = bounds
   }
   
   override var intrinsicContentSize: CGSize {
-    // Simplified: Let the system handle safe area insets automatically
-    // The UIInputView container should already account for safe areas
     return CGSize(width: -1, height: _kbView.intrinsicContentSize.height)
   }
 }

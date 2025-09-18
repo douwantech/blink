@@ -69,7 +69,7 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
   
-  // MARK: - UIKeyboardLayoutGuide Integration
+  // UIKeyboardLayoutGuide Integration
   private var keyboardLayoutGuide: UIKeyboardLayoutGuide?
   private var overlayBottomConstraint: NSLayoutConstraint?
   private var _lastKnownKeyboardHeight: CGFloat = 0
@@ -86,16 +86,12 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
       return
     }
     
-    // MARK: - Constraint-based Layout with UIKeyboardLayoutGuide
-    // Overlay positioning is handled automatically by Auto Layout constraints
     _snippetsVC?.view.frame = _overlay.frame
     
-    // MARK: - Alternative Keyboard Height Detection
-    // In case KVO doesn't fire reliably, also check keyboard height here
+    // Keyboard Height Detection
     let currentKeyboardHeight = keyboardLayoutGuide?.layoutFrame.height ?? 0
     if currentKeyboardHeight != _lastKnownKeyboardHeight {
       _lastKnownKeyboardHeight = currentKeyboardHeight
-      print("🔧 Keyboard height detected in viewDidLayoutSubviews: \(currentKeyboardHeight)")
       NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
     }
     
@@ -175,12 +171,9 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
   }
   
   @objc public func bottomInset() -> CGFloat {
-    // MARK: - UIKeyboardLayoutGuide Integration
-    // Returns keyboard height for LayoutManager integration
     // LayoutManager.buildSafeInsets() calls this to get keyboard height
     // Read directly from UIKeyboardLayoutGuide layoutFrame for real-time accuracy
     let height = keyboardLayoutGuide?.layoutFrame.height ?? 0
-    print("🔧 SpaceController.bottomInset() returning: \(height)")
     return height
   }
   
@@ -190,24 +183,14 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
     return LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
   }
   
-  // MARK: - UIKeyboardLayoutGuide Setup
   private func setupKeyboardLayoutGuide() {
     guard keyboardLayoutGuide == nil else { return }
     
     keyboardLayoutGuide = view.keyboardLayoutGuide
     
     // Setup overlay constraints
-    setupOverlayConstraints()
-    
-    // Observe keyboard layout frame changes
-    keyboardLayoutGuide?.addObserver(self, forKeyPath: "layoutFrame", options: [.new], context: nil)
-  }
-  
-  private func setupOverlayConstraints() {
-    guard let keyboardGuide = keyboardLayoutGuide else { return }
-    
     _overlay.translatesAutoresizingMaskIntoConstraints = false
-    overlayBottomConstraint = _overlay.bottomAnchor.constraint(equalTo: keyboardGuide.topAnchor)
+    overlayBottomConstraint = _overlay.bottomAnchor.constraint(equalTo: keyboardLayoutGuide!.topAnchor)
     
     NSLayoutConstraint.activate([
       _overlay.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -215,16 +198,6 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
       _overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       overlayBottomConstraint!
     ])
-  }
-  
-  override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-    if keyPath == "layoutFrame" && object as? UIKeyboardLayoutGuide === keyboardLayoutGuide {
-      // Keyboard layout frame changed - trigger layout coordination
-      // Debug: Print keyboard height for verification
-      let newHeight = keyboardLayoutGuide?.layoutFrame.height ?? 0
-      print("🔧 UIKeyboardLayoutGuide height changed to: \(newHeight)")
-      NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    }
   }
   
   deinit {
@@ -334,7 +307,6 @@ Please go to your subscriptions and cancel one of them!
     
     nc.addObserver(self, selector:#selector(_didBecomeKeyWindow), name: UIApplication.didBecomeActiveNotification, object: nil)
     
-    // MARK: - Layout Coordination System
     // LayoutManagerBottomInsetDidUpdate coordinates layout between SpaceController and TermController
     // Triggered by: UIKeyboardLayoutGuide changes, orientation changes, layout mode changes, scene transitions
     nc.addObserver(self, selector: #selector(_relayout),
@@ -409,7 +381,6 @@ Please go to your subscriptions and cancel one of them!
    
     currentTerm()?.resumeIfNeeded()
     
-    // MARK: - Scene Change Layout Update
     // Scene changes (external display, etc.) need to trigger layout updates
     NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
    
@@ -508,7 +479,7 @@ Please go to your subscriptions and cancel one of them!
   }
   
   @objc func _focusOnShell() {
-    //_attachInputToCurrentTerm()
+    _attachInputToCurrentTerm()
   }
   
   
@@ -790,8 +761,8 @@ extension SpaceController {
   }
   
   @objc func focusOnShellAction() {
-//    KBTracker.shared.input?.reset()
-//    _focusOnShell()
+    KBTracker.shared.input?.reset()
+    _focusOnShell()
   }
   
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
