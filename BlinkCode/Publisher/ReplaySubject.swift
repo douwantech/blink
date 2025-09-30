@@ -56,6 +56,7 @@ final class ReplaySubject<Input, Failure: Error>: Subject {
     }
     func send(_ value: Input) {
       lock.lock(); defer { lock.unlock() }
+      guard !completed else { return }
         recording.receive(value)
         stream.send(value)
         if recording.output.count == maxValues {
@@ -64,6 +65,7 @@ final class ReplaySubject<Input, Failure: Error>: Subject {
     }
     func send(completion: Subscribers.Completion<Failure>) {
       lock.lock(); defer { lock.unlock() }
+      guard !completed else { return }
       if !completed {
         completed = true
         recording.receive(completion: completion)
