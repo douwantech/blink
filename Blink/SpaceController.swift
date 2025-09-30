@@ -202,9 +202,6 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
   
   deinit {
     NotificationCenter.default.removeObserver(self)
-    
-    // Remove observer from UIKeyboardLayoutGuide
-    keyboardLayoutGuide?.removeObserver(self, forKeyPath: "layoutFrame")
   }
 
   @objc private func _setupAppearance() {
