@@ -141,10 +141,9 @@ NSString *_encodeString(NSString *str);
     traits.smartInsertDeleteType = UITextSmartInsertDeleteTypeNo;
   }
   // Disable WritingTools support (AI functions)
-  if ([traits respondsToSelector:@selector(setWritingToolsBehavior:)]) {
+  if (@available(iOS 18.0, *)) {
     traits.writingToolsBehavior = UIWritingToolsBehaviorNone;
   }
-  
 }
 
 - (KeyCommand *)_modifiersCommand:(UIKeyModifierFlags) flags {
