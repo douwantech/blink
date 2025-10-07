@@ -396,7 +396,7 @@ struct NewOfferingTermsButtons: View {
 
       }
         .padding()
-      Text("\(UIApplication.blinkShortVersion())")
+      Text("\(UIApplication.blinkShortVersion() ?? "untagged version")")
         .foregroundColor(BlinkColors.termsText)
         .font(BlinkFonts.btnSub)
 
