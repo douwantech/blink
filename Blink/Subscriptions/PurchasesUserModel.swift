@@ -148,7 +148,7 @@ class PurchasesUserModel: ObservableObject {
       }
       return true
     } catch {
-      self.alertErrorMessage = "Could not continue with purchase - \(error.localizedDescription)"
+      self.alertErrorMessage = "Purchase cannot be completed. Please try again. Details: \(error.localizedDescription)"
       return false
     }
   }
