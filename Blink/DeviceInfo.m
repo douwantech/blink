@@ -81,6 +81,7 @@
       || [_machine hasPrefix:@"iPad16"]
       || [marketingName containsString:@"(M2)"]
       || [marketingName containsString:@"(M4)"]
+      || [marketingName containsString:@"(M5)"]
       || [marketingName hasPrefix:@"Mac"];
 
     _hasAppleSilicon = [marketingName hasPrefix:@"iPad Pro (11-inch) (3rd generation)"]
@@ -89,7 +90,8 @@
       || [marketingName hasPrefix:@"iPad Pro (12.9-inch) (6th generation)"]
       || [marketingName hasPrefix:@"iPad Air (5th generation)"]
       || [marketingName containsString:@"(M2)"]
-      || [marketingName containsString:@"(M4)"];
+      || [marketingName containsString:@"(M4)"]
+      || [marketingName containsString:@"(M5)"];
   }
   return self;
 }
@@ -303,6 +305,11 @@
     @"iPad16,4":  @"iPad Pro (11-inch) (M4)", // cellular
     @"iPad16,5":  @"iPad Pro (13-inch) (M4)", // wifi
     @"iPad16,6":  @"iPad Pro (13-inch) (M4)", // cellular
+    
+    @"iPad17,1":  @"iPad Pro (11-inch) (M5)",
+    @"iPad17,2":  @"iPad Pro (11-inch) (M5)",
+    @"iPad17,3":  @"iPad Pro (13-inch) (M5)",
+    @"iPad17,4":  @"iPad Pro (13-inch) (M5)"
   };
   
   NSString *value = codes[_machine];

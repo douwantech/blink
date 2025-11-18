@@ -95,7 +95,8 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
       result = deviceMargins;
       if (DeviceInfo.shared.hasCorners &&
           UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        if ([DeviceInfo.shared.marketingName containsString:@"M4"]) {
+        if ([DeviceInfo.shared.marketingName containsString:@"M4"] ||
+            [DeviceInfo.shared.marketingName containsString:@"M5"]) {
           result.top = 25;
           result.bottom = 25;
         } else {
@@ -113,7 +114,8 @@ NSString * LayoutManagerBottomInsetDidUpdate = @"LayoutManagerBottomInsetDidUpda
       }
       
       if (!deviceInfo.hasNotch && !deviceInfo.hasDynamicIsland) {
-        if ([DeviceInfo.shared.marketingName containsString:@"M4"]) {
+        if ([DeviceInfo.shared.marketingName containsString:@"M4"] ||
+            [DeviceInfo.shared.marketingName containsString:@"M5"]) {
           result.top = 8;
           result.left = 8;
           result.right = MAX(deviceMargins.right, 8);
