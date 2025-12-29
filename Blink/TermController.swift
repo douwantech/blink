@@ -53,25 +53,26 @@ protocol LayoutInsetsProvider: AnyObject {
 private class ProxyView: UIView {
   var controlledView: UIView? = nil
   private var _cancelable: AnyCancellable? = nil
-  
+  private var _hasBeenPlaced: Bool = false  // TEST: Track if view has been placed
+
   override func willMove(toSuperview newSuperview: UIView?) {
     super.willMove(toSuperview: newSuperview)
     if superview == nil {
       _cancelable = nil
     }
   }
-  
+
   override func didMoveToSuperview() {
     super.didMoveToSuperview()
-    
+
     _cancelable = nil
-    
+
     guard
       let parent = superview
     else {
       return
     }
-    
+
     _cancelable = parent.publisher(for: \.frame).sink { [weak self] frame in
       guard let controlledView = self?.controlledView,
             controlledView.superview != nil
@@ -80,10 +81,10 @@ private class ProxyView: UIView {
       }
       controlledView.frame = frame
     }
-  
+
     placeControlledView()
   }
-  
+
   override func layoutSubviews() {
     super.layoutSubviews()
     guard
@@ -94,11 +95,12 @@ private class ProxyView: UIView {
     }
     controlledView.frame = parent.frame
   }
-  
+
   func removeControlledView() {
-    controlledView?.removeFromSuperview()
+    guard let controlledView = controlledView else { return }
+    controlledView.isHidden = true
   }
-  
+
   func placeControlledView() {
     guard
       let parent = superview,
@@ -107,20 +109,26 @@ private class ProxyView: UIView {
     else {
       return
     }
-    
+
     controlledView.frame = parent.frame
-    
-    if
-      let sharedWindow = ShadowWindow.shared,
-      container.window == sharedWindow {
-      
-      sharedWindow.layer.removeFromSuperlayer()
-      container.addSubview(controlledView)
-      sharedWindow.refWindow.layer.addSublayer(sharedWindow.layer)
-      
-    } else {
-      container.addSubview(controlledView)
+
+    if !_hasBeenPlaced {
+      if
+        let sharedWindow = ShadowWindow.shared,
+        container.window == sharedWindow {
+
+        sharedWindow.layer.removeFromSuperlayer()
+        container.addSubview(controlledView)
+        sharedWindow.refWindow.layer.addSublayer(sharedWindow.layer)
+
+      } else {
+        container.addSubview(controlledView)
+      }
+      _hasBeenPlaced = true
     }
+
+    // Show the view when placing
+    controlledView.isHidden = false
   }
 }
 
@@ -202,12 +210,12 @@ class TermController: UIViewController {
   func placeToContainer() {
     _proxyView.placeControlledView()
   }
-  
+
   func removeFromContainer() -> Bool {
     if KBTracker.shared.input == _termView.webView {
       return false
     }
-    _proxyView.controlledView?.removeFromSuperview()
+    _proxyView.removeControlledView()
     return true
   }
   
@@ -236,9 +244,9 @@ class TermController: UIViewController {
   public override func viewDidLoad() {
     super.viewDidLoad()
     viewIsLoaded = true
-    
+
     resumeIfNeeded()
-    
+
     _termView.load(with: _sessionParams)
     
     let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
@@ -265,14 +273,14 @@ class TermController: UIViewController {
   
   public override func viewWillLayoutSubviews() {
     super.viewWillLayoutSubviews()
-    
+
     guard let window = view.window,
       let windowScene = window.windowScene,
       windowScene.activationState == .foregroundActive
     else {
       return
     }
-    
+
     let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
     _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
     // print("🔧 termView initialInsets: \(_termView.additionalInsets)")

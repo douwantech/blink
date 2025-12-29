@@ -584,7 +584,7 @@ extension SpaceController: UIPageViewControllerDelegate {
     guard completed else {
       return
     }
-    
+
     guard let termController = pageViewController.viewControllers?.first as? TermController
     else {
       return
@@ -593,7 +593,7 @@ extension SpaceController: UIPageViewControllerDelegate {
     _currentKey = termController.meta.key
     _displayHUD()
     _attachInputToCurrentTerm()
-    
+
   }
 }
 
