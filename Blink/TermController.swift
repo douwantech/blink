@@ -54,6 +54,7 @@ private class ProxyView: UIView {
   var controlledView: UIView? = nil
   private var _cancelable: AnyCancellable? = nil
   private var _hasBeenPlaced: Bool = false  // TEST: Track if view has been placed
+  private var _isTerminated: Bool = false   // TEST: Prevent re-placement after termination
 
   override func willMove(toSuperview newSuperview: UIView?) {
     super.willMove(toSuperview: newSuperview)
@@ -97,11 +98,31 @@ private class ProxyView: UIView {
   }
 
   func removeControlledView() {
+    // TEST: Hide instead of remove (for temporary switching)
     guard let controlledView = controlledView else { return }
     controlledView.isHidden = true
   }
 
+  func destroyControlledView() {
+    // TEST: Full removal for terminal termination
+    guard let controlledView = controlledView else { return }
+    controlledView.removeFromSuperview()
+    _hasBeenPlaced = false
+    _isTerminated = true  // Prevent any future re-placement
+  }
+
+  func prepareForWindowMove() {
+    // TEST: Remove for window move but allow re-placement in new window
+    guard let controlledView = controlledView else { return }
+    controlledView.removeFromSuperview()
+    _hasBeenPlaced = false
+    // Note: Don't set _isTerminated - this is a move, not termination
+  }
+
   func placeControlledView() {
+    // TEST: Never place if terminal was terminated
+    if _isTerminated { return }
+
     guard
       let parent = superview,
       let container = parent.superview,
@@ -112,7 +133,9 @@ private class ProxyView: UIView {
 
     controlledView.frame = parent.frame
 
-    if !_hasBeenPlaced {
+    // TEST: Place once per container, then just show/hide
+    // If view is in a different container (window changed), we need to re-place
+    if !_hasBeenPlaced || controlledView.superview !== container {
       if
         let sharedWindow = ShadowWindow.shared,
         container.window == sharedWindow {
@@ -218,7 +241,12 @@ class TermController: UIViewController {
     _proxyView.removeControlledView()
     return true
   }
-  
+
+  func prepareForWindowMove() {
+    // TEST: Prepare terminal for move to different window
+    _proxyView.prepareForWindowMove()
+  }
+
   public override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
     if !coordinator.isAnimated {
       return
@@ -300,6 +328,7 @@ class TermController: UIViewController {
   
   @objc public func terminate() {
     NotificationCenter.default.post(name: .deviceTerminated, object: nil, userInfo: ["device": _termDevice])
+    _proxyView.destroyControlledView()
     _termDevice.delegate = nil
     _termView.terminate()
     _session?.kill()

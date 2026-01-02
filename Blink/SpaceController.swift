@@ -846,7 +846,8 @@ extension SpaceController {
       let window = self.view.window,
       shadowScene == window.windowScene,
       shadowWindow !== window {
-      
+
+      term.prepareForWindowMove()
       _removeCurrentSpace(attachInput: false)
       shadowWindow.makeKey()
       shadowWindow.spaceController._addTerm(term: term)
@@ -871,8 +872,9 @@ extension SpaceController {
     else {
       return
     }
-    
 
+
+    term.prepareForWindowMove()
     _removeCurrentSpace(attachInput: false)
     nextSpaceCtrl._addTerm(term: term)
     nextWindow.makeKey()
