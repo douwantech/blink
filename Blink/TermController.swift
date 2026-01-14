@@ -492,6 +492,21 @@ extension TermController: TermDeviceDelegate {
     }
     // If not ready, wait for isReady call to trigger _becomeFirstResponder()
   }
+
+  func resignInput() {
+    guard isAttached && isReady else {
+      return
+    }
+
+    guard let deviceView = _termDevice.view else { return }
+
+    deviceView.webView.reportFocus(false)
+
+    // It is key to reset here so when attached again, settings are synced and the keyboard state is properly reset.
+    KBTracker.shared.attach(input: nil)
+
+    _ = _termDevice.view?.webView.resignFirstResponder()
+  }
   
   private func _attachInput() {
     guard let deviceView = _termDevice.view else { return }

@@ -784,7 +784,7 @@ extension SpaceController {
       let idx = sessions.firstIndex(of: session)?.advanced(by: 1)
     else  {
       if currentTerm()?.termDevice.view?.isFocused() == true {
-        _ = currentTerm()?.termDevice.view?.webView?.resignFirstResponder()
+        currentTerm()?.resignInput()
       } else {
         _focusOnShell()
       }
@@ -932,13 +932,13 @@ extension SpaceController {
       
       return
     }
-    
+
     DispatchQueue.main.async {
-      _ = KBTracker.shared.input?.resignFirstResponder()
+      self.currentTerm()?.resignInput()
       let navCtrl = UINavigationController()
       navCtrl.navigationBar.prefersLargeTitles = true
       let s = SettingsHostingController.createSettings(nav: navCtrl, onDismiss: {
-        [weak self] in self?._focusOnShell()
+        [weak self] in self?.focusOnShellAction()
       })
       navCtrl.setViewControllers([s], animated: false)
       self.present(navCtrl, animated: true, completion: nil)
@@ -1066,7 +1066,7 @@ extension SpaceController {
     }
     
     DispatchQueue.main.async {
-      _ = KBTracker.shared.input?.resignFirstResponder();
+      self.currentTerm()?.resignInput()
       
       // Reset version when opening.
       WhatsNewInfo.setNewVersion()
