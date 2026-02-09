@@ -381,7 +381,7 @@ function term_getCurrentSelection() {
   return {
     base: selection.baseNode.textContent,
     offset: selection.baseOffset,
-    text: t.getSelectionText() || "",
+    text: selection.toString() || "",
     rect,
   };
 }
