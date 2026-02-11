@@ -449,7 +449,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)resetFontSize
 {
-  [_webView evaluateJavaScript:term_resetFontSize() completionHandler:nil];
+  [_webView evaluateJavaScript:term_setFontSize([BLKDefaults selectedFontSize]) completionHandler:nil];
 }
 
 - (void)setClipboardWrite:(BOOL)state {
