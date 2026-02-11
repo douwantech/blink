@@ -659,11 +659,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   }
   
   NSMutableArray *items = [[NSMutableArray alloc] init];
-  
-  
+
+
   [items addObject:[[UIMenuItem alloc] initWithTitle:@"Paste selection"
                                               action:@selector(pasteSelection:)]];
-  
+
+  [items addObject:[[UIMenuItem alloc] initWithTitle:@"Copy Raw"
+                                              action:@selector(copyRaw:)]];
+
   _detectedLink = [self _detectLinkInSelection:data];
   
   if (_detectedLink) {
@@ -805,6 +808,17 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   NSString *text = _selectedText;
   if (text) {
     [UIPasteboard generalPasteboard].string = _sanitizeTextForClipboard(text);
+  }
+  UIMenuController * menu = [UIMenuController sharedMenuController];
+  [menu hideMenuFromView:self];
+  [self cleanSelection];
+}
+
+- (void)copyRaw:(id)sender
+{
+  NSString *text = _selectedText;
+  if (text) {
+    [UIPasteboard generalPasteboard].string = text;
   }
   UIMenuController * menu = [UIMenuController sharedMenuController];
   [menu hideMenuFromView:self];
@@ -1010,12 +1024,15 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
         NSMutableArray *editItems = [[NSMutableArray alloc] init];
         for (UIMenuElement *editElem in menu.children) {
           if ([editElem isKindOfClass:[UICommand class]]) {
-            
+
             UICommand *cmd = (UICommand *)editElem;
             if (cmd.action == @selector(cut:)) {
               continue;
             } else if (cmd.action == @selector(paste:) && _hasSelection) {
               [editItems addObject:[UICommand commandWithTitle:@"Paste" image:[UIImage systemImageNamed:@"doc.on.clipboard"] action:@selector(pasteSelection:) propertyList:nil]];
+            } else if (cmd.action == @selector(copy:) && _hasSelection) {
+              [editItems addObject:editElem];
+              [editItems addObject:[UICommand commandWithTitle:@"Copy Raw" image:[UIImage systemImageNamed:@"doc.on.doc.fill"] action:@selector(copyRaw:) propertyList:nil]];
             } else {
               [editItems addObject:editElem];
             }

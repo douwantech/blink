@@ -754,6 +754,7 @@ extension SpaceController {
     case .windowFocusOther: _focusOtherWindowAction()
     case .windowNew: _newWindowAction()
     case .clipboardCopy: KBTracker.shared.input?.copy(self)
+    case .clipboardCopyRaw: KBTracker.shared.input?.copyRaw(self)
     case .clipboardPaste: KBTracker.shared.input?.paste(self)
     case .selectionGoogle: KBTracker.shared.input?.googleSelection(self)
     case .selectionStackOverflow: KBTracker.shared.input?.soSelection(self)

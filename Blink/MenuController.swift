@@ -50,6 +50,7 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
 
   enum EditMenu: String, CaseIterable {
     case clipboardCopy
+    case clipboardCopyRaw
     case clipboardPaste
     case selectionGoogle
     case selectionStackOverflow
