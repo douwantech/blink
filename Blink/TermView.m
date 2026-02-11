@@ -766,11 +766,45 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self cleanSelection];
 }
 
+// Sanitize terminal selection for clipboard
+// hterm selection may include row-padding spaces at EOL; those should not leak
+// into the system clipboard as trailing whitespace.
+static NSString * _sanitizeTextForClipboard(NSString *text) {
+  if (!text || text.length == 0) {
+    return @"";
+  }
+
+  // Replace \r\n with \n
+  NSString *result = [text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
+
+  // Remove trailing spaces/tabs before newlines
+  NSRegularExpression *trailingEOL = [NSRegularExpression
+    regularExpressionWithPattern:@"[ \\t]+\\n"
+    options:0
+    error:nil];
+  result = [trailingEOL stringByReplacingMatchesInString:result
+                                                  options:0
+                                                    range:NSMakeRange(0, result.length)
+                                             withTemplate:@"\n"];
+
+  // Remove trailing spaces/tabs at end of text
+  NSRegularExpression *trailingEnd = [NSRegularExpression
+    regularExpressionWithPattern:@"[ \\t]+$"
+    options:0
+    error:nil];
+  result = [trailingEnd stringByReplacingMatchesInString:result
+                                                  options:0
+                                                    range:NSMakeRange(0, result.length)
+                                             withTemplate:@""];
+
+  return result;
+}
+
 - (void)copy:(id)sender
 {
   NSString *text = _selectedText;
   if (text) {
-    [UIPasteboard generalPasteboard].string = text;
+    [UIPasteboard generalPasteboard].string = _sanitizeTextForClipboard(text);
   }
   UIMenuController * menu = [UIMenuController sharedMenuController];
   [menu hideMenuFromView:self];
