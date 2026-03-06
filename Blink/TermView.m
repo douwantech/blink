@@ -439,16 +439,26 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)increaseFontSize
 {
+  if (_layoutLocked) {
+    return;
+  }
   [_webView evaluateJavaScript:term_increaseFontSize() completionHandler:nil];
 }
 
 - (void)decreaseFontSize
 {
+  if (_layoutLocked) {
+    return;
+  }
   [_webView evaluateJavaScript:term_decreaseFontSize() completionHandler:nil];
 }
 
 - (void)resetFontSize
 {
+  if (_layoutLocked) {
+    return;
+  }
+
   [_webView evaluateJavaScript:term_setFontSize([BLKDefaults selectedFontSize]) completionHandler:nil];
 }
 

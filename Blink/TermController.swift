@@ -349,6 +349,11 @@ class TermController: UIViewController {
   }
   
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
+    // Block font resize when layout is locked
+    guard !_sessionParams.layoutLocked else {
+      return
+    }
+
     switch pinch.state {
     case .began: fallthrough
     case .ended:
