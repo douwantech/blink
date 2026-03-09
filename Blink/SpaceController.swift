@@ -753,7 +753,8 @@ extension SpaceController {
     case .zoomIn: currentTerm()?.termDevice.view?.increaseFontSize()
     case .zoomOut: currentTerm()?.termDevice.view?.decreaseFontSize()
     case .zoomReset: currentTerm()?.termDevice.view?.resetFontSize()
-    
+    case .hideKeyboard: KBTracker.shared.input?.resignFirstResponder()
+
     }
   }
   

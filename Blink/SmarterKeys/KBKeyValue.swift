@@ -80,6 +80,7 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
   case down
   case copy
   case paste
+  case hideKB
   case text(value: String)
   case f(Int8)
   
@@ -93,9 +94,10 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
     case .left:  return "left"
     case .right: return "right"
     case .up:    return "up"
-    case .down:  return "down"
-    case .copy:  return "copy"
-    case .paste: return "paste"
+    case .down:   return "down"
+    case .copy:   return "copy"
+    case .paste:  return "paste"
+    case .hideKB: return "hideKB"
     case .text(let value): return value
     case .f(let value): return "F\(value)"
     }
@@ -157,6 +159,7 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
     case .paste: return "Paste"
     case .tab: return "Tab"
     case .up: return "Up"
+    case .hideKB: return "Hide Keyboard"
     case .text(let value): return value
     case .f(let value): return "F\(value)"
     }
@@ -178,6 +181,7 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
     case .up: return UIKeyCommand.inputUpArrow
     case .down: return UIKeyCommand.inputDownArrow
     case .tab: return "\t"
+    case .hideKB: return "hideKeyboard"
     default: return nil
     }
   }
@@ -196,9 +200,10 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
     case .down:  return "arrow.down"
 
       
-    case .copy:  return "doc.on.doc"
-    case .paste: return "doc.on.clipboard"
-    default:     return nil
+    case .copy:   return "doc.on.doc"
+    case .paste:  return "doc.on.clipboard"
+    case .hideKB: return "keyboard.chevron.compact.down"
+    default:      return nil
     }
   }
   
@@ -213,12 +218,19 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
   }
   
   static var specials: [Self] {
-    [.cmd, .alt, .ctrl, .esc, .tab, .left, .right, .up, .down, .copy, .paste]
+    [.cmd, .alt, .ctrl, .esc, .tab, .left, .right, .up, .down, .copy, .paste, .hideKB]
   }
   
   var isModifier: Bool {
     switch self {
     case .alt, .ctrl, .cmd: return true
+    default: return false
+    }
+  }
+
+  var isCommand: Bool {
+    switch self {
+    case .hideKB: return true
     default: return false
     }
   }

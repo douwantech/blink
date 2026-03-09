@@ -66,7 +66,8 @@ enum Command: String, Codable, CaseIterable {
   case snippetsShow
   case toggleQuickActions
   case toggleGeoTrack
-  
+  case hideKeyboard
+
   var title: String {
     switch self {
     case .windowNew:              return "New Window"
@@ -105,6 +106,7 @@ enum Command: String, Codable, CaseIterable {
     case .snippetsShow:           return "Show Snippets"
     case .toggleQuickActions:     return "Toggle Quick Actions"
     case .toggleGeoTrack:         return "Toggle Geo Track"
+    case .hideKeyboard:           return "Hide Keyboard"
     }
   }
 }
