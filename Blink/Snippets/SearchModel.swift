@@ -67,6 +67,7 @@ class SearchModel: ObservableObject {
   @Published var editingMode: TextViewEditingMode = .template
   @Published var newSnippetPresented = false
   @Published var indexProgress: SnippetsLocations.RefreshProgress = .none
+  @Published var isPinnedMode = false
   let defaultShellOutputFormatter = ShellOutputFormatter.lineBySemicolon
 
   let snippetsLocations: SnippetsLocations
@@ -195,20 +196,22 @@ class SearchModel: ObservableObject {
     let textView = TextViewBuilder.createForSnippetEditing()
     let editorCtrl = EditorViewController(textView: textView, model: self)
     let navCtrl = UINavigationController(rootViewController: editorCtrl)
-    navCtrl.modalPresentationStyle = .formSheet
+    navCtrl.modalPresentationStyle = .pageSheet
+    navCtrl.isModalInPresentation = isPinnedMode
 
     if let sheetCtrl = navCtrl.sheetPresentationController {
-      sheetCtrl.prefersGrabberVisible = true
-      sheetCtrl.prefersEdgeAttachedInCompactHeight = true
-      sheetCtrl.widthFollowsPreferredContentSizeWhenEdgeAttached = true
-
-      sheetCtrl.detents = [
-        .custom(resolver: { context in
-          120
-        }),
-        .medium(), .large()
-      ]
+      if KBTracker.shared.isHardwareKB {
+        sheetCtrl.detents = [
+          .custom(resolver: { context in 120 }),
+          .medium(),
+          .large()
+        ]
+      } else {
+        // Without hardware keyboard, we remove small to accommodate for SW keyboard layout.
+        sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
+      }
       sheetCtrl.largestUndimmedDetentIdentifier = .large
+      sheetCtrl.prefersGrabberVisible = true
     }
     rootCtrl?.present(navCtrl, animated: false)
 
@@ -216,19 +219,26 @@ class SearchModel: ObservableObject {
 
   func openNewSnippet() {
     self.newSnippetPresented = true
+
     let textView = TextViewBuilder.createForSnippetEditing()
     let editorCtrl = NewSnippetViewController(textView: textView, model: self)
     let navCtrl = UINavigationController(rootViewController: editorCtrl)
-    navCtrl.modalPresentationStyle = .formSheet
+    navCtrl.modalPresentationStyle = .pageSheet
+    navCtrl.isModalInPresentation = isPinnedMode
 
     if let sheetCtrl = navCtrl.sheetPresentationController {
-      sheetCtrl.prefersGrabberVisible = true
-      sheetCtrl.prefersEdgeAttachedInCompactHeight = true
-      sheetCtrl.widthFollowsPreferredContentSizeWhenEdgeAttached = true
-      sheetCtrl.detents = [
-        .medium(), .large()
-      ]
+      if KBTracker.shared.isHardwareKB {
+        sheetCtrl.detents = [
+          .custom(resolver: { context in 120 }),
+          .medium(),
+          .large()
+        ]
+      } else {
+        // Without hardware keyboard, we remove small to accommodate for SW keyboard layout.
+        sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
+      }
       sheetCtrl.largestUndimmedDetentIdentifier = .large
+      sheetCtrl.prefersGrabberVisible = true
     }
     rootCtrl?.present(navCtrl, animated: true)
 
@@ -242,9 +252,17 @@ class SearchModel: ObservableObject {
   func sendContentToReceiver(content: String, shellOutputFormatter: ShellOutputFormatter) {
     let content = shellOutputFormatter.format(content)
     self.snippetContext?.providerSnippetReceiver()?.receive(content)
-    self.editingSnippet = nil
-    self.input = ""
-    self.snippetContext?.dismissSnippetsController()
+
+    if isPinnedMode {
+      // In pinned mode: keep editor open, just clear input
+      self.input = ""
+      // Editor will handle clearing its own text view
+    } else {
+      // Normal mode: close everything
+      self.editingSnippet = nil
+      self.input = ""
+      self.snippetContext?.dismissSnippetsController()
+    }
   }
 
   func close() {

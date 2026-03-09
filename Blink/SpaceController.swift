@@ -68,7 +68,59 @@ class SpaceController: UIViewController, LayoutInsetsProvider {
   private var _snippetsVC: SnippetsViewController? = nil
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
-  
+
+  // Snips Input Mode tracking
+  private var _isSnipsInputModeActive: Bool = false {
+    didSet {
+      guard _isSnipsInputModeActive != oldValue else { return }
+      _configureCapabilitiesForSnipsInputMode(_isSnipsInputModeActive)
+    }
+  }
+
+  var isSnipsInputModeActive: Bool {
+    _isSnipsInputModeActive
+  }
+
+  // Capability flags - independent state that controls what's allowed
+  private var canTerminalBecomeFirstResponder: Bool = true {
+    didSet {
+      guard canTerminalBecomeFirstResponder != oldValue else { return }
+      currentTerm()?.shouldBlockFirstResponder = !canTerminalBecomeFirstResponder
+    }
+  }
+
+  private var canDisplayHUD: Bool = true {
+    didSet {
+      guard canDisplayHUD != oldValue else { return }
+      if !canDisplayHUD {
+        _hud?.hide(animated: false)
+      }
+    }
+  }
+
+  private var canSwitchPages: Bool = true {
+    didSet {
+      guard canSwitchPages != oldValue else { return }
+      _setPageViewControllerScrollEnabled(canSwitchPages)
+    }
+  }
+
+  // Configure capabilities based on input mode
+  private func _configureCapabilitiesForSnipsInputMode(_ active: Bool) {
+    canTerminalBecomeFirstResponder = !active
+    canDisplayHUD = !active
+    canSwitchPages = !active
+  }
+
+  private func _setPageViewControllerScrollEnabled(_ enabled: Bool) {
+    // Find and enable/disable scroll gesture recognizers
+    for view in _viewportsController.view.subviews {
+      if let scrollView = view as? UIScrollView {
+        scrollView.isScrollEnabled = enabled
+      }
+    }
+  }
+
   // UIKeyboardLayoutGuide Integration
   private var keyboardLayoutGuide: UIKeyboardLayoutGuide?
   private var overlayBottomConstraint: NSLayoutConstraint?
@@ -481,6 +533,10 @@ Please go to your subscriptions and cancel one of them!
   
   
   private func _attachInputToCurrentTerm() {
+    // Check capability flag instead of mode directly
+    guard canTerminalBecomeFirstResponder else {
+      return
+    }
     currentTerm()?.activateInput()
   }
   
@@ -490,7 +546,12 @@ Please go to your subscriptions and cancel one of them!
   
   private func _displayHUD() {
     _hud?.hide(animated: false)
-    
+
+    // Check capability flag instead of mode directly
+    guard canDisplayHUD else {
+      return
+    }
+
     guard let term = currentTerm() else {
       return
     }
@@ -622,7 +683,7 @@ extension SpaceController: UIPageViewControllerDataSource {
   public func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
     _controller(controller: viewController, advancedBy: -1)
   }
-  
+
   public func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
     _controller(controller: viewController, advancedBy: 1)
   }
@@ -1186,6 +1247,7 @@ extension SpaceController: SnippetContext {
         self.addChild(ctrl)
         ctrl.didMove(toParent: self)
         self._snippetsVC = ctrl
+        self._isSnipsInputModeActive = true
       }
     } catch {
       self.showAlert(msg: "Could not display Snips: \(error)")
@@ -1203,6 +1265,7 @@ extension SpaceController: SnippetContext {
     ctrl._snippetsVC?.removeFromParent()
     ctrl._snippetsVC?.didMove(toParent: nil)
     ctrl._snippetsVC = nil
+    ctrl._isSnipsInputModeActive = false
   }
   
   func dismissSnippetsController() {
@@ -1214,5 +1277,5 @@ extension SpaceController: SnippetContext {
     self.focusOnShellAction()
     return self.currentDevice
   }
-  
+
 }

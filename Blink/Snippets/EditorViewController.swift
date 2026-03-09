@@ -123,17 +123,36 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       let sendWithNewlineOptions = [
         UIAction(title: "Raw", handler: {_ in
           self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .raw)
+          if self.model.isPinnedMode {
+            textView.text = ""
+          }
         }),
         UIAction(title: "Block", handler: {_ in
           self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .block)
+          if self.model.isPinnedMode {
+            textView.text = ""
+          }
         }),
         UIAction(title: "B/E", handler: {_ in
           self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .beginEnd)
+          if self.model.isPinnedMode {
+            textView.text = ""
+          }
         }),
         UIAction(title: "Semicolon", handler: {_ in
           self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .lineBySemicolon)
+          if self.model.isPinnedMode {
+            textView.text = ""
+          }
         })
       ]
+
+      let pinButton = UIBarButtonItem(
+        image: UIImage(systemName: model.isPinnedMode ? "pin.fill" : "pin"),
+        style: .plain,
+        target: self,
+        action: #selector(togglePinMode)
+      )
 
       self.navigationItem.rightBarButtonItems =
         [
@@ -144,8 +163,18 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
           image: UIImage(systemName: "paperplane.fill"),
           primaryAction: nil,
           menu: UIMenu(title: "Send as", children: sendWithNewlineOptions)
-        ),]
+        ),
+         pinButton
+        ]
     }
+  }
+
+  @objc func togglePinMode() {
+    model.isPinnedMode.toggle()
+    updateUIMode(textView)
+
+    // Update modal presentation to prevent/allow dismissal
+    navigationController?.isModalInPresentation = model.isPinnedMode
   }
 
   func textViewDidChangeSelection(_ textView: TextView) {
@@ -219,8 +248,9 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
   var model: SearchModel
   var templateTokenRanges: [NSRange]
   var acceptReplace: Bool
-  
+
   var _keyCommands: [UIKeyCommand] = []
+  private var textViewBottomConstraint: NSLayoutConstraint?
   
   init(textView: TextView, model: SearchModel) {
     self.textView = textView
@@ -251,9 +281,21 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
   
   override func viewDidLoad() {
     super.viewDidLoad()
-   
+
     self.view.backgroundColor = UIColor.systemBackground
     self.view.addSubview(textView)
+
+    textView.translatesAutoresizingMaskIntoConstraints = false
+    let keyboardLayoutGuide = view.keyboardLayoutGuide
+    textViewBottomConstraint = textView.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor)
+
+    NSLayoutConstraint.activate([
+      textView.topAnchor.constraint(equalTo: view.topAnchor, constant: self.systemMinimumLayoutMargins.top),
+      textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: self.systemMinimumLayoutMargins.leading),
+      textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -self.systemMinimumLayoutMargins.trailing),
+      textViewBottomConstraint!
+    ])
+
     if let snippet = model.editingSnippet,
        let content = try? snippet.content {
       textView.text = content
@@ -318,14 +360,13 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
   
   @objc func send() {
     model.sendContentToReceiver(content: textView.text)
+
+    // If in pinned mode, clear the text for next message
+    if model.isPinnedMode {
+      textView.text = ""
+    }
   }
-  
-  override func viewDidLayoutSubviews() {
-    super.viewDidLayoutSubviews()
-    let ins = self.systemMinimumLayoutMargins
-    textView.frame = self.view.bounds.insetBy(dx: ins.leading, dy: ins.top)
-  }
-  
+
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     _ = textView.becomeFirstResponder()

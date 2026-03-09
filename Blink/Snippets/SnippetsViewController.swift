@@ -36,9 +36,9 @@ import BlinkSnippets
 
 struct SwiftUISnippetsView: View {
   @ObservedObject var model: SearchModel
-  
+
   @State var transitionFrame: CGRect? = nil
-  
+
   var body: some View {
     HStack(alignment: .top) {
       if model.editingSnippet == nil && model.newSnippetPresented == false {
@@ -49,7 +49,7 @@ struct SwiftUISnippetsView: View {
               transitionFrame = nil
             }
           }
-          
+
           SnippetsListView(model: model)
             .frame(maxWidth: transitionFrame == nil ? 560 : nil)
             .frame(minWidth: transitionFrame?.width, maxWidth: transitionFrame?.width, minHeight: transitionFrame?.height, maxHeight: transitionFrame?.height)
@@ -59,7 +59,7 @@ struct SwiftUISnippetsView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
-        
+
         Spacer()
       }
     }
@@ -69,15 +69,66 @@ struct SwiftUISnippetsView: View {
   }
 }
 
+class PassThroughContainerView: UIView {
+  var shouldPassThrough: (() -> Bool)?
+  weak var hostingView: UIView?
+
+  override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    let hitView = super.hitTest(point, with: event)
+
+    // If we should pass through...
+    if shouldPassThrough?() == true {
+      // ...and we hit this container or the hosting view, then pass through (reject the hitTest)
+      if hitView == self || hitView == hostingView {
+        return nil
+      }
+    }
+
+    return hitView
+  }
+}
+
 class SnippetsViewController: UIHostingController<SwiftUISnippetsView>, UIGestureRecognizerDelegate{
   var model: SearchModel!
   var tapGestureRecogninzer: UITapGestureRecognizer!
-  
+  var hostingView: UIView?
+
+  override func loadView() {
+    super.loadView()
+
+    let container = PassThroughContainerView(frame: .zero)
+    container.backgroundColor = .clear
+    container.shouldPassThrough = { [weak self] in
+      self?.model?.editingSnippet != nil || self?.model?.newSnippetPresented == true
+    }
+
+    let hostingView = self.view!
+    hostingView.translatesAutoresizingMaskIntoConstraints = false
+    hostingView.backgroundColor = .clear
+
+    self.hostingView = hostingView
+    container.hostingView = hostingView
+    container.addSubview(hostingView)
+    NSLayoutConstraint.activate([
+      hostingView.topAnchor.constraint(equalTo: container.topAnchor),
+      hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+      hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+    ])
+
+    self.view = container
+  }
+
   override func viewDidLoad() {
     super.viewDidLoad()
-    self.view.backgroundColor = .clear
+
+    // Add tap gesture recognizer to dismiss snippets (tapping outside the list)
+    let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(_onTap(_:)))
+    tapRecognizer.delegate = self
+    self.view.addGestureRecognizer(tapRecognizer)
+    self.tapGestureRecogninzer = tapRecognizer
   }
-  
+
   public static func create(context: (any SnippetContext)?, transitionFrame: CGRect?) throws -> SnippetsViewController {
     let model = try SearchModel()
     model.snippetContext = context
@@ -85,10 +136,6 @@ class SnippetsViewController: UIHostingController<SwiftUISnippetsView>, UIGestur
     let ctrl = SnippetsViewController(rootView: rootView)
     ctrl.model = model
     model.rootCtrl = ctrl
-    let tapRecognizer = UITapGestureRecognizer(target: ctrl, action: #selector(_onTap(_:)))
-    ctrl.view.addGestureRecognizer(tapRecognizer)
-    ctrl.tapGestureRecogninzer = tapRecognizer
-    tapRecognizer.delegate = ctrl
     return ctrl
   }
   
@@ -104,7 +151,8 @@ class SnippetsViewController: UIHostingController<SwiftUISnippetsView>, UIGestur
   }
   
   func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-    touch.view == self.view
+    // Accept touches on passthrough or hosting view (empty areas)
+    touch.view == self.view || touch.view == hostingView
   }
 
 }
