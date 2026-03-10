@@ -68,6 +68,7 @@ class SearchModel: ObservableObject {
   @Published var newSnippetPresented = false
   @Published var indexProgress: SnippetsLocations.RefreshProgress = .none
   @Published var isPinnedMode = false
+  @Published var languageMode: LanguageMode = .shell
   let defaultShellOutputFormatter = ShellOutputFormatter.lineBySemicolon
 
   let snippetsLocations: SnippetsLocations
@@ -175,19 +176,13 @@ class SearchModel: ObservableObject {
     self.close()
   }
 
-  func editSelectionOrCreate() {
-    let snippet: Snippet
-    if currentSelection == nil {
-      if self.input.isEmpty {
-        snippet = Snippet.scratch()
-        self.editingMode = .code
-      } else {
-        openNewSnippet()
-        return
-      }
-    } else {
-      snippet = currentSelection!
-      self.editingMode = .template
+  func openScratch() {
+    let snippet = Snippet.scratch()
+    self.editingMode = .code
+
+    // Restore saved language mode for scratch
+    if let savedMode = LanguageMode(rawValue: BLKDefaults.scratchLanguageMode()) {
+      self.languageMode = savedMode
     }
 
     self.currentSnippetName = snippet.fuzzyIndex
@@ -207,7 +202,54 @@ class SearchModel: ObservableObject {
           .large()
         ]
       } else {
-        // Without hardware keyboard, we remove small to accommodate for SW keyboard layout.
+        sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
+      }
+      sheetCtrl.largestUndimmedDetentIdentifier = .large
+      sheetCtrl.prefersGrabberVisible = true
+    }
+    rootCtrl?.present(navCtrl, animated: false)
+  }
+
+  func editSelectionOrCreate() {
+    let snippet: Snippet
+
+    // Scratch mode
+    if currentSelection == nil {
+      if self.input.isEmpty {
+        snippet = Snippet.scratch()
+        self.editingMode = .code
+
+        if let savedMode = LanguageMode(rawValue: BLKDefaults.scratchLanguageMode()) {
+          self.languageMode = savedMode
+        }
+      } else {
+        openNewSnippet()
+        return
+      }
+    } else {
+      snippet = currentSelection!
+      self.editingMode = .template
+      // Current snippets always use shell mode
+      self.languageMode = .shell
+    }
+
+    self.currentSnippetName = snippet.fuzzyIndex
+    self.editingSnippet = snippet
+
+    let textView = TextViewBuilder.createForSnippetEditing()
+    let editorCtrl = EditorViewController(textView: textView, model: self)
+    let navCtrl = UINavigationController(rootViewController: editorCtrl)
+    navCtrl.modalPresentationStyle = .pageSheet
+    navCtrl.isModalInPresentation = isPinnedMode
+
+    if let sheetCtrl = navCtrl.sheetPresentationController {
+      if KBTracker.shared.isHardwareKB {
+        sheetCtrl.detents = [
+          .custom(resolver: { context in 120 }),
+          .medium(),
+          .large()
+        ]
+      } else {
         sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
       }
       sheetCtrl.largestUndimmedDetentIdentifier = .large
@@ -234,7 +276,6 @@ class SearchModel: ObservableObject {
           .large()
         ]
       } else {
-        // Without hardware keyboard, we remove small to accommodate for SW keyboard layout.
         sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
       }
       sheetCtrl.largestUndimmedDetentIdentifier = .large
@@ -341,8 +382,8 @@ public protocol SnippetContext {
 
 extension TermDevice: SnippetReceiver {
   public func receive(_ content: String) {
-    self.view?.paste(content)
-//    self.write(content)
+//    self.view?.paste(content)
+    self.write(inDirectly: content)
   }
 }
 

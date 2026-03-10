@@ -168,31 +168,36 @@ class KeyShortcut: ObservableObject, Codable, Identifiable {
   static var snippetsShowShortcut: KeyShortcut {
     KeyShortcut(.snippetsShow, [.command, .shift], ",")
   }
-  
+
+  static var scratchShowShortcut: KeyShortcut {
+    KeyShortcut(.scratchShow, [.command, .shift], ".")
+  }
+
   static var defaultList: [KeyShortcut] {
     [
       KeyShortcut(.clipboardCopy, .command, "c"),
       KeyShortcut(.clipboardPaste, .command, "v"),
-      
+
       KeyShortcut(.windowNew, [.command, .shift], "t"),
       KeyShortcut(.windowClose, [.command, .shift], "w"),
       KeyShortcut(.windowFocusOther, [.command], "o"),
-      
+
       KeyShortcut(.tabNew, .command, "t"),
       KeyShortcut(.tabClose, .command, "w"),
       KeyShortcut(.tabNext, [.command, .shift], "]"),
       KeyShortcut(.tabNext, [.command, .shift], UIKeyCommand.inputRightArrow),
       KeyShortcut(.tabPrev, [.command, .shift], "["),
       KeyShortcut(.tabPrev, [.command, .shift], UIKeyCommand.inputLeftArrow),
-      
+
       KeyShortcut(.tabMoveToOtherWindow, [.command, .shift], "o"),
-      
+
       KeyShortcut(.zoomIn, [.command, .shift], "="),
       KeyShortcut(.zoomOut, .command, "-"),
       KeyShortcut(.zoomReset, .command, "="),
-      
+
       KeyShortcut(.configShow, .command, ","),
-      Self.snippetsShowShortcut
+      Self.snippetsShowShortcut,
+      Self.scratchShowShortcut
     ]
   }
 }

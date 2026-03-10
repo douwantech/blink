@@ -35,13 +35,14 @@ import UIKit
 import SwiftUI
 import Runestone
 import TreeSitterBashRunestone
+import BlinkSnippets
 
 
 class EditorViewController: UIViewController, TextViewDelegate, UINavigationItemRenameDelegate {
   func navigationItem(_: UINavigationItem, didEndRenamingWith title: String) {}
-  
+
   func navigationItemShouldBeginRenaming(_: UINavigationItem) -> Bool { true }
-  
+
   func navigationItem(_: UINavigationItem, willBeginRenamingWith suggestedTitle: String, selectedRange: Range<String.Index>) -> (String, Range<String.Index>) {
     // preselect name part
     let parts = suggestedTitle.split(separator: "/", maxSplits: 1)
@@ -51,7 +52,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       return (suggestedTitle, suggestedTitle.range(of: suggestedTitle)!)
     }
   }
-  
+
   func navigationItem(_: UINavigationItem, shouldEndRenamingWith title: String) -> Bool {
     let str = title.trimmingCharacters(in: .whitespacesAndNewlines)
     if str.hasPrefix("/") || !str.contains("/") || str.hasSuffix("/") {
@@ -71,10 +72,6 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     }
   }
 
-  func textViewDidBeginEditing(_ textView: TextView) {
-    updateUIMode(textView)
-  }
-
   func setNextTemplateTokenRanges(textView: TextView) {
     let text = textView.text
     let nextTokenRangeIndex: String.Index
@@ -83,7 +80,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     } else {
       nextTokenRangeIndex = text.startIndex
     }
-    
+
     if nextTokenRangeIndex < text.endIndex,
       let range = text[nextTokenRangeIndex...].range(of: #"\$\{[^\}]+\}"#, options: .regularExpression) {
       let token = String(text[range])
@@ -93,88 +90,25 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       let range = nextTokenRanges[0]
       textView.selectedTextRange =  textView.textRange(from: range)
     } else {
-      completeTemplates()
+      _completeTemplates()
     }
   }
 
-  @objc func completeTemplates() {
-    model.editingMode = .code
-    updateUIMode(self.textView)
-  }
-
-  func updateUIMode(_ textView: TextView) {
-    if model.editingMode == .template {
-      self.textView.selectionHighlightColor = .systemYellow.withAlphaComponent(0.3)
-      self.textView.selectionBarColor = .systemYellow.withAlphaComponent(0.8)
-      self.textView.insertionPointColor = .systemYellow.withAlphaComponent(0.8)
-      self.textView.returnKeyType = .next
-      self.navigationItem.rightBarButtonItem =
-        UIBarButtonItem(
-          title: "Complete", style: .done, target: self, action: #selector(completeTemplates)
-        )
-      self.setNextTemplateTokenRanges(textView: textView)
-    } else if model.editingMode == .code {
-      self.textView.selectionHighlightColor = .blinkTint.withAlphaComponent(0.3)
-      self.textView.selectionBarColor = .blinkTint.withAlphaComponent(0.8)
-      self.textView.insertionPointColor = .blinkTint.withAlphaComponent(0.8)
-      textView.highlightedRanges = []
-      model.editingMode = .code
-      textView.returnKeyType = .default
-      let sendWithNewlineOptions = [
-        UIAction(title: "Raw", handler: {_ in
-          self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .raw)
-          if self.model.isPinnedMode {
-            textView.text = ""
-          }
-        }),
-        UIAction(title: "Block", handler: {_ in
-          self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .block)
-          if self.model.isPinnedMode {
-            textView.text = ""
-          }
-        }),
-        UIAction(title: "B/E", handler: {_ in
-          self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .beginEnd)
-          if self.model.isPinnedMode {
-            textView.text = ""
-          }
-        }),
-        UIAction(title: "Semicolon", handler: {_ in
-          self.model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .lineBySemicolon)
-          if self.model.isPinnedMode {
-            textView.text = ""
-          }
-        })
-      ]
-
-      let pinButton = UIBarButtonItem(
-        image: UIImage(systemName: model.isPinnedMode ? "pin.fill" : "pin"),
-        style: .plain,
-        target: self,
-        action: #selector(togglePinMode)
-      )
-
-      self.navigationItem.rightBarButtonItems =
-        [
-         UIBarButtonItem(
-          title: "Send", style: .done, target: self, action: #selector(send)
-        ),
-         UIBarButtonItem(
-          image: UIImage(systemName: "paperplane.fill"),
-          primaryAction: nil,
-          menu: UIMenu(title: "Send as", children: sendWithNewlineOptions)
-        ),
-         pinButton
-        ]
-    }
+  @objc private func _completeTemplates() {
+    _updateEditingMode(.code)
   }
 
   @objc func togglePinMode() {
-    model.isPinnedMode.toggle()
-    updateUIMode(textView)
+    _updateForPinMode(!model.isPinnedMode)
+  }
 
-    // Update modal presentation to prevent/allow dismissal
-    navigationController?.isModalInPresentation = model.isPinnedMode
+  private func _updateForPinMode(_ isPinned: Bool) {
+    model.isPinnedMode = isPinned
+
+    // Prevent/allow dismissal
+    navigationController?.isModalInPresentation = isPinned
+
+    _updateNavigationBar()
   }
 
   func textViewDidChangeSelection(_ textView: TextView) {
@@ -213,7 +147,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     }
     templateTokenRanges.forEach {
       let replacementRange = NSRange(location: accummulatedPositionOffset + $0.location + editingLocationOffset, length: range.length)
-      
+
       textView.replace(replacementRange, withText: text)
 
       // this will force rerendering of all highlights
@@ -243,7 +177,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
 
     textView.highlightedRanges = highlightedRanges
   }
-  
+
   var textView: TextView
   var model: SearchModel
   var templateTokenRanges: [NSRange]
@@ -251,7 +185,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
 
   var _keyCommands: [UIKeyCommand] = []
   private var textViewBottomConstraint: NSLayoutConstraint?
-  
+
   init(textView: TextView, model: SearchModel) {
     self.textView = textView
     self.model = model
@@ -259,7 +193,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     self.acceptReplace = false
     super.init(nibName: nil, bundle: nil)
     self.textView.editorDelegate = self
-    
+
     _keyCommands = [
       UIKeyCommand(input: "\r", modifierFlags: .command, action: #selector(send)),
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancel))
@@ -268,17 +202,17 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       cmd.wantsPriorityOverSystemBehavior = true
     }
   }
-  
+
   override var keyCommands: [UIKeyCommand] {
     get {
       _keyCommands
     }
   }
-  
+
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
   }
-  
+
   override func viewDidLoad() {
     super.viewDidLoad()
 
@@ -309,6 +243,8 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     self.navigationItem.leftBarButtonItem?.action = #selector(cancel)
     self.navigationItem.style = .editor
 
+    _updateEditingMode(model.editingMode)
+
     // For scratch, we disable special options
     // Ideally, a "Save as" would allow to rename scratch somewhere else, but we cannot change it.
     if model.editingSnippet?.name == "scratch" {
@@ -336,7 +272,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       return UIMenu(children: finalMenuElements)
     }
   }
-  
+
   @objc func saveSnippet() {
     do {
       try model.saveSnippet(newContent: self.textView.text)
@@ -353,15 +289,27 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       showAlert(msg: "\(error)")
     }
   }
-  
+
   @objc func cancel() {
     model.closeEditor()
   }
-  
-  @objc func send() {
-    model.sendContentToReceiver(content: textView.text)
 
-    // If in pinned mode, clear the text for next message
+  @objc func send() {
+    // Send with appropriate formatter based on language mode
+    switch model.languageMode {
+    case .shell:
+      model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .lineBySemicolon)
+
+    case .prompt:
+      let content = textView.text ?? ""
+      model.sendContentToReceiver(content: content, shellOutputFormatter: .raw)
+
+      // Add newline with delay to submit. This simulates typing, otherwise the prompt introduces a newline.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        self?.model.sendContentToReceiver(content: "\r", shellOutputFormatter: .unprocessed)
+      }
+    }
+
     if model.isPinnedMode {
       textView.text = ""
     }
@@ -371,12 +319,12 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     super.viewDidAppear(animated)
     _ = textView.becomeFirstResponder()
   }
-  
+
   override func viewDidDisappear(_ animated: Bool) {
     super.viewDidDisappear(animated)
     self.model.closeEditor()
   }
-  
+
   override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     if action == #selector(deleteSnippet) {
       // TODO: check location
@@ -384,10 +332,133 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
     }
     return super.canPerformAction(action, withSender: sender)
   }
-  
+
   func showAlert(msg: String) {
     let ctrl = UIAlertController(title: "Error", message: msg, preferredStyle: .alert)
     ctrl.addAction(UIAlertAction(title: "Ok", style: .default))
     self.present(ctrl, animated: true)
+  }
+}
+
+extension EditorViewController {
+  private var isScratch: Bool {
+    model.editingSnippet?.name == "scratch"
+  }
+
+  private func _updateEditingMode(_ mode: TextViewEditingMode) {
+    model.editingMode = mode
+
+    if model.editingMode == .template {
+      self.textView.selectionHighlightColor = .systemYellow.withAlphaComponent(0.3)
+      self.textView.selectionBarColor = .systemYellow.withAlphaComponent(0.8)
+      self.textView.insertionPointColor = .systemYellow.withAlphaComponent(0.8)
+      self.textView.returnKeyType = .next
+      textView.configure(for: model.languageMode)
+
+      self.navigationItem.rightBarButtonItem =
+        UIBarButtonItem(
+          title: "Complete", style: .done, target: self, action: #selector(_completeTemplates)
+        )
+
+      self.setNextTemplateTokenRanges(textView: textView)
+
+    } else if model.editingMode == .code {
+      self.textView.selectionHighlightColor = .blinkTint.withAlphaComponent(0.3)
+      self.textView.selectionBarColor = .blinkTint.withAlphaComponent(0.8)
+      self.textView.insertionPointColor = .blinkTint.withAlphaComponent(0.8)
+      self.textView.highlightedRanges = []
+      model.editingMode = .code
+      self.textView.returnKeyType = .default
+
+      _updateForLanguageMode(model.languageMode)
+    }
+  }
+
+  private func _updateForLanguageMode(_ languageMode: LanguageMode) {
+    // Update model
+    model.languageMode = languageMode
+
+    if isScratch {
+      BLKDefaults.setScratchLanguageMode(languageMode.rawValue)
+      BLKDefaults.save()
+    }
+
+    // Configure TextView for the language mode
+    textView.configure(for: languageMode)
+
+    _updateNavigationBar()
+  }
+
+  private func _createSendAction(title: String, formatter: ShellOutputFormatter) -> UIAction {
+    UIAction(title: title, handler: { _ in
+      self.model.sendContentToReceiver(content: self.textView.text, shellOutputFormatter: formatter)
+      if self.model.isPinnedMode {
+        self.textView.text = ""
+      }
+    })
+  }
+
+  private func _updateNavigationBar() {
+    let pinButton = UIBarButtonItem(
+      image: UIImage(systemName: model.isPinnedMode ? "pin.fill" : "pin"),
+      style: .plain,
+      target: self,
+      action: #selector(togglePinMode)
+    )
+
+    let languageModeButton = UIBarButtonItem(
+      image: UIImage(systemName: "textformat"),
+      primaryAction: nil,
+      menu: _createLanguageModeMenu()
+    )
+
+    var rightBarButtonItems: [UIBarButtonItem] = [
+      UIBarButtonItem(title: "Send", style: .done, target: self, action: #selector(send))
+    ]
+
+    // Only add send options menu for shell mode
+    if model.languageMode == .shell {
+      let sendWithNewlineOptions = [
+        _createSendAction(title: "Raw", formatter: .raw),
+        _createSendAction(title: "Block", formatter: .block),
+        _createSendAction(title: "B/E", formatter: .beginEnd),
+        _createSendAction(title: "Semicolon", formatter: .lineBySemicolon)
+      ]
+
+      rightBarButtonItems.append(
+        UIBarButtonItem(
+          image: UIImage(systemName: "paperplane.fill"),
+          primaryAction: nil,
+          menu: UIMenu(title: "Send as", children: sendWithNewlineOptions)
+        )
+      )
+    }
+
+    rightBarButtonItems.append(pinButton)
+
+    // Only add language mode button for scratch
+    if isScratch {
+      rightBarButtonItems.append(languageModeButton)
+    }
+
+    self.navigationItem.rightBarButtonItems = rightBarButtonItems
+  }
+
+  private func _createLanguageModeMenu() -> UIMenu {
+    let shellAction = UIAction(
+      title: "Shell",
+      image: UIImage(systemName: "terminal"),
+      state: model.languageMode == .shell ? .on : .off,
+      handler: { _ in self._updateForLanguageMode(.shell) }
+    )
+
+    let promptAction = UIAction(
+      title: "Prompt",
+      image: UIImage(systemName: "text.bubble"),
+      state: model.languageMode == .prompt ? .on : .off,
+      handler: { _ in self._updateForLanguageMode(.prompt) }
+    )
+
+    return UIMenu(title: "Language Mode", children: [shellAction, promptAction])
   }
 }
