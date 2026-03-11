@@ -412,8 +412,13 @@ extension EditorViewController {
       menu: _createLanguageModeMenu()
     )
 
-    var rightBarButtonItems: [UIBarButtonItem] = [
-      UIBarButtonItem(title: "Send", style: .done, target: self, action: #selector(send))
+    var sendButtons: [UIBarButtonItem] = [
+      UIBarButtonItem(
+        image: UIImage(systemName: "paperplane.fill"),
+        style: .plain,
+        target: self,
+        action: #selector(send)
+      )
     ]
 
     // Only add send options menu for shell mode
@@ -425,21 +430,25 @@ extension EditorViewController {
         _createSendAction(title: "Semicolon", formatter: .lineBySemicolon)
       ]
 
-      rightBarButtonItems.append(
+      sendButtons.append(
         UIBarButtonItem(
-          image: UIImage(systemName: "paperplane.fill"),
+          image: UIImage(systemName: "ellipsis.circle"),
           primaryAction: nil,
           menu: UIMenu(title: "Send as", children: sendWithNewlineOptions)
         )
       )
     }
 
-    rightBarButtonItems.append(pinButton)
-
-    // Only add language mode button for scratch
+    var configButtons: [UIBarButtonItem] = [pinButton]
     if isScratch {
-      rightBarButtonItems.append(languageModeButton)
+      configButtons.append(languageModeButton)
     }
+
+    let flexibleSpace = UIBarButtonItem(systemItem: .flexibleSpace)
+
+    var rightBarButtonItems: [UIBarButtonItem] = sendButtons
+    rightBarButtonItems.append(flexibleSpace)
+    rightBarButtonItems.append(contentsOf: configButtons)
 
     self.navigationItem.rightBarButtonItems = rightBarButtonItems
   }
