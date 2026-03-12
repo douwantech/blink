@@ -100,7 +100,8 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   
   _dontUseBlinkSnippetsIndex = [coder decodeBoolForKey:@"dontUseBlinkSnippetsIndex"];
   _snippetsDefaultLocation = [coder decodeIntegerForKey:@"snippetsDefaultLocation"];
-  
+  _scratchLanguageMode = [coder decodeObjectOfClass:[NSString class] forKey:@"scratchLanguageMode"];
+
   return self;
 }
 
@@ -131,7 +132,8 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   [encoder encodeBool:_compactQuickActions forKey:@"compactQuickActions"];
   [encoder encodeBool:_dontUseBlinkSnippetsIndex forKey:@"dontUseBlinkSnippetsIndex"];
   [encoder encodeInteger:_snippetsDefaultLocation forKey:@"snippetsDefaultLocation"];
-  
+  [encoder encodeObject:_scratchLanguageMode forKey:@"scratchLanguageMode"];
+
 }
 
 + (BOOL)supportsSecureCoding {
@@ -348,6 +350,10 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   defaults.snippetsDefaultLocation = value;
 }
 
++ (void)setScratchLanguageMode:(NSString *)mode {
+  defaults.scratchLanguageMode = mode;
+}
+
 
 + (NSString *)selectedFontName
 {
@@ -460,6 +466,10 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (BKSnippetDefaultLocation)snippetsDefaultLocation {
   return defaults.snippetsDefaultLocation;
+}
+
++ (NSString *)scratchLanguageMode {
+  return defaults.scratchLanguageMode ?: @"shell";
 }
 
 

@@ -37,9 +37,14 @@ public enum ShellOutputFormatter {
   case raw,
        block,
        lineBySemicolon,
-       beginEnd
+       beginEnd,
+       unprocessed
 
   public func format(_ script: String) -> String {
+    if self == .unprocessed {
+      return script
+    }
+
     let commands = parseCommands(script)
 
     // Escape if no multi-line
@@ -48,7 +53,7 @@ public enum ShellOutputFormatter {
     } else if commands.count == 1 {
       return commands[0]
     }
-    
+
     switch self {
     case .raw:
       return script
@@ -58,6 +63,8 @@ public enum ShellOutputFormatter {
       return script.wrapIn(prefix: "$(\n", suffix: "\n)")
     case .beginEnd:
       return script.wrapIn(prefix: "begin\n", suffix: "\nend")
+    case .unprocessed:
+      preconditionFailure("Unprocessed should not reach this point")  // Already handled above
     }
   }
   

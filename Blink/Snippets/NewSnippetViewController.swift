@@ -140,8 +140,9 @@ class NewSnippetViewController: UIViewController, TextViewDelegate, UINavigation
   var model: SearchModel
   var templateTokenRanges: [NSRange]
   var acceptReplace: Bool
-  
+
   var _keyCommands: [UIKeyCommand] = []
+  private var textViewBottomConstraint: NSLayoutConstraint?
   
   init(textView: TextView, model: SearchModel) {
     self.textView = textView
@@ -180,10 +181,21 @@ class NewSnippetViewController: UIViewController, TextViewDelegate, UINavigation
   
   override func viewDidLoad() {
     super.viewDidLoad()
-   
+
     self.view.backgroundColor = UIColor.systemBackground
     self.view.addSubview(textView)
-    
+
+    textView.translatesAutoresizingMaskIntoConstraints = false
+    let keyboardLayoutGuide = view.keyboardLayoutGuide
+    textViewBottomConstraint = textView.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor)
+
+    NSLayoutConstraint.activate([
+      textView.topAnchor.constraint(equalTo: view.topAnchor, constant: self.systemMinimumLayoutMargins.top),
+      textView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: self.systemMinimumLayoutMargins.leading),
+      textView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -self.systemMinimumLayoutMargins.trailing),
+      textViewBottomConstraint!
+    ])
+
     self.navigationItem.rightBarButtonItem =
       UIBarButtonItem(
         title: "Create", style: .done, target: self, action: #selector(create)
@@ -192,28 +204,28 @@ class NewSnippetViewController: UIViewController, TextViewDelegate, UINavigation
     self.navigationItem.leftBarButtonItem?.target = self
     self.navigationItem.leftBarButtonItem?.action = #selector(cancel)
     self.navigationItem.style = .editor
-        
+
     self.formView.categoryTextField.addTarget(self, action: #selector(onFieldFocus), for: .editingDidBegin)
-    
+
     self.formView.categoryTextField.addTarget(self, action: #selector(onFieldChange), for: .editingChanged)
-    
+
     self.formView.categoryTextField.addTarget(self, action: #selector(onFieldBlur), for: .editingDidEnd)
-    
+
     self.formView.nameTextField.addTarget(self, action: #selector(onFieldFocus), for: .editingDidBegin)
     self.formView.nameTextField.addTarget(self, action: #selector(onFieldBlur), for: .editingDidEnd)
     self.formView.nameTextField.addTarget(self, action: #selector(onFieldChange), for: .editingChanged)
-    
+
     let query = self.model.fuzzyResults.query
     let parts = query.split(separator: "/", maxSplits: 1)
-    
+
     if parts.count > 0 {
       self.formView.categoryTextField.text = String(parts[0])
     }
-    
+
     if parts.count == 2 {
       self.formView.nameTextField.text = String(parts[1])
     }
-    
+
     self.onFieldChange()
   }
   
@@ -281,19 +293,17 @@ class NewSnippetViewController: UIViewController, TextViewDelegate, UINavigation
     ctrl.addAction(UIAlertAction(title: "Ok", style: .default))
     self.present(ctrl, animated: true)
   }
-  
+
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
 
-    let ins = self.systemMinimumLayoutMargins
-    textView.frame = self.view.bounds.insetBy(dx: ins.leading, dy: ins.top)
-    let size = formView.intrinsicContentSize;
+    let size = formView.intrinsicContentSize
     if textView.contentInset.top != size.height {
       textView.contentInset = UIEdgeInsets(top: size.height, left: 0, bottom: 0, right: 0)
     }
     formView.frame = CGRect(x: 0, y: -size.height, width: textView.bounds.width, height: size.height)
   }
-  
+
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     

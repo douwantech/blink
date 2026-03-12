@@ -179,12 +179,19 @@ class TermController: UIViewController {
   private var _fontSizeBeforeScaling: Int? = nil
   
   @objc public var viewIsLoaded: Bool = false
-  
+
   @objc public var activityKey: String? = nil
   @objc public var termDevice: TermDevice { _termDevice }
   @objc weak var delegate: TermControlDelegate? = nil
   weak var layoutProvider: LayoutInsetsProvider? = nil
   @objc var sessionParams: MCPParams { _sessionParams }
+
+  // Control whether terminal can become first responder (e.g., during Snips Input Mode)
+  var shouldBlockFirstResponder: Bool = false {
+    didSet {
+      _termDevice.shouldBlockFirstResponder = shouldBlockFirstResponder
+    }
+  }
   @objc var bgColor: UIColor? {
     get { _bgColor }
     set { _bgColor = newValue }
@@ -488,10 +495,15 @@ extension TermController: TermDeviceDelegate {
   }
   
   func activateInput() {
+    // Don't activate input if blocked (e.g., during Snips Input Mode)
+    guard !shouldBlockFirstResponder else {
+      return
+    }
+
     if !isAttached {
       _attachInput()
     }
-    
+
     if isReady {
       _becomeFirstResponder()
     }
@@ -534,12 +546,15 @@ extension TermController: TermDeviceDelegate {
   
   private func _becomeFirstResponder() {
     guard let deviceView = _termDevice.view else { return }
-    
+
+    // Don't become first responder if blocked (e.g., during Snips Input Mode)
+    guard !shouldBlockFirstResponder else { return }
+
     if !isAttached && !isReady{ return }
-    
+
     deviceView.webView.reportFocus(true)
     _termDevice.focus()
-    
+
     let input = KBTracker.shared.input
 
     if input != KBTracker.shared.input {

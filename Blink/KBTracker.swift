@@ -89,6 +89,25 @@ class KBTracker: NSObject {
       else {
         return KBConfig()
     }
+
+    let defaultShortcuts = KeyShortcut.defaultList
+    var mergedShortcuts = cfg.shortcuts
+
+    for defaultShortcut in defaultShortcuts {
+      let commandExists = mergedShortcuts.contains { shortcut in
+        if case .command(let cmd) = shortcut.action,
+           case .command(let defaultCmd) = defaultShortcut.action {
+          return cmd == defaultCmd
+        }
+        return false
+      }
+
+      if !commandExists {
+        mergedShortcuts.append(defaultShortcut)
+      }
+    }
+
+    cfg.shortcuts = mergedShortcuts
     return cfg;
   }
   

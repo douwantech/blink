@@ -137,19 +137,23 @@ import Combine
   }
   
   override func becomeFirstResponder() -> Bool {
-    
+    // Don't become first responder if blocked (e.g., during Snips Input Mode)
+    if device?.shouldBlockFirstResponder == true {
+      return false
+    }
+
     sync(traits: KBTracker.shared.kbTraits, device: KBTracker.shared.kbDevice, hideSmartKeysWithHKB: KBTracker.shared.hideSmartKeysWithHKB)
-    
+
     let res = super.becomeFirstResponder()
-    
+
     if !webViewReady {
       return res
     }
-    
+
     device?.focus()
     kbView.isHidden = false
     setNeedsLayout()
-    
+
     _inputAccessoryView?.isHidden = false
 
     return res

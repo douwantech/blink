@@ -74,6 +74,7 @@
 @property (nonatomic) BOOL rawMode;
 @property (nonatomic) BOOL autoCR;
 @property (nonatomic) BOOL secureTextEntry;
+@property (nonatomic) BOOL shouldBlockFirstResponder;
 @property (nonatomic) NSInteger rows;
 @property (nonatomic) NSInteger cols;
 

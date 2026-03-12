@@ -88,6 +88,7 @@ typedef NS_ENUM(NSInteger, BKSnippetDefaultLocation) {
 @property (nonatomic) BOOL compactQuickActions;
 @property (nonatomic) BOOL dontUseBlinkSnippetsIndex;
 @property (nonatomic) BKSnippetDefaultLocation snippetsDefaultLocation;
+@property (nonatomic, strong) NSString *scratchLanguageMode;
 
 + (void)loadDefaults;
 + (BOOL)saveDefaults;
@@ -140,6 +141,8 @@ typedef NS_ENUM(NSInteger, BKSnippetDefaultLocation) {
 + (BOOL)compactQuickActions;
 + (BOOL) dontUseBlinkSnippetsIndex;
 + (BKSnippetDefaultLocation) snippetsDefaultLocation;
++ (void)setScratchLanguageMode:(NSString *)mode;
++ (NSString *)scratchLanguageMode;
 
 
 + (void)applyExternalScreenCompensation:(BKOverscanCompensation)value;

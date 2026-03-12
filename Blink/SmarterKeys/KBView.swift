@@ -444,7 +444,19 @@ extension KBView: KBKeyViewDelegate {
       flags.insert(.shift)
     }
 
-    if let input = value.input,
+    // For shifted characters like < and >, we need to shift the modifier to match "Shift+,"
+    var inputForMatching = value.input
+    if case .text(let ch) = value {
+      if ch == "<" {
+        flags.insert(.shift)
+        inputForMatching = ","
+      } else if ch == ">" {
+        flags.insert(.shift)
+        inputForMatching = "."
+      }
+    }
+
+    if let input = inputForMatching,
       flags.rawValue > 0,
       let (cmd, responder) = keyInput.matchCommand(input: input, flags: flags),
       let action = cmd.action  {

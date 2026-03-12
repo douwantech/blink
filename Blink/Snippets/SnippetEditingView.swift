@@ -37,11 +37,51 @@ enum TextViewEditingMode {
   case template, code
 }
 
+enum LanguageMode: String {
+  case shell = "shell"
+  case prompt = "prompt"
+  // case code(language: TreeSitterLanguage) // Future: for specific language syntax highlighting
+}
+
 extension TextView {
   func textRange(from range: NSRange) -> UITextRange? {
     let start = self.position(from: self.beginningOfDocument, offset: range.location)!
     let end = self.position(from: start, offset: range.length)!
     return self.textRange(from: start, to: end)
+  }
+
+  func configure(for languageMode: LanguageMode) {
+    switch languageMode {
+    case .shell:
+      // Shell mode: disable text assistance features
+      self.autocapitalizationType = .none
+      self.autocorrectionType = .no
+      self.smartDashesType = .no
+      self.smartQuotesType = .no
+      self.smartInsertDeleteType = .no
+      self.spellCheckingType = .no
+      self.setLanguageMode(TreeSitterLanguageMode(language: .bash))
+
+    case .prompt:
+      // Prompt mode: enable text assistance features for writing prompts
+      self.autocapitalizationType = .sentences
+      self.autocorrectionType = .yes
+      self.smartDashesType = .yes
+      self.smartQuotesType = .yes
+      self.smartInsertDeleteType = .yes
+      self.spellCheckingType = .yes
+      self.setLanguageMode(PlainTextLanguageMode())
+
+    // case .code(let language):
+    //   // Code mode: disable text assistance but enable syntax highlighting
+    //   self.autocapitalizationType = .none
+    //   self.autocorrectionType = .no
+    //   self.smartDashesType = .no
+    //   self.smartQuotesType = .no
+    //   self.smartInsertDeleteType = .no
+    //   self.spellCheckingType = .no
+    //   self.setLanguageMode(TreeSitterLanguageMode(language: language))
+    }
   }
 }
 
@@ -60,22 +100,13 @@ class TextViewBuilder {
     return textView()
   }
 
-  // TODO Language from Snippet information
   static func textView() -> TextView {
     let tv = TextView()
     tv.theme = PragmataProTheme(originalTheme: DefaultTheme())
     tv.backgroundColor = .clear
-    tv.setLanguageMode(TreeSitterLanguageMode(language: .bash))
-    
-    tv.autocapitalizationType = .none
-    tv.autocorrectionType = .no
     tv.inputAssistantItem.leadingBarButtonGroups = []
     tv.inputAssistantItem.trailingBarButtonGroups = []
-    tv.smartDashesType = .no
-    tv.smartQuotesType = .no
-    tv.smartInsertDeleteType = .no
-    tv.spellCheckingType = .no
-    
+
     return tv
   }
 }

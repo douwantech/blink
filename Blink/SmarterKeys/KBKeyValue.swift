@@ -138,6 +138,7 @@ enum KBKeyValue: Hashable, Identifiable, Codable {
       case "\\", "|": return .backslash
       case "^": return .circumflex
       case "_": return .underscore
+      case "<", ">": return .less
       default: return .unidentified
       }
     default: return .unidentified

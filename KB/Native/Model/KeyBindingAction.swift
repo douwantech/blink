@@ -64,6 +64,7 @@ enum Command: String, Codable, CaseIterable {
   case selectionShare
   case configShow
   case snippetsShow
+  case scratchShow
   case toggleQuickActions
   case toggleGeoTrack
   case hideKeyboard
@@ -104,6 +105,7 @@ enum Command: String, Codable, CaseIterable {
     case .selectionShare:         return "Share Selection"
     case .configShow:             return "Show Config"
     case .snippetsShow:           return "Show Snippets"
+    case .scratchShow:            return "Show Scratch"
     case .toggleQuickActions:     return "Toggle Quick Actions"
     case .toggleGeoTrack:         return "Toggle Geo Track"
     case .hideKeyboard:           return "Hide Keyboard"
