@@ -76,6 +76,7 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 @property (nonatomic, readonly) SmarterTermInput *webView;
 @property (nonatomic, readonly) SmarterTermInput *browserView;
 
+- (void)setCmdKeyPressed:(BOOL)pressed;
 
 - (CGRect)webViewFrame;
 - (void)loadWith:(MCPParams *)params;

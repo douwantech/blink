@@ -592,7 +592,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _isReady = YES;
   [_device viewIsReady];
   [[NSNotificationCenter defaultCenter] postNotificationName:TermViewReadyNotificationKey object:self];
-    
+
 //  if (_gestureInteraction.focused) {
 //    [_webView evaluateJavaScript:term_focus() completionHandler:nil];
 //  } else {
@@ -1045,6 +1045,10 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 -(void)_createNewTab {
   SpaceController *sp = (SpaceController *)self.window.rootViewController;
   [sp newShellAction];
+}
+
+- (void)setCmdKeyPressed:(BOOL)pressed {
+  [_gestureInteraction setCmdKeyPressed:pressed];
 }
 
 @end
