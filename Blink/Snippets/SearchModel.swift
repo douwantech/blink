@@ -313,7 +313,9 @@ class SearchModel: ObservableObject {
   @objc func closeEditor() {
     self.editingSnippet = nil
     self.newSnippetPresented = false
-    self.rootCtrl?.presentedViewController?.dismiss(animated: true)
+    self.rootCtrl?.presentedViewController?.dismiss(animated: true) {
+      self.focusOnInput()
+    }
   }
 
   func focusOnInput() {
