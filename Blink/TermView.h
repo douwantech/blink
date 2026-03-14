@@ -91,6 +91,7 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 - (void)setClipboardWrite:(BOOL)state;
 - (void)applyTheme:(NSString *)themeName;
 - (void)copy:(id _Nullable )sender;
+- (void)copyRaw:(id _Nullable )sender;
 - (void)pasteSelection:(id _Nullable)sender;
 - (void)terminate;
 - (void)reset;

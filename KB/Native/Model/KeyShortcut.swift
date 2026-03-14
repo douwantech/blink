@@ -176,6 +176,7 @@ class KeyShortcut: ObservableObject, Codable, Identifiable {
   static var defaultList: [KeyShortcut] {
     [
       KeyShortcut(.clipboardCopy, .command, "c"),
+      KeyShortcut(.clipboardCopyRaw, [.command, .shift], "c"),
       KeyShortcut(.clipboardPaste, .command, "v"),
 
       KeyShortcut(.windowNew, [.command, .shift], "t"),

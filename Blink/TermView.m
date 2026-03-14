@@ -675,11 +675,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   }
   
   NSMutableArray *items = [[NSMutableArray alloc] init];
-  
-  
+
+
   [items addObject:[[UIMenuItem alloc] initWithTitle:@"Paste selection"
                                               action:@selector(pasteSelection:)]];
-  
+
+  [items addObject:[[UIMenuItem alloc] initWithTitle:@"Copy Raw"
+                                              action:@selector(copyRaw:)]];
+
   _detectedLink = [self _detectLinkInSelection:data];
   
   if (_detectedLink) {
@@ -782,7 +785,52 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self cleanSelection];
 }
 
+// Sanitize terminal selection for clipboard
+// hterm selection may include row-padding spaces at EOL; those should not leak
+// into the system clipboard as trailing whitespace.
+static NSString * _sanitizeTextForClipboard(NSString *text) {
+  if (!text || text.length == 0) {
+    return @"";
+  }
+
+  // Replace \r\n with \n
+  NSString *result = [text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
+
+  // Remove trailing spaces/tabs before newlines
+  NSRegularExpression *trailingEOL = [NSRegularExpression
+    regularExpressionWithPattern:@"[ \\t]+\\n"
+    options:0
+    error:nil];
+  result = [trailingEOL stringByReplacingMatchesInString:result
+                                                  options:0
+                                                    range:NSMakeRange(0, result.length)
+                                             withTemplate:@"\n"];
+
+  // Remove trailing spaces/tabs at end of text
+  NSRegularExpression *trailingEnd = [NSRegularExpression
+    regularExpressionWithPattern:@"[ \\t]+$"
+    options:0
+    error:nil];
+  result = [trailingEnd stringByReplacingMatchesInString:result
+                                                  options:0
+                                                    range:NSMakeRange(0, result.length)
+                                             withTemplate:@""];
+
+  return result;
+}
+
 - (void)copy:(id)sender
+{
+  NSString *text = _selectedText;
+  if (text) {
+    [UIPasteboard generalPasteboard].string = _sanitizeTextForClipboard(text);
+  }
+  UIMenuController * menu = [UIMenuController sharedMenuController];
+  [menu hideMenuFromView:self];
+  [self cleanSelection];
+}
+
+- (void)copyRaw:(id)sender
 {
   NSString *text = _selectedText;
   if (text) {
@@ -994,12 +1042,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
         NSMutableArray *editItems = [[NSMutableArray alloc] init];
         for (UIMenuElement *editElem in menu.children) {
           if ([editElem isKindOfClass:[UICommand class]]) {
-            
+
             UICommand *cmd = (UICommand *)editElem;
             if (cmd.action == @selector(cut:)) {
               continue;
             } else if (cmd.action == @selector(paste:) && _hasSelection) {
               [editItems addObject:[UICommand commandWithTitle:@"Paste" image:[UIImage systemImageNamed:@"doc.on.clipboard"] action:@selector(pasteSelection:) propertyList:nil]];
+            } else if (cmd.action == @selector(copy:) && _hasSelection) {
+              [editItems addObject:editElem];
+              [editItems addObject:[UICommand commandWithTitle:@"Copy Raw" image:[UIImage systemImageNamed:@"doc.on.doc.fill"] action:@selector(copyRaw:) propertyList:nil]];
             } else {
               [editItems addObject:editElem];
             }
