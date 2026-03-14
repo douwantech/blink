@@ -41,15 +41,15 @@ import SSH
 let MoshServerRemotePath = ".local/blink"
 let MoshServerBinaryName  = "mosh-server"
 let MoshServerVersion     = "1.4.0"
-let MoshServerBlinkVersion = "17.3.0"
+let MoshServerBlinkVersion = "18.4.5"
 let MoshServerDownloadPathURL = URL(string: "https://github.com/blinksh/mosh-static-multiarch/releases/download/\(MoshServerVersion)%2Bblink-\(MoshServerBlinkVersion)/")!
 
 fileprivate enum Checksum {
-  static let DarwinArm64 = "3cdc2cf180bda497264049f43cb97557f6827795e7e612ad69ac02ea0096cbc4"
-  static let DarwinX86_64 = "bf42e75ab1ad3beca899da18a3f154e0e6c9c4ef5507a2e5fbc945d404ce1168"
-  static let LinuxAmd64 = "49e71e059e480d96b5f5b9fb15485a79c2717008fb9d9c967c85edfe2103e300"
-  static let LinuxArm64 = "fc8a6257f61a7d65d15206301fb010097e58521afa9ee12852e1e89ade0b8efc"
-  static let LinuxArmv7 = "23d440e99cfd736074b7cb12540e2b902824ac2d296a82166985d30c5f59ca13"
+  static let DarwinArm64 = "85fa5f39378d9dc25b1b2e528d2d3de111c6f8d87108403d8deecbd7df869338"
+  static let DarwinX86_64 = "c776319628de721d572622161cb547ce70b6e722185e0c00f2d735b58bb9fbbb"
+  static let LinuxAmd64 = "01cada775c20b6756ff0a758a1ac33f321100cb74622e8d50b97da7585e2f964"
+  static let LinuxArm64 = "1252d1db88ad58c9d762f6ae2ba2385d8606130a618930b983d1a28a40db62e7"
+  static let LinuxArmv7 = "a9d05f992bbffd195775dfc7a0912d253b61094cf5a7348dc141303bf0fb58da"
   static func validate(data: Data, platform: Platform, architecture: Architecture) -> Bool {
     let hash = SHA256.hash(data: data)
     let hexHash = hash.map { byte in  String(format: "%02x", byte)}.joined()
