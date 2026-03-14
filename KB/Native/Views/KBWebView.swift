@@ -126,12 +126,18 @@ class KBWebView: KBWebViewBase {
   }
   
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    for press in presses {
+      if let key = press.key, key.keyCode == .keyboardLeftGUI || key.keyCode == .keyboardRightGUI,
+         let termView = superview as? TermView {
+        termView.setCmdKeyPressed(true)
+      }
+    }
+
     guard
       let key = presses.first?.key,
       let (cmd, responder) = matchCommand(input: key.charactersIgnoringModifiers, flags: key.modifierFlags),
       let action = cmd.action
     else {
-      // Remap cmd+. from Escape back to cmd+.
       if let key = presses.first?.key,
          key.keyCode.rawValue == 55,
          key.characters == "UIKeyInputEscape"
@@ -142,8 +148,19 @@ class KBWebView: KBWebViewBase {
       super.pressesBegan(presses, with: event)
       return
     }
-    
+
     responder.perform(action, with: cmd)
+  }
+
+  override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    for press in presses {
+      if let key = press.key, key.keyCode == .keyboardLeftGUI || key.keyCode == .keyboardRightGUI,
+         let termView = superview as? TermView {
+        termView.setCmdKeyPressed(false)
+      }
+    }
+
+    super.pressesEnded(presses, with: event)
   }
   
   func contentView() -> UIView? {

@@ -81,7 +81,7 @@ class UIScrollViewWithoutHitTest: UIScrollView {
 
 /**
  Gestures:
- 
+
  - 1 finger tap - reports click
  - 2 finger pan - reports mouse wheel
  - 3 pinch - zoom
@@ -95,24 +95,30 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   private let _jsScrollerPath: String
   private let _handlerName: String
   private let _1fTapRecognizer = UITapGestureRecognizer()
+  private let _1fPanRecognizer = UIPanGestureRecognizer()
   private let _2fTapRecognizer = UITapGestureRecognizer()
   private let _pinchRecognizer = UIPinchGestureRecognizer()
   private let _3fTapRecognizer = UITapGestureRecognizer()
   private let _longPressRecognizer = UILongPressGestureRecognizer()
   private let _hoverRecognizer = UIHoverGestureRecognizer()
+  private var _pointerInteraction: Any? = nil
   private var _characterSize: CGSize? = nil
   private var _scrollPoint: CGPoint? = nil
   private var _scrollPointTrackpad: CGPoint? = nil
-  
+  private var _mouseDragMode: Bool = false
+  private var _mouseDragStartPoint: CGPoint? = nil
+  private var _cmdKeyPressed: Bool = false
+
   @objc var focused: Bool = false;
   @objc var hasSelection: Bool = false {
     didSet {
       _pinchRecognizer.isEnabled = !hasSelection
       _1fTapRecognizer.isEnabled = !hasSelection
-      
+
       if hasSelection {
         _scrollView.panGestureRecognizer.dropTouches()
         _termScrollView.panGestureRecognizer.dropTouches()
+        _1fPanRecognizer.dropTouches()
         view?.dropSuperViewTouches()
       }
     }
@@ -126,6 +132,7 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   var allRecognizers:[UIGestureRecognizer] {
     let recognizers = [
       _1fTapRecognizer,
+      _1fPanRecognizer,
       _2fTapRecognizer,
       _3fTapRecognizer,
       _pinchRecognizer,
@@ -153,17 +160,26 @@ class UIScrollViewWithoutHitTest: UIScrollView {
       for r in allRecognizers {
         webView.addGestureRecognizer(r)
       }
-      
+
+      let pointerInteraction = UIPointerInteraction(delegate: self)
+      webView.addInteraction(pointerInteraction)
+      _pointerInteraction = pointerInteraction
+
       _wkWebView = webView
     } else {
       _scrollView.removeFromSuperview()
       _termScrollView.removeFromSuperview()
       _wkWebView?.configuration.userContentController.removeScriptMessageHandler(forName: _handlerName)
-      
+
       for r in allRecognizers {
         _wkWebView?.addGestureRecognizer(r)
       }
-      
+
+      if let interaction = _pointerInteraction as? UIPointerInteraction {
+        _wkWebView?.removeInteraction(interaction)
+        _pointerInteraction = nil
+      }
+
       _wkWebView = nil
     }
   }
@@ -208,14 +224,24 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     _3fTapRecognizer.delegate = self
     
     _longPressRecognizer.delegate = self
-    
+    _longPressRecognizer.addTarget(self, action: #selector(_onLongPress(_:)))
+
     _1fTapRecognizer.numberOfTapsRequired = 1
     _1fTapRecognizer.numberOfTouchesRequired = 1
     _1fTapRecognizer.delegate = self
     _1fTapRecognizer.addTarget(self, action: #selector(_on1fTap(_:)))
     _1fTapRecognizer.require(toFail: _3fTapRecognizer)
     _1fTapRecognizer.require(toFail: _longPressRecognizer)
-    
+    _1fTapRecognizer.require(toFail: _1fPanRecognizer)
+
+    _1fPanRecognizer.minimumNumberOfTouches = 1
+    _1fPanRecognizer.maximumNumberOfTouches = 1
+    _1fPanRecognizer.delegate = self
+    _1fPanRecognizer.addTarget(self, action: #selector(_on1fPan(_:)))
+    _1fPanRecognizer.require(toFail: _longPressRecognizer)
+    _1fPanRecognizer.cancelsTouchesInView = true // Consume all touches when active
+    _1fPanRecognizer.isEnabled = false // Disabled by default, only enabled during drag mode
+
     _2fTapRecognizer.numberOfTapsRequired = 1
     _2fTapRecognizer.numberOfTouchesRequired = 2
     _2fTapRecognizer.delegate = self
@@ -224,8 +250,8 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     
     _pinchRecognizer.delegate = self
     _pinchRecognizer.addTarget(self, action: #selector(_onPinch(_:)))
-    
-    
+
+
     _hoverRecognizer.addTarget(self, action: #selector(_onHover(_:)))
   }
   
@@ -235,17 +261,37 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     let point = recognizer.location(in: recognizer.view)
     switch recognizer.state {
     case .recognized:
-      
+      let wasInDragMode = _mouseDragMode
+
       if focused {
-        _wkWebView?.evaluateJavaScript("term_reportMouseClick(\(point.x), \(point.y), 1, \(BLKDefaults.isKeyCastsOn() ? "true" : "false"));", completionHandler: nil)
+        if _cmdKeyPressed {
+          if _mouseDragMode {
+            _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mouseup\", \(point.x), \(point.y), 1);", completionHandler: nil)
+            _mouseDragMode = false
+            _mouseDragStartPoint = nil
+            _1fPanRecognizer.isEnabled = false
+            _scrollView.panGestureRecognizer.isEnabled = true
+            _termScrollView.panGestureRecognizer.isEnabled = true
+          } else {
+            _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mousedown\", \(point.x), \(point.y), 1);", completionHandler: nil)
+            _mouseDragMode = true
+            _mouseDragStartPoint = point
+            _1fPanRecognizer.isEnabled = true
+            _scrollView.panGestureRecognizer.isEnabled = false
+            _termScrollView.panGestureRecognizer.isEnabled = false
+          }
+        } else {
+          _wkWebView?.evaluateJavaScript("term_reportMouseClick(\(point.x), \(point.y), 1, \(BLKDefaults.isKeyCastsOn() ? "true" : "false"));", completionHandler: nil)
+        }
       }
-      if let target = _wkWebView?.target(forAction: #selector(focusOnShellAction), withSender: self) as? UIResponder {
-        target.perform(#selector(focusOnShellAction), with: self)
+
+      if !_cmdKeyPressed && !wasInDragMode {
+        if let target = _wkWebView?.target(forAction: #selector(focusOnShellAction), withSender: self) as? UIResponder {
+          target.perform(#selector(focusOnShellAction), with: self)
+        }
       }
     default: break
     }
-    
-    
   }
   
   @objc func _on2fTap(_ recognizer: UITapGestureRecognizer) {
@@ -257,19 +303,67 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     default: break
     }
   }
-  
-  @objc func _on1fPan(_ recognizer: UIPanGestureRecognizer) {
+
+  @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {
+    guard focused else {
+      return
+    }
+
     let point = recognizer.location(in: recognizer.view)
+
     switch recognizer.state {
     case .began:
-      _scrollView.panGestureRecognizer.dropTouches()
+      if !_mouseDragMode {
+        _mouseDragMode = true
+        _mouseDragStartPoint = nil
+        _1fPanRecognizer.isEnabled = true
+        _scrollView.panGestureRecognizer.isEnabled = false
+        _termScrollView.panGestureRecognizer.isEnabled = false
+      }
+    case .ended:
+      if _mouseDragMode && _mouseDragStartPoint == nil {
+        var cursorPoint = point
+
+        if let contentView = _wkWebView?.scrollView.subviews.first(where: { view in
+          String(describing: type(of: view)).contains("WKContent")
+        }),
+           let textInput = contentView as? UITextInput,
+           let selectedRange = textInput.selectedTextRange,
+           let convertedRect = _wkWebView?.convert(textInput.caretRect(for: selectedRange.start), from: contentView) {
+          cursorPoint = CGPoint(x: convertedRect.midX, y: convertedRect.midY)
+        }
+
+        _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mousedown\", \(cursorPoint.x), \(cursorPoint.y), 1);", completionHandler: nil)
+        _mouseDragStartPoint = cursorPoint
+      }
+    default:
+      break
+    }
+  }
+
+  @objc func _on1fPan(_ recognizer: UIPanGestureRecognizer) {
+    guard focused && _mouseDragMode else {
+      return
+    }
+
+    let point = recognizer.location(in: recognizer.view)
+
+    switch recognizer.state {
+    case .began:
       recognizer.view?.superview?.dropSuperViewTouches()
-      _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mousedown\", \(point.x), \(point.y), 1);", completionHandler: nil)
+
     case .changed:
       _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mousemove\", \(point.x), \(point.y), 1);", completionHandler: nil)
+
     case .ended: fallthrough
     case .cancelled:
       _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mouseup\", \(point.x), \(point.y), 1);", completionHandler: nil)
+      _mouseDragMode = false
+      _mouseDragStartPoint = nil
+      _1fPanRecognizer.isEnabled = false
+      _scrollView.panGestureRecognizer.isEnabled = true
+      _termScrollView.panGestureRecognizer.isEnabled = true
+
     default: break
     }
   }
@@ -289,29 +383,56 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   }
   
   @objc func _onHover(_ recognizer: UIHoverGestureRecognizer) {
+    guard focused else {
+      return
+    }
+
+    let point = recognizer.location(in: recognizer.view)
+
     switch recognizer.state {
     case .began, .changed:
-      _scrollPointTrackpad = recognizer.location(in: view)
+      _scrollPointTrackpad = point
+      if _mouseDragMode {
+        _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mousemove\", \(point.x), \(point.y), 1);", completionHandler: nil)
+      }
     default: break
     }
   }
-  
+
   @objc func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
-    
+
   }
-  
+
   @objc func newShellAction() {
-    
+
   }
-  
+
   @objc func focusOnShellAction() {
-    
+
   }
-  
+
+  @objc func setCmdKeyPressed(_ pressed: Bool) {
+    _cmdKeyPressed = pressed
+    if !pressed && _mouseDragMode {
+      if let point = _mouseDragStartPoint {
+        _wkWebView?.evaluateJavaScript("term_reportMouseEvent(\"mouseup\", \(point.x), \(point.y), 1);", completionHandler: nil)
+      }
+      _mouseDragMode = false
+      _mouseDragStartPoint = nil
+      _1fPanRecognizer.isEnabled = false
+      _scrollView.panGestureRecognizer.isEnabled = true
+      _termScrollView.panGestureRecognizer.isEnabled = true
+    }
+  }
+
 }
 
 extension WKWebViewGesturesInteraction: UIGestureRecognizerDelegate {
   func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+    // When in drag mode, the 1f pan should be exclusive - don't allow other gestures
+    if _mouseDragMode && gestureRecognizer === _1fPanRecognizer {
+      return false
+    }
     return true
   }
 }
@@ -437,5 +558,15 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       
     default: break
     }
+  }
+}
+
+extension WKWebViewGesturesInteraction: UIPointerInteractionDelegate {
+  func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest, defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+    return defaultRegion
+  }
+
+  func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+    return nil
   }
 }
