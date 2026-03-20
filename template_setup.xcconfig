@@ -36,5 +36,6 @@ BLINK_MIGRATION_SCHEME = blinkv15
 
 WHATS_NEW_URL = http:/$()/localhost/whats-new
 CONVERSION_OPPORTUNITY_URL = http:/$()/localhost/conversionOpportunity
+WHATS_NEW_GITHUB_URL = http:/$()/localhost/conversionOpportunity
 
 BLINK_APP_FONT = JetBrains Mono

@@ -1130,23 +1130,38 @@ extension SpaceController {
   @objc func showWhatsNewAction() {
     if let shadowWindow = ShadowWindow.shared,
       view.window == shadowWindow {
-      
+
       _ = currentDevice?.view?.webView.resignFirstResponder()
-      
+
       let spCtrl = shadowWindow.windowScene?.windows.first?.rootViewController as? SpaceController
       spCtrl?.showWhatsNewAction()
-      
+
       return
     }
-    
+
     DispatchQueue.main.async {
       self.currentTerm()?.resignInput()
-      
-      // Reset version when opening.
       WhatsNewInfo.setNewVersion()
-      let root = UIHostingController(rootView: GridView(rowsProvider: RowsViewModel(baseURL: XCConfig.infoPlistWhatsNewURL())))
-      self.present(root, animated: true, completion: nil)
-      
+
+      let urlString = XCConfig.infoPlistWhatsNewGithubURL()
+
+      if let url = URL(string: urlString) {
+        let redirectURL = url.customerTierURL()
+        var request = URLRequest(url: redirectURL)
+        request.httpMethod = "HEAD"
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+          if error == nil,
+             let httpResponse = response as? HTTPURLResponse,
+             httpResponse.statusCode == 302,
+             let finalURL = response?.url {
+            blink_openurl(finalURL)
+          } else {
+            // Fallback if we cannot get the current announcement
+            blink_openurl(URL(string: "https://github.com/blinksh/blink/discussions/categories/announcements")!)
+          }
+        }.resume()
+      }
     }
   }
   

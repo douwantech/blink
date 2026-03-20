@@ -47,6 +47,10 @@
   return [self _valueForKey:@"BLINK_WHATS_NEW_URL"];
 }
 
++ (NSString *) infoPlistWhatsNewGithubURL {
+  return [self _valueForKey:@"BLINK_WHATS_NEW_GITHUB_URL"];
+}
+
 + (NSString *) infoPlistConversionOpportunityURL {
   return [self _valueForKey:@"BLINK_CONVERSION_OPPORTUNITY_URL"];
 }
