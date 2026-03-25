@@ -63,8 +63,27 @@ class KeyShortcut: ObservableObject, Codable, Identifiable {
   
   var title: String { action.title }
   
+  var isCleared: Bool { input.isEmpty && modifiers.isEmpty }
+
+  var isInDefaultCommandList: Bool {
+    guard case .command(let cmd) = action else { return false }
+    return KeyShortcut.defaultList.contains {
+      if case .command(let defaultCmd) = $0.action { return defaultCmd == cmd }
+      return false
+    }
+  }
+
+  static func defaultFor(_ shortcut: KeyShortcut) -> KeyShortcut? {
+    guard case .command(let cmd) = shortcut.action else { return nil }
+    return defaultList.first {
+      if case .command(let defaultCmd) = $0.action { return defaultCmd == cmd }
+      return false
+    }
+  }
+
   var description: String {
-    
+    if isCleared { return "None" }
+
     var res = modifiers.toSymbols()
     
     switch input {

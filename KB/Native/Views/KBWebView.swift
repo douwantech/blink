@@ -61,6 +61,7 @@ class KBWebView: KBWebViewBase {
     self.allBlinkKeyCommands.removeAll()
     
     cfg.shortcuts.forEach { shortcut in
+      guard !shortcut.isCleared else { return }
       let cmd = BlinkCommand(
         title: "",
         image: nil,

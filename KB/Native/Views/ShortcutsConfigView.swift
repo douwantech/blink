@@ -266,10 +266,31 @@ struct ShortcutConfigView: View {
         }
       }
     .navigationBarItems(trailing:
-      Button("Delete") {
-        self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
-        self.nav.navController.popViewController(animated: true)
-        self.config.touch()
+      Group {
+        if shortcut.isInDefaultCommandList {
+          if shortcut.isCleared {
+            Button("Set Default") {
+              if let original = KeyShortcut.defaultFor(self.shortcut) {
+                self.shortcut.modifiers = original.modifiers
+                self.shortcut.input = original.input
+              }
+              self.config.touch()
+            }
+          } else {
+            Button("Clear") {
+              self.shortcut.input = ""
+              self.shortcut.modifiers = []
+              self.nav.navController.popViewController(animated: true)
+              self.config.touch()
+            }
+          }
+        } else {
+          Button("Delete") {
+            self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
+            self.nav.navController.popViewController(animated: true)
+            self.config.touch()
+          }
+        }
       }
     )
     .listStyle(GroupedListStyle())
@@ -344,12 +365,15 @@ struct ShortcutsConfigView: View {
   
   private func _onDelete(offsets: IndexSet) {
     let list = self._list
-    var toDelete: [KeyShortcut] = []
     for idx in offsets {
-      toDelete.append(list[idx])
+      let shortcut = list[idx]
+      if shortcut.isInDefaultCommandList {
+        shortcut.input = ""
+        shortcut.modifiers = []
+      } else {
+        self.config.shortcuts.removeAll(where: { $0 === shortcut })
+      }
     }
-    for v in toDelete {
-      self.config.shortcuts.removeAll(where: {$0 === v})
-    }
+    self.config.touch()
   }
 }
