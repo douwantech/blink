@@ -32,103 +32,128 @@
 
 import SwiftUI
 
+
+// MARK: - ActionsList
+
 struct ActionsList: View {
-  @Binding var action: KeyBindingAction
+  @ObservedObject var shortcut: KeyShortcut
   var commandsMode: Bool
   var usedActions: Set<String> = []
-  @State private var updatedAt = Date()
 
   var pressList = KeyBindingAction.pressList
   var commandList = KeyBindingAction.commandList
-  
+
   var body: some View {
     List {
       if commandsMode {
         Section(header: Text("Commands")) {
           ForEach(commandList.filter { ka in
-            ka.id == action.id || !usedActions.contains(ka.id)
+            ka.id == shortcut.action.id || !usedActions.contains(ka.id)
           }, id: \.id) { ka in
-            self._row(action: self.action, value: ka)
+            self._row(value: ka)
           }
         }
       } else {
-        Section(header: Text("Send")) {
-          self._rowHex(action: self.action)
-          self._rowCustomInput(action: self.action)
-        }
-        Section(header: Text("Press")) {
+        Section(header: Text("Action")) {
+          _rowCustomSequence()
           ForEach(pressList, id: \.id) { ka in
-            self._row(action: self.action, value: ka)
+            self._row(value: ka)
           }
         }
       }
-      
     }
     .listStyle(GroupedListStyle())
   }
-  
-  private func _rowHex(action: KeyBindingAction) -> some View {
-    var checked = false
-    var value = ""
-    
-    if case .hex(let val, let input, let comment) = action, input == nil, comment == nil {
-      checked = true
-      value = val
-    }
+
+  private func _rowCustomSequence() -> some View {
+    let checked = shortcut.action.isCustomHEX
     return HStack {
-      Text("Hex Code")
+      Text(checked ? "Press \(shortcut.action.title)" : "Press Custom Sequence")
       Spacer()
       Checkmark(checked: checked)
-    }.overlay(
-      Button(action: {
-        self.action = .hex(value, stringInput: nil, comment: nil)
-        self.updatedAt = Date()
-      }, label: { EmptyView() }
-      )
-    )
-  }
-  
-  private func _rowCustomInput(action: KeyBindingAction) -> some View {
-    var checked = false
-    var value = ""
-    var stringInput = ""
-    
-    if case .hex(let val, let input, let comment) = action, input != nil, comment == nil {
-      checked = true
-      value = val
-      stringInput = input!
     }
-    return HStack {
-      Text("Custom String")
-      Spacer()
-      Checkmark(checked: checked)
-    }.overlay(
-      Button(action: {
-        self.action = .hex(value, stringInput: stringInput, comment: nil)
-        self.updatedAt = Date()
-      }, label: { EmptyView() }
-      )
-    )
+    .overlay(NavButton(details: {
+      CustomSequenceView(shortcut: self.shortcut)
+    }))
   }
-  
-  private func _row(action: KeyBindingAction, value: KeyBindingAction) -> some View {
+
+  private func _row(value: KeyBindingAction) -> some View {
     HStack {
       Text(value.title)
       Spacer()
-      Checkmark(checked: action.id == value.id)
+      Checkmark(checked: shortcut.action.id == value.id)
     }.overlay(
       Button(action: {
-        self.action = value
-        self.updatedAt = Date()
+        self.shortcut.action = value
       }, label: { EmptyView() }
       )
     )
   }
 }
 
+// MARK: - CustomSequenceView
+
+enum SequenceMode: String, CaseIterable {
+  case hex = "Hex"
+  case string = "String"
+}
+
+struct CustomSequenceView: View {
+  @ObservedObject var shortcut: KeyShortcut
+  @State private var mode: SequenceMode
+  @State private var input: String
+  private let _formatter = HexFormatter()
+
+  init(shortcut: KeyShortcut) {
+    self.shortcut = shortcut
+    let (hex, stringInput) = shortcut.action.hexValues
+    let isString = stringInput != nil
+    self._mode = State(initialValue: isString ? .string : .hex)
+    self._input = State(initialValue: isString ? stringInput! : hex)
+  }
+
+  var body: some View {
+    List {
+      Section {
+        Picker("Mode", selection: $mode) {
+          ForEach(SequenceMode.allCases, id: \.self) { m in
+            Text(m.rawValue).tag(m)
+          }
+        }
+        .pickerStyle(SegmentedPickerStyle())
+      }
+      Section(
+        footer: Text(mode == .string
+          ? "Use string sequence, with \\x for escape characters."
+          : "Use hex encoded sequence.")
+      ) {
+        TextField(mode == .string ? "Custom String" : "HEX", text: $input)
+          .disableAutocorrection(true)
+          .keyboardType(.asciiCapable)
+      }
+    }
+    .listStyle(GroupedListStyle())
+    .onChange(of: mode) { _ in
+      input = ""
+    }
+    .onDisappear {
+      guard !input.isEmpty else { return }
+      if mode == .string {
+        let hex = _formatter.stringToHexString(input)
+        shortcut.action = .hex(hex, stringInput: input, comment: nil)
+      } else {
+        let hex = _formatter.hexString(str: input)
+        shortcut.action = .hex(hex, stringInput: nil, comment: nil)
+      }
+    }
+  }
+}
+
+// MARK: - HexFormatter
+
 class HexFormatter: Formatter {
   private let _hexCharacterSet = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
-  
+
   override func string(for obj: Any?) -> String? {
     guard let str = obj as? NSString
     else {
@@ -136,23 +161,23 @@ class HexFormatter: Formatter {
     }
     return str.uppercased
   }
-  
+
   override func editingString(for obj: Any) -> String? {
     if let str = obj as? NSString {
       return str as String
     }
     return nil
   }
-  
+
   override func isPartialStringValid(_ partialString: String, newEditingString newString: AutoreleasingUnsafeMutablePointer<NSString?>?, errorDescription error: AutoreleasingUnsafeMutablePointer<NSString?>?) -> Bool {
     return partialString.isEmpty || partialString.rangeOfCharacter(from: _hexCharacterSet.inverted) == nil
   }
-  
+
   override func getObjectValue(_ obj: AutoreleasingUnsafeMutablePointer<AnyObject?>?, for string: String, errorDescription error: AutoreleasingUnsafeMutablePointer<NSString?>?) -> Bool {
     obj?.pointee = hexString(str: string) as NSString
     return true
   }
-  
+
   func hexString(str: String) -> String {
     String(
       str.replacingOccurrences(of: "[^0-9abcdef]", with: "", options: [.regularExpression, .caseInsensitive], range: nil)
@@ -160,14 +185,14 @@ class HexFormatter: Formatter {
         .prefix(1000)
     )
   }
-  
+
   func stringToHexString(_ input: String) -> String {
     var result = ""
     var currentIndex = input.startIndex
-    
+
     while currentIndex < input.endIndex {
       let currentCharacter = input[currentIndex]
-      
+
       if currentCharacter == "\\" && input.index(currentIndex, offsetBy: 1) < input.endIndex && input[input.index(currentIndex, offsetBy: 1)] == "x" {
         // Skip "\x"
         currentIndex = input.index(currentIndex, offsetBy: 2)
@@ -191,57 +216,46 @@ class HexFormatter: Formatter {
         currentIndex = input.index(after: currentIndex)
       }
     }
-    
+
     return result
   }
 }
 
-struct HexEditorView: View {
-  @ObservedObject var shortcut: KeyShortcut
-  @State var input: String = ""
-  var value: String { shortcut.action.hexValues.0 }
-  var stringInput: String? { shortcut.action.hexValues.1 }
-  private let _formatter = HexFormatter()
-  
-  var body: some View {
-    _editor()
-      .onAppear {
-        if let stringInput = stringInput {
-          self.input = stringInput
-        } else {
-          self.input = value
-        }
-      }
-      .disableAutocorrection(true)
-      .keyboardType(.asciiCapable)
-  }
-  
-  private func _editor() -> some View {
-    if self.stringInput != nil {
-      return TextField("Custom String", text: $input,
-                onEditingChanged: { _ in
-        let value = _formatter.stringToHexString(input)
-        shortcut.action = .hex(value, stringInput: input, comment: nil)
-      })
-    } else {
-      return TextField("HEX", text: $input, onEditingChanged: { _ in
-        // Whenever the view is first shown, enter pressed, tap back on Navigation Link & TextField selected
-        // Update the HEX code using the HexFormatter to only accept valid HEX encoded Strings
-        let value = _formatter.hexString(str: input)
-        shortcut.action = .hex(value, stringInput: nil, comment: nil)
-      })
-    }
-  }
-}
-
+// MARK: - ShortcutConfigView
 
 struct ShortcutConfigView: View {
   @EnvironmentObject var nav: Nav
   @ObservedObject var config: KBConfig
-  @ObservedObject var shortcut: KeyShortcut
-  
-  var commandsMode: Bool
-  
+  @StateObject private var draft: KeyShortcut
+
+  let shortcut: KeyShortcut?  // nil for new
+  let commandsMode: Bool
+
+  private var isNew: Bool { shortcut == nil }
+
+  init(config: KBConfig, shortcut: KeyShortcut?, commandsMode: Bool, initialAction: KeyBindingAction = .none) {
+    self._config = ObservedObject(wrappedValue: config)
+    self.shortcut = shortcut
+    self.commandsMode = commandsMode
+    if let s = shortcut {
+      self._draft = StateObject(wrappedValue: KeyShortcut(action: s.action, modifiers: s.modifiers, input: s.input))
+    } else {
+      self._draft = StateObject(wrappedValue: KeyShortcut(action: initialAction, modifiers: [], input: ""))
+    }
+  }
+
+  private var isComplete: Bool {
+    guard !draft.input.isEmpty else { return false }
+    switch draft.action {
+    case .none:
+      return false
+    case .hex(let val, _, _):
+      return !val.isEmpty
+    default:
+      return true
+    }
+  }
+
   var body: some View {
       List {
         Section(
@@ -249,73 +263,89 @@ struct ShortcutConfigView: View {
           footer: Text("Press keys on external KB to change.")
         ) {
           HStack {
-            Text(shortcut.description)
+            Text(draft.description)
           }
         }
-        Section(
-          header: Text("Action"),
-          footer: Text(self.shortcut.action.isCustomHEX ? (self.shortcut.action.isHexStringInput ?
-                                                            "Use string sequence, with \\x for escape characters." :
-                                                            "Use hex encoded sequence") : ""))
-        {
-          DefaultRow(title: shortcut.action.titleWithoutValue) {
+        Section(header: Text("Action")) {
+          DefaultRow(title: draft.action.title) {
             ActionsList(
-              action: self.$shortcut.action,
+              shortcut: self.draft,
               commandsMode: self.commandsMode,
               usedActions: Set(self.config.shortcuts
                 .filter { $0 !== self.shortcut }
                 .map { $0.action.id })
             )
           }
-          if self.shortcut.action.isCustomHEX {
-            HexEditorView(
-              shortcut: self.shortcut
-            )
-          }
         }
       }
-    .navigationBarItems(trailing:
-      Group {
-        if shortcut.isInDefaultCommandList {
-          if shortcut.isCleared {
-            Button("Set Default") {
-              if let original = KeyShortcut.defaultFor(self.shortcut) {
-                self.shortcut.modifiers = original.modifiers
-                self.shortcut.input = original.input
+    .navigationBarBackButtonHidden(true)
+    .navigationBarItems(
+      leading:
+        Button(isComplete ? "Done" : "Cancel") {
+          _done()
+        },
+      trailing:
+        Group {
+          if !isNew {
+            if draft.isInDefaultCommandList {
+              if draft.isCleared {
+                Button("Set Default") {
+                  if let original = KeyShortcut.defaultFor(self.draft) {
+                    self.shortcut?.modifiers = original.modifiers
+                    self.shortcut?.input = original.input
+                  }
+                  self.nav.navController.popViewController(animated: true)
+                  self.config.touch()
+                }
+              } else {
+                Button("Clear") {
+                  self.shortcut?.input = ""
+                  self.shortcut?.modifiers = []
+                  self.nav.navController.popViewController(animated: true)
+                  self.config.touch()
+                }
               }
-              self.config.touch()
+            } else {
+              Button("Delete") {
+                self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
+                self.nav.navController.popViewController(animated: true)
+                self.config.touch()
+              }
             }
-          } else {
-            Button("Clear") {
-              self.shortcut.input = ""
-              self.shortcut.modifiers = []
-              self.nav.navController.popViewController(animated: true)
-              self.config.touch()
-            }
-          }
-        } else {
-          Button("Delete") {
-            self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
-            self.nav.navController.popViewController(animated: true)
-            self.config.touch()
           }
         }
-      }
     )
     .listStyle(GroupedListStyle())
-    .background(KeyCaptureView(shortcut: shortcut))
-    .onReceive(shortcut.objectWillChange, perform: {
-      config.objectWillChange.send()
-    })
-    
+    .background(KeyCaptureView(shortcut: draft))
+  }
+
+  private func _done() {
+    if isComplete {
+      if let shortcut = shortcut {
+        // Existing: commit draft to original
+        shortcut.action = draft.action
+        shortcut.modifiers = draft.modifiers
+        shortcut.input = draft.input
+      } else {
+        // New: append to config
+        let newShortcut = KeyShortcut(action: draft.action, modifiers: draft.modifiers, input: draft.input)
+        config.shortcuts.append(newShortcut)
+      }
+      config.touch()
+    }
+
+    // Incomplete: just pop, nothing was added
+    nav.navController.popViewController(animated: true)
   }
 }
+
+// MARK: - ShortcutsConfigView
 
 struct ShortcutsConfigView: View {
   @EnvironmentObject var nav: Nav
   @ObservedObject var config: KBConfig
   var commandsMode: Bool
-  
+
   var body: some View {
     let list = _list
     if list.isEmpty {
@@ -324,13 +354,13 @@ struct ShortcutsConfigView: View {
       return AnyView(_tableView(list: list))
     }
   }
-  
+
   private func _emptyView() -> some View {
     AnyView(VStack {
       Button("Add shortcut", action: _addAction)
     })
   }
-  
+
   private func _tableView(list: [KeyShortcut]) -> some View {
     List {
       ForEach(list, id: \.id) { shortcut in
@@ -341,15 +371,29 @@ struct ShortcutsConfigView: View {
             commandsMode: self.commandsMode
           )
         }
+        .swipeActions(edge: .trailing) {
+          if shortcut.isInDefaultCommandList {
+            Button("Clear") {
+              shortcut.input = ""
+              shortcut.modifiers = []
+              self.config.touch()
+            }
+            .tint(.orange)
+          } else {
+            Button("Delete", role: .destructive) {
+              self.config.shortcuts.removeAll(where: { $0 === shortcut })
+              self.config.touch()
+            }
+          }
+        }
       }
-      .onDelete(perform: _onDelete)
     }
     .listStyle(GroupedListStyle())
     .navigationBarItems(
       trailing: Button("Add", action: _addAction)
     )
   }
-  
+
   private func _addAction() {
     let usedActions = Set(config.shortcuts.map { $0.action.id })
     let action: KeyBindingAction
@@ -359,37 +403,21 @@ struct ShortcutsConfigView: View {
     } else {
       action = .none
     }
-    let shortcut = KeyShortcut(action: action, modifiers: [], input: "")
-    config.shortcuts.append(shortcut)
-    config.touch()
-    
     let rootView = ShortcutConfigView(
       config: config,
-      shortcut: shortcut,
-      commandsMode: commandsMode
+      shortcut: nil,
+      commandsMode: commandsMode,
+      initialAction: action
     ).environmentObject(nav)
     let vc = UIHostingController(rootView: rootView)
     nav.navController.pushViewController(vc, animated: true)
   }
-  
+
   private var _list: [KeyShortcut] {
     config
       .shortcuts
       .filter({$0.action.isCommand == commandsMode})
       .sorted(by: {$0.title < $1.title})
   }
-  
-  private func _onDelete(offsets: IndexSet) {
-    let list = self._list
-    for idx in offsets {
-      let shortcut = list[idx]
-      if shortcut.isInDefaultCommandList {
-        shortcut.input = ""
-        shortcut.modifiers = []
-      } else {
-        self.config.shortcuts.removeAll(where: { $0 === shortcut })
-      }
-    }
-    self.config.touch()
-  }
+
 }
