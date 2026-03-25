@@ -35,8 +35,9 @@ import SwiftUI
 struct ActionsList: View {
   @Binding var action: KeyBindingAction
   var commandsMode: Bool
+  var usedActions: Set<String> = []
   @State private var updatedAt = Date()
-  
+
   var pressList = KeyBindingAction.pressList
   var commandList = KeyBindingAction.commandList
   
@@ -44,7 +45,9 @@ struct ActionsList: View {
     List {
       if commandsMode {
         Section(header: Text("Commands")) {
-          ForEach(commandList, id: \.id) { ka in
+          ForEach(commandList.filter { ka in
+            ka.id == action.id || !usedActions.contains(ka.id)
+          }, id: \.id) { ka in
             self._row(action: self.action, value: ka)
           }
         }
@@ -256,7 +259,13 @@ struct ShortcutConfigView: View {
                                                             "Use hex encoded sequence") : ""))
         {
           DefaultRow(title: shortcut.action.titleWithoutValue) {
-            ActionsList(action: self.$shortcut.action, commandsMode: self.commandsMode)
+            ActionsList(
+              action: self.$shortcut.action,
+              commandsMode: self.commandsMode,
+              usedActions: Set(self.config.shortcuts
+                .filter { $0 !== self.shortcut }
+                .map { $0.action.id })
+            )
           }
           if self.shortcut.action.isCustomHEX {
             HexEditorView(
@@ -342,7 +351,14 @@ struct ShortcutsConfigView: View {
   }
   
   private func _addAction() {
-    let action: KeyBindingAction = commandsMode ? KeyBindingAction.command(.clipboardCopy) : .none
+    let usedActions = Set(config.shortcuts.map { $0.action.id })
+    let action: KeyBindingAction
+    if commandsMode {
+      action = KeyBindingAction.commandList.first { !usedActions.contains($0.id) }
+        ?? KeyBindingAction.command(.clipboardCopy)
+    } else {
+      action = .none
+    }
     let shortcut = KeyShortcut(action: action, modifiers: [], input: "")
     config.shortcuts.append(shortcut)
     config.touch()
