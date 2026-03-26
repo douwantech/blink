@@ -115,7 +115,7 @@ class KBTracker: NSObject {
     return cfg;
   }
   
-  func saveAndApply(config: KBConfig) {
+  func save(config: KBConfig) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = .prettyPrinted
     guard
@@ -124,15 +124,15 @@ class KBTracker: NSObject {
       else {
         return
     }
-    
+
     try? data.write(to: url, options: .atomicWrite)
-    input?.configure(config)
     UIMenuSystem.main.setNeedsRebuild()
   }
   
   func attach(input: SmarterTermInput?) {
     self.input = input
     input?.sync(traits: kbTraits, device: kbDevice, hideSmartKeysWithHKB: hideSmartKeysWithHKB)
+    input?.configure(loadConfig())
   }
   
   override init() {

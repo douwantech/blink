@@ -57,7 +57,7 @@ class MigrationAddSnippetsShortcut: MigrationStep {
     }
     
     cfg.shortcuts.append(KeyShortcut.snippetsShowShortcut)
-    KBTracker.shared.saveAndApply(config: cfg)
+    KBTracker.shared.save(config: cfg)
     
   }
 

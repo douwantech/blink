@@ -126,7 +126,7 @@ struct KBConfigView: View {
       )
     )
     .onReceive(config.objectWillChange.debounce(for: 0.5, scheduler: RunLoop.main)) {
-      KBTracker.shared.saveAndApply(config: self.config)
+      KBTracker.shared.save(config: self.config)
     }
 //    .onReceive(_keyboardConnectPublisher) { _ in
 //      _connectedKeyboardVendorName = GCKeyboard.coalesced?.vendorName
