@@ -76,6 +76,11 @@ struct FixedTextField: UIViewRepresentable {
       
       textField.autocorrectionType = autocorrectionType
       textField.autocapitalizationType = autocapitalizationType
+      if autocorrectionType == .no {
+        textField.smartDashesType = .no
+        textField.smartQuotesType = .no
+        textField.smartInsertDeleteType = .no
+      }
       
       self.addSubview(textField)
       if let returnKeyType = returnKeyType {
