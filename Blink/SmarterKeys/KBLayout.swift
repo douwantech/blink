@@ -54,7 +54,7 @@ extension KBLayout {
       .wideKey(.esc,  traits: .default - .portrait),
       .key(.ctrl, traits: .default),
       .key(.alt,  traits: .default),
-      .icon(.hideKB, traits: .default - .cmdOff),
+      .arrows(traits: .default - .cmdOff),
     ], [
       .key(.tab,  traits: .default - .cmdOn),
       .vertical2("`", "~",  traits: .default - .cmdOn),
@@ -91,6 +91,7 @@ extension KBLayout {
     ],
     [
       .arrows(traits: .default - .cmdOn),
+      .icon(.hideKB, traits: .default - .cmdOff),
       .wideKey(.cmd, traits: .default + .hkb),
     ])
   }
