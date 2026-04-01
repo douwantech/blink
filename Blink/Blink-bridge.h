@@ -44,6 +44,8 @@ extern void ios_exit(int errorCode) __dead2; // set error code and exits from th
 typedef void (*mosh_state_callback) (const void *context, const void *buffer, size_t size);
 
 #import "BLKDefaults.h"
+#import "BKTheme.h"
+#import "BKFont.h"
 #import "UIDevice+DeviceName.h"
 #import "BKHosts.h"
 #import "BlinkPaths.h"
@@ -53,6 +55,7 @@ typedef void (*mosh_state_callback) (const void *context, const void *buffer, si
 #import "Session.h"
 #import "MCPSession.h"
 #import "TermDevice.h"
+#import "TermView.h"
 #import "KBWebViewBase.h"
 #import "openurl.h"
 #import "BKPubKey.h"

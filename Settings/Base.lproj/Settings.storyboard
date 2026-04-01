@@ -131,7 +131,7 @@
         <!--Add a new theme-->
         <scene sceneID="EMy-fs-l8I">
             <objects>
-                <tableViewController id="lav-FK-npF" customClass="BKThemeCreateViewController" sceneMemberID="viewController">
+                <tableViewController storyboardIdentifier="BKThemeCreateViewController" id="lav-FK-npF" customClass="BKThemeCreateViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="grouped" separatorStyle="default" rowHeight="44" sectionHeaderHeight="18" sectionFooterHeight="18" id="rJ7-WJ-BVJ">
                         <rect key="frame" x="0.0" y="0.0" width="704" height="984"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
@@ -629,7 +629,7 @@
         <!--Add a new font-->
         <scene sceneID="JUW-H8-yiS">
             <objects>
-                <tableViewController id="KGQ-4q-oYw" customClass="BKFontCreateViewController" sceneMemberID="viewController">
+                <tableViewController storyboardIdentifier="BKFontCreateViewController" id="KGQ-4q-oYw" customClass="BKFontCreateViewController" sceneMemberID="viewController">
                     <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="grouped" separatorStyle="default" rowHeight="44" sectionHeaderHeight="18" sectionFooterHeight="18" id="O9K-gx-gMb">
                         <rect key="frame" x="0.0" y="0.0" width="704" height="984"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>

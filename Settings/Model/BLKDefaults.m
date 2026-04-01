@@ -35,6 +35,7 @@
 #import "BlinkPaths.h"
 #import "DeviceInfo.h"
 #import "LayoutManager.h"
+#import "Blink-Swift.h"
 
 
 BLKDefaults *defaults;
@@ -245,12 +246,12 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (void)setCursorBlink:(BOOL)state
 {
-  defaults.cursorBlink = state;
+  [TerminalStyleStore.shared setStyleCursorBlink:state];
 }
 
 + (void)setBoldAsBright:(BOOL)state
 {
-  defaults.boldAsBright = state;
+  [TerminalStyleStore.shared setStyleBoldAsBright:state];
 }
 
 + (void)setAlternateAppIcon:(BOOL)state
@@ -264,22 +265,22 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (void)setEnableBold:(NSUInteger)state
 {
-  defaults.enableBold = state;
+  [TerminalStyleStore.shared setStyleEnableBold:state];
 }
 
 + (void)setFontName:(NSString *)fontName
 {
-  defaults.fontName = fontName;
+  [TerminalStyleStore.shared setStyleFontName:fontName];
 }
 
 + (void)setThemeName:(NSString *)themeName
 {
-  defaults.themeName = themeName;
+  [TerminalStyleStore.shared setStyleThemeName:themeName];
 }
 
 + (void)setFontSize:(NSNumber *)fontSize
 {
-  defaults.fontSize = fontSize;
+  [TerminalStyleStore.shared setStyleFontSize:fontSize];
 }
 
 + (void)setExternalDisplayFontSize:(NSNumber *)fontSize
@@ -357,16 +358,16 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (NSString *)selectedFontName
 {
-  return defaults.fontName;
+  return TerminalStyleStore.shared.bridgedFontName;
 }
 + (NSString *)selectedThemeName
 {
-  return defaults.themeName;
+  return TerminalStyleStore.shared.bridgedThemeName;
 }
 
 + (NSNumber *)selectedFontSize
 {
-  return defaults.fontSize;
+  return TerminalStyleStore.shared.bridgedFontSize;
 }
 
 + (NSNumber *)selectedExternalDisplayFontSize
@@ -376,17 +377,17 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (BOOL)isCursorBlink
 {
-  return defaults.cursorBlink;
+  return TerminalStyleStore.shared.bridgedCursorBlink;
 }
 
 + (NSUInteger)enableBold
 {
-  return defaults.enableBold;
+  return TerminalStyleStore.shared.bridgedEnableBold;
 }
 
 + (BOOL)isBoldAsBright
 {
-  return defaults.boldAsBright;
+  return TerminalStyleStore.shared.bridgedBoldAsBright;
 }
 
 + (BOOL)isAlternateAppIcon
@@ -496,5 +497,7 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   
   
 }
+
++ (instancetype)legacyInstance { return defaults; }
 
 @end
