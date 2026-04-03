@@ -33,7 +33,7 @@
 import Foundation
 
 
-class WhatsNewInfo {
+@objc class WhatsNewInfo: NSObject {
   // https://stackoverflow.com/questions/4842424/list-of-ansi-color-escape-sequences
   static private let defaults = UserDefaults.standard
   static private let MaxDisplayCount = 5
@@ -60,9 +60,9 @@ help - Quick help
   // static private var BlinkClassicUpdatedDisplay: String { defaults.string(forKey: BlinkClassicUpdatedDisplayKey) }
   // static private let BlinkClassicVersion = "18.2"
 
-  private init() {}
+  private override init() { super.init() }
 
-  static func mustDisplayInitialPrompt() -> String? {
+  @objc static func mustDisplayInitialPrompt() -> String? {
     if isFirstInstall() {
       promptDisplayed()
       return firstUsagePrompt

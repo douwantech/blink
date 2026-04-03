@@ -76,7 +76,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 }
 
 
-- (id)initWithFrame:(CGRect)frame
+- (instancetype)initWithFrame:(CGRect)frame termUIState:(TermUIState *)termUIState
 {
   self = [super initWithFrame:frame];
 
@@ -84,13 +84,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return self;
   }
   _touchID = 1000;
-  
+
   _selectionRect = CGRectZero;
   _layoutDebounceTimer = nil;
   _currentBounds = CGRectZero;
   _jsQueue = dispatch_queue_create(@"TermView.js".UTF8String, DISPATCH_QUEUE_SERIAL);
   _jsBuffer = [[NSMutableString alloc] init];
   _touchesArray = [[NSMutableArray alloc] init];
+
+  self.termUIState = termUIState;
 
   [self _addWebView];
   
@@ -404,24 +406,52 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   }
 }
 
-- (void)loadWithTermUIState:(TermUIState *)termUIState;
+- (void)load
 {
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:termUIState]];
+  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:self.termUIState]];
 
   NSString *path = [[NSBundle mainBundle] pathForResource:@"term" ofType:@"html"];
   NSURL *url = [NSURL fileURLWithPath:path];
   [_webView loadFileURL:url allowingReadAccessToURL:url];
 }
 
-- (void)reloadWithTermUIState:(TermUIState *)termUIState;
+- (void)applyTermUIState:(TermUIState *)termUIState
 {
   self.termUIState = termUIState;
-  
-  [_webView.configuration.userContentController removeAllUserScripts];
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:termUIState]];
-  [_webView reload];
-  
-  [self setupWebViewConstraints];
+
+  NSArray<NSString *> *commands = [self _jsCommandsForTermUIState:termUIState];
+  NSString *js = [commands componentsJoinedByString:@"\n"];
+  [_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+    [self _syncTerminalState];
+  }];
+
+  if (termUIState.layoutMode != [self currentLayoutMode]) {
+    [self _setLayoutMode:termUIState.layoutMode];
+  }
+  if (termUIState.layoutLocked && !self.layoutLocked) {
+    self.layoutLockedFrame = termUIState.layoutLockedFrame;
+    if (self.constraintManager) {
+      [self.constraintManager setLayoutLocked:YES withFrame:termUIState.layoutLockedFrame];
+    }
+    self.layoutLocked = YES;
+  } else if (!termUIState.layoutLocked && self.layoutLocked) {
+    [self _unlockLayout];
+  }
+}
+
+// Reads back terminal-side state after JS changes. Currently just bgColor,
+// but could grow into a larger state dict as needed.
+- (void)_syncTerminalState
+{
+  [_webView evaluateJavaScript:@"_colorComponents(t.scrollPort_.screen_.style.backgroundColor)"
+             completionHandler:^(NSArray *bgColor, NSError *error) {
+    if (bgColor && [bgColor count] == 3) {
+      self.backgroundColor = [UIColor colorWithRed:[bgColor[0] floatValue] / 255.0f
+                                             green:[bgColor[1] floatValue] / 255.0f
+                                              blue:[bgColor[2] floatValue] / 255.0f
+                                             alpha:1];
+    }
+  }];
 }
 
 - (void)setWidth:(NSInteger)count
@@ -587,11 +617,16 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   if ([operation isEqualToString:@"selectionchange"]) {
     [self _handleSelectionChange:data];
   } else if ([operation isEqualToString:@"sigwinch"]) {
-    [_device viewWinSizeChanged:__winSizeFromJSON(data)];
+    struct winsize newWinSize = __winSizeFromJSON(data);
+    _termUIState.rows = newWinSize.ws_row;
+    _termUIState.cols = newWinSize.ws_col;
+    [_device viewWinSizeChanged:newWinSize];
   } else if ([operation isEqualToString:@"terminalReady"]) {
     [self _onTerminalReady:data];
   } else if ([operation isEqualToString:@"fontSizeChanged"]) {
-    [_device viewFontSizeChanged:[data[@"size"] integerValue]];
+    NSInteger size = [data[@"size"] integerValue];
+    _termUIState.fontSize = size;
+    [_device viewFontSizeChanged:size];
   } else if ([operation isEqualToString:@"copy"]) {
     [_device viewCopyString: data[@"content"]];
   } else if ([operation isEqualToString:@"alert"]) {
@@ -917,40 +952,46 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   return result;
 }
 
-- (WKUserScript *)_termInitScriptWithTermUIState:(TermUIState *)termUIState;
+- (NSArray<NSString *> *)_jsCommandsForTermUIState:(TermUIState *)termUIState
 {
-  NSMutableArray *script = [[NSMutableArray alloc] init];
+  NSMutableArray *commands = [[NSMutableArray alloc] init];
   BOOL lockdownMode = [[NSUserDefaults.standardUserDefaults objectForKey:@"LDMGlobalEnabled"] boolValue];
   BKFont *selectedFont = [BKFont withName: termUIState.fontName ?: [BLKDefaults selectedFontName]];
-  // In Lockdown mode, keep bundled fonts but disable non-bundled ones.
   BKFont *font = (lockdownMode && selectedFont.isCustom) ? nil : selectedFont;
   NSString *fontFamily = font.name ?: (lockdownMode ? @"monospace" : nil);
   NSString *content = font.content;
   if (font && font.isCustom && content) {
-    [script addObject:term_appendUserCss(content)];
+    [commands addObject:term_appendUserCss(content)];
     fontFamily = [self _detectFontFamilyFromContent:content] ?: font.name;
   }
-  
-  [script addObject:@"function applyUserSettings() {"];
-  {
-    if (fontFamily) {
-      [script addObject: term_setFontFamily(fontFamily, font.systemWide ? @"dom" : @"canvas")];
-    }
-    
-    [script addObject:term_setBoldEnabled(termUIState.enableBold)];
-    [script addObject:term_setBoldAsBright(termUIState.boldAsBright)];
-    
-    NSString *themeContent = [[BKTheme withName: termUIState.themeName ?: [BLKDefaults selectedThemeName]] content];
-    if (themeContent) {
-      [script addObject:themeContent];
-    }
-    
-    [script addObject:term_setFontSize(termUIState.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(termUIState.fontSize))];
-    
-    [script addObject: term_setCursorBlink([BLKDefaults isCursorBlink])];
-  }
-  [script addObject:@"};"];
 
+  if (fontFamily) {
+    [commands addObject:term_setFontFamily(fontFamily, font.systemWide ? @"dom" : @"canvas")];
+  }
+
+  [commands addObject:term_setBoldEnabled(termUIState.enableBold)];
+  [commands addObject:term_setBoldAsBright(termUIState.boldAsBright)];
+
+  NSString *themeContent = [[BKTheme withName: termUIState.themeName ?: [BLKDefaults selectedThemeName]] content];
+  if (themeContent) {
+    [commands addObject:themeContent];
+  }
+
+  [commands addObject:term_setFontSize(termUIState.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(termUIState.fontSize))];
+  [commands addObject:term_setCursorBlink([BLKDefaults isCursorBlink])];
+
+  return commands;
+}
+
+- (WKUserScript *)_termInitScriptWithTermUIState:(TermUIState *)termUIState;
+{
+  BOOL lockdownMode = [[NSUserDefaults.standardUserDefaults objectForKey:@"LDMGlobalEnabled"] boolValue];
+  NSArray<NSString *> *commands = [self _jsCommandsForTermUIState:termUIState];
+
+  NSMutableArray *script = [[NSMutableArray alloc] init];
+  [script addObject:@"function applyUserSettings() {"];
+  [script addObjectsFromArray:commands];
+  [script addObject:@"};"];
   [script addObject:term_init(UIAccessibilityIsVoiceOverRunning(), lockdownMode)];
 
   return [[WKUserScript alloc] initWithSource:
@@ -986,6 +1027,14 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
   return YES;
+}
+
+- (NSInteger)rows {
+  return self.termUIState ? self.termUIState.rows : 0;
+}
+
+- (NSInteger)cols {
+  return self.termUIState ? self.termUIState.cols : 0;
 }
 
 // Public methods for layout state
@@ -1138,20 +1187,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
     UIMenu *layoutMenu = [UIMenu menuWithTitle:@"Layout" image:[UIImage systemImageNamed:@"squareshape.squareshape.dashed"] identifier:nil options:UIMenuOptionsSingleSelection children:layoutActions];
     
     [actions addObject:layoutMenu];
-    
-    UICommand *closeTabCmd = [UICommand commandWithTitle:@"Close Tab" image: [UIImage systemImageNamed:@"xmark.rectangle"]
-                                                  action:@selector(_closeCurrentTab) propertyList:nil];
-    
-    closeTabCmd.attributes = UIMenuElementAttributesDestructive;
-    
-    UIMenu *tabsMenu = [UIMenu menuWithTitle:@"Tab" image:[UIImage systemImageNamed:@"rectangle"] identifier:nil options:UIMenuOptionsSingleSelection children:@[
-      [UICommand commandWithTitle:@"New Tab" image: [UIImage systemImageNamed:@"plus.rectangle"]
-                           action:@selector(_createNewTab) propertyList:nil],
-      [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[closeTabCmd] ]
-      
-    ]];
-    
-    [actions addObject:tabsMenu];
   }
   
   
@@ -1194,16 +1229,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 - (bool)_isLayoutLocked {
   return self.layoutLocked;
-}
-
--(void)_closeCurrentTab {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp closeShellAction];
-}
-
--(void)_createNewTab {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp runShellSessionIntentWithCommand: @""];
 }
 
 - (void)setCmdKeyPressed:(BOOL)pressed {

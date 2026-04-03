@@ -36,6 +36,7 @@
 #import "DeviceInfo.h"
 #import "TermView.h"
 #import "TermDevice.h"
+#import "Blink-Swift.h"
 #import <UserNotifications/UserNotifications.h>
 
 #define FONT_SIZE_FIELD_TAG 2001
@@ -110,11 +111,11 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
   [self loadDefaultValues];
   [super viewDidLoad];
   
-  _termView = [[TermView alloc] initWithFrame:self.view.bounds];
+  _termView = [[TermView alloc] initWithFrame:self.view.bounds termUIState:[TermUIState withDefaults]];
   _termView.backgroundColor = UIColor.systemGroupedBackgroundColor;
   _termView.userInteractionEnabled = NO;
   _termView.device = self;
-  [_termView loadWithTermUIState:nil];
+  [_termView load];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -487,7 +488,7 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
       [[tableView cellForRowAtIndexPath:indexPath] setAccessoryType:UITableViewCellAccessoryCheckmark];
       BKTheme *theme = [[BKTheme all] objectAtIndex:_selectedThemeIndexPath.row];
       [BLKDefaults setThemeName:[theme name]];
-      [_termView reloadWithTermUIState:nil];
+      [_termView applyTermUIState:[TermUIState withDefaults]];
     }
   } else if (indexPath.section == BKAppearance_Fonts) {
     if (indexPath.row == [[BKFont all] count]) {
@@ -502,7 +503,7 @@ typedef NS_ENUM(NSInteger, BKAppearanceSections) {
       [[tableView cellForRowAtIndexPath:indexPath] setAccessoryType:UITableViewCellAccessoryCheckmark];
       BKFont *font = [[BKFont all] objectAtIndex:_selectedFontIndexPath.row];
       [BLKDefaults setFontName:[font name]];
-      [_termView reloadWithTermUIState:nil];
+      [_termView applyTermUIState:[TermUIState withDefaults]];
     }
   }
 }

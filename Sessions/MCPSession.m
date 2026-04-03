@@ -71,8 +71,13 @@
     _sshQueue = dispatch_queue_create("mcp.sshclients.queue", DISPATCH_QUEUE_SERIAL);
     [self setActiveSession];
     device.readlineListener = self;
+
+    NSString *initialPrompt = [WhatsNewInfo mustDisplayInitialPrompt];
+    if (initialPrompt) {
+      [device writeOutLn:initialPrompt];
+    }
   }
-  
+
   return self;
 }
 

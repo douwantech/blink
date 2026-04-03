@@ -33,17 +33,17 @@
 import Foundation
 
 
+// MARK: - Protocol
+
 protocol TermSessionPayload {
-  // TODO Maybe returning the session, but TBD
-  // We use this to restore the proper payload object
   static var sessionType: TermSessionPayloadType { get }
-  
+
   func start(in device: TermDevice, sessionKey: String)
   func suspend()
-  //func resumeSession(in device: TermDevice, sessionKey: String)
-  // TODO Don't remember why both have the same name, this isn't clear.
-  // I think it has to do with the state the terminal is in when we call it.
   func resumeFromSuspended()
+
+  // The payload owns its own serialization: config params + snapshot.
+  func encode(with coder: NSCoder)
 
   var session: Session? { get }
 }
@@ -52,13 +52,32 @@ enum TermSessionPayloadType: String, Codable {
   case mcp
 }
 
+// MARK: - Decode dispatch
+
+// Reads the type tag from the archive and dispatches to the right concrete decoder.
+func decodePayload(from coder: NSCoder) -> (any TermSessionPayload)? {
+  guard let typeRaw: String = coder.bk_decode(for: TermSessionPayloadKey.sessionType),
+        let type = TermSessionPayloadType(rawValue: typeRaw) else { return nil }
+  switch type {
+  case .mcp:
+    return MCPSessionPayload.decode(from: coder)
+  }
+}
+
+// Shared archive keys for the payload layer.
+private enum TermSessionPayloadKey: CodingKey {
+  case sessionType
+  case snapshot
+}
+
+// MARK: - MCPSessionPayload
+
 class MCPSessionPayload : TermSessionPayload {
   static var sessionType: TermSessionPayloadType { .mcp }
   private var _session: MCPSession? = nil
   private var _initialParams: MCPParams
+  private var _snapshot: Data? = nil
 
-  // TODO Don't love this here. Because this is an extension of the state on the TermController.
-  // But, if this is going to wrap that behavior, it seems the only way?
   var session: Session? { _session }
 
   init(params: MCPParams) {
@@ -66,24 +85,56 @@ class MCPSessionPayload : TermSessionPayload {
   }
 
   func start(in device: TermDevice, sessionKey: String) {
+    // Inject snapshot into params before the session reads them, then clear.
+    if let snapshot = _snapshot {
+      _initialParams.putEncodedState(snapshot)
+      _snapshot = nil
+    }
     self._session = MCPSession(device: device, andParams: _initialParams)
     _session!.execute(withArgs: "")
   }
 
   func resumeFromSuspended() {
-    if let session = self._session,
-       session.sessionParams.hasEncodedState() {
+    guard let session = self._session else { return }
+    // Inject snapshot back into the live session's params, then clear.
+    if let snapshot = _snapshot {
+      session.sessionParams.putEncodedState(snapshot)
+      _snapshot = nil
+    }
+    if session.sessionParams.hasEncodedState() {
       session.execute(withArgs: "")
     }
   }
 
   func suspend() {
     guard let session = self._session else { return }
-
     session.suspend()
-    
-    let hasEncodedState = session.sessionParams.hasEncodedState()
-    debugPrint("MCP has encoded state", hasEncodedState)
+    // Extract snapshot from params. After this, params are clean config.
+    _snapshot = session.sessionParams.takeEncodedState()
+    debugPrint("MCP has encoded state", _snapshot != nil)
+  }
+
+  private enum Key: CodingKey { case sessionParams }
+
+  func encode(with coder: NSCoder) {
+    // Type tag — so decode dispatch knows which payload to reconstruct.
+    coder.bk_encode(Self.sessionType.rawValue, for: TermSessionPayloadKey.sessionType)
+    // Snapshot — stored as a sibling, never inside the params.
+    coder.bk_encode(_snapshot, for: TermSessionPayloadKey.snapshot)
+    // Config params — always clean (snapshot was extracted in suspend).
+    if let session = _session {
+      coder.bk_encode(session.sessionParams, for: Key.sessionParams)
+    } else {
+      coder.bk_encode(_initialParams, for: Key.sessionParams)
+    }
+  }
+
+  static func decode(from coder: NSCoder) -> MCPSessionPayload? {
+    guard let params: MCPParams = coder.bk_decode(of: [MCPParams.self], for: Key.sessionParams) else {
+      return nil
+    }
+    let payload = MCPSessionPayload(params: params)
+    payload._snapshot = coder.bk_decode(for: TermSessionPayloadKey.snapshot)
+    return payload
   }
 }
-

@@ -65,6 +65,8 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 
 @interface TermView : UIView
 
+- (nonnull instancetype)initWithFrame:(CGRect)frame termUIState:(nonnull TermUIState *)termUIState;
+
 @property (nonatomic, readonly) NSString *title;
 @property (nonatomic, readonly) BOOL hasSelection;
 @property (nonatomic, readonly) NSURL *detectedLink;
@@ -73,20 +75,22 @@ extern NSString * TermViewBrowserReadyNotificationKey;
 @property (nonatomic) UIEdgeInsets additionalInsets;
 @property (nonatomic) BOOL layoutLocked;
 @property (nonatomic) CGRect layoutLockedFrame;
+@property (nonatomic, strong, nonnull) TermUIState *termUIState;
 
 @property (nonatomic, strong) LayoutConstraintManager *constraintManager;
 @property (nonatomic, readonly) BOOL isReady;
 @property (nonatomic, readonly) CGRect selectionRect;
 @property (nonatomic, readonly) SmarterTermInput *webView;
 @property (nonatomic, readonly) SmarterTermInput *browserView;
-@property (nonatomic, strong) TermUIState *termUIState;
 @property (nonatomic, weak) id termController;
+@property (nonatomic, readonly) NSInteger rows;
+@property (nonatomic, readonly) NSInteger cols;
 
 - (void)setCmdKeyPressed:(BOOL)pressed;
 
 - (CGRect)webViewFrame;
-- (void)loadWithTermUIState:(TermUIState *)params;
-- (void)reloadWithTermUIState:(TermUIState *)params;
+- (void)load;
+- (void)applyTermUIState:(nonnull TermUIState *)termUIState;
 - (void)clear;
 - (void)setWidth:(NSInteger)count;
 - (void)setFontSize:(NSNumber *)newSize;

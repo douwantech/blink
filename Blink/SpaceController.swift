@@ -502,8 +502,6 @@ Please go to your subscriptions and cancel one of them!
       return
     }
     
-    let termUIState = term.termUIState
-    
     if let bgColor = term.view.backgroundColor, bgColor != .clear {
       view.backgroundColor = bgColor
       _viewportsController.view.backgroundColor = bgColor
@@ -530,11 +528,11 @@ Please go to your subscriptions and cancel one of them!
     
     var sceneTitle = "[\(pageNum == nil ? 1 : pageNum! + 1) of \(_viewportsKeys.count)] \(title ?? "blink")"
     
-    if termUIState.rows == 0 && termUIState.cols == 0 {
+    if term.termView.rows == 0 && term.termView.cols == 0 {
       hud.label.numberOfLines = 1
       hud.label.text = title ?? "blink"
     } else {
-      let geometry = "\(termUIState.cols)×\(termUIState.rows)"
+      let geometry = "\(term.termView.cols)×\(term.termView.rows)"
       hud.label.numberOfLines = 2
       hud.label.text = "\(title ?? "blink")\n\(geometry)"
       
@@ -759,9 +757,9 @@ extension SpaceController {
     case .selectionGoogle: KBTracker.shared.input?.googleSelection(self)
     case .selectionStackOverflow: KBTracker.shared.input?.soSelection(self)
     case .selectionShare: KBTracker.shared.input?.shareSelection(self)
-    case .zoomIn: currentTerm()?.termDevice.view?.increaseFontSize()
-    case .zoomOut: currentTerm()?.termDevice.view?.decreaseFontSize()
-    case .zoomReset: currentTerm()?.termDevice.view?.resetFontSize()
+    case .zoomIn: currentTerm()?.termView.increaseFontSize()
+    case .zoomOut: currentTerm()?.termView.decreaseFontSize()
+    case .zoomReset: currentTerm()?.termView.resetFontSize()
     case .hideKeyboard: KBTracker.shared.input?.resignFirstResponder()
 
     }
@@ -787,6 +785,10 @@ extension SpaceController {
     _createTerminal(userActivity: nil, animated: animated, sessionPayload: payload)
   }
 
+  @objc func newShellAction() {
+    _newShellAction()
+  }
+
   @objc func closeShellAction() {
     _closeCurrentSpace()
   }
@@ -800,7 +802,7 @@ extension SpaceController {
       let session = view.window?.windowScene?.session,
       let idx = sessions.firstIndex(of: session)?.advanced(by: 1)
     else  {
-      if currentTerm()?.termDevice.view?.isFocused() == true {
+      if currentTerm()?.termView.isFocused() == true {
         currentTerm()?.resignInput()
       } else {
         _focusOnShell()

@@ -41,18 +41,8 @@ class SessionMeta: Codable {
 protocol SuspendableSession: class {
   var meta: SessionMeta { get }
   init(meta: SessionMeta?)
-  func resume(with unarchiver: NSKeyedUnarchiver) -> NSKeyedArchiver?
+  func resume(with unarchiver: NSKeyedUnarchiver)
   func suspendSession(with archiver: NSKeyedArchiver)
-}
-
-extension SuspendableSession {
-  func suspendIfNeeded() {
-    SessionRegistry.shared.suspendIfNeeded(session: self)
-  }
-  
-  func resumeIfNeeded() {
-    SessionRegistry.shared.resumeIfNeeded(session: self)
-  }
 }
 
 @objc class SessionRegistry: NSObject {
@@ -174,10 +164,7 @@ extension SuspendableSession {
       return
     }
 
-    // Resume the session and get updated state if needed
-    if let updatedArchiver = session.resume(with: unarchiver) {
-      _fsWrite(updatedArchiver.encodedData, forKey: key)
-    }
+    session.resume(with: unarchiver)
     session.meta.isSuspended = false
   }
   

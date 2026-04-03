@@ -279,36 +279,37 @@ const CGFloat MENU_PADDING = 10.0;
             actionWithTitle:noTitle ? @"" : @"Fit"
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeSafeFit;
+        [delegate.currentTerm.termView setLayoutModeFit];
     }
     ];
-    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
+
     return action;
   }
   if (elementID == BlinkActionLayoutFill) {
     UIAction *action = [UIAction
-            actionWithTitle:noTitle ? @"" : @"Fill"
-            image:nil
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeFill;
-    }
-    ];
-    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
+                         actionWithTitle:noTitle ? @"" : @"Fill"
+                                   image:nil
+                              identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView setLayoutModeFill];
+      }
+                        ];
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
-  
+
   if (elementID == BlinkActionLayoutCover) {
     UIAction * action = [UIAction
-            actionWithTitle:noTitle ? @"" : @"Cover"
-            image:nil
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      delegate.currentTerm.termUIState.layoutMode = BKLayoutModeCover;
-    }
-    ];
-    action.state = delegate.currentTerm.termUIState.layoutMode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
+                          actionWithTitle:noTitle ? @"" : @"Cover"
+                                    image:nil
+                               identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView setLayoutModeCover];
+      }
+                         ];
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
-  
+
   if (elementID == BlinkActionTabCreate) {
     return [UIAction
             actionWithTitle:noTitle ? @"" : @"Create"
@@ -347,12 +348,12 @@ const CGFloat MENU_PADDING = 10.0;
   
   if (elementID == BlinkActionToggleLayoutLock) {
     UIAction *action = [UIAction
-                        actionWithTitle:noTitle ? @"" : @"Lock"
-            image:[UIImage systemImageNamed:@"lock.rectangle"]
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm.termDevice.view toggleLayoutLock];
-    }];
-    action.state = delegate.currentTerm.termUIState.layoutLocked ? UIMenuElementStateOn : UIMenuElementStateOff;
+                         actionWithTitle:noTitle ? @"" : @"Lock"
+                                   image:[UIImage systemImageNamed:@"lock.rectangle"]
+                              identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView toggleLayoutLock];
+      }];
+    action.state = [delegate.currentTerm.termView isLayoutLocked] ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   

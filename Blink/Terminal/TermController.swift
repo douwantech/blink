@@ -35,7 +35,6 @@ import UserNotifications
 import AVFoundation
 
 @objc protocol TermControlDelegate: NSObjectProtocol {
-  // May be do it optional
   func terminalHangup(control: TermController)
   @objc optional func terminalDidResize(control: TermController)
 }
@@ -156,9 +155,9 @@ class TermController: UIViewController {
 
   private var _termDevice = TermDevice()
   private var _bag = Array<AnyCancellable>()
-  private var _termView = TermView(frame: .zero)
+  private var _termView = TermView(frame: .zero, termUIState: TermUIState.withDefaults())
   private var _proxyView = ProxyView(frame: .zero)
-  private var _termUIState: TermUIState = TermUIState.withDefaults()
+  private var _sceneRole: UISceneSession.Role? = nil
   private var _bgColor: UIColor? = nil
   private var _fontSizeBeforeScaling: Int? = nil
 
@@ -192,8 +191,7 @@ class TermController: UIViewController {
     _termDevice.view?.webView.isFirstResponder ?? false
   }
 
-
-  @objc var termUIState: TermUIState { _termUIState }
+  @objc var termView: TermView { _termView }
 
   private var _sessionPayload: TermSessionPayload? = nil
   private var _session: Session? { _sessionPayload?.session }
@@ -206,10 +204,7 @@ class TermController: UIViewController {
   convenience init(sceneRole: UISceneSession.Role? = nil, sessionPayload: TermSessionPayload? = nil) {
     self.init(meta: nil)
     self._sessionPayload = sessionPayload
-
-    if sceneRole == .windowExternalDisplayNonInteractive {
-      _termUIState.fontSize = BLKDefaults.selectedExternalDisplayFontSize()?.intValue ?? 24
-    }
+    self._sceneRole = sceneRole
   }
 
   required public init?(coder aDecoder: NSCoder) {
@@ -256,9 +251,10 @@ class TermController: UIViewController {
     super.viewDidLoad()
     viewIsLoaded = true
 
-    // resumeIfNeeded()
-
-    _termView.load(with: _termUIState)
+    if _sceneRole == .windowExternalDisplayNonInteractive {
+      _termView.termUIState.fontSize = BLKDefaults.selectedExternalDisplayFontSize()?.intValue ?? 24
+    }
+    _termView.load()
   }
 
   public override func viewWillLayoutSubviews() {
@@ -274,7 +270,7 @@ class TermController: UIViewController {
 
   public override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
-    _termUIState.viewSize = view.bounds.size
+    _termView.termUIState.viewSize = view.bounds.size
   }
 
   @objc public func terminate() {
@@ -292,20 +288,20 @@ class TermController: UIViewController {
 
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
     // Block font resize when layout is locked
-    guard !_termUIState.layoutLocked else {
+    guard !_termView.termUIState.layoutLocked else {
       return
     }
 
     switch pinch.state {
     case .began: fallthrough
     case .ended:
-      _fontSizeBeforeScaling = _termUIState.fontSize
+      _fontSizeBeforeScaling = _termView.termUIState.fontSize
     case .changed:
       guard let initialSize = _fontSizeBeforeScaling else {
         return
       }
       let newSize = Int(round(CGFloat(initialSize) * pinch.scale))
-      guard newSize != _termUIState.fontSize else {
+      guard newSize != _termView.termUIState.fontSize else {
         return
       }
       _termView.setFontSize(newSize as NSNumber)
@@ -322,11 +318,6 @@ class TermController: UIViewController {
 
 extension TermController: SessionDelegate {
   public func sessionFinished() {
-// TODO Not sure how accurate this flow is.
-//    if _session.sessionParams.hasEncodedState() {
-//      _session.delegate = nil
-//      return
-//    }
     self.delegate?.terminalHangup(control: self)
   }
 }
@@ -404,6 +395,7 @@ extension TermController: TermDeviceDelegate {
 
   func apiCall(_ api: String!, andRequest request: String!) {
     guard
+      let session = _session as? MCPSession,
       let api = api,
       let call = _apiRoutes[api]
     else {
@@ -412,9 +404,9 @@ extension TermController: TermDeviceDelegate {
 
     weak var termView = _termView
 
-//    _ = call(session, request)
-//      .receive(on: RunLoop.main)
-//      .sink { termView?.apiResponse(api, response: $0) }
+   _ = call(session, request)
+     .receive(on: RunLoop.main)
+     .sink { termView?.apiResponse(api, response: $0) }
   }
 
   public func deviceIsReady() {
@@ -422,6 +414,11 @@ extension TermController: TermDeviceDelegate {
       _startSession()
     } else {
       resumeIfNeeded()
+    }
+
+    guard _sessionPayload != nil else {
+      print("Session Payload is nil")
+      return
     }
 
     // Input progression. When device becomes ready, check if we need to become first responder
@@ -502,16 +499,12 @@ extension TermController: TermDeviceDelegate {
   }
     
   public func deviceSizeChanged() {
-    _termUIState.rows = _termDevice.rows
-    _termUIState.cols = _termDevice.cols
-
-    delegate?.terminalDidResize?(control: self)
     print("Terminal size changed - rows: \(_termDevice.rows) x cols: \(_termDevice.cols)")
+    delegate?.terminalDidResize?(control: self)
     _session?.sigwinch()
   }
 
   public func viewFontSizeChanged(_ size: Int) {
-    _termUIState.fontSize = size
     _termDevice.input?.reset()
   }
 
@@ -532,19 +525,7 @@ extension TermController: SuspendableSession {
 
   var meta: SessionMeta { _meta }
 
-  var _decodableKey: String { "params" }
-  
-  private func _createPayloadFromTermParams(_ termParams: TermParams) -> TermSessionPayload? {
-    switch termParams.sessionType {
-    case MCPSessionPayload.sessionType.rawValue:
-      if let mcpParams = termParams.sessionParams as? MCPParams {
-        return MCPSessionPayload(params: mcpParams)
-      }
-    default:
-      break
-    }
-    return nil
-  }
+  private enum ArchiveKey: CodingKey { case termUIState }
 
   func _startSession() {
     guard let payload = _sessionPayload,
@@ -553,12 +534,7 @@ extension TermController: SuspendableSession {
     payload.start(in: _termDevice, sessionKey: meta.key.uuidString)
     _session?.delegate = self
 
-    // TODO Move to the MCPSession instead.
-    // if let initialPrompt = WhatsNewInfo.mustDisplayInitialPrompt() {
-    //   _termDevice.writeOutLn(initialPrompt)
-    // }
-
-    if view.bounds.size != _termUIState.viewSize {
+    if view.bounds.size != _termView.termUIState.viewSize {
       _session?.sigwinch()
     }
 
@@ -567,29 +543,22 @@ extension TermController: SuspendableSession {
     }
   }
 
-  func resume(with unarchiver: NSKeyedUnarchiver) -> NSKeyedArchiver? {    
-    guard
-      unarchiver.containsValue(forKey: _decodableKey),
-      let termParams = unarchiver.decodeObject(of: TermParams.self, forKey: _decodableKey)
+  func resumeIfNeeded() {
+    guard _termDevice.isReady else { return }
+    SessionRegistry.shared.resumeIfNeeded(session: self)
+  }
+
+  func resume(with unarchiver: NSKeyedUnarchiver) {
+    guard let termUIState: TermUIState = unarchiver.bk_decode(of: [TermUIState.self], for: ArchiveKey.termUIState)
     else {
-      return nil
+      return
     }
 
-    guard let termUIState = termParams.termUIState,
-          let sessionParams = termParams.sessionParams else {
-            return nil
-          }
+    _termView.applyTermUIState(termUIState)
 
-    _termUIState = termUIState
-
-    // Two paths. If there is no "live" payload, we create and start again,
-    // otherwise we resume the suspended payload.
     if _sessionPayload == nil {
-      // Create a deepCopy of the params to be fully owned by the Session, while the TermParams can be "cleaned".
-      // We need this separation because start / resume are fully asynchronous.
-      guard let payloadTermParams = termParams.deepCopy(),
-            let payload = _createPayloadFromTermParams(payloadTermParams) else { return nil }
-      
+      guard let payload = decodePayload(from: unarchiver) else { return }
+
       _sessionPayload = payload
       payload.start(in: _termDevice, sessionKey: _meta.key.uuidString)
       _session!.delegate = self
@@ -597,40 +566,23 @@ extension TermController: SuspendableSession {
       _sessionPayload!.resumeFromSuspended()
     }
 
-    if view.bounds.size != _termUIState.viewSize {
+    if view.bounds.size != _termView.termUIState.viewSize {
       _session!.sigwinch()
     }
 
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
       self._termView.setClipboardWrite(true)
     }
-
-    // After resuming the payload, we write a "clean" copy back to disk.
-    // Meaning the Session will have taken any encodedState, so we store it "clean" to avoid reuse.
-    let _ = termParams.sessionParams?.takeEncodedState()
-    let updatedArchiver = NSKeyedArchiver(requiringSecureCoding: true)
-    updatedArchiver.encode(termParams, forKey: _decodableKey)
-    return updatedArchiver
   }
 
   func suspendSession(with archiver: NSKeyedArchiver) {
-    // TODO session as a getter instead of _session. Do not keep a ref.
-    guard let session = _session, let sessionPayload = _sessionPayload else { return }
+    guard let sessionPayload = _sessionPayload else { return }
     _termView.setClipboardWrite(false)
 
-    _sessionPayload?.suspend()
+    sessionPayload.suspend()
 
-    let termParams = TermParams(sessionParams: session.sessionParams,
-                                // TODO A bit ugly
-                                sessionType: type(of: sessionPayload).sessionType.rawValue,
-                                termUIState: _termUIState)
-
-    archiver.encode(termParams, forKey: _decodableKey)
-  }
-
-  func resumeIfNeeded() {
-    guard _termDevice.isReady else { return }
-    (self as SuspendableSession).resumeIfNeeded()
+    archiver.bk_encode(_termView.termUIState, for: ArchiveKey.termUIState)
+    sessionPayload.encode(with: archiver)
   }
 }
 
@@ -638,15 +590,68 @@ extension Notification.Name {
   static let deviceTerminated = Notification.Name("deviceTerminated")
 }
 
-fileprivate extension TermUIState {
-    static func withDefaults() -> TermUIState {
-        var uiState = TermUIState()
-        uiState.fontSize = BLKDefaults.selectedFontSize()?.intValue ?? 16
-        uiState.fontName = BLKDefaults.selectedFontName()
-        uiState.themeName = BLKDefaults.selectedThemeName()
-        uiState.enableBold = UInt(BLKDefaults.enableBold())
-        uiState.boldAsBright = BLKDefaults.isBoldAsBright()
-        uiState.layoutMode = BLKDefaults.layoutMode().rawValue
-        return uiState
-    }
+// MARK: - TermUIState
+
+@objc class TermUIState: NSObject, NSSecureCoding {
+  @objc var viewSize: CGSize = .zero
+  @objc var rows: Int = 0
+  @objc var cols: Int = 0
+  @objc var themeName: String? = nil
+  @objc var fontName: String? = nil
+  @objc var fontSize: Int = 16
+  @objc var layoutMode: Int = 0
+  @objc var boldAsBright: Bool = false
+  @objc var enableBold: UInt = 0
+  @objc var layoutLocked: Bool = false
+  @objc var layoutLockedFrame: CGRect = .zero
+
+  private enum Key: CodingKey {
+    case viewSize, rows, cols, themeName, fontName, fontSize
+    case layoutMode, boldAsBright, enableBold, layoutLocked, layoutLockedFrame
+  }
+
+  override init() { super.init() }
+
+  required init?(coder: NSCoder) {
+    super.init()
+    self.viewSize = coder.bk_decode(for: Key.viewSize)
+    self.rows = coder.bk_decode(for: Key.rows)
+    self.cols = coder.bk_decode(for: Key.cols)
+    self.themeName = coder.bk_decode(for: Key.themeName)
+    self.fontName = coder.bk_decode(for: Key.fontName)
+    self.fontSize = coder.bk_decode(for: Key.fontSize)
+    self.layoutMode = coder.bk_decode(for: Key.layoutMode)
+    self.boldAsBright = coder.bk_decode(for: Key.boldAsBright)
+    self.enableBold = coder.bk_decode(for: Key.enableBold)
+    self.layoutLocked = coder.bk_decode(for: Key.layoutLocked)
+    self.layoutLockedFrame = coder.bk_decode(for: Key.layoutLockedFrame)
+  }
+
+  func encode(with coder: NSCoder) {
+    coder.bk_encode(viewSize, for: Key.viewSize)
+    coder.bk_encode(rows, for: Key.rows)
+    coder.bk_encode(cols, for: Key.cols)
+    coder.bk_encode(themeName, for: Key.themeName)
+    coder.bk_encode(fontName, for: Key.fontName)
+    coder.bk_encode(fontSize, for: Key.fontSize)
+    coder.bk_encode(layoutMode, for: Key.layoutMode)
+    coder.bk_encode(boldAsBright, for: Key.boldAsBright)
+    coder.bk_encode(enableBold, for: Key.enableBold)
+    coder.bk_encode(layoutLocked, for: Key.layoutLocked)
+    coder.bk_encode(layoutLockedFrame, for: Key.layoutLockedFrame)
+  }
+
+  static var supportsSecureCoding: Bool { true }
+
+  @objc static func withDefaults() -> TermUIState {
+    let state = TermUIState()
+    state.fontSize = BLKDefaults.selectedFontSize()?.intValue ?? 16
+    state.fontName = BLKDefaults.selectedFontName()
+    state.themeName = BLKDefaults.selectedThemeName()
+    state.enableBold = UInt(BLKDefaults.enableBold())
+    state.boldAsBright = BLKDefaults.isBoldAsBright()
+    state.layoutMode = BLKDefaults.layoutMode().rawValue
+    return state
+  }
 }
+

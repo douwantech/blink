@@ -37,9 +37,6 @@
 __attribute__ ((visibility("default")))
 int config_main(int argc, char *argv[]) {
   if (argc == 1) {
-    // TODO We may want to change this. Not sure doing a dispatching a "funciton" to any object in the hierarchy
-    // is still a good idea.
-    // TODO Plus, we want a better config command config <host> <host_name>, etc...
     dispatch_async(dispatch_get_main_queue(), ^{
       [[UIApplication sharedApplication]
        sendAction:NSSelectorFromString(@"showConfigAction") to:nil from:nil forEvent:nil];
