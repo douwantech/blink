@@ -310,7 +310,6 @@
 		D23742CA21106ADF00366359 /* bench.m in Sources */ = {isa = PBXBuildFile; fileRef = D23742C921106ADF00366359 /* bench.m */; };
 		D238675426EA76E6003A82A1 /* OwnAlertController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB8BEA726E008190093BF48 /* OwnAlertController.swift */; };
 		D23A7B25233C934900B3B66D /* UIColor+isLight.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23A7B24233C934900B3B66D /* UIColor+isLight.swift */; };
-		D23AA645223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D23AA644223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.m */; };
 		D23B4C6E2A6FCAC2002E689B /* SearchTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22277F92A26204900D4C708 /* SearchTextInput.swift */; };
 		D23D258823438B15002850CA /* UIColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23D258723438B15002850CA /* UIColor.swift */; };
 		D23EA945260379EB00BCF1FF /* KeyListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23EA944260379EB00BCF1FF /* KeyListView.swift */; };
@@ -1060,8 +1059,6 @@
 		D235579622CE07D20094AADB /* Blink-bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Blink-bridge.h"; sourceTree = "<group>"; };
 		D23742C921106ADF00366359 /* bench.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = bench.m; sourceTree = "<group>"; };
 		D23A7B24233C934900B3B66D /* UIColor+isLight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIColor+isLight.swift"; sourceTree = "<group>"; };
-		D23AA643223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BKXCallBackUrlConfigurationViewController.h; sourceTree = "<group>"; };
-		D23AA644223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BKXCallBackUrlConfigurationViewController.m; sourceTree = "<group>"; };
 		D23D258723438B15002850CA /* UIColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIColor.swift; sourceTree = "<group>"; };
 		D23EA944260379EB00BCF1FF /* KeyListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyListView.swift; sourceTree = "<group>"; };
 		D23EA9582604CB4B00BCF1FF /* FixedTextField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixedTextField.swift; sourceTree = "<group>"; };
@@ -1729,8 +1726,6 @@
 				B75112CC1DE4A7B10040C693 /* BKiCloudConfigurationViewController.m */,
 				B752EE2C1DFEF45300E305C8 /* BKSecurityConfigurationViewController.h */,
 				B752EE2D1DFEF45300E305C8 /* BKSecurityConfigurationViewController.m */,
-				D23AA643223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.h */,
-				D23AA644223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.m */,
 			);
 			path = UserConfiguration;
 			sourceTree = "<group>";
@@ -3455,7 +3450,6 @@
 				D210769B2A69234500B3D77E /* SnippetsConfigView.swift in Sources */,
 				D22277FD2A26204900D4C708 /* SearchMode.swift in Sources */,
 				B7D6A6291E2D43A800EDF7B0 /* BKSmartKeysConfigViewController.m in Sources */,
-				D23AA645223EA3C40020FA77 /* BKXCallBackUrlConfigurationViewController.m in Sources */,
 				D2FBEC0B27CF505D00FD974A /* browse.swift in Sources */,
 				D277150D287F0C2200D31F4E /* build.m in Sources */,
 				D2C2441B238E44AB0082C69C /* NavView.swift in Sources */,

@@ -126,6 +126,10 @@ public extension EncodedStateBacked {
   @objc var childSessionType: String? = nil
   @objc var childSessionParams: BKSessionParams?
 
+  /// Command to run when the session bootstraps. Ephemeral — not encoded.
+  /// Consumed once inside `MCPSession.executeWithArgs:`.
+  @objc var initialCommand: String? = nil
+
   private enum Key: CodingKey { case childSessionType, childSessionParams }
 
   override init() { super.init() }

@@ -775,13 +775,11 @@ extension SpaceController {
   }
   
   private func _newShellAction(command: String = "", animated: Bool = true) {
-    let payload: MCPSessionPayload = if command.isEmpty {
-      MCPSessionPayload(params: MCPParams())
-    } else {
-      // TODO Pass command
-      MCPSessionPayload(params: MCPParams())
+    let params = MCPParams()
+    if !command.isEmpty {
+      params.initialCommand = command
     }
-
+    let payload = MCPSessionPayload(params: params)
     _createTerminal(userActivity: nil, animated: animated, sessionPayload: payload)
   }
 
@@ -1275,7 +1273,7 @@ extension SpaceController: SnippetContext {
 // MARK: SceneIntent handlers
 extension SpaceController {
   @objc func runShellSessionIntent(command: String = "") {
-    DispatchQueue.main.sync {      
+    DispatchQueue.main.sync {
       self._newShellAction(command: command)
     }
   }

@@ -199,15 +199,16 @@ void __setupProcessEnv(void) {
 
 // MARK: NSUserActivity
 
-- (BOOL)application:(UIApplication *)application willContinueUserActivityWithType:(NSString *)userActivityType 
-{
-  return YES;
-}
+// Deprecated and no-ops.
+// - (BOOL)application:(UIApplication *)application willContinueUserActivityWithType:(NSString *)userActivityType 
+// {
+//   return YES;
+// }
 
-- (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray * _Nullable))restorationHandler
-{
-  return YES;
-}
+// - (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray * _Nullable))restorationHandler
+// {
+//   return YES;
+// }
 
 - (BOOL)application:(UIApplication *)application shouldAllowExtensionPointIdentifier:(NSString *)extensionPointIdentifier {
   if ([extensionPointIdentifier isEqualToString: UIApplicationKeyboardExtensionPointIdentifier]) {

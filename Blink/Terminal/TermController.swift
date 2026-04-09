@@ -281,11 +281,6 @@ class TermController: UIViewController {
     _session?.kill()
   }
 
-  @objc public func isRunningCmd() -> Bool {
-    return true
-    //return _session?.isRunningCmd() ?? false
-  }
-
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
     // Block font resize when layout is locked
     guard !_termView.termUIState.layoutLocked else {
@@ -514,10 +509,6 @@ extension TermController: TermDeviceDelegate {
 
   public func viewController() -> UIViewController! {
     return self
-  }
-
-  public func xCallbackLineSubmitted(_ line: String, _ successUrl: URL? = nil) {
-    //_session?.enqueueXCallbackCommand(line, xCallbackSuccessUrl: successUrl)
   }
 }
 

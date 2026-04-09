@@ -88,8 +88,6 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   if ([coder containsValueForKey:@"overscanCompensation"]) {
     _overscanCompensation = (BKOverscanCompensation)[coder decodeIntegerForKey:@"overscanCompensation"];
   }
-  _xCallBackURLEnabled = [coder decodeBoolForKey:@"xCallBackURLEnabled"];
-  _xCallBackURLKey = [coder decodeObjectOfClasses:strings forKey:@"xCallBackURLKey"];
   _disableCustomKeyboards = [coder decodeBoolForKey:@"disableCustomKeyboards"];
   _playSoundOnBell = [coder decodeBoolForKey:@"playSoundOnBell"];
   _notificationOnBellUnfocused = [coder decodeBoolForKey:@"notificationOnBellUnfocused"];
@@ -121,8 +119,6 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   [encoder encodeBool:_alternateAppIcon forKey:@"alternateAppIcon"];
   [encoder encodeInteger:_layoutMode forKey:@"layoutMode"];
   [encoder encodeInteger:_overscanCompensation forKey:@"overscanCompensation"];
-  [encoder encodeBool:_xCallBackURLEnabled forKey:@"xCallBackURLEnabled"];
-  [encoder encodeObject:_xCallBackURLKey forKey:@"xCallBackURLKey"];
   [encoder encodeBool:_disableCustomKeyboards forKey:@"disableCustomKeyboards"];
   [encoder encodeBool:_playSoundOnBell forKey:@"playSoundOnBell"];
   [encoder encodeBool:_notificationOnBellUnfocused forKey:@"notificationOnBellUnfocused"];
@@ -310,16 +306,8 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
   defaults.keyboardStyle = value;
 }
 
-+ (void)setXCallBackURLEnabled:(BOOL)value {
-  defaults.xCallBackURLEnabled = value;
-}
-
 + (void)setDisableCustomKeyboards:(BOOL)state {
   defaults.disableCustomKeyboards = state;
-}
-
-+ (void)setXCallBackURLKey:(NSString *)key {
-  defaults.xCallBackURLKey = key;
 }
 
 + (void)setPlaySoundOnBell:(BOOL)state {
@@ -416,16 +404,6 @@ NSString *const BKAppearanceChanged = @"BKAppearanceChanged";
 
 + (BKKeyboardStyle)keyboardStyle {
   return defaults.keyboardStyle;
-}
-
-+ (BOOL)isXCallBackURLEnabled
-{
-  return defaults.xCallBackURLEnabled;
-}
-
-+ (NSString *)xCallBackURLKey
-{
-  return defaults.xCallBackURLKey;
 }
 
 + (BOOL)disableCustomKeyboards {

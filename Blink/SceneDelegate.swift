@@ -155,14 +155,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   }
 
   /**
-   Handles the `ssh://` URL schemes and x-callback-url for devices that are running iOS 13 or higher.
+   Handles the `ssh://`, `vscode://` and `http(s)://` URL schemes.
    */
   func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
 
     if let sshUrlScheme = URLContexts.first(where: { $0.url.scheme == "ssh" })?.url {
       _handleSshUrlScheme(with: sshUrlScheme)
-    } else if let xCallbackUrl = URLContexts.first(where: { $0.url.scheme == "blinkshell" })?.url {
-      _handleXcallbackUrl(with: xCallbackUrl)
     } else if let codeUrlScheme = URLContexts.first(where: { $0.url.scheme == "vscode" })?.url {
       _handleCodeUrlScheme(with: codeUrlScheme)
     } else if let httpScheme = URLContexts.first(where: { $0.url.scheme == "http" || $0.url.scheme == "https"})?.url {
@@ -453,9 +451,7 @@ fileprivate extension URL {
 extension SceneDelegate {
 
   /*
-   Handles the `ssh://` URL schemes and x-callback-url for devices that are running iOS 13 or higher.
-   - Parameters:
-     - xCallbackUrl: The x-callback-url specified by the user
+   Handles the `ssh://` URL scheme.
    */
   private func _handleSshUrlScheme(with sshUrl: URL) {
     func buildSSHCommand(from url: URL) -> String? {
@@ -501,130 +497,7 @@ extension SceneDelegate {
       return
     }
 
-    guard let term = _spCtrl.currentTerm() else {
-      return
-    }
-
-    if !term.isRunningCmd() {
-      term.termDevice.write(sshCommand)
-      return
-    }
-
-    // If a SSH/mosh connection is already open in the current terminal shell
-    // create a new one and then write the command
-    // TODO Why not passing the command?
-    _spCtrl.runShellSessionIntent()
-
-    guard let newTerm = _spCtrl.currentTerm() else {
-      return
-    }
-
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-      newTerm.termDevice.write(sshCommand)
-    }
-  }
-
-  /**
-   Handles the x-callback-url, if  a successful `x-success` URL is provided when being called from apps like Shortcuts it returns to the original app after a successful execution.
-    - Parameters:
-      - xCallbackUrl: The x-callback-url specified by the user, URL format should be `blinkshell://run?key=KEY&cmd=CMD%20ENCODED`
-   */
-  private func _handleXcallbackUrl(with xCallbackUrl: URL) {
-
-    let components = URLComponents(url: xCallbackUrl, resolvingAgainstBaseURL: true)
-
-    var xCancelURL: URL?
-    var xSuccessURL: URL?
-    var xErrorURL: URL?
-
-    guard let items = components?.queryItems else {
-      return
-    }
-
-    if let xCancel = items.first(where: { $0.name == "x-cancel" })?.value {
-      xCancelURL = URL(string: xCancel)
-    }
-
-    if let xError = items.first(where: { $0.name == "x-error" })?.value {
-      xErrorURL = URL(string: xError)
-    }
-
-    if let xSuccess = items.first(where: { $0.name == "x-success" })?.value {
-      xSuccessURL = URL(string: xSuccess)
-    }
-
-    guard case xCallbackUrl.host = "run" else {
-      if let xErrorURL = xErrorURL {
-        blink_openurl(xErrorURL)
-      }
-      return
-    }
-
-    guard BLKDefaults.isXCallBackURLEnabled() else {
-      if let xCancelURL = xCancelURL {
-        blink_openurl(xCancelURL)
-      }
-      return
-    }
-
-    // Cancel execution of the command if the x-callback-url doesn't have a
-    // key field present that is needed to allow URL actions
-    guard let keyItem: String = items.first(where: { $0.name == "key" })?.value else {
-
-      if let xCancelURL = xCancelURL {
-        blink_openurl(xCancelURL)
-      }
-
-      return
-    }
-
-    // Cancel the execution of the command as x-callback-url are not
-    // enabled for the user's or the x-callback-url does not have
-    // the correct key set
-    guard keyItem == BLKDefaults.xCallBackURLKey() else {
-
-      if let xErrorURL = xErrorURL {
-        blink_openurl(xErrorURL)
-      }
-      return
-    }
-
-    guard let cmdItem: String = items.first(where: { $0.name == "cmd" })?.value else {
-      if let xErrorURL = xErrorURL {
-        blink_openurl(xErrorURL)
-      }
-      return
-    }
-
-    guard let term = _spCtrl.currentTerm() else {
-      if let xErrorURL = xErrorURL {
-        blink_openurl(xErrorURL)
-      }
-      return
-    }
-
-    _spCtrl.focusOnShellAction()
-
-    // If SSH/mosh session is already open in the current terminal shell
-    // create a new one and then write the SSH command
-    guard term.isRunningCmd() else {
-       // No running command or shell found running, run the SSH command on the
-       // available shell
-      term.xCallbackLineSubmitted(cmdItem, xSuccessURL)
-      return
-    }
-
-    // If a SSH/mosh connection is already open in the current terminal shell
-    // create a new one and then write the command
-    _spCtrl.runShellSessionIntent()
-
-    guard let newTerm = _spCtrl.currentTerm() else {
-       return
-    }
-
-    DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.5) {
-      newTerm.xCallbackLineSubmitted(cmdItem, xSuccessURL)
-    }
+    _spCtrl.runShellSessionIntent(command: sshCommand)
   }
 
   // vscode://<path_to_file>
@@ -666,44 +539,15 @@ extension SceneDelegate {
       return
     }
 
-    // Call 'code'
-    guard let term = _spCtrl.currentTerm() else {
-      return
-    }
-
-    guard term.isRunningCmd() else {
-      // No running command or shell found running, run the SSH command on the
-      // available shell
-      term.termDevice.write(codeCommand)
-      term.termDevice.write("\n")
-      return
-    }
-
-    _spCtrl.runShellSessionIntent()
-    guard let newTerm = _spCtrl.currentTerm() else {
-      return
-    }
-
-    DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.5) {
-      newTerm.termDevice.write(codeCommand)
-      newTerm.termDevice.write("\n")
-    }
+    _spCtrl.runShellSessionIntent(command: codeCommand)
   }
 
   private func _handleHttpUrlScheme(with url: URL) {
-    _spCtrl.runShellSessionIntent()
-    guard let newTerm = _spCtrl.currentTerm() else {
-      return
-    }
-
     let urlCommand = url.absoluteString
     if urlCommand.rangeOfCharacter(from: .controlCharacters) != nil {
       return
     }
 
-    DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.5) {
-      newTerm.termDevice.write(urlCommand)
-      newTerm.termDevice.write("\n")
-    }
+    _spCtrl.runShellSessionIntent(command: "code \(urlCommand)")
   }
 }

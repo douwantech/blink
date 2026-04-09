@@ -50,7 +50,6 @@
 
 - (void)enqueueCommand:(NSString *)cmd;
 - (void)enqueueCommand:(NSString *)cmd skipHistoryRecord: (BOOL) skipHistoryRecord;
-- (void)enqueueXCallbackCommand:(NSString *)cmd xCallbackSuccessUrl:(NSURL *)xCallbackSuccessUrl;
 - (bool)isRunningCmd;
 
 - (void)updateAllowedPaths;
