@@ -119,9 +119,16 @@ struct SettingsView: View {
       }
 
       Section("Terminal") {
-        RowWithStoryBoardId(content: {
-          Label("Appearance", systemImage: "paintpalette")
-        }, storyBoardId: "BKAppearanceViewController")
+        Row {
+          Label("Style", systemImage: "paintpalette")
+        } details: {
+          StyleCustomizationView()
+        }
+        Row {
+          Label("Display", systemImage: "display")
+        } details: {
+          DisplaySettingsView()
+        }
         Row {
           Label("Keyboard", systemImage: "keyboard")
         } details: {
