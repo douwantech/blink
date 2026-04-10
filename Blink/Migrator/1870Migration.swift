@@ -2,7 +2,7 @@
 //
 // B L I N K
 //
-// Copyright (C) 2016-2019 Blink Mobile Shell Project
+// Copyright (C) 2016-2026 Blink Mobile Shell Project
 //
 // This file is part of Blink.
 //
@@ -33,44 +33,37 @@
 import Foundation
 
 
-@objc class Migrator : NSObject {
-  @objc static func perform() {
-    Self.perform(steps: [MigrationToAppGroup(),
-                         MigrationAddSnippetsShortcut(),
-                         MigrationFileProviderReplicatedExtension(),
-                         MigrationWipeSessionRegistry()
-                        ])
-  }
+// Wipes the SessionRegistry on-disk state. The TermSessionPayload / SessionParams
+// data types changed in a way that is incompatible with previously suspended
+// sessions, and migrating the old archives is not worth the effort.
+class MigrationWipeSessionRegistry: MigrationStep {
+  var version: Int { get { 1870 } }
 
-  static func perform(steps: [MigrationStep]) {
-    let migratorFileURL = URL(fileURLWithPath: BlinkPaths.groupContainerPath()).appendingPathComponent(".migrator")
+  func execute() throws {
+    let fm = FileManager.default
 
-    let currentVersionString = try? String(contentsOf: migratorFileURL, encoding: .utf8)
-    var currentVersion = Int(currentVersionString ?? "0") ?? 0
+    let supportDirURL = try fm.url(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask,
+      appropriateFor: nil,
+      create: false
+    )
+    let sessionsFolderURL = supportDirURL.appendingPathComponent("sessions")
 
-    steps.forEach { step in
-      guard step.version > currentVersion else {
-        return
-      }
+    guard fm.fileExists(atPath: sessionsFolderURL.path) else {
+      return
+    }
 
+    let contentURLs = (try? fm.contentsOfDirectory(at: sessionsFolderURL,
+                                                   includingPropertiesForKeys: nil,
+                                                   options: [])) ?? []
+
+    for url in contentURLs {
       do {
-        try step.execute()
-        currentVersion = step.version
-        try String(currentVersion)
-          .data(using: .utf8)!
-          .write(to: migratorFileURL,
-                 options:  [.atomic, .noFileProtection])
+        try fm.removeItem(at: url)
       } catch {
-        print(error)
-        exit(0)
+        print("Failed to remove \(url.path): \(error)")
       }
     }
   }
-}
-
-protocol MigrationStep {
-  // Migration steps should be idempotent
-  func execute() throws
-  // After a step is applied, the version is updated
-  var version: Int { get }
 }
