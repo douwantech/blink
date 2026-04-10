@@ -73,7 +73,17 @@ public struct BKConfig {
   public func bkSSHHost(_ alias: String, extending baseHost: BKSSHHost) throws -> BKSSHHost {
     let sshConfigHost = try self.bkSSHHost(alias)
     
-    return try baseHost.merge(sshConfigHost)
+    var extendedHost = try baseHost.merge(sshConfigHost)
+    if extendedHost.hostName == nil {
+      extendedHost.hostName = alias
+    }
+    return extendedHost
+  }
+
+  public func resolveHost(alias: String, extending baseHost: BKSSHHost) throws -> (hostName: String, host: BKSSHHost) {
+    let host = try bkSSHHost(alias, extending: baseHost)
+    let hostName = host.hostName ?? alias
+    return (hostName, host)
   }
 
   public func privateKey(forIdentifier identifier: String) -> (String, String)? {

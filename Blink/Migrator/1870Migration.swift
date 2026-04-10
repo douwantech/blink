@@ -2,7 +2,7 @@
 //
 // B L I N K
 //
-// Copyright (C) 2016-2019 Blink Mobile Shell Project
+// Copyright (C) 2016-2026 Blink Mobile Shell Project
 //
 // This file is part of Blink.
 //
@@ -30,12 +30,40 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 
-#import <UIKit/UIKit.h>
+import Foundation
 
-NS_ASSUME_NONNULL_BEGIN
 
-@interface BKXCallBackUrlConfigurationViewController : UITableViewController
+// Wipes the SessionRegistry on-disk state. The TermSessionPayload / SessionParams
+// data types changed in a way that is incompatible with previously suspended
+// sessions, and migrating the old archives is not worth the effort.
+class MigrationWipeSessionRegistry: MigrationStep {
+  var version: Int { get { 1870 } }
 
-@end
+  func execute() throws {
+    let fm = FileManager.default
 
-NS_ASSUME_NONNULL_END
+    let supportDirURL = try fm.url(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask,
+      appropriateFor: nil,
+      create: false
+    )
+    let sessionsFolderURL = supportDirURL.appendingPathComponent("sessions")
+
+    guard fm.fileExists(atPath: sessionsFolderURL.path) else {
+      return
+    }
+
+    let contentURLs = (try? fm.contentsOfDirectory(at: sessionsFolderURL,
+                                                   includingPropertiesForKeys: nil,
+                                                   options: [])) ?? []
+
+    for url in contentURLs {
+      do {
+        try fm.removeItem(at: url)
+      } catch {
+        print("Failed to remove \(url.path): \(error)")
+      }
+    }
+  }
+}

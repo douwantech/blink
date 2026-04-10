@@ -279,48 +279,42 @@ const CGFloat MENU_PADDING = 10.0;
             actionWithTitle:noTitle ? @"" : @"Fit"
             image:nil
             identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeSafeFit;
-      [self.superview setNeedsLayout];
-      
+        [delegate.currentTerm.termView setLayoutModeFit];
     }
     ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
+
     return action;
   }
   if (elementID == BlinkActionLayoutFill) {
     UIAction *action = [UIAction
-            actionWithTitle:noTitle ? @"" : @"Fill"
-            image:nil
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeFill;
-      [self.superview setNeedsLayout];
-    }
-    ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
+                         actionWithTitle:noTitle ? @"" : @"Fill"
+                                   image:nil
+                              identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView setLayoutModeFill];
+      }
+                        ];
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
-  
+
   if (elementID == BlinkActionLayoutCover) {
     UIAction * action = [UIAction
-            actionWithTitle:noTitle ? @"" : @"Cover"
-            image:nil
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm unlockLayout];
-      delegate.currentTerm.sessionParams.layoutMode = BKLayoutModeCover;
-      [self.superview setNeedsLayout];
-    }
-    ];
-    action.state = delegate.currentTerm.sessionParams.layoutMode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
+                          actionWithTitle:noTitle ? @"" : @"Cover"
+                                    image:nil
+                               identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView setLayoutModeCover];
+      }
+                         ];
+    action.state = [delegate.currentTerm.termView currentLayoutMode] == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
-  
+
   if (elementID == BlinkActionTabCreate) {
     return [UIAction
             actionWithTitle:noTitle ? @"" : @"Create"
             image:[UIImage systemImageNamed:@"plus.rectangle.on.rectangle"] identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [[delegate spaceController] newShellAction];
+      [[delegate spaceController] runShellSessionIntentWithCommand:@""];
     }];
   }
   
@@ -354,13 +348,12 @@ const CGFloat MENU_PADDING = 10.0;
   
   if (elementID == BlinkActionToggleLayoutLock) {
     UIAction *action = [UIAction
-                        actionWithTitle:noTitle ? @"" : @"Lock"
-            image:[UIImage systemImageNamed:@"lock.rectangle"]
-            identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
-      [delegate.currentTerm toggleLayoutLock];
-      [self.superview setNeedsLayout];
-    }];
-    action.state = delegate.currentTerm.sessionParams.layoutLocked ? UIMenuElementStateOn : UIMenuElementStateOff;
+                         actionWithTitle:noTitle ? @"" : @"Lock"
+                                   image:[UIImage systemImageNamed:@"lock.rectangle"]
+                              identifier:elementID handler:^(__kindof UIAction * _Nonnull action) {
+        [delegate.currentTerm.termView toggleLayoutLock];
+      }];
+    action.state = [delegate.currentTerm.termView isLayoutLocked] ? UIMenuElementStateOn : UIMenuElementStateOff;
     return action;
   }
   

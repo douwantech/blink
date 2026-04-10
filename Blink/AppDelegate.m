@@ -199,15 +199,16 @@ void __setupProcessEnv(void) {
 
 // MARK: NSUserActivity
 
-- (BOOL)application:(UIApplication *)application willContinueUserActivityWithType:(NSString *)userActivityType 
-{
-  return YES;
-}
+// Deprecated and no-ops.
+// - (BOOL)application:(UIApplication *)application willContinueUserActivityWithType:(NSString *)userActivityType 
+// {
+//   return YES;
+// }
 
-- (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray * _Nullable))restorationHandler
-{
-  return YES;
-}
+// - (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray * _Nullable))restorationHandler
+// {
+//   return YES;
+// }
 
 - (BOOL)application:(UIApplication *)application shouldAllowExtensionPointIdentifier:(NSString *)extensionPointIdentifier {
   if ([extensionPointIdentifier isEqualToString: UIApplicationKeyboardExtensionPointIdentifier]) {
@@ -319,12 +320,7 @@ void __setupProcessEnv(void) {
 - (UISceneConfiguration *) application:(UIApplication *)application
 configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
                                options:(UISceneConnectionOptions *)options {
-  for (NSUserActivity * activity in options.userActivities) {
-    if ([activity.activityType isEqual:@"com.blink.whatsnew"]) {
-      return [UISceneConfiguration configurationWithName:@"whatsnew"
-                                             sessionRole:connectingSceneSession.role];
-    }
-  }
+  // for (NSUserActivity * activity in options.userActivities) {  }
   return [UISceneConfiguration configurationWithName:@"main"
                                          sessionRole:connectingSceneSession.role];
 }

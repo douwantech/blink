@@ -321,6 +321,11 @@ extension SSHCommand {
     return try BKSSHHost(content: params)
   }
 
+  func resolveHost() throws -> (hostName: String, host: BKSSHHost) {
+    let commandHost = try self.bkSSHHost()
+    return try BKConfig().resolveHost(alias: self.hostAlias, extending: commandHost)
+  }
+
   func sshOptions() throws -> [String: Any] {
     var params: [String: Any] = [:]
 

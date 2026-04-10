@@ -38,7 +38,8 @@ import Foundation
     Self.perform(steps: [MigrationToAppGroup(),
                          MigrationAddSnippetsShortcut(),
                          MigrationFileProviderReplicatedExtension(),
-                         MigrationStyleFromDefaults()
+                         MigrationStyleFromDefaults(),
+                         MigrationWipeSessionRegistry()
                         ])
   }
 

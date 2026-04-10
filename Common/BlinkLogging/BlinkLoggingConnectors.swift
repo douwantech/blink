@@ -33,7 +33,7 @@
 import Foundation
 import Combine
 
-public class FileLogging {
+class FileLogging {
   private let h: FileHandle
   let queue = DispatchQueue(label: "FileLogging")
   
@@ -65,7 +65,7 @@ public class FileLogging {
 }
 
 extension Publisher {
-  public func sinkToFile(_ file: FileLogging) throws -> AnyCancellable where Self.Output == [BlinkLogKeys:Any] {
+  func sinkToFile(_ file: FileLogging) throws -> AnyCancellable where Self.Output == [BlinkLogKeys:Any] {
     // TODO receive(on:)
     return receive(on: file.queue)
       .sink(receiveCompletion: { _ in},
@@ -77,12 +77,12 @@ extension Publisher {
     })
   }
 
-  public func sinkToOutput() -> AnyCancellable where Self.Output == [BlinkLogKeys:Any] {
+  func sinkToOutput() -> AnyCancellable where Self.Output == [BlinkLogKeys:Any] {
     return sink(receiveCompletion: { _ in },
                 receiveValue: { Swift.print($0[.message] ?? "") })
   }
 
-  public func filter(logLevel: BlinkLogLevel) -> AnyPublisher<[BlinkLogKeys:Any], Never>
+  func filter(logLevel: BlinkLogLevel) -> AnyPublisher<[BlinkLogKeys:Any], Never>
   where Self.Output == [BlinkLogKeys:Any], Self.Failure == Never {
       return filter { log in
         guard let filterLogLevel = log[.logLevel] as? BlinkLogLevel else {
@@ -92,7 +92,7 @@ extension Publisher {
         .eraseToAnyPublisher()
   }
 
-  public func format(_ formatter: @escaping ([BlinkLogKeys:Any]) -> String) -> AnyPublisher<[BlinkLogKeys:Any], Never>
+  func format(_ formatter: @escaping ([BlinkLogKeys:Any]) -> String) -> AnyPublisher<[BlinkLogKeys:Any], Never>
   where Self.Output == [BlinkLogKeys:Any], Self.Failure == Never {
     return map {
       $0.merging([.message: formatter($0)],

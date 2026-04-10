@@ -338,6 +338,7 @@ public class BlinkCopy: NSObject {
     let sshCommand: SSHCommand
     var params = [hostPath]
     let host: BKSSHHost
+    let hostNameResolved: String
     let config: SSHClientConfig
 
     do {
@@ -347,14 +348,16 @@ public class BlinkCopy: NSObject {
         params.append(v)
       }
       sshCommand = try SSHCommand.parse(params)
-      host = try BKConfig().bkSSHHost(sshCommand.hostAlias, extending: sshCommand.bkSSHHost())
+      let resolved = try sshCommand.resolveHost()
+      host = resolved.host
+      hostNameResolved = resolved.hostName
       config = try SSHClientConfigProvider.config(host: host, using: device)
     } catch {
       let message = SSHCommand.message(for: error)
       return .fail(error: CommandError(message: message))
     }
 
-    return SSHClient.dial(host.hostName ?? sshCommand.hostAlias, with: config, withProxy: BlinkSSH.executeProxyCommand)
+    return SSHClient.dial(hostNameResolved, with: config, withProxy: BlinkSSH.executeProxyCommand)
       .flatMap { $0.requestSFTP() }
       .tryMap  { try SFTPTranslator(on: $0) }
       .eraseToAnyPublisher()

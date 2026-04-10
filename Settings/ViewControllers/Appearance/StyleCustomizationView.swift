@@ -44,7 +44,7 @@ struct StyleCustomizationView: View {
   var body: some View {
     VStack(spacing: 0) {
       // -- Pinned Preview --
-      TerminalPreviewCell(revision: previewRevision)
+      TerminalPreviewCell(style: editingStyle, revision: previewRevision)
         .frame(height: 200)
 
       Text("Configuration will be applied to new terminal sessions.")
@@ -238,6 +238,7 @@ struct StyleCustomizationView: View {
 // MARK: - Terminal Preview
 
 struct TerminalPreviewCell: UIViewRepresentable {
+  var style: TerminalStyle
   /// Bump this to force a reload in updateUIView.
   var revision: Int
 
@@ -246,17 +247,18 @@ struct TerminalPreviewCell: UIViewRepresentable {
   }
 
   func makeUIView(context: Context) -> TermView {
-    let termView = TermView(frame: .zero)
+    let termView = TermView(frame: .zero, termUIState: TermUIState(style: style))
     termView.backgroundColor = .systemGroupedBackground
     termView.isUserInteractionEnabled = false
     termView.device = context.coordinator
     context.coordinator.termView = termView
-    termView.load(with: nil)
+    termView.load()
     return termView
   }
 
   func updateUIView(_ termView: TermView, context: Context) {
-    termView.reload(with: nil)
+    termView.applyTermUIState(TermUIState(style: style))
+    termView.setCursorBlink(style.cursorBlink)
   }
 
   class Coordinator: NSObject, TermViewDeviceProtocol {

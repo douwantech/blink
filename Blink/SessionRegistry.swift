@@ -42,17 +42,7 @@ protocol SuspendableSession: class {
   var meta: SessionMeta { get }
   init(meta: SessionMeta?)
   func resume(with unarchiver: NSKeyedUnarchiver)
-  func suspendedSession(with archiver: NSKeyedArchiver)
-}
-
-extension SuspendableSession {
-  func suspendIfNeeded() {
-    SessionRegistry.shared.suspendIfNeeded(session: self)
-  }
-  
-  func resumeIfNeeded() {
-    SessionRegistry.shared.resumeIfNeeded(session: self)
-  }
+  func suspendSession(with archiver: NSKeyedArchiver)
 }
 
 @objc class SessionRegistry: NSObject {
@@ -150,7 +140,7 @@ extension SuspendableSession {
     }
     
     let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-    session.suspendedSession(with: archiver)
+    session.suspendSession(with: archiver)
     _fsWrite(archiver.encodedData, forKey: session.meta.key)
     session.meta.isSuspended = true
   }
@@ -164,6 +154,7 @@ extension SuspendableSession {
     session.meta.isSuspended = false
   }
   
+  
   private func _resume(forKey key: UUID) {
     guard
       let session = _sessionsIndex[key],
@@ -172,7 +163,7 @@ extension SuspendableSession {
     else {
       return
     }
-    
+
     session.resume(with: unarchiver)
     session.meta.isSuspended = false
   }

@@ -2,7 +2,7 @@
 //
 // B L I N K
 //
-// Copyright (C) 2016-2018 Blink Mobile Shell Project
+// Copyright (C) 2016-2019 Blink Mobile Shell Project
 //
 // This file is part of Blink.
 //
@@ -29,22 +29,36 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import "BLKDefaults.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-extern NSString *LayoutManagerBottomInsetDidUpdate;
+@class LayoutConstraintManager;
 
-@interface LayoutManager: NSObject
+@interface LayoutConstraintManager : NSObject
+
+// Setup constraints for a view with layout mode and keyboard guide
++ (instancetype)managerForView:(UIView *)view 
+                    layoutMode:(BKLayoutMode)mode 
+                keyboardGuide:(UIKeyboardLayoutGuide *)keyboardGuide;
 
 + (BKLayoutMode) deviceDefaultLayoutMode;
-+ (UIEdgeInsets) buildSafeInsetsForController:(UIViewController *)ctrl andMode:(BKLayoutMode) mode;
-+ (NSString *) layoutModeToString:(BKLayoutMode)mode;
-//+ (CGFloat) mainWindowKBBottomInset;
-//+ (void) updateMainWindowKBBottomInset:(CGFloat) bottomInset;
+
+// Update layout mode
+- (void)updateLayoutMode:(BKLayoutMode)mode;
+
+// Handle layout lock
+- (void)setLayoutLocked:(BOOL)locked withFrame:(CGRect)frame;
+
+// Note: Keyboard handling is now automatic via constraint priorities
+
+// Update keyboard layout guide (for window changes)
+- (void)updateKeyboardLayoutGuide:(nullable UIKeyboardLayoutGuide *)keyboardGuide;
+
+// Get current constraint constants for debugging
+- (UIEdgeInsets)currentInsets;
 
 @end
 

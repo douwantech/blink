@@ -75,6 +75,19 @@ struct TerminalStyle: Codable, Identifiable, Equatable {
   }
 }
 
+// MARK: - TermUIState
+
+extension TermUIState {
+  convenience init(style: TerminalStyle) {
+    self.init()
+    themeName = style.themeName
+    fontName = style.fontName
+    fontSize = Int(style.fontSize)
+    enableBold = UInt(style.boldMode.rawValue)
+    boldAsBright = style.boldAsBright
+  }
+}
+
 // MARK: - Resolved
 
 extension TerminalStyle {

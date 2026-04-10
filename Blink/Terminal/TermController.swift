@@ -35,7 +35,6 @@ import UserNotifications
 import AVFoundation
 
 @objc protocol TermControlDelegate: NSObjectProtocol {
-  // May be do it optional
   func terminalHangup(control: TermController)
   @objc optional func terminalDidResize(control: TermController)
 }
@@ -44,10 +43,6 @@ import AVFoundation
   func controlPanelOnClose()
   func controlPanelOnPaste()
   func currentTerm() -> TermController!
-}
-
-protocol LayoutInsetsProvider: AnyObject {
-  func provideInsets(for controller: TermController) -> UIEdgeInsets
 }
 
 private class ProxyView: UIView {
@@ -157,34 +152,20 @@ private class ProxyView: UIView {
 
 class TermController: UIViewController {
   private let _meta: SessionMeta
- 
+
   private var _termDevice = TermDevice()
   private var _bag = Array<AnyCancellable>()
-  private var _termView = TermView(frame: .zero)
+  private var _termView = TermView(frame: .zero, termUIState: TermUIState.withDefaults())
   private var _proxyView = ProxyView(frame: .zero)
-  private var _sessionParams: MCPParams = {
-    let params = MCPParams()
-    
-    params.fontSize = BLKDefaults.selectedFontSize()?.intValue ?? 16
-    params.fontName = BLKDefaults.selectedFontName()
-    params.themeName = BLKDefaults.selectedThemeName()
-    params.enableBold = BLKDefaults.enableBold()
-    params.boldAsBright = BLKDefaults.isBoldAsBright()
-    params.viewSize = .zero
-    params.layoutMode = BLKDefaults.layoutMode().rawValue
-    
-    return params
-  }()
+  private var _sceneRole: UISceneSession.Role? = nil
   private var _bgColor: UIColor? = nil
   private var _fontSizeBeforeScaling: Int? = nil
-  
+
   @objc public var viewIsLoaded: Bool = false
 
   @objc public var activityKey: String? = nil
   @objc public var termDevice: TermDevice { _termDevice }
   @objc weak var delegate: TermControlDelegate? = nil
-  weak var layoutProvider: LayoutInsetsProvider? = nil
-  @objc var sessionParams: MCPParams { _sessionParams }
 
   // Control whether terminal can become first responder (e.g., during Snips Input Mode)
   var shouldBlockFirstResponder: Bool = false {
@@ -209,34 +190,27 @@ class TermController: UIViewController {
   override var isFirstResponder: Bool {
     _termDevice.view?.webView.isFirstResponder ?? false
   }
-  
-  
-  private var _session: MCPSession? = nil
-  
+
+  @objc var termView: TermView { _termView }
+
+  private var _sessionPayload: TermSessionPayload? = nil
+  private var _session: Session? { _sessionPayload?.session }
+
   required init(meta: SessionMeta? = nil) {
     _meta = meta ?? SessionMeta()
     super.init(nibName: nil, bundle: nil)
   }
-  
-  convenience init(sceneRole: UISceneSession.Role? = nil) {
+
+  convenience init(sceneRole: UISceneSession.Role? = nil, sessionPayload: TermSessionPayload? = nil) {
     self.init(meta: nil)
-    if sceneRole == .windowExternalDisplayNonInteractive {
-      _sessionParams.fontSize = BLKDefaults.selectedExternalDisplayFontSize()?.intValue ?? 24
-    }
+    self._sessionPayload = sessionPayload
+    self._sceneRole = sceneRole
   }
-  
+
   required public init?(coder aDecoder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
   }
-  
-  @objc public func toggleLayoutLock() {
-    if sessionParams.layoutLocked {
-      self.unlockLayout()
-    } else {
-      self.lockLayout()
-    }
-  }
-  
+
   func placeToContainer() {
     _proxyView.placeControlledView()
   }
@@ -260,52 +234,29 @@ class TermController: UIViewController {
     }
 
     super.viewWillTransition(to: size, with: coordinator)
-    
-    coordinator.animate(alongsideTransition: nil) { _ in
-      NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    }
   }
-  
+
   public override func loadView() {
     super.loadView()
     _termDevice.delegate = self
     _termDevice.attachView(_termView)
     _termView.backgroundColor = _bgColor
+    _termView.termController = self
     _proxyView.controlledView = _termView;
     _proxyView.isUserInteractionEnabled = false
     view = _proxyView
   }
-  
+
   public override func viewDidLoad() {
     super.viewDidLoad()
     viewIsLoaded = true
 
-    resumeIfNeeded()
-
-    _termView.load(with: _sessionParams)
-    
-    let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
-    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    print("🔧 termView initialInsets: \(_termView.additionalInsets)")
-    
-    NotificationCenter.default.addObserver(
-      self,
-      selector: #selector(_relayout),
-      name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    
-  }
-  
-  @objc func _relayout() {
-    guard
-      let window = view.window,
-      window.screen === UIScreen.main
-    else {
-      return
+    if _sceneRole == .windowExternalDisplayNonInteractive {
+      _termView.termUIState.fontSize = BLKDefaults.selectedExternalDisplayFontSize()?.intValue ?? 24
     }
-    
-    view.setNeedsLayout()
+    _termView.load()
   }
-  
+
   public override func viewWillLayoutSubviews() {
     super.viewWillLayoutSubviews()
 
@@ -315,24 +266,13 @@ class TermController: UIViewController {
     else {
       return
     }
-
-    let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
-    _termView.additionalInsets = layoutProvider?.provideInsets(for: self) ?? LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    // print("🔧 termView initialInsets: \(_termView.additionalInsets)")
-    // let layoutMode = BKLayoutMode(rawValue: _sessionParams.layoutMode) ?? BKLayoutMode.default
-    // print("🔧 Layout Mode: \(layoutMode)")
-    // _termView.additionalInsets = LayoutManager.buildSafeInsets(for: self, andMode: layoutMode)
-    //print("🔧 termView additionalInsets: \(_termView.additionalInsets)")
-    _termView.layoutLockedFrame = _sessionParams.layoutLockedFrame
-    _termView.layoutLocked = _sessionParams.layoutLocked
-    _termView.setNeedsLayout()
   }
-  
+
   public override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
-    _sessionParams.viewSize = view.bounds.size
+    _termView.termUIState.viewSize = view.bounds.size
   }
-  
+
   @objc public func terminate() {
     NotificationCenter.default.post(name: .deviceTerminated, object: nil, userInfo: ["device": _termDevice])
     _proxyView.destroyControlledView()
@@ -340,61 +280,40 @@ class TermController: UIViewController {
     _termView.terminate()
     _session?.kill()
   }
-  
-  @objc public func lockLayout() {
-    _sessionParams.layoutLocked = true
-    _sessionParams.layoutLockedFrame = _termView.webViewFrame()
-  }
-  
-  @objc public func unlockLayout() {
-    _sessionParams.layoutLocked = false
-    view.setNeedsLayout()
-  }
-  
-  @objc public func isRunningCmd() -> Bool {
-    return _session?.isRunningCmd() ?? false
-  }
-  
+
   @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
     // Block font resize when layout is locked
-    guard !_sessionParams.layoutLocked else {
+    guard !_termView.termUIState.layoutLocked else {
       return
     }
 
     switch pinch.state {
     case .began: fallthrough
     case .ended:
-      _fontSizeBeforeScaling = _sessionParams.fontSize
+      _fontSizeBeforeScaling = _termView.termUIState.fontSize
     case .changed:
       guard let initialSize = _fontSizeBeforeScaling else {
         return
       }
       let newSize = Int(round(CGFloat(initialSize) * pinch.scale))
-      guard newSize != _sessionParams.fontSize else {
+      guard newSize != _termView.termUIState.fontSize else {
         return
       }
       _termView.setFontSize(newSize as NSNumber)
     default:  break
     }
   }
-  
+
   deinit {
     NotificationCenter.default.removeObserver(self)
+    // Break ref-loop
     _session?.delegate = nil
-    _session = nil
   }
-  
 }
 
 extension TermController: SessionDelegate {
   public func sessionFinished() {
-    if _sessionParams.hasEncodedState() {
-      _session?.delegate = nil
-      _session = nil
-      return
-    }
-
-    delegate?.terminalHangup(control: self)
+    self.delegate?.terminalHangup(control: self)
   }
 }
 
@@ -412,55 +331,55 @@ let _apiRoutes:[String: (MCPSession, String) -> AnyPublisher<String, Never>] = [
 
 // MARK: - TermDeviceDelegate methods
 extension TermController: TermDeviceDelegate {
-  
+
   /**
    When a `ring-bell` notification has been received on `TermView` react to it by sounding a bell if the terminal that sent it
    is in focus and if it's not send a notification. Tapping the notification opens the session that sent it.
-   
+
    Only reproduce haptic feedback on iPhones and if it's enabled.
-   
+
    Enable/Disable standard OSC sequences & iTerm2 notifications
    */
   func viewDidReceiveBellRing() {
-    
+
     if BLKDefaults.isPlaySoundOnBellOn() && _termView.isFocused() {
       AudioServicesPlaySystemSound(1103);
     }
-  
+
     viewNotify(["title": "🔔 \(_termView.title ?? "")", "type": BKNotificationType.bell.rawValue])
-    
+
     // Haptic feedback is only visible from iPhones
     if UIDevice.current.userInterfaceIdiom == .phone && !BLKDefaults.hapticFeedbackOnBellOff() {
       UINotificationFeedbackGenerator().notificationOccurred(.warning)
     }
   }
-  
+
   /**
    Presents a UserNotification with the `title` & `body` values passed on `data`. Tapping on the notification opens the terminal that originated the notification. Also triggered when the terminal receives a standard `OSC` sequence & iTerm2-like notification.
-   
+
    - Parameters:
     - data: Set the `title` and `body` String values to display those values in the notification banner. Set the `type`'s rawValue of `BKNotificationType` to identify the type of notification used.
    */
   func viewNotify(_ data: [AnyHashable : Any]!) {
-    
+
     guard let notificationTypeRaw = data["type"] as? Int, let notificationType = BKNotificationType(rawValue: notificationTypeRaw) else {
       return
     }
-        
+
     if notificationType  == .bell && (_termView.isFocused() || !BLKDefaults.isNotificationOnBellUnfocusedOn())
         || notificationType == .osc && !BLKDefaults.isOscNotificationsOn() {
        return
     }
-    
+
     let content = UNMutableNotificationContent()
     content.title = (data["title"] as? String) ?? title ?? "Blink"
     content.body = (data["body"] as? String) ?? ""
     content.sound = .default
     content.threadIdentifier = meta.key.uuidString
     content.targetContentIdentifier = "blink://open-scene/\(view?.window?.windowScene?.session.persistentIdentifier ?? "")"
-    
+
     let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-    
+
     let center = UNUserNotificationCenter.current()
     center.requestAuthorization(options: [.alert, .sound, .announcement]) { (granted, error) in
       if granted {
@@ -468,11 +387,11 @@ extension TermController: TermDeviceDelegate {
       }
     }
   }
-  
+
   func apiCall(_ api: String!, andRequest request: String!) {
     guard
+      let session = _session as? MCPSession,
       let api = api,
-      let session = _session,
       let call = _apiRoutes[api]
     else {
       return
@@ -480,19 +399,29 @@ extension TermController: TermDeviceDelegate {
 
     weak var termView = _termView
 
-    _ = call(session, request)
-      .receive(on: RunLoop.main)
-      .sink { termView?.apiResponse(api, response: $0) }
+   _ = call(session, request)
+     .receive(on: RunLoop.main)
+     .sink { termView?.apiResponse(api, response: $0) }
   }
-  
+
   public func deviceIsReady() {
-    startSession()
-    
+    if _sessionPayload != nil {
+      _startSession()
+    } else {
+      resumeIfNeeded()
+    }
+
+    guard _sessionPayload != nil else {
+      print("Session Payload is nil")
+      return
+    }
+
     // Input progression. When device becomes ready, check if we need to become first responder
     if isAttached {
       _becomeFirstResponder()
     }
   }
+
   
   func activateInput() {
     // Don't activate input if blocked (e.g., during Snips Input Mode)
@@ -565,77 +494,38 @@ extension TermController: TermDeviceDelegate {
   }
     
   public func deviceSizeChanged() {
-    _sessionParams.rows = _termDevice.rows
-    _sessionParams.cols = _termDevice.cols
-    
+    print("Terminal size changed - rows: \(_termDevice.rows) x cols: \(_termDevice.cols)")
     delegate?.terminalDidResize?(control: self)
     _session?.sigwinch()
   }
-  
+
   public func viewFontSizeChanged(_ size: Int) {
-    _sessionParams.fontSize = size
     _termDevice.input?.reset()
   }
-  
-  public func handleControl(_ control: String!) -> Void {
-    _session?.handleControl(control)
-  }
-  
+
   public func deviceFocused() {
     view.setNeedsLayout()
   }
-  
+
   public func viewController() -> UIViewController! {
     return self
-  }
-  
-  public func xCallbackLineSubmitted(_ line: String, _ successUrl: URL? = nil) {
-    _session?.enqueueXCallbackCommand(line, xCallbackSuccessUrl: successUrl)
-  }
-  
-  public func lineSubmitted(_ line: String!) {
-    _session?.enqueueCommand(line)
-  }
-  
-  @objc public func setLayoutMode(layoutMode: BKLayoutMode) {
-    self.sessionParams.layoutMode = layoutMode.rawValue
-    
-    NotificationCenter.default.post(name: NSNotification.Name(rawValue: LayoutManagerBottomInsetDidUpdate), object: nil)
-    
-    if (self.sessionParams.layoutLocked) {
-      self.unlockLayout()
-    }
-    self.view?.setNeedsLayout()
   }
 }
 
 extension TermController: SuspendableSession {
-  
+
   var meta: SessionMeta { _meta }
-  
-  var _decodableKey: String { "params" }
-  
-  func startSession() {
-    guard _session == nil
-    else {
-      if view.bounds.size != _sessionParams.viewSize {
-        _session?.sigwinch()
-      }
-      return
-    }
-    
-    _session = MCPSession(
-      device: _termDevice,
-      andParams: _sessionParams)
-    
-    if let initialPrompt = WhatsNewInfo.mustDisplayInitialPrompt() {
-      _termDevice.writeOutLn(initialPrompt)
-    }
-    
+
+  private enum ArchiveKey: CodingKey { case termUIState }
+
+  func _startSession() {
+    guard let payload = _sessionPayload,
+          _session == nil else { return }
+
+    payload.start(in: _termDevice, sessionKey: meta.key.uuidString)
     _session?.delegate = self
-    _session?.execute(withArgs: "")
-    
-    if view.bounds.size != _sessionParams.viewSize {
+
+    if view.bounds.size != _termView.termUIState.viewSize {
       _session?.sigwinch()
     }
 
@@ -643,50 +533,116 @@ extension TermController: SuspendableSession {
       self._termView.setClipboardWrite(true)
     }
   }
-  
-  
+
+  func resumeIfNeeded() {
+    guard _termDevice.isReady else { return }
+    SessionRegistry.shared.resumeIfNeeded(session: self)
+  }
+
   func resume(with unarchiver: NSKeyedUnarchiver) {
-    guard
-      unarchiver.containsValue(forKey: _decodableKey),
-      let params = unarchiver.decodeObject(of: MCPParams.self, forKey: _decodableKey)
+    guard let termUIState: TermUIState = unarchiver.bk_decode(of: [TermUIState.self], for: ArchiveKey.termUIState)
     else {
       return
     }
-    
-    _sessionParams = params
-    _session?.sessionParams = params
-   
-    if _sessionParams.hasEncodedState() {
-      _session?.execute(withArgs: "")
+
+    _termView.applyTermUIState(termUIState)
+
+    if _sessionPayload == nil {
+      guard let payload = decodePayload(from: unarchiver) else { return }
+
+      _sessionPayload = payload
+      payload.start(in: _termDevice, sessionKey: _meta.key.uuidString)
+      _session!.delegate = self
+    } else {
+      _sessionPayload!.resumeFromSuspended()
     }
 
-    if view.bounds.size != _sessionParams.viewSize {
-      _session?.sigwinch()
+    if view.bounds.size != _termView.termUIState.viewSize {
+      _session!.sigwinch()
     }
-    
+
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
       self._termView.setClipboardWrite(true)
     }
   }
-  
-  func suspendedSession(with archiver: NSKeyedArchiver) {
-    guard
-      let session = _session
-    else {
-      return
-    }
-    
+
+  func suspendSession(with archiver: NSKeyedArchiver) {
+    guard let sessionPayload = _sessionPayload else { return }
     _termView.setClipboardWrite(false)
-    _sessionParams.cleanEncodedState()
-    session.suspend()
-    
-    let hasEncodedState = _sessionParams.hasEncodedState()
-    
-    debugPrint("has encoded state", hasEncodedState)
-    archiver.encode(_sessionParams, forKey: _decodableKey)
+
+    sessionPayload.suspend()
+
+    archiver.bk_encode(_termView.termUIState, for: ArchiveKey.termUIState)
+    sessionPayload.encode(with: archiver)
   }
 }
 
 extension Notification.Name {
   static let deviceTerminated = Notification.Name("deviceTerminated")
 }
+
+// MARK: - TermUIState
+
+@objc class TermUIState: NSObject, NSSecureCoding {
+  @objc var viewSize: CGSize = .zero
+  @objc var rows: Int = 0
+  @objc var cols: Int = 0
+  @objc var themeName: String? = nil
+  @objc var fontName: String? = nil
+  @objc var fontSize: Int = 16
+  @objc var layoutMode: Int = 0
+  @objc var boldAsBright: Bool = false
+  @objc var enableBold: UInt = 0
+  @objc var layoutLocked: Bool = false
+  @objc var layoutLockedFrame: CGRect = .zero
+
+  private enum Key: CodingKey {
+    case viewSize, rows, cols, themeName, fontName, fontSize
+    case layoutMode, boldAsBright, enableBold, layoutLocked, layoutLockedFrame
+  }
+
+  override init() { super.init() }
+
+  required init?(coder: NSCoder) {
+    super.init()
+    self.viewSize = coder.bk_decode(for: Key.viewSize)
+    self.rows = coder.bk_decode(for: Key.rows)
+    self.cols = coder.bk_decode(for: Key.cols)
+    self.themeName = coder.bk_decode(for: Key.themeName)
+    self.fontName = coder.bk_decode(for: Key.fontName)
+    self.fontSize = coder.bk_decode(for: Key.fontSize)
+    self.layoutMode = coder.bk_decode(for: Key.layoutMode)
+    self.boldAsBright = coder.bk_decode(for: Key.boldAsBright)
+    self.enableBold = coder.bk_decode(for: Key.enableBold)
+    self.layoutLocked = coder.bk_decode(for: Key.layoutLocked)
+    self.layoutLockedFrame = coder.bk_decode(for: Key.layoutLockedFrame)
+  }
+
+  func encode(with coder: NSCoder) {
+    coder.bk_encode(viewSize, for: Key.viewSize)
+    coder.bk_encode(rows, for: Key.rows)
+    coder.bk_encode(cols, for: Key.cols)
+    coder.bk_encode(themeName, for: Key.themeName)
+    coder.bk_encode(fontName, for: Key.fontName)
+    coder.bk_encode(fontSize, for: Key.fontSize)
+    coder.bk_encode(layoutMode, for: Key.layoutMode)
+    coder.bk_encode(boldAsBright, for: Key.boldAsBright)
+    coder.bk_encode(enableBold, for: Key.enableBold)
+    coder.bk_encode(layoutLocked, for: Key.layoutLocked)
+    coder.bk_encode(layoutLockedFrame, for: Key.layoutLockedFrame)
+  }
+
+  static var supportsSecureCoding: Bool { true }
+
+  @objc static func withDefaults() -> TermUIState {
+    let state = TermUIState()
+    state.fontSize = BLKDefaults.selectedFontSize()?.intValue ?? 16
+    state.fontName = BLKDefaults.selectedFontName()
+    state.themeName = BLKDefaults.selectedThemeName()
+    state.enableBold = UInt(BLKDefaults.enableBold())
+    state.boldAsBright = BLKDefaults.isBoldAsBright()
+    state.layoutMode = BLKDefaults.layoutMode().rawValue
+    return state
+  }
+}
+

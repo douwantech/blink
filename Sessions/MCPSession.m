@@ -70,8 +70,14 @@
     _cmdQueue = dispatch_queue_create("mcp.command.queue", DISPATCH_QUEUE_SERIAL);
     _sshQueue = dispatch_queue_create("mcp.sshclients.queue", DISPATCH_QUEUE_SERIAL);
     [self setActiveSession];
+    device.readlineListener = self;
+
+    NSString *initialPrompt = [WhatsNewInfo mustDisplayInitialPrompt];
+    if (initialPrompt) {
+      [device writeOutLn:initialPrompt];
+    }
   }
-  
+
   return self;
 }
 
@@ -86,7 +92,9 @@
 
     // We are restoring mosh session if possible first.
     if ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
-      BlinkMosh *mosh = [[BlinkMosh alloc] initWithMcpSession: self device:_device andParams:self.sessionParams.childSessionParams];
+      MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
+
+      BlinkMosh *mosh = [[BlinkMosh alloc] initWithMcpSession: self device:_device andParams:moshParams];
       _childSession = mosh;
       [_childSession executeAttachedWithArgs:@""];
       _childSession = nil;
@@ -104,6 +112,11 @@
         return;
       }
     }
+    NSString *initialCommand = self.sessionParams.initialCommand;
+    if (initialCommand.length > 0) {
+      [self enqueueCommand:initialCommand];
+      return;
+    }
     #if TARGET_OS_MACCATALYST
       BKHosts *localhost = [BKHosts withHost:@"localhost"];
       if (localhost) {
@@ -118,21 +131,6 @@
     }
     #endif
   });
-}
-
-/*!
- @brief Enqueue a new command coming from a x-callback-url. After completing successfully return to the
- @discussion Accepts the x-callback-url and the x-success URL to call after a successful command completion
- @param cmd Command to be executed
- @param xCallbackSuccessUrl Success URL of the original application (like Shortcuts) to return to after reunning the command
-*/
-- (void)enqueueXCallbackCommand:(NSString *)cmd xCallbackSuccessUrl:(NSURL *)xCallbackSuccessUrl {
-  [self enqueueCommand:cmd];
-  
-  dispatch_async(_cmdQueue, ^{
-    blink_openurl(xCallbackSuccessUrl);
-  });
-  
 }
 
 - (void)enqueueCommand:(NSString *)cmd {
@@ -395,7 +393,6 @@
   }
   
   ios_closeSession(_sessionUUID.UTF8String);
-  
   [_device close];
   _device = NULL;
 }
@@ -415,6 +412,8 @@
     if (_sshClients.count > 0) {
       dispatch_sync(_sshQueue, ^{
         for (id client in _sshClients) {
+          // TODO We need the kill here because of the Proxy connections, but if we simplify, SSH will just be a
+          // regular child session.
           [client kill];
         }
       });
@@ -470,5 +469,8 @@
   thread_stderr = NULL;
 }
 
+- (void)lineSubmitted:(NSString *)line { 
+  [self enqueueCommand:line];
+}
 
 @end

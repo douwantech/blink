@@ -35,6 +35,7 @@
 #import "BKFont.h"
 #import "BKTheme.h"
 #import "TermJS.h"
+#import "LayoutConstraintManager.h"
 #import <AVFoundation/AVFoundation.h>
 
 #import "Blink-Swift.h"
@@ -75,7 +76,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 }
 
 
-- (id)initWithFrame:(CGRect)frame
+- (instancetype)initWithFrame:(CGRect)frame termUIState:(TermUIState *)termUIState
 {
   self = [super initWithFrame:frame];
 
@@ -83,7 +84,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return self;
   }
   _touchID = 1000;
-  
+
   _selectionRect = CGRectZero;
   _layoutDebounceTimer = nil;
   _currentBounds = CGRectZero;
@@ -91,10 +92,13 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _jsBuffer = [[NSMutableString alloc] init];
   _touchesArray = [[NSMutableArray alloc] init];
 
+  self.termUIState = termUIState;
+
   [self _addWebView];
+  
   _coverView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, frame.size.height)];
-  [self addSubview:_coverView];
   _coverView.backgroundColor = [UIColor blackColor];
+  [self addSubview:_coverView];
   
   return self;
 }
@@ -110,48 +114,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)layoutSubviews {
   [super layoutSubviews];
-  
+
   _coverView.frame = self.bounds;
   [self bringSubviewToFront:_coverView];
-  
-  [_layoutDebounceTimer invalidate];
-  
-  if (CGRectEqualToRect(_currentBounds, CGRectZero)) {
-    [self _actualLayoutSubviews];
-    return;
-  }
-  
-  CGRect webViewFrame = [self webViewFrame];
-  if (CGRectEqualToRect(_currentBounds, self.bounds)
-      && UIEdgeInsetsEqualToEdgeInsets(_currentAdditionalInsets, self.additionalInsets)
-      && CGRectEqualToRect(webViewFrame, _webView.frame)
-      )
-  {
-    return;
-  }
-  
-  __weak typeof(self) weakSelf = self;
-  _layoutDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:NO block:^(NSTimer * _Nonnull timer) {
-    [weakSelf _actualLayoutSubviews];
-  }];
 }
 
-- (void)_actualLayoutSubviews {
-  CGRect webViewFrame = [self webViewFrame];
-  
-  if (!CGRectEqualToRect(_webView.frame, webViewFrame)) {
-    _webView.frame = webViewFrame;
-    _browserView.frame = webViewFrame;
-    if (_browserView) {
-      [self bringSubviewToFront:_browserView];
-    }
-  }
-
-  _currentBounds = self.bounds;
-  _currentAdditionalInsets = self.additionalInsets;
-}
 
 - (UIEdgeInsets)safeAreaInsets {
+  // Should be unused
+  NSAssert(true, @"Unused");
   return UIEdgeInsetsZero;
 }
 
@@ -159,7 +130,9 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   if (_layoutLocked) {
     return _layoutLockedFrame;
   }
-  return UIEdgeInsetsInsetRect(self.bounds, self.additionalInsets);
+  
+  // With constraints, return the actual frame of the WebView
+  return _webView.frame;
 }
 
 - (BOOL)canBecomeFirstResponder {
@@ -182,7 +155,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 //  configuration.limitsNavigationsToAppBoundDomains = YES;
   [configuration.userContentController addScriptMessageHandler:self name:@"interOp"];
 
-  _webView = [[SmarterTermInput alloc] initWithFrame:[self webViewFrame] configuration:configuration];
+  _webView = [[SmarterTermInput alloc] initWithFrame:CGRectZero configuration:configuration];
   _webView.UIDelegate = self;
   
   if (@available(iOS 16.0, *)) {
@@ -194,6 +167,55 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_webView addInteraction:_gestureInteraction];
   
   [self addSubview:_webView];
+}
+
+- (void)didMoveToSuperview {
+  [super didMoveToSuperview];
+  
+  // Setup constraints when view is added to superview (if not already done)
+  [self setupWebViewConstraints];
+}
+
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  
+  [self setupWebViewConstraints];
+}
+
+- (void)setupWebViewConstraints {
+  // Only setup if we haven't already set up constraints
+  if (self.constraintManager) {
+    return;
+  }
+  
+  if (!self.window) {
+    // Need a window to get keyboard layout guide
+    return;
+  }
+  
+  // Get current layout mode from stored termUIState
+  BKLayoutMode layoutMode = BKLayoutModeDefault;
+  if (self.termUIState) {
+    layoutMode = self.termUIState.layoutMode;
+    // Reset lock modes
+    self.termUIState.layoutLocked = NO;
+    self.termUIState.layoutLockedFrame = CGRectZero;
+  }
+  
+  self.constraintManager = [LayoutConstraintManager managerForView:_webView
+                                                        layoutMode:layoutMode 
+                                                    keyboardGuide:self.keyboardLayoutGuide];
+  
+  // Setup browser view constraints to match web view
+  if (_browserView) {
+    _browserView.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+      [_browserView.topAnchor constraintEqualToAnchor:_webView.topAnchor],
+      [_browserView.leadingAnchor constraintEqualToAnchor:_webView.leadingAnchor],
+      [_browserView.trailingAnchor constraintEqualToAnchor:_webView.trailingAnchor],
+      [_browserView.bottomAnchor constraintEqualToAnchor:_webView.bottomAnchor]
+    ]];
+  }
 }
 
 - (void)addBrowserWebView:(NSURL *)url agent: (NSString *)agent injectUIO: (BOOL) injectUIO
@@ -218,7 +240,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 //    configuration.limitsNavigationsToAppBoundDomains = YES;
 
 
-  _browserView = [[VSCodeInput alloc] initWithFrame:[self webViewFrame] configuration:configuration];
+  _browserView = [[VSCodeInput alloc] initWithFrame:CGRectZero configuration:configuration];
   _browserView.customUserAgent =
 //  [@"Mozilla/5.0 (Linux; Intel Mac OS X 10_15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15 " stringByAppendingString:agent];
   [@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15 " stringByAppendingString:agent];
@@ -231,6 +253,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_browserView setOpaque:NO];
   _browserView.backgroundColor = [UIColor clearColor];
   _browserView.scrollView.backgroundColor = [UIColor clearColor];
+  
+  // Setup browser view constraints to match web view
+  _browserView.translatesAutoresizingMaskIntoConstraints = NO;
+  [NSLayoutConstraint activateConstraints:@[
+    [_browserView.topAnchor constraintEqualToAnchor:_webView.topAnchor],
+    [_browserView.leadingAnchor constraintEqualToAnchor:_webView.leadingAnchor],
+    [_browserView.trailingAnchor constraintEqualToAnchor:_webView.trailingAnchor],
+    [_browserView.bottomAnchor constraintEqualToAnchor:_webView.bottomAnchor]
+  ]];
 
   NSURLRequest *request = [NSURLRequest requestWithURL:url];
   [_browserView loadRequest:request];
@@ -375,21 +406,52 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   }
 }
 
-                         
-- (void)loadWith:(MCPParams *)params;
+- (void)load
 {
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWith:params]];
-  
+  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWithTermUIState:self.termUIState]];
+
   NSString *path = [[NSBundle mainBundle] pathForResource:@"term" ofType:@"html"];
   NSURL *url = [NSURL fileURLWithPath:path];
   [_webView loadFileURL:url allowingReadAccessToURL:url];
 }
 
-- (void)reloadWith:(MCPParams *)params;
+- (void)applyTermUIState:(TermUIState *)termUIState
 {
-  [_webView.configuration.userContentController removeAllUserScripts];
-  [_webView.configuration.userContentController addUserScript:[self _termInitScriptWith:params]];
-  [_webView reload];
+  self.termUIState = termUIState;
+
+  NSArray<NSString *> *commands = [self _jsCommandsForTermUIState:termUIState];
+  NSString *js = [commands componentsJoinedByString:@"\n"];
+  [_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+    [self _syncTerminalState];
+  }];
+
+  if (termUIState.layoutMode != [self currentLayoutMode]) {
+    [self _setLayoutMode:termUIState.layoutMode];
+  }
+  if (termUIState.layoutLocked && !self.layoutLocked) {
+    self.layoutLockedFrame = termUIState.layoutLockedFrame;
+    if (self.constraintManager) {
+      [self.constraintManager setLayoutLocked:YES withFrame:termUIState.layoutLockedFrame];
+    }
+    self.layoutLocked = YES;
+  } else if (!termUIState.layoutLocked && self.layoutLocked) {
+    [self _unlockLayout];
+  }
+}
+
+// Reads back terminal-side state after JS changes. Currently just bgColor,
+// but could grow into a larger state dict as needed.
+- (void)_syncTerminalState
+{
+  [_webView evaluateJavaScript:@"_colorComponents(t.scrollPort_.screen_.style.backgroundColor)"
+             completionHandler:^(NSArray *bgColor, NSError *error) {
+    if (bgColor && [bgColor count] == 3) {
+      self.backgroundColor = [UIColor colorWithRed:[bgColor[0] floatValue] / 255.0f
+                                             green:[bgColor[1] floatValue] / 255.0f
+                                              blue:[bgColor[2] floatValue] / 255.0f
+                                             alpha:1];
+    }
+  }];
 }
 
 - (void)setWidth:(NSInteger)count
@@ -555,11 +617,16 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   if ([operation isEqualToString:@"selectionchange"]) {
     [self _handleSelectionChange:data];
   } else if ([operation isEqualToString:@"sigwinch"]) {
-    [_device viewWinSizeChanged:__winSizeFromJSON(data)];
+    struct winsize newWinSize = __winSizeFromJSON(data);
+    _termUIState.rows = newWinSize.ws_row;
+    _termUIState.cols = newWinSize.ws_col;
+    [_device viewWinSizeChanged:newWinSize];
   } else if ([operation isEqualToString:@"terminalReady"]) {
     [self _onTerminalReady:data];
   } else if ([operation isEqualToString:@"fontSizeChanged"]) {
-    [_device viewFontSizeChanged:[data[@"size"] integerValue]];
+    NSInteger size = [data[@"size"] integerValue];
+    _termUIState.fontSize = size;
+    [_device viewFontSizeChanged:size];
   } else if ([operation isEqualToString:@"copy"]) {
     [_device viewCopyString: data[@"content"]];
   } else if ([operation isEqualToString:@"alert"]) {
@@ -885,40 +952,46 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   return result;
 }
 
-- (WKUserScript *)_termInitScriptWith:(MCPParams *)params;
+- (NSArray<NSString *> *)_jsCommandsForTermUIState:(TermUIState *)termUIState
 {
-  NSMutableArray *script = [[NSMutableArray alloc] init];
+  NSMutableArray *commands = [[NSMutableArray alloc] init];
   BOOL lockdownMode = [[NSUserDefaults.standardUserDefaults objectForKey:@"LDMGlobalEnabled"] boolValue];
-  BKFont *selectedFont = [BKFont withName: params.fontName ?: [BLKDefaults selectedFontName]];
-  // In Lockdown mode, keep bundled fonts but disable non-bundled ones.
+  BKFont *selectedFont = [BKFont withName: termUIState.fontName ?: [BLKDefaults selectedFontName]];
   BKFont *font = (lockdownMode && selectedFont.isCustom) ? nil : selectedFont;
   NSString *fontFamily = font.name ?: (lockdownMode ? @"monospace" : nil);
   NSString *content = font.content;
   if (font && font.isCustom && content) {
-    [script addObject:term_appendUserCss(content)];
+    [commands addObject:term_appendUserCss(content)];
     fontFamily = [self _detectFontFamilyFromContent:content] ?: font.name;
   }
-  
-  [script addObject:@"function applyUserSettings() {"];
-  {
-    if (fontFamily) {
-      [script addObject: term_setFontFamily(fontFamily, font.systemWide ? @"dom" : @"canvas")];
-    }
-    
-    [script addObject:term_setBoldEnabled(params.enableBold)];
-    [script addObject:term_setBoldAsBright(params.boldAsBright)];
-    
-    NSString *themeContent = [[BKTheme withName: params.themeName ?: [BLKDefaults selectedThemeName]] content];
-    if (themeContent) {
-      [script addObject:themeContent];
-    }
-    
-    [script addObject:term_setFontSize(params.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(params.fontSize))];
-    
-    [script addObject: term_setCursorBlink([BLKDefaults isCursorBlink])];
-  }
-  [script addObject:@"};"];
 
+  if (fontFamily) {
+    [commands addObject:term_setFontFamily(fontFamily, font.systemWide ? @"dom" : @"canvas")];
+  }
+
+  [commands addObject:term_setBoldEnabled(termUIState.enableBold)];
+  [commands addObject:term_setBoldAsBright(termUIState.boldAsBright)];
+
+  NSString *themeContent = [[BKTheme withName: termUIState.themeName ?: [BLKDefaults selectedThemeName]] content];
+  if (themeContent) {
+    [commands addObject:themeContent];
+  }
+
+  [commands addObject:term_setFontSize(termUIState.fontSize == 0 ? [BLKDefaults selectedFontSize] : @(termUIState.fontSize))];
+  [commands addObject:term_setCursorBlink([BLKDefaults isCursorBlink])];
+
+  return commands;
+}
+
+- (WKUserScript *)_termInitScriptWithTermUIState:(TermUIState *)termUIState;
+{
+  BOOL lockdownMode = [[NSUserDefaults.standardUserDefaults objectForKey:@"LDMGlobalEnabled"] boolValue];
+  NSArray<NSString *> *commands = [self _jsCommandsForTermUIState:termUIState];
+
+  NSMutableArray *script = [[NSMutableArray alloc] init];
+  [script addObject:@"function applyUserSettings() {"];
+  [script addObjectsFromArray:commands];
+  [script addObject:@"};"];
   [script addObject:term_init(UIAccessibilityIsVoiceOverRunning(), lockdownMode)];
 
   return [[WKUserScript alloc] initWithSource:
@@ -943,6 +1016,7 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   [_webView.configuration.userContentController removeScriptMessageHandlerForName:@"interOp"];
 }
 
+
 - (void)dealloc {
   [self terminate];
   [_webView removeInteraction:_gestureInteraction];
@@ -953,6 +1027,102 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
   return YES;
+}
+
+- (NSInteger)rows {
+  return self.termUIState ? self.termUIState.rows : 0;
+}
+
+- (NSInteger)cols {
+  return self.termUIState ? self.termUIState.cols : 0;
+}
+
+// Public methods for layout state
+-(BKLayoutMode)currentLayoutMode {
+  if (self.termUIState) {
+    return self.termUIState.layoutMode;
+  }
+  return BKLayoutModeDefault;
+}
+
+-(BOOL)isLayoutLocked {
+  return self.layoutLocked;
+}
+
+// Layout mode control methods
+-(void)setLayoutModeFill {
+  [self _setLayoutMode:BKLayoutModeFill];
+}
+
+-(void)setLayoutModeFit {
+  [self _setLayoutMode:BKLayoutModeSafeFit];
+}
+
+-(void)setLayoutModeCover {
+  [self _setLayoutMode:BKLayoutModeCover];
+}
+
+-(void)toggleLayoutLock {
+  if (self.termUIState.layoutLocked) {
+    [self _unlockLayout];
+  } else {
+    [self _lockLayout];
+  }
+}
+
+// Private methods
+-(void)_setLayoutMode:(BKLayoutMode)layoutMode {
+  if (self.termUIState) {
+    self.termUIState.layoutMode = layoutMode;
+  }
+  
+  // If layout is locked, unlock it when changing layout mode
+  if (self.termUIState.layoutLocked) {
+    [self _unlockLayout];
+  }
+  
+  // Trigger layout update
+  [self setNeedsLayout];
+  
+  // Update constraints with new layout mode
+  if (self.constraintManager) {
+    [self.constraintManager updateLayoutMode:layoutMode];
+  }
+}
+
+-(void)_lockLayout {
+  if (self.termUIState) {
+    self.termUIState.layoutLocked = true;
+    self.termUIState.layoutLockedFrame = [self webViewFrame];
+  }
+  
+  // Update local state
+  self.layoutLockedFrame = [self webViewFrame];
+  
+  // Update constraint manager
+  if (self.constraintManager) {
+    [self.constraintManager setLayoutLocked:YES withFrame:[self webViewFrame]];
+  }
+  
+  self.layoutLocked = true;
+}
+
+-(void)_unlockLayout {
+  if (self.termUIState) {
+    self.termUIState.layoutLocked = false;
+    self.termUIState.layoutLockedFrame = CGRectZero;
+  }
+  
+  // Update local state
+  self.layoutLocked = false;
+  
+  // Update constraint manager
+  if (self.constraintManager) {
+    [self.constraintManager setLayoutLocked:NO withFrame:CGRectZero];
+  }
+  
+  // Trigger layout update
+  [self setNeedsLayout];
 }
 
 @end
@@ -988,17 +1158,17 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
     NSMutableArray *layoutActions = [[NSMutableArray alloc] init];
     
     if ([[DeviceInfo shared] hasCorners]) {
-      BKLayoutMode mode = [self _currentLayoutMode];
+      BKLayoutMode mode = [self currentLayoutMode];
       UICommand *fitCmd = [UICommand commandWithTitle:@"Fit" image: nil
-                                               action:@selector(_setLayoutModeFit) propertyList:nil];
+                                               action:@selector(setLayoutModeFit) propertyList:nil];
       //      fitCmd.attributes = UIMenuElementAttributesKeepsMenuPresented;
       fitCmd.state = mode == BKLayoutModeSafeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
       UICommand *fillCmd = [UICommand commandWithTitle:@"Fill" image: nil
-                                                action:@selector(_setLayoutModeFill) propertyList:nil];
+                                                action:@selector(setLayoutModeFill) propertyList:nil];
       //      fillCmd.attributes = UIMenuElementAttributesKeepsMenuPresented;
       fillCmd.state = mode == BKLayoutModeFill ? UIMenuElementStateOn : UIMenuElementStateOff;
       UICommand *coverCmd = [UICommand commandWithTitle:@"Cover" image: nil
-                                                 action:@selector(_setLayoutModeCover) propertyList:nil];
+                                                 action:@selector(setLayoutModeCover) propertyList:nil];
       coverCmd.state = mode == BKLayoutModeCover ? UIMenuElementStateOn : UIMenuElementStateOff;
       //      coverCmd.attributes = UIMenuElementAttributesKeepsMenuPresented;
       UIMenu *layoutMenu = [UIMenu menuWithTitle:@"Mode" image:nil identifier:nil options:UIMenuOptionsDisplayInline children: @[ fitCmd, fillCmd, coverCmd ]];
@@ -1008,29 +1178,15 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
     
     if ([self _isLayoutLocked]) {
       [layoutActions addObject:[UICommand commandWithTitle:@"Unlock" image: [UIImage systemImageNamed:@"lock.slash"]
-                                                    action:@selector(_changeLayoutLock) propertyList:nil]];
+                                                    action:@selector(_unlockLayout) propertyList:nil]];
     } else {
       [layoutActions addObject:[UICommand commandWithTitle:@"Lock" image: [UIImage systemImageNamed:@"lock"]
-                                                    action:@selector(_changeLayoutLock) propertyList:nil]];
+                                                    action:@selector(_lockLayout) propertyList:nil]];
     }
     
     UIMenu *layoutMenu = [UIMenu menuWithTitle:@"Layout" image:[UIImage systemImageNamed:@"squareshape.squareshape.dashed"] identifier:nil options:UIMenuOptionsSingleSelection children:layoutActions];
     
     [actions addObject:layoutMenu];
-    
-    UICommand *closeTabCmd = [UICommand commandWithTitle:@"Close Tab" image: [UIImage systemImageNamed:@"xmark.rectangle"]
-                                                  action:@selector(_closeCurrentTab) propertyList:nil];
-    
-    closeTabCmd.attributes = UIMenuElementAttributesDestructive;
-    
-    UIMenu *tabsMenu = [UIMenu menuWithTitle:@"Tab" image:[UIImage systemImageNamed:@"rectangle"] identifier:nil options:UIMenuOptionsSingleSelection children:@[
-      [UICommand commandWithTitle:@"New Tab" image: [UIImage systemImageNamed:@"plus.rectangle"]
-                           action:@selector(_createNewTab) propertyList:nil],
-      [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[closeTabCmd] ]
-      
-    ]];
-    
-    [actions addObject:tabsMenu];
   }
   
   
@@ -1070,44 +1226,9 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   return [UIMenu menuWithChildren:actions];
 }
 
-- (void)_changeLayoutLock {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp.currentTerm toggleLayoutLock];
-}
 
 - (bool)_isLayoutLocked {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  return sp.currentTerm.sessionParams.layoutLocked;
-}
-
--(void)_setLayoutModeFill {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp.currentTerm setLayoutModeWithLayoutMode:BKLayoutModeFill];
-}
-
--(void)_setLayoutModeFit {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp.currentTerm setLayoutModeWithLayoutMode:BKLayoutModeSafeFit];
-}
-
--(void)_setLayoutModeCover {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp.currentTerm setLayoutModeWithLayoutMode:BKLayoutModeCover];
-}
-
--(BKLayoutMode)_currentLayoutMode {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  return sp.currentTerm.sessionParams.layoutMode;
-}
-
--(void)_closeCurrentTab {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp closeShellAction];
-}
-
--(void)_createNewTab {
-  SpaceController *sp = (SpaceController *)self.window.rootViewController;
-  [sp newShellAction];
+  return self.layoutLocked;
 }
 
 - (void)setCmdKeyPressed:(BOOL)pressed {
