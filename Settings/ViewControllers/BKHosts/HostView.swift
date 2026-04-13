@@ -47,6 +47,8 @@ struct FileDomainView: View {
   @State private var _errorMessage = ""
 
   @State private var showValidateConnectionProgress = false
+  // Need to hold the Conn as otherwise it will be cleaned up during the validation and cancel.
+  @State private var validateConnectionConn: FilesTranslatorConnection? = nil
   @State private var validateConnectionCompletion: Subscribers.Completion<ValidationError>? = nil
   @State private var validateConnectionCancellable: AnyCancellable? = nil
 
@@ -81,7 +83,10 @@ struct FileDomainView: View {
                 title: Text("Validating Connection"),
                 message: Text("Connecting to remote..."),
                 // message: Text(validateConnectionProgressMessage),
-                dismissButton: .cancel(Text("Cancel"), action: { self.validateConnectionCancellable = nil })
+                dismissButton: .cancel(Text("Cancel"), action: {
+                  self.validateConnectionCancellable = nil
+                  self.validateConnectionConn = nil
+                })
               )
             }
           }
@@ -156,6 +161,7 @@ struct FileDomainView: View {
                                          configurator: BlinkConfigFactoryConfiguration())
     self.validateConnectionCancellable = nil
     self.validateConnectionCompletion = nil
+    self.validateConnectionConn = conn
     // self.isValidatingConnection = true
     self.showValidateConnectionProgress = true
 
@@ -164,7 +170,7 @@ struct FileDomainView: View {
       .sink(
         receiveCompletion: {
           self.validateConnectionCompletion = $0
-          //self.showValidateConnectionProgress = false
+          self.validateConnectionConn = nil
         },
         receiveValue: { _ in }
       )
