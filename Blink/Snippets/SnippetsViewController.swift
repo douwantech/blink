@@ -91,6 +91,7 @@ class PassThroughContainerView: UIView {
 class SnippetsViewController: UIHostingController<SwiftUISnippetsView>, UIGestureRecognizerDelegate{
   var model: SearchModel!
   var tapGestureRecogninzer: UITapGestureRecognizer!
+  var pendingOpenScratch: Bool = false
   var hostingView: UIView?
 
   override func loadView() {
@@ -142,6 +143,10 @@ class SnippetsViewController: UIHostingController<SwiftUISnippetsView>, UIGestur
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     self.model.inputView?.becomeFirstResponder()
+    if pendingOpenScratch {
+      pendingOpenScratch = false
+      self.model.openScratch()
+    }
   }
   
   @objc func _onTap(_ recognizer: UITapGestureRecognizer) {

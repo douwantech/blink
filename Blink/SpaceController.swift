@@ -1221,6 +1221,7 @@ extension SpaceController: SnippetContext {
     do {
       self.view.window?.makeKeyAndVisible()
       let ctrl = try SnippetsViewController.create(context: receiver, transitionFrame: _blinkMenu?.bounds)
+      ctrl.pendingOpenScratch = openScratch
       DispatchQueue.main.async {
         ctrl.view.frame = self.view.bounds
         ctrl.willMove(toParent: self)
@@ -1229,11 +1230,6 @@ extension SpaceController: SnippetContext {
         ctrl.didMove(toParent: self)
         self._snippetsVC = ctrl
         self._isSnipsInputModeActive = true
-
-        // Open scratch immediately
-        if openScratch {
-          ctrl.model.openScratch()
-        }
       }
     } catch {
       self.showAlert(msg: "Could not display Snips: \(error)")
