@@ -291,15 +291,27 @@ class SearchModel: ObservableObject {
   }
 
   func sendContentToReceiver(content: String, shellOutputFormatter: ShellOutputFormatter) {
-    let content = shellOutputFormatter.format(content)
-    self.snippetContext?.providerSnippetReceiver()?.receive(content)
+    let formatted = shellOutputFormatter.format(content)
+    self.snippetContext?.providerSnippetReceiver()?.receive(formatted)
+    cleanupAfterSend()
+  }
 
+  func sendPromptContentToReceiver(content: String) {
+    let formatted = ShellOutputFormatter.raw.format(content)
+    let receiver = self.snippetContext?.providerSnippetReceiver()
+    receiver?.receive(formatted)
+
+    // Prompt submit trails the content so shells don't read it as part of the same sequence.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+      receiver?.receive("\r")
+      self.cleanupAfterSend()
+    }
+  }
+
+  private func cleanupAfterSend() {
     if isPinnedMode {
-      // In pinned mode: keep editor open, just clear input
       self.input = ""
-      // Editor will handle clearing its own text view
     } else {
-      // Normal mode: close everything
       self.editingSnippet = nil
       self.input = ""
       self.snippetContext?.dismissSnippetsController()
@@ -384,8 +396,11 @@ public protocol SnippetContext {
 
 extension TermDevice: SnippetReceiver {
   public func receive(_ content: String) {
-//    self.view?.paste(content)
-    self.write(inDirectly: content)
+    if self.rawMode {
+      self.write(inDirectly: content)
+    } else {
+      self.view?.paste(content)
+    }
   }
 }
 

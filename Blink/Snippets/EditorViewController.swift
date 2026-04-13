@@ -301,13 +301,7 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
       model.sendContentToReceiver(content: textView.text, shellOutputFormatter: .lineBySemicolon)
 
     case .prompt:
-      let content = textView.text ?? ""
-      model.sendContentToReceiver(content: content, shellOutputFormatter: .raw)
-
-      // Add newline with delay to submit. This simulates typing, otherwise the prompt introduces a newline.
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-        self?.model.sendContentToReceiver(content: "\r", shellOutputFormatter: .unprocessed)
-      }
+      model.sendPromptContentToReceiver(content: textView.text ?? "")
     }
 
     if model.isPinnedMode {
