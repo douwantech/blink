@@ -227,6 +227,8 @@ class NewSnippetViewController: UIViewController, TextViewDelegate, UINavigation
     }
 
     self.onFieldChange()
+
+    textView.configure(for: .shell)
   }
   
   @objc func onFieldChange() {
