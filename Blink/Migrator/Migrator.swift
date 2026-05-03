@@ -31,6 +31,7 @@
 
 
 import Foundation
+import SSH
 
 
 @objc class Migrator : NSObject {
@@ -41,6 +42,62 @@ import Foundation
                          MigrationStyleFromDefaults(),
                          MigrationWipeSessionRegistry()
                         ])
+  }
+
+  @objc static func setupAutoSSHKey() {
+    let keyID = "AutoMac"
+    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    let logURL = docs.appendingPathComponent("autossh.log")
+    func dlog(_ s: String) {
+      let line = "\(Date()) \(s)\n"
+      if let data = line.data(using: .utf8) {
+        if let h = try? FileHandle(forWritingTo: logURL) {
+          h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+          try? data.write(to: logURL)
+        }
+      }
+    }
+    dlog("setupAutoSSHKey enter, withID=\(BKPubKey.withID(keyID) as Any)")
+    let blob = """
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBhKWYQft5vRmWA8zd74u3KLW/99sshjHt66dv2h72c9AAAAJDL4pQ6y+KU
+OgAAAAtzc2gtZWQyNTUxOQAAACBhKWYQft5vRmWA8zd74u3KLW/99sshjHt66dv2h72c9A
+AAAECLn2rrwcjqcn0pCEduLsPAs37coc5NnEdCfMrD9EZiKmEpZhB+3m9GZYDzN3vi7cot
+b/32yyGMe3rp2/aHvZz0AAAACWJsaW5rLXNpbQECAwQ=
+-----END OPENSSH PRIVATE KEY-----
+
+"""
+
+    var justImported = false
+    if BKPubKey.withID(keyID) == nil {
+      guard let data = blob.data(using: .utf8) else {
+        dlog("data nil"); return
+      }
+      dlog("blob len=\(data.count)")
+      do {
+        let key = try SSHKey(fromFileBlob: data, passphrase: "")
+        dlog("SSHKey ok")
+        try BKPubKey.addKeychainKey(id: keyID, key: key, comment: "auto")
+        dlog("addKeychainKey ok")
+        BKPubKey.saveIDS()
+        dlog("saveIDS ok, withID now=\(BKPubKey.withID(keyID) as Any)")
+        justImported = true
+      } catch {
+        dlog("error: \(error)")
+      }
+    } else {
+      dlog("AutoMac exists, skip import")
+    }
+
+    let desired = BKAgentSettings(prompt: .Allow, keys: [keyID])
+    let current = (try? SSHDefaultAgent.getSettings()) ?? nil
+    dlog("current=\(String(describing: current)) desired=\(desired) justImported=\(justImported)")
+    if justImported || current != desired {
+      try? SSHDefaultAgent.setSettings(desired)
+      dlog("setSettings done")
+    }
   }
 
   static func perform(steps: [MigrationStep]) {

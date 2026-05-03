@@ -127,7 +127,8 @@
       }
     #else
     if (_device) {
-      [_device prompt:@"blink> " secure:NO shell:YES];
+      [Migrator setupAutoSSHKey];
+      [self enqueueCommand:@"ssh -t apple@192.168.0.63 \"/usr/local/bin/tmux new-session -A -s talkai\""];
     }
     #endif
   });
