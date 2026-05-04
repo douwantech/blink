@@ -290,10 +290,15 @@ class UIScrollViewWithoutHitTest: UIScrollView {
           target.perform(#selector(focusOnShellAction), with: self)
         }
       }
+
+      _wkWebView?.evaluateJavaScript("typeof blink_url_at_point === 'function' ? blink_url_at_point(\(point.x), \(point.y)) : ''") { result, _ in
+        guard let s = result as? String, !s.isEmpty, let url = URL(string: s) else { return }
+        blink_openurl(url)
+      }
     default: break
     }
   }
-  
+
   @objc func _on2fTap(_ recognizer: UITapGestureRecognizer) {
     switch recognizer.state {
     case .recognized:
@@ -504,12 +509,16 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
       _termScrollView.recenterIfNeeded(force: true)
     }
   }
-  
+
+  func scrollViewWillBeginDecelerating(_ scrollView: UIScrollView) {
+    if scrollView == _termScrollView {
+      scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+    }
+  }
+
   func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
     if scrollView == _termScrollView {
-      if !decelerate {
-        _termScrollView.recenterIfNeeded(force: true)
-      }
+      _termScrollView.recenterIfNeeded(force: true)
     }
   }
 }

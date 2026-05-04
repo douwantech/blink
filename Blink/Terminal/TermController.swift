@@ -343,7 +343,7 @@ extension TermController: TermDeviceDelegate {
   func viewDidReceiveBellRing() {
 
     if BLKDefaults.isPlaySoundOnBellOn() && _termView.isFocused() {
-      AudioServicesPlaySystemSound(1103);
+      AudioServicesPlaySystemSound(1103)
     }
 
     viewNotify(["title": "🔔 \(_termView.title ?? "")", "type": BKNotificationType.bell.rawValue])

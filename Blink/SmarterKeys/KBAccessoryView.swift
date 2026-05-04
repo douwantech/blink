@@ -34,7 +34,9 @@ import UIKit
 class KBAccessoryView: UIInputView {
   private let _kbView: KBView
   private var _glassEffectView: UIVisualEffectView?
-  
+  private let _voiceButton = UIButton(type: .system)
+  var onVoiceButtonTap: (() -> Void)?
+
   init(kbView: KBView) {
     _kbView = kbView
     super.init(frame: .zero, inputViewStyle: .keyboard)
@@ -42,33 +44,48 @@ class KBAccessoryView: UIInputView {
     allowsSelfSizing = true
 
     self.frame.size.height = _kbView.intrinsicContentSize.height
-    
+
     if #available(iOS 26.0, *) {
       _setupGlassMaterialEffect()
     } else {
-      // Earlier iOS versions: Add kbView directly to UIInputView
       addSubview(_kbView)
     }
 
     _kbView.translatesAutoresizingMaskIntoConstraints = false
+
+    _voiceButton.setImage(UIImage(systemName: "mic.fill"), for: .normal)
+    _voiceButton.tintColor = .systemBlue
+    _voiceButton.translatesAutoresizingMaskIntoConstraints = false
+    _voiceButton.addTarget(self, action: #selector(_voiceTapped), for: .touchUpInside)
+    addSubview(_voiceButton)
+
+    NSLayoutConstraint.activate([
+      _voiceButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+      _voiceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      _voiceButton.widthAnchor.constraint(equalToConstant: 40),
+      _voiceButton.heightAnchor.constraint(equalToConstant: 32),
+    ])
+
     let margin: CGFloat = 0.0
-    
+
     if #available(iOS 26.0, *) {
       guard let glassEffectView = _glassEffectView else { return }
       NSLayoutConstraint.activate([
         _kbView.leadingAnchor.constraint(equalTo: glassEffectView.contentView.leadingAnchor, constant: margin),
-        _kbView.trailingAnchor.constraint(equalTo: glassEffectView.contentView.trailingAnchor, constant: -margin),
-        //_kbView.topAnchor.constraint(equalTo: glassEffectView.contentView.topAnchor),
+        _kbView.trailingAnchor.constraint(equalTo: _voiceButton.leadingAnchor, constant: -4),
         _kbView.bottomAnchor.constraint(equalTo: glassEffectView.contentView.bottomAnchor)
       ])
     } else {
       NSLayoutConstraint.activate([
         _kbView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: margin),
-        _kbView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -margin),
-        //_kbView.topAnchor.constraint(equalTo: topAnchor),
+        _kbView.trailingAnchor.constraint(equalTo: _voiceButton.leadingAnchor, constant: -4),
         _kbView.bottomAnchor.constraint(equalTo: bottomAnchor)
       ])
     }
+  }
+
+  @objc private func _voiceTapped() {
+    onVoiceButtonTap?()
   }
   
   required init?(coder: NSCoder) {

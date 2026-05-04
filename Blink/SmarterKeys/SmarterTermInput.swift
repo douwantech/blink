@@ -44,7 +44,10 @@ import Combine
   }()
   
   private var _inputAccessoryView: UIView? = nil
-  
+
+  private var _voiceInputView: VoiceInputView?
+  private(set) var useVoiceInput: Bool = true
+
   var isHardwareKB: Bool { kbView.traits.isHKBAttached }
   
   weak var device: TermDevice? = nil {
@@ -203,7 +206,11 @@ import Combine
 
     if let _ = _inputAccessoryView as? KBAccessoryView {
     } else {
-      _inputAccessoryView = KBAccessoryView(kbView: kbView)
+      let av = KBAccessoryView(kbView: kbView)
+      av.onVoiceButtonTap = { [weak self] in
+        self?.setUseVoiceInput(true)
+      }
+      _inputAccessoryView = av
     }
   }
 
@@ -211,8 +218,46 @@ import Combine
     if isHardwareKB {
       return nil
     }
-    
+    if useVoiceInput {
+      return nil
+    }
     return _inputAccessoryView
+  }
+
+  override var inputView: UIView? {
+    guard useVoiceInput else { return nil }
+    if _voiceInputView == nil {
+      let v = VoiceInputView()
+      v.delegate = self
+      _voiceInputView = v
+    }
+    return _voiceInputView
+  }
+
+  func setUseVoiceInput(_ enabled: Bool) {
+    guard useVoiceInput != enabled else { return }
+    useVoiceInput = enabled
+    if let cv = contentView() {
+      cv.reloadInputViews()
+    } else {
+      reloadInputViews()
+    }
+  }
+
+  @objc private func _toggleVoiceInputAction() {
+    setUseVoiceInput(!useVoiceInput)
+  }
+
+  override var keyCommands: [UIKeyCommand]? {
+    var cmds = super.keyCommands ?? []
+    let toggle = UIKeyCommand(
+      title: "切换语音/键盘输入",
+      action: #selector(_toggleVoiceInputAction),
+      input: "M",
+      modifierFlags: [.command, .shift]
+    )
+    cmds.append(toggle)
+    return cmds
   }
 
   func sync(traits: KBTraits, device: KBDevice, hideSmartKeysWithHKB: Bool) {
@@ -450,7 +495,8 @@ extension SmarterTermInput {
          #selector(Self.shareSelection(_:)):
       return sender != nil && device?.view?.hasSelection == true
     case #selector(Self.copyLink(_:)),
-         #selector(Self.openLink(_:)):
+         #selector(Self.openLink(_:)),
+         #selector(Self.viewImageInApp(_:)):
       return sender != nil && device?.view?.detectedLink != nil
     default:
 //      if #available(iOS 15.0, *) {
@@ -496,6 +542,18 @@ extension SmarterTermInput {
     deviceView.cleanSelection()
   }
   
+  @objc func viewImageInApp(_ sender: Any) {
+    guard
+      let deviceView = device?.view,
+      let url = deviceView.detectedLink,
+      let presenter = window?.rootViewController?.topPresented
+    else {
+      return
+    }
+    deviceView.cleanSelection()
+    BlinkImageViewerController.present(url: url, from: presenter)
+  }
+
   @objc func openLink(_ sender: Any) {
     guard
       let deviceView = device?.view,
@@ -553,6 +611,26 @@ extension SmarterTermInput {
 }
 
 
+extension SmarterTermInput: VoiceInputViewDelegate {
+  func voiceInput(_ view: VoiceInputView, didCommitText text: String) {
+    guard let device = device else { return }
+    device.write(text)
+    device.write("\r")
+  }
+
+  func voiceInputDidRequestKeyboard(_ view: VoiceInputView) {
+    setUseVoiceInput(false)
+  }
+
+  func voiceInputDidRequestDismiss(_ view: VoiceInputView) {
+    _ = resignFirstResponder()
+  }
+
+  func voiceInputDidRequestSendEsc(_ view: VoiceInputView) {
+    device?.write("\u{1B}")
+  }
+}
+
 extension SmarterTermInput: TermInput {
   var secureTextEntry: Bool {
     get {
@@ -563,6 +641,16 @@ extension SmarterTermInput: TermInput {
     }
   }
   
+}
+
+private extension UIViewController {
+  var topPresented: UIViewController {
+    var top: UIViewController = self
+    while let presented = top.presentedViewController {
+      top = presented
+    }
+    return top
+  }
 }
 
 class VSCodeInput: SmarterTermInput {

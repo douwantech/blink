@@ -128,7 +128,7 @@
     #else
     if (_device) {
       [Migrator setupAutoSSHKey];
-      [self enqueueCommand:@"ssh -t apple@192.168.0.63 \"/usr/local/bin/tmux new-session -A -s talkai\""];
+      [self enqueueCommand:@"ssh -t apple@192.168.0.63 \"/usr/local/bin/tmux new-session -A -s blink\""];
     }
     #endif
   });

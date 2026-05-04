@@ -34,6 +34,7 @@
 #include "ios_system/ios_system.h"
 #include "ios_error.h"
 #include "openurl.h"
+#import "Blink-Swift.h"
 
 NSArray<NSString *> *__blink_known_browsers(void) {
   return @[
@@ -97,6 +98,9 @@ NSURL *__blink_browser_app_url(NSURL *srcURL) {
 
 void blink_openurl(NSURL *url) {
   dispatch_async(dispatch_get_main_queue(), ^{
+    if ([BlinkImageURLRouter tryPresentImageFor:url]) {
+      return;
+    }
     NSURL *browserAppURL = __blink_browser_app_url(url);
     [[UIApplication sharedApplication] openURL:browserAppURL ?: url
                                        options:@{}

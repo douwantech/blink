@@ -389,6 +389,8 @@
 		D2A0C2162600D16300F0DF97 /* Protobuf_C_.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */; };
 		D2A0C2172600D16300F0DF97 /* Protobuf_C_.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D2A5221E230D279B0010AC04 /* SmarterTermInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */; };
+		D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229A230D279B0010AC04 /* VoiceInputView.swift */; };
+		D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */; };
 		D2A52227231304FF0010AC04 /* UIGestureRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52226231304FE0010AC04 /* UIGestureRecognizer.swift */; };
 		D2A54CB129801062009D79FE /* BuildAccountModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A54CB029801062009D79FE /* BuildAccountModel.swift */; };
 		D2A6398928CFA0B90066FD18 /* SwiftCBOR in Frameworks */ = {isa = PBXBuildFile; productRef = D2A6398828CFA0B90066FD18 /* SwiftCBOR */; };
@@ -1147,6 +1149,8 @@
 		D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = extraCommandsDictionary.plist; sourceTree = "<group>"; };
 		D2A0C63E20AAD98D001CF38F /* ios_error.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ios_error.h; sourceTree = "<group>"; };
 		D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmarterTermInput.swift; sourceTree = "<group>"; };
+		D2A5229A230D279B0010AC04 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
+		D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkImageViewerController.swift; sourceTree = "<group>"; };
 		D2A52226231304FE0010AC04 /* UIGestureRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIGestureRecognizer.swift; sourceTree = "<group>"; };
 		D2A54CB029801062009D79FE /* BuildAccountModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildAccountModel.swift; sourceTree = "<group>"; };
 		D2A80978270713D200CD0FAF /* FeatureFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureFlags.swift; sourceTree = "<group>"; };
@@ -2185,6 +2189,8 @@
 				D241CBC823040733003D64A5 /* KBTraits.swift */,
 				D241CBC223040733003D64A5 /* KBView.swift */,
 				D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */,
+				D2A5229A230D279B0010AC04 /* VoiceInputView.swift */,
+				D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */,
 				D2B1F8DC23265A0600634D67 /* CommandsHUDView.swift */,
 				D2B1F8DE23265A4700634D67 /* CommandControl.swift */,
 			);
@@ -3544,6 +3550,8 @@
 				BD1758AC26EA8C5400AEC545 /* MenuController.swift in Sources */,
 				074F30791D062A2800A73445 /* main.m in Sources */,
 				D2A5221E230D279B0010AC04 /* SmarterTermInput.swift in Sources */,
+				D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */,
+				D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */,
 				D2B1DEB52A669342001C6D3B /* 1620Migration.swift in Sources */,
 				D23D258823438B15002850CA /* UIColor.swift in Sources */,
 				D2AD8E7627A2BAFA00DED28D /* Purchases.swift in Sources */,

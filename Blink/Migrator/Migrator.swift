@@ -32,6 +32,7 @@
 
 import Foundation
 import SSH
+import UserNotifications
 
 
 @objc class Migrator : NSObject {
@@ -59,6 +60,22 @@ import SSH
       }
     }
     dlog("setupAutoSSHKey enter, withID=\(BKPubKey.withID(keyID) as Any)")
+
+    if !UserDefaults.standard.bool(forKey: "Blink.oscNotificationsAutoEnabled") {
+      BLKDefaults.setOscNotifications(true)
+      UserDefaults.standard.set(true, forKey: "Blink.oscNotificationsAutoEnabled")
+      BLKDefaults.save()
+      dlog("oscNotifications auto-enabled")
+    }
+    if !UserDefaults.standard.bool(forKey: "Blink.bellSoundAutoEnabled") {
+      BLKDefaults.setPlaySoundOnBell(true)
+      UserDefaults.standard.set(true, forKey: "Blink.bellSoundAutoEnabled")
+      BLKDefaults.save()
+      dlog("playSoundOnBell auto-enabled")
+    }
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+      dlog("notification authorization granted=\(granted)")
+    }
     let blob = """
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW

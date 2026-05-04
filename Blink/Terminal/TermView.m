@@ -761,6 +761,8 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
                              [self _menuActionTitleFromNSURL:_detectedLink], urlName];
     [items addObject:[[UIMenuItem alloc] initWithTitle:actionTitle
                                                 action:@selector(openLink:)]];
+    [items addObject:[[UIMenuItem alloc] initWithTitle:@"View Image"
+                                                action:@selector(viewImageInApp:)]];
   } else {
     [items addObject:[[UIMenuItem alloc] initWithTitle:@"Search"
                                                 action:@selector(googleSelection:)]];

@@ -78,7 +78,7 @@ function term_setupDefaults() {
   term_set('audible-bell-sound', '');
   term_set('receive-encoding', 'raw'); // we are UTF8
   term_set('allow-images-inline', true); // need to make it work
-  term_set('scroll-wheel-may-send-arrow-keys', true)
+  term_set('scroll-wheel-may-send-arrow-keys', false)
 }
 
 function term_processKB(str) {
@@ -277,6 +277,40 @@ function term_reportMouseClick(x, y, buttons, display) {
   if (display) {
      term_displayInput("👆", display);
   }
+}
+
+function blink_url_at_point(x, y) {
+  function findIn(doc, lx, ly) {
+    var range = doc.caretRangeFromPoint ? doc.caretRangeFromPoint(lx, ly) : null;
+    if (!range) return '';
+    var node = range.startContainer;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return '';
+    var text = node.textContent || '';
+    var off = range.startOffset;
+    var re = /https?:\/\/[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+/g;
+    var m;
+    while ((m = re.exec(text))) {
+      if (off >= m.index && off <= m.index + m[0].length) {
+        return m[0];
+      }
+    }
+    return '';
+  }
+  try {
+    var r = findIn(document, x, y);
+    if (r) return r;
+    var frames = document.querySelectorAll('iframe');
+    for (var i = 0; i < frames.length; i++) {
+      try {
+        var doc = frames[i].contentDocument;
+        if (!doc) continue;
+        var rect = frames[i].getBoundingClientRect();
+        r = findIn(doc, x - rect.left, y - rect.top);
+        if (r) return r;
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return '';
 }
 
 function term_reportMouseEvent(name, x, y, buttons) {
