@@ -8,6 +8,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestKeyboard(_ view: VoiceInputView)
   func voiceInputDidRequestDismiss(_ view: VoiceInputView)
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView)
+  func voiceInputDidRequestClearLine(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -24,6 +25,7 @@ final class VoiceInputView: UIInputView {
   private let settingsButton = UIButton(type: .system)
   private let minimizeButton = UIButton(type: .system)
   private let escButton = UIButton(type: .system)
+  private let clearTextButton = UIButton(type: .system)
   private let hintLabel = UILabel()
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
@@ -127,12 +129,20 @@ final class VoiceInputView: UIInputView {
     escButton.layer.cornerRadius = 6
     escButton.addTarget(self, action: #selector(escTapped), for: .touchUpInside)
 
+    clearTextButton.setTitle("Clear", for: .normal)
+    clearTextButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+    clearTextButton.setTitleColor(.secondaryLabel, for: .normal)
+    clearTextButton.layer.borderColor = UIColor.secondaryLabel.cgColor
+    clearTextButton.layer.borderWidth = 1
+    clearTextButton.layer.cornerRadius = 6
+    clearTextButton.addTarget(self, action: #selector(clearTextTapped), for: .touchUpInside)
+
     hintLabel.font = .systemFont(ofSize: 13)
     hintLabel.textColor = .tertiaryLabel
     hintLabel.textAlignment = .center
     hintLabel.text = currentLocaleTitle()
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, hintLabel].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, hintLabel].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -172,6 +182,11 @@ final class VoiceInputView: UIInputView {
       escButton.centerYAnchor.constraint(equalTo: keyboardButton.centerYAnchor),
       escButton.widthAnchor.constraint(equalToConstant: 44),
       escButton.heightAnchor.constraint(equalToConstant: 30),
+
+      clearTextButton.trailingAnchor.constraint(equalTo: escButton.leadingAnchor, constant: -4),
+      clearTextButton.centerYAnchor.constraint(equalTo: escButton.centerYAnchor),
+      clearTextButton.widthAnchor.constraint(equalToConstant: 56),
+      clearTextButton.heightAnchor.constraint(equalToConstant: 30),
 
       hintLabel.leadingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: 8),
       hintLabel.centerYAnchor.constraint(equalTo: micButton.centerYAnchor),
@@ -366,6 +381,15 @@ final class VoiceInputView: UIInputView {
       sheet.prefersGrabberVisible = true
     }
     findViewController()?.present(nav, animated: true)
+  }
+
+  @objc private func clearTextTapped() {
+    if isRecording {
+      setMicButtonRecording(false)
+      stopRecording()
+    }
+    setText("")
+    delegate?.voiceInputDidRequestClearLine(self)
   }
 
   @objc private func escTapped() {

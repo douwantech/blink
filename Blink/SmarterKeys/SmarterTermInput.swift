@@ -629,6 +629,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView) {
     device?.write("\u{1B}")
   }
+
+  func voiceInputDidRequestClearLine(_ view: VoiceInputView) {
+    device?.write("\u{15}")
+  }
 }
 
 extension SmarterTermInput: TermInput {
