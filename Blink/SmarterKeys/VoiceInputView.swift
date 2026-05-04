@@ -811,7 +811,7 @@ final class VoiceSettingsViewController: UITableViewController {
       picker.voiceView = voiceView
       navigationController?.pushViewController(picker, animated: true)
     case (1, 1):
-      voiceView?.openAIConfigFromSettings()
+      presentAISettings()
     default: break
     }
   }
@@ -819,6 +819,47 @@ final class VoiceSettingsViewController: UITableViewController {
   @objc private func toggleAI(_ sw: UISwitch) {
     AITextPolisher.shared.enabled = sw.isOn
     voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
+  }
+
+  private func presentAISettings() {
+    let alert = UIAlertController(title: "AI 配置", message: "兼容 OpenAI 协议（智谱 GLM 等）", preferredStyle: .alert)
+    alert.addTextField { tf in
+      tf.placeholder = "API Key"
+      tf.text = AITextPolisher.shared.apiKey
+      tf.autocapitalizationType = .none
+      tf.autocorrectionType = .no
+      tf.clearButtonMode = .whileEditing
+    }
+    alert.addTextField { tf in
+      tf.placeholder = "模型 (如 glm-4.5)"
+      tf.text = AITextPolisher.shared.model
+      tf.autocapitalizationType = .none
+      tf.autocorrectionType = .no
+    }
+    alert.addTextField { tf in
+      tf.placeholder = "Base URL"
+      tf.text = AITextPolisher.shared.baseURL
+      tf.autocapitalizationType = .none
+      tf.autocorrectionType = .no
+      tf.keyboardType = .URL
+    }
+    alert.addTextField { tf in
+      tf.placeholder = "停顿延迟（秒，默认 3.5）"
+      tf.text = String(format: "%.1f", AITextPolisher.shared.debounceSeconds)
+      tf.keyboardType = .decimalPad
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+      let fields = alert.textFields ?? []
+      if fields.indices.contains(0), let k = fields[0].text { AITextPolisher.shared.apiKey = k }
+      if fields.indices.contains(1), let m = fields[1].text, !m.isEmpty { AITextPolisher.shared.model = m }
+      if fields.indices.contains(2), let u = fields[2].text, !u.isEmpty { AITextPolisher.shared.baseURL = u }
+      if fields.indices.contains(3), let s = fields[3].text, let d = Double(s), d > 0 {
+        AITextPolisher.shared.debounceSeconds = d
+      }
+      self?.tableView.reloadData()
+    })
+    present(alert, animated: true)
   }
 }
 
