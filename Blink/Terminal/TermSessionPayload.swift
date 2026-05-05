@@ -80,6 +80,8 @@ class MCPSessionPayload : TermSessionPayload {
 
   var session: Session? { _session }
 
+  var currentParams: MCPParams { _session?.sessionParams ?? _initialParams }
+
   init(params: MCPParams) {
     self._initialParams = params
   }

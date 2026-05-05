@@ -36,6 +36,7 @@ import UIKit
 class SessionMeta: Codable {
   fileprivate(set) var key: UUID = UUID()
   fileprivate(set) var isSuspended: Bool = false
+  var tabTitle: String? = nil
 }
 
 protocol SuspendableSession: class {

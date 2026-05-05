@@ -4,12 +4,14 @@ final class BlinkMachine: Codable {
   let id: String
   var name: String
   var host: String
+  var lanHost: String?
   var user: String
 
-  init(id: String = UUID().uuidString, name: String = "", host: String, user: String) {
+  init(id: String = UUID().uuidString, name: String = "", host: String, lanHost: String? = nil, user: String) {
     self.id = id
     self.name = name
     self.host = host
+    self.lanHost = lanHost
     self.user = user
   }
 
@@ -18,11 +20,73 @@ final class BlinkMachine: Codable {
   }
 }
 
+enum HostReachability {
+  private struct Cached { let reachable: Bool; let ts: Date }
+  private static var cache: [String: Cached] = [:]
+  private static let lock = NSLock()
+  private static let ttl: TimeInterval = 30
+  static let defaultTimeout: TimeInterval = 0.3
+
+  static func isReachable(host: String, port: UInt16 = 22, timeout: TimeInterval = defaultTimeout) -> Bool {
+    let key = "\(host):\(port)"
+    let now = Date()
+    lock.lock()
+    if let c = cache[key], now.timeIntervalSince(c.ts) < ttl {
+      lock.unlock()
+      return c.reachable
+    }
+    lock.unlock()
+    let ok = probe(host: host, port: port, timeout: timeout)
+    lock.lock(); cache[key] = Cached(reachable: ok, ts: now); lock.unlock()
+    return ok
+  }
+
+  static func invalidate() {
+    lock.lock(); cache.removeAll(); lock.unlock()
+  }
+
+  private static func probe(host: String, port: UInt16, timeout: TimeInterval) -> Bool {
+    var hints = addrinfo(
+      ai_flags: AI_NUMERICSERV,
+      ai_family: AF_UNSPEC,
+      ai_socktype: SOCK_STREAM,
+      ai_protocol: IPPROTO_TCP,
+      ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+    var res: UnsafeMutablePointer<addrinfo>? = nil
+    guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else {
+      return false
+    }
+    defer { freeaddrinfo(res) }
+    for ai in sequence(first: first.pointee, next: { $0.ai_next?.pointee }) {
+      if tryConnect(ai: ai, timeout: timeout) { return true }
+    }
+    return false
+  }
+
+  private static func tryConnect(ai: addrinfo, timeout: TimeInterval) -> Bool {
+    let fd = socket(ai.ai_family, ai.ai_socktype, ai.ai_protocol)
+    if fd < 0 { return false }
+    defer { close(fd) }
+    let flags = fcntl(fd, F_GETFL, 0)
+    _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    let r = connect(fd, ai.ai_addr, ai.ai_addrlen)
+    if r == 0 { return true }
+    if errno != EINPROGRESS { return false }
+    var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+    let n = poll(&pfd, 1, Int32(timeout * 1000))
+    if n <= 0 { return false }
+    if (pfd.revents & Int16(POLLOUT)) == 0 { return false }
+    var sockErr: Int32 = 0
+    var len: socklen_t = socklen_t(MemoryLayout<Int32>.size)
+    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockErr, &len) < 0 { return false }
+    return sockErr == 0
+  }
+}
+
 @objc final class BlinkMachineStore: NSObject {
   @objc static let shared = BlinkMachineStore()
 
   private let kMachines = "BlinkMachineStore.machines"
-  private let kCurrent = "BlinkMachineStore.currentId"
 
   private override init() { super.init() }
 
@@ -41,16 +105,7 @@ final class BlinkMachine: Codable {
     }
   }
 
-  var currentId: String? {
-    get { UserDefaults.standard.string(forKey: kCurrent) }
-    set { UserDefaults.standard.set(newValue, forKey: kCurrent) }
-  }
-
-  var currentMachine: BlinkMachine? {
-    let id = currentId
-    let arr = machines
-    return arr.first { $0.id == id } ?? arr.first
-  }
+  var currentMachine: BlinkMachine? { machines.first }
 
   @objc var hasAnyMachine: Bool { !machines.isEmpty }
 
@@ -74,14 +129,7 @@ final class BlinkMachine: Codable {
 
     let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
 
-    var session: String
-    if let s = tmuxSession, !s.isEmpty {
-      session = s
-    } else if let wid = workDirId {
-      session = "blink-\(wid.prefix(8))"
-    } else {
-      session = "blink"
-    }
+    var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
 
     let tmuxCmd = "/usr/local/bin/tmux new-session -A -s \(session)"
@@ -92,7 +140,19 @@ final class BlinkMachine: Codable {
     } else {
       remoteCmd = tmuxCmd
     }
-    return "ssh -t \(m.user)@\(m.host) \"\(remoteCmd)\""
+    return "ssh -t \(m.user)@\(Self.bestHost(for: m)) \"\(remoteCmd)\""
+  }
+
+  static func bestHost(for m: BlinkMachine) -> String {
+    let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
+    if lan.isEmpty { return m.host }
+    return HostReachability.isReachable(host: lan) ? lan : m.host
+  }
+
+  @objc static func effectiveTmuxSessionName(workDirId: String?, tmuxSession: String?) -> String {
+    if let s = tmuxSession, !s.isEmpty { return s }
+    if let wid = workDirId, !wid.isEmpty { return "blink-\(wid.prefix(8))" }
+    return "blink"
   }
 
   @objc func machineExists(forId machineId: String?) -> Bool {
@@ -100,7 +160,7 @@ final class BlinkMachine: Codable {
     return machines.contains { $0.id == id }
   }
 
-  @objc var currentMachineId: String? { currentId }
+  @objc var currentMachineId: String? { machines.first?.id }
 
   func addOrUpdate(_ machine: BlinkMachine) {
     var arr = machines
@@ -108,22 +168,12 @@ final class BlinkMachine: Codable {
       arr[idx] = machine
     } else {
       arr.append(machine)
-      if currentId == nil {
-        currentId = machine.id
-      }
     }
     machines = arr
   }
 
   func delete(id: String) {
     machines.removeAll { $0.id == id }
-    if currentId == id {
-      currentId = machines.first?.id
-    }
-  }
-
-  func setCurrent(id: String) {
-    currentId = id
   }
 
   @objc static func presentAddMachineIfNeeded() {
@@ -178,7 +228,7 @@ final class MachineListViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    "点选切当前机器，左滑删除，蓝色 i 按钮编辑。AutoMac 公钥：\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEpZhB+3m9GZYDzN3vi7cotb/32yyGMe3rp2/aHvZz0 blink-sim"
+    "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\nAutoMac 公钥：\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEpZhB+3m9GZYDzN3vi7cotb/32yyGMe3rp2/aHvZz0 blink-sim"
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -187,30 +237,19 @@ final class MachineListViewController: UITableViewController {
     cell.textLabel?.text = m.displayName
     cell.detailTextLabel?.text = "\(m.user)@\(m.host)"
     cell.detailTextLabel?.textColor = .secondaryLabel
-    cell.accessoryType = (m.id == BlinkMachineStore.shared.currentId) ? .checkmark : .detailButton
+    cell.accessoryType = .detailButton
     return cell
   }
 
   override func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: true)
     let m = BlinkMachineStore.shared.machines[indexPath.row]
-    BlinkMachineStore.shared.setCurrent(id: m.id)
-    tv.reloadData()
-    let mcp = MCPSession.currentActive()
-    mcp?.switchToMachine(id: m.id, workDirId: mcp?.sessionParams.workDirId, tmuxSession: mcp?.sessionParams.tmuxSession)
+    pushForm(editing: m)
   }
 
   override func tableView(_ tv: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
     let m = BlinkMachineStore.shared.machines[indexPath.row]
     pushForm(editing: m)
-  }
-
-  override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-    if editingStyle == .delete {
-      let m = BlinkMachineStore.shared.machines[indexPath.row]
-      BlinkMachineStore.shared.delete(id: m.id)
-      tv.deleteRows(at: [indexPath], with: .automatic)
-    }
   }
 
   @objc private func closeTapped() { dismiss(animated: true) }
@@ -231,6 +270,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   private let nameField = UITextField()
   private let hostField = UITextField()
+  private let lanHostField = UITextField()
   private let userField = UITextField()
 
   init(editing machine: BlinkMachine?) {
@@ -253,7 +293,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     )
 
     configureField(nameField, placeholder: "可选，留空显示 user@host", value: machine.name, returnKey: .next, keyboard: .default)
-    configureField(hostField, placeholder: "100.69.35.59 或 mac.tail.ts.net", value: machine.host, returnKey: .next, keyboard: .URL)
+    configureField(hostField, placeholder: "外网/Tailscale，如 mac.tail.ts.net", value: machine.host, returnKey: .next, keyboard: .URL)
+    configureField(lanHostField, placeholder: "可选，局域网 IP，如 192.168.1.10", value: machine.lanHost ?? "", returnKey: .next, keyboard: .URL)
     configureField(userField, placeholder: "apple", value: machine.user, returnKey: .done, keyboard: .default)
   }
 
@@ -276,20 +317,31 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     tf.clearButtonMode = .whileEditing
   }
 
-  override func numberOfSections(in tv: UITableView) -> Int { 1 }
-  override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { 3 }
+  override func numberOfSections(in tv: UITableView) -> Int { isNew ? 1 : 2 }
+  override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
+    section == 0 ? 4 : 1
+  }
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    "登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
+    guard section == 0 else { return nil }
+    return "填写内网主机后，连接时优先尝试内网（300ms 探测），不可达自动回退外网。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    if indexPath.section == 1 {
+      let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+      cell.textLabel?.text = "删除机器"
+      cell.textLabel?.textColor = .systemRed
+      cell.textLabel?.textAlignment = .center
+      return cell
+    }
     let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
     cell.selectionStyle = .none
     let (label, field): (String, UITextField) = {
       switch indexPath.row {
       case 0: return ("名称", nameField)
-      case 1: return ("主机", hostField)
-      case 2: return ("用户", userField)
+      case 1: return ("外网", hostField)
+      case 2: return ("内网", lanHostField)
+      case 3: return ("用户", userField)
       default: return ("", UITextField())
       }
     }()
@@ -317,25 +369,43 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   func textFieldShouldReturn(_ textField: UITextField) -> Bool {
     if textField === nameField { hostField.becomeFirstResponder() }
-    else if textField === hostField { userField.becomeFirstResponder() }
+    else if textField === hostField { lanHostField.becomeFirstResponder() }
+    else if textField === lanHostField { userField.becomeFirstResponder() }
     else { saveTapped() }
     return false
   }
 
+  override func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
+    tv.deselectRow(at: indexPath, animated: true)
+    guard indexPath.section == 1 else { return }
+    let alert = UIAlertController(title: "删除机器？", message: machine.displayName, preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+      guard let self else { return }
+      BlinkMachineStore.shared.delete(id: self.machine.id)
+      HostReachability.invalidate()
+      self.navigationController?.popViewController(animated: true)
+    })
+    present(alert, animated: true)
+  }
+
   @objc private func saveTapped() {
     let host = (hostField.text ?? "").trimmingCharacters(in: .whitespaces)
+    let lan = (lanHostField.text ?? "").trimmingCharacters(in: .whitespaces)
     let user = (userField.text ?? "").trimmingCharacters(in: .whitespaces)
     let name = (nameField.text ?? "").trimmingCharacters(in: .whitespaces)
     if host.isEmpty || user.isEmpty {
-      let alert = UIAlertController(title: "缺少字段", message: "主机和用户必填", preferredStyle: .alert)
+      let alert = UIAlertController(title: "缺少字段", message: "外网主机和用户必填", preferredStyle: .alert)
       alert.addAction(UIAlertAction(title: "确定", style: .default))
       present(alert, animated: true)
       return
     }
     machine.name = name
     machine.host = host
+    machine.lanHost = lan.isEmpty ? nil : lan
     machine.user = user
     BlinkMachineStore.shared.addOrUpdate(machine)
+    HostReachability.invalidate()
     navigationController?.popViewController(animated: true)
   }
 }
@@ -347,11 +417,24 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestSettings()
 }
 
+final class HorizontalOnlyScrollView: UIScrollView {
+  override func gestureRecognizerShouldBegin(_ gr: UIGestureRecognizer) -> Bool {
+    if gr === panGestureRecognizer, let pan = gr as? UIPanGestureRecognizer {
+      let v = pan.velocity(in: self)
+      if abs(v.y) > abs(v.x) { return false }
+    }
+    return super.gestureRecognizerShouldBegin(gr)
+  }
+}
+
 @objc final class BlinkTabBar: UIView {
   @objc weak var delegate: BlinkTabBarDelegate?
 
-  private let scrollView = UIScrollView()
-  private let stack = UIStackView()
+  private let scrollView1 = HorizontalOnlyScrollView()
+  private let scrollView2 = HorizontalOnlyScrollView()
+  private let stack1 = UIStackView()
+  private let stack2 = UIStackView()
+  private let rowsStack = UIStackView()
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
 
@@ -370,20 +453,31 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
     addSubview(settingsButton)
 
-    scrollView.translatesAutoresizingMaskIntoConstraints = false
-    scrollView.showsHorizontalScrollIndicator = false
-    addSubview(scrollView)
-
-    stack.axis = .horizontal
-    stack.spacing = 4
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    scrollView.addSubview(stack)
-
     addButton.setImage(UIImage(systemName: "plus"), for: .normal)
     addButton.tintColor = .systemBlue
     addButton.translatesAutoresizingMaskIntoConstraints = false
     addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
     addSubview(addButton)
+
+    for sv in [scrollView1, scrollView2] {
+      sv.translatesAutoresizingMaskIntoConstraints = false
+      sv.showsHorizontalScrollIndicator = false
+    }
+    for stk in [stack1, stack2] {
+      stk.axis = .horizontal
+      stk.spacing = 4
+      stk.translatesAutoresizingMaskIntoConstraints = false
+    }
+    scrollView1.addSubview(stack1)
+    scrollView2.addSubview(stack2)
+
+    rowsStack.axis = .vertical
+    rowsStack.spacing = 4
+    rowsStack.distribution = .fillEqually
+    rowsStack.translatesAutoresizingMaskIntoConstraints = false
+    rowsStack.addArrangedSubview(scrollView1)
+    rowsStack.addArrangedSubview(scrollView2)
+    addSubview(rowsStack)
 
     NSLayoutConstraint.activate([
       settingsButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -396,16 +490,22 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
       addButton.widthAnchor.constraint(equalToConstant: 32),
       addButton.heightAnchor.constraint(equalToConstant: 28),
 
-      scrollView.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 4),
-      scrollView.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -4),
-      scrollView.topAnchor.constraint(equalTo: topAnchor),
-      scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+      rowsStack.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 4),
+      rowsStack.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -4),
+      rowsStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+      rowsStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
 
-      stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 4),
-      stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -4),
-      stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 8),
-      stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -8),
-      stack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -8),
+      stack1.topAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.topAnchor),
+      stack1.bottomAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.bottomAnchor),
+      stack1.leadingAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.leadingAnchor, constant: 8),
+      stack1.trailingAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.trailingAnchor, constant: -8),
+      stack1.heightAnchor.constraint(equalTo: scrollView1.frameLayoutGuide.heightAnchor),
+
+      stack2.topAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.topAnchor),
+      stack2.bottomAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.bottomAnchor),
+      stack2.leadingAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.leadingAnchor, constant: 8),
+      stack2.trailingAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.trailingAnchor, constant: -8),
+      stack2.heightAnchor.constraint(equalTo: scrollView2.frameLayoutGuide.heightAnchor),
     ])
   }
 
@@ -414,11 +514,33 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   }
 
   @objc func reload(titles: [String], currentIndex: Int) {
-    stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    stack1.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    stack2.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    let split = (titles.count + 1) / 2
     for (i, title) in titles.enumerated() {
       let btn = makeTabButton(title: title, index: i, isCurrent: i == currentIndex)
-      stack.addArrangedSubview(btn)
+      if i < split {
+        stack1.addArrangedSubview(btn)
+      } else {
+        stack2.addArrangedSubview(btn)
+      }
     }
+    layoutIfNeeded()
+    scrollToTab(at: currentIndex, animated: true)
+  }
+
+  private func scrollToTab(at index: Int, animated: Bool) {
+    let split = stack1.arrangedSubviews.count
+    let (stack, scroll, localIdx): (UIStackView, UIScrollView, Int) =
+      index < split
+      ? (stack1, scrollView1, index)
+      : (stack2, scrollView2, index - split)
+    guard stack.arrangedSubviews.indices.contains(localIdx) else { return }
+    let btn = stack.arrangedSubviews[localIdx]
+    let frameInScroll = btn.convert(btn.bounds, to: scroll)
+    let pad: CGFloat = 24
+    let target = frameInScroll.insetBy(dx: -pad, dy: 0)
+    scroll.scrollRectToVisible(target, animated: animated)
   }
 
   private func makeTabButton(title: String, index: Int, isCurrent: Bool) -> UIButton {
@@ -519,6 +641,20 @@ final class BlinkWorkDir: Codable {
   func delete(id: String) {
     workDirs.removeAll { $0.id == id }
   }
+
+  @discardableResult
+  func duplicate(id: String) -> BlinkWorkDir? {
+    var arr = workDirs
+    guard let src = arr.first(where: { $0.id == id }) else { return nil }
+    let copy = BlinkWorkDir(name: src.name.isEmpty ? "" : "\(src.name) 副本", path: src.path)
+    if let idx = arr.firstIndex(where: { $0.id == id }) {
+      arr.insert(copy, at: idx + 1)
+    } else {
+      arr.append(copy)
+    }
+    workDirs = arr
+    return copy
+  }
 }
 
 final class WorkDirListViewController: UITableViewController {
@@ -567,6 +703,28 @@ final class WorkDirListViewController: UITableViewController {
     }
   }
 
+  override func tableView(_ tv: UITableView, leadingSwipeActionsConfigurationForRowAt ip: IndexPath) -> UISwipeActionsConfiguration? {
+    let wd = BlinkWorkDirStore.shared.workDirs[ip.row]
+    let dup = UIContextualAction(style: .normal, title: "复制") { [weak self] _, _, done in
+      guard let self else { done(false); return }
+      let copy = BlinkWorkDirStore.shared.duplicate(id: wd.id)
+      tv.reloadData()
+      done(true)
+      if let copy {
+        self.navigationController?.pushViewController(WorkDirFormViewController(editing: copy), animated: true)
+      }
+    }
+    dup.backgroundColor = .systemBlue
+    dup.image = UIImage(systemName: "doc.on.doc")
+    let copyPath = UIContextualAction(style: .normal, title: "复制路径") { _, _, done in
+      UIPasteboard.general.string = wd.path
+      done(true)
+    }
+    copyPath.backgroundColor = .systemGray
+    copyPath.image = UIImage(systemName: "doc.on.clipboard")
+    return UISwipeActionsConfiguration(actions: [dup, copyPath])
+  }
+
   @objc private func addTapped() {
     let form = WorkDirFormViewController(editing: nil)
     navigationController?.pushViewController(form, animated: true)
@@ -578,6 +736,7 @@ final class WorkDirFormViewController: UITableViewController, UITextFieldDelegat
   private let isNew: Bool
   private let nameField = UITextField()
   private let pathField = UITextField()
+  var onSaved: ((BlinkWorkDir) -> Void)?
 
   init(editing wd: BlinkWorkDir?) {
     if let wd {
@@ -659,6 +818,7 @@ final class WorkDirFormViewController: UITableViewController, UITextFieldDelegat
     wd.name = (nameField.text ?? "").trimmingCharacters(in: .whitespaces)
     wd.path = path
     BlinkWorkDirStore.shared.addOrUpdate(wd)
+    onSaved?(wd)
     navigationController?.popViewController(animated: true)
   }
 }
@@ -954,6 +1114,12 @@ final class NewTabWorkDirPickerViewController: UITableViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     title = "选工作目录"
+    navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addTapped))
+  }
+
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    tableView.reloadData()
   }
 
   override func numberOfSections(in tv: UITableView) -> Int { 1 }
@@ -984,5 +1150,16 @@ final class NewTabWorkDirPickerViewController: UITableViewController {
       onSelect?(BlinkWorkDirStore.shared.workDirs[ip.row - 1].id)
     }
     navigationController?.popViewController(animated: true)
+  }
+
+  @objc private func addTapped() {
+    let form = WorkDirFormViewController(editing: nil)
+    form.onSaved = { [weak self] wd in
+      self?.onSelect?(wd.id)
+      DispatchQueue.main.async {
+        self?.navigationController?.popViewController(animated: true)
+      }
+    }
+    navigationController?.pushViewController(form, animated: true)
   }
 }

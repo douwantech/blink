@@ -196,6 +196,8 @@ class TermController: UIViewController {
   private var _sessionPayload: TermSessionPayload? = nil
   private var _session: Session? { _sessionPayload?.session }
 
+  var mcpParams: MCPParams? { (_sessionPayload as? MCPSessionPayload)?.currentParams }
+
   required init(meta: SessionMeta? = nil) {
     _meta = meta ?? SessionMeta()
     super.init(nibName: nil, bundle: nil)
@@ -553,6 +555,7 @@ extension TermController: SuspendableSession {
       _sessionPayload = payload
       payload.start(in: _termDevice, sessionKey: _meta.key.uuidString)
       _session!.delegate = self
+      NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
     } else {
       _sessionPayload!.resumeFromSuspended()
     }

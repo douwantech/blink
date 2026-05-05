@@ -62,9 +62,16 @@ final class VoiceInputView: UIInputView {
     self.translatesAutoresizingMaskIntoConstraints = false
     self.recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
     setupUI()
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(activeSessionDidChange),
+      name: .blinkActiveSessionDidChange, object: nil)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  @objc private func activeSessionDidChange() {
+    DispatchQueue.main.async { [weak self] in self?.refreshSettingsButtonTitle() }
+  }
 
   override var intrinsicContentSize: CGSize {
     CGSize(width: UIView.noIntrinsicMetric, height: 220)
@@ -75,9 +82,10 @@ final class VoiceInputView: UIInputView {
     textView.textColor = .label
     textView.backgroundColor = .clear
     textView.textAlignment = .center
-    textView.isScrollEnabled = true
+    textView.isScrollEnabled = false
     textView.isEditable = false
     textView.isSelectable = false
+    textView.panGestureRecognizer.isEnabled = false
     textView.textContainerInset = UIEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
     let tap = UITapGestureRecognizer(target: self, action: #selector(textViewTapped))
     textView.addGestureRecognizer(tap)
@@ -447,6 +455,7 @@ final class VoiceInputView: UIInputView {
     vc.onCreate = { [weak self] machineId, workDirId, tmuxSession in
       MCPSession.currentActive()?.switchToMachine(id: machineId, workDirId: workDirId, tmuxSession: tmuxSession)
       self?.refreshSettingsButtonTitle()
+      NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
     }
     let nav = UINavigationController(rootViewController: vc)
     nav.modalPresentationStyle = .pageSheet
@@ -459,24 +468,10 @@ final class VoiceInputView: UIInputView {
 
   func refreshSettingsButtonTitle() {
     let mcp = MCPSession.currentActive()
-    let mid = mcp?.sessionParams.machineId ?? BlinkMachineStore.shared.currentMachineId
-    let wid = mcp?.sessionParams.workDirId
-    let m = BlinkMachineStore.shared.machines.first { $0.id == mid }
-    let wd = BlinkWorkDirStore.shared.workDir(forId: wid)
-    let mText: String
-    if let m {
-      mText = m.name.isEmpty ? m.user : m.name
-    } else {
-      mText = "未配置"
-    }
-    let wText: String
-    if let wd {
-      let last = (wd.path as NSString).lastPathComponent
-      wText = " · \(last)"
-    } else {
-      wText = ""
-    }
-    settingsButton.setTitle("\(mText)\(wText)", for: .normal)
+    let name = BlinkMachineStore.effectiveTmuxSessionName(
+      workDirId: mcp?.sessionParams.workDirId,
+      tmuxSession: mcp?.sessionParams.tmuxSession)
+    settingsButton.setTitle(name, for: .normal)
   }
 
   override func didMoveToWindow() {
@@ -861,14 +856,14 @@ final class VoiceSettingsViewController: UITableViewController {
 
   @objc private func closeTapped() { dismiss(animated: true) }
 
-  override func numberOfSections(in tableView: UITableView) -> Int { 4 }
+  override func numberOfSections(in tableView: UITableView) -> Int { 5 }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-    ["机器", "工作目录", "识别", "AI 整理"][section]
+    ["机器", "工作目录", "识别", "AI 整理", "实验"][section]
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 1, 1, 2][section]
+    [1, 1, 1, 2, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -899,6 +894,14 @@ final class VoiceSettingsViewController: UITableViewController {
       cell.textLabel?.text = "AI 配置"
       cell.detailTextLabel?.text = AITextPolisher.shared.model
       cell.accessoryType = .disclosureIndicator
+    case (4, 0):
+      cell.textLabel?.text = "测试 GLM-ASR"
+      cell.detailTextLabel?.text = "bigmodel.cn"
+      cell.accessoryType = .disclosureIndicator
+    case (4, 1):
+      cell.textLabel?.text = "测试 Whisper"
+      cell.detailTextLabel?.text = "api.openai.com"
+      cell.accessoryType = .disclosureIndicator
     default: break
     }
     return cell
@@ -919,6 +922,10 @@ final class VoiceSettingsViewController: UITableViewController {
       navigationController?.pushViewController(picker, animated: true)
     case (3, 1):
       presentAISettings()
+    case (4, 0):
+      navigationController?.pushViewController(ASRTestViewController(config: .glm), animated: true)
+    case (4, 1):
+      navigationController?.pushViewController(ASRTestViewController(config: .whisper), animated: true)
     default: break
     }
   }
@@ -1056,3 +1063,266 @@ final class VoiceEditTextViewController: UIViewController {
   }
 }
 
+
+// MARK: - ASR Test Page (multipart /audio/transcriptions, OpenAI 兼容协议)
+
+final class ASRTestViewController: UIViewController, AVAudioRecorderDelegate, UITextFieldDelegate {
+  struct Config {
+    let title: String
+    let endpoint: String
+    let defaultModel: String
+    let apiKeyDefaultsKey: String
+    let extraFormFields: [String: String]
+  }
+
+  private let config: Config
+  private let modelField = UITextField()
+  private let apiKeyField = UITextField()
+  private let recordButton = UIButton(type: .system)
+  private let statusLabel = UILabel()
+  private let resultView = UITextView()
+  private var recorder: AVAudioRecorder?
+  private var fileURL: URL?
+  private var recordStartedAt: Date?
+  private var uploadStartedAt: Date?
+
+  init(config: Config) {
+    self.config = config
+    super.init(nibName: nil, bundle: nil)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = config.title
+    view.backgroundColor = .systemBackground
+
+    let modelLabel = UILabel()
+    modelLabel.text = "model"
+    modelLabel.font = .systemFont(ofSize: 14)
+    modelLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    modelField.text = config.defaultModel
+    modelField.borderStyle = .roundedRect
+    modelField.autocapitalizationType = .none
+    modelField.autocorrectionType = .no
+    modelField.translatesAutoresizingMaskIntoConstraints = false
+
+    let keyLabel = UILabel()
+    keyLabel.text = "key"
+    keyLabel.font = .systemFont(ofSize: 14)
+    keyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    apiKeyField.text = UserDefaults.standard.string(forKey: config.apiKeyDefaultsKey) ?? ""
+    apiKeyField.placeholder = "API Key (Bearer …)"
+    apiKeyField.borderStyle = .roundedRect
+    apiKeyField.autocapitalizationType = .none
+    apiKeyField.autocorrectionType = .no
+    apiKeyField.isSecureTextEntry = true
+    apiKeyField.clearButtonMode = .whileEditing
+    apiKeyField.delegate = self
+    apiKeyField.addTarget(self, action: #selector(saveKey), for: .editingDidEnd)
+    apiKeyField.translatesAutoresizingMaskIntoConstraints = false
+
+    recordButton.setTitle("● 开始录音", for: .normal)
+    recordButton.titleLabel?.font = .systemFont(ofSize: 22, weight: .semibold)
+    recordButton.setTitleColor(.systemRed, for: .normal)
+    recordButton.layer.cornerRadius = 12
+    recordButton.layer.borderWidth = 1
+    recordButton.layer.borderColor = UIColor.separator.cgColor
+    recordButton.addTarget(self, action: #selector(recordTapped), for: .touchUpInside)
+    recordButton.translatesAutoresizingMaskIntoConstraints = false
+
+    statusLabel.text = "endpoint: \(config.endpoint)"
+    statusLabel.font = .systemFont(ofSize: 12)
+    statusLabel.textColor = .secondaryLabel
+    statusLabel.numberOfLines = 0
+    statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    resultView.font = .systemFont(ofSize: 16)
+    resultView.layer.borderColor = UIColor.separator.cgColor
+    resultView.layer.borderWidth = 1
+    resultView.layer.cornerRadius = 8
+    resultView.isEditable = false
+    resultView.translatesAutoresizingMaskIntoConstraints = false
+
+    [modelLabel, modelField, keyLabel, apiKeyField, recordButton, statusLabel, resultView].forEach { view.addSubview($0) }
+
+    let g = view.safeAreaLayoutGuide
+    NSLayoutConstraint.activate([
+      modelLabel.topAnchor.constraint(equalTo: g.topAnchor, constant: 16),
+      modelLabel.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+      modelLabel.widthAnchor.constraint(equalToConstant: 50),
+      modelField.centerYAnchor.constraint(equalTo: modelLabel.centerYAnchor),
+      modelField.leadingAnchor.constraint(equalTo: modelLabel.trailingAnchor, constant: 8),
+      modelField.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+
+      keyLabel.topAnchor.constraint(equalTo: modelField.bottomAnchor, constant: 12),
+      keyLabel.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+      keyLabel.widthAnchor.constraint(equalToConstant: 50),
+      apiKeyField.centerYAnchor.constraint(equalTo: keyLabel.centerYAnchor),
+      apiKeyField.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 8),
+      apiKeyField.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+
+      recordButton.topAnchor.constraint(equalTo: apiKeyField.bottomAnchor, constant: 16),
+      recordButton.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+      recordButton.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+      recordButton.heightAnchor.constraint(equalToConstant: 60),
+
+      statusLabel.topAnchor.constraint(equalTo: recordButton.bottomAnchor, constant: 12),
+      statusLabel.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+      statusLabel.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+
+      resultView.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 12),
+      resultView.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+      resultView.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+      resultView.bottomAnchor.constraint(equalTo: g.bottomAnchor, constant: -16),
+    ])
+  }
+
+  func textFieldShouldReturn(_ tf: UITextField) -> Bool { tf.resignFirstResponder(); return true }
+
+  @objc private func saveKey() {
+    UserDefaults.standard.set(apiKeyField.text ?? "", forKey: config.apiKeyDefaultsKey)
+  }
+
+  @objc private func recordTapped() {
+    apiKeyField.resignFirstResponder()
+    modelField.resignFirstResponder()
+    if recorder?.isRecording == true {
+      stopAndUpload()
+    } else {
+      requestMicAndStart()
+    }
+  }
+
+  private func requestMicAndStart() {
+    AVAudioApplication.requestRecordPermission { [weak self] ok in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        if ok { self.startRecording() }
+        else { self.statusLabel.text = "麦克风权限被拒绝" }
+      }
+    }
+  }
+
+  private func startRecording() {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+      try session.setActive(true)
+    } catch {
+      statusLabel.text = "AVSession 错误：\(error.localizedDescription)"
+      return
+    }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("asr-\(UUID().uuidString).wav")
+    fileURL = url
+    let settings: [String: Any] = [
+      AVFormatIDKey: Int(kAudioFormatLinearPCM),
+      AVSampleRateKey: 16000.0,
+      AVNumberOfChannelsKey: 1,
+      AVLinearPCMBitDepthKey: 16,
+      AVLinearPCMIsFloatKey: false,
+      AVLinearPCMIsBigEndianKey: false,
+    ]
+    do {
+      let r = try AVAudioRecorder(url: url, settings: settings)
+      r.delegate = self
+      r.prepareToRecord()
+      r.record()
+      recorder = r
+      recordStartedAt = Date()
+      recordButton.setTitle("■ 停止 (录音中…)", for: .normal)
+      statusLabel.text = "录音中…"
+      resultView.text = ""
+    } catch {
+      statusLabel.text = "录音错误：\(error.localizedDescription)"
+    }
+  }
+
+  private func stopAndUpload() {
+    guard let r = recorder, let url = fileURL else { return }
+    r.stop()
+    recorder = nil
+    let recDur = recordStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+    recordButton.setTitle("● 开始录音", for: .normal)
+    upload(fileURL: url, recordedSeconds: recDur)
+  }
+
+  private func upload(fileURL: URL, recordedSeconds: Double) {
+    saveKey()
+    let key = (apiKeyField.text ?? "").trimmingCharacters(in: .whitespaces)
+    if key.isEmpty {
+      statusLabel.text = "未配置 API key — 在上面 key 框里填一下"
+      return
+    }
+    statusLabel.text = String(format: "上传中…（录音 %.1fs）", recordedSeconds)
+    uploadStartedAt = Date()
+    let model = (modelField.text?.isEmpty == false) ? modelField.text! : config.defaultModel
+    let endpoint = URL(string: config.endpoint)!
+    var req = URLRequest(url: endpoint)
+    req.httpMethod = "POST"
+    req.timeoutInterval = 60
+    req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+    let boundary = "Boundary-\(UUID().uuidString)"
+    req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+    var body = Data()
+    func append(_ s: String) { body.append(s.data(using: .utf8)!) }
+    append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n\(model)\r\n")
+    for (k, v) in config.extraFormFields {
+      append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n")
+    }
+    append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
+    if let data = try? Data(contentsOf: fileURL) { body.append(data) }
+    append("\r\n--\(boundary)--\r\n")
+    req.httpBody = body
+    let bodySize = body.count
+
+    URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        let elapsed = self.uploadStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        try? FileManager.default.removeItem(at: fileURL)
+        if let err {
+          self.statusLabel.text = String(format: "失败：%@（%.2fs）", err.localizedDescription, elapsed)
+          return
+        }
+        let http = resp as? HTTPURLResponse
+        let status = http?.statusCode ?? -1
+        let bodyText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if status == 200,
+           let data,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = json["text"] as? String {
+          self.resultView.text = text
+          self.statusLabel.text = String(format: "成功（录音 %.1fs / 上传+识别 %.2fs / payload %d KB）",
+                                         recordedSeconds, elapsed, bodySize / 1024)
+        } else if status == 200 {
+          self.resultView.text = bodyText
+          self.statusLabel.text = String(format: "200 但解析失败（%.2fs）", elapsed)
+        } else {
+          self.resultView.text = bodyText
+          self.statusLabel.text = String(format: "HTTP %d（%.2fs）", status, elapsed)
+        }
+      }
+    }.resume()
+  }
+}
+
+extension ASRTestViewController.Config {
+  static let glm = ASRTestViewController.Config(
+    title: "GLM-ASR 测试",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+    defaultModel: "glm-asr-2512",
+    apiKeyDefaultsKey: "VoiceInputView.aiAPIKey",
+    extraFormFields: ["stream": "false"]
+  )
+  static let whisper = ASRTestViewController.Config(
+    title: "Whisper 测试",
+    endpoint: "https://api.openai.com/v1/audio/transcriptions",
+    defaultModel: "whisper-1",
+    apiKeyDefaultsKey: "VoiceInputView.whisperAPIKey",
+    extraFormFields: [:]
+  )
+}

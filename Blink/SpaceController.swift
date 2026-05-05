@@ -37,6 +37,10 @@
 import MBProgressHUD
 import SwiftUI
 
+extension Notification.Name {
+  static let blinkActiveSessionDidChange = Notification.Name("BlinkActiveSessionDidChange")
+}
+
 
 // MARK: UIViewController
 class SpaceController: UIViewController {
@@ -60,7 +64,12 @@ class SpaceController: UIViewController {
     didSet { _reloadTabBar() }
   }
   private var _currentKey: UUID? = nil {
-    didSet { _reloadTabBar() }
+    didSet {
+      if oldValue != _currentKey {
+        _reloadTabBar()
+        NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
+      }
+    }
   }
   
   private var _hud: MBProgressHUD? = nil
@@ -169,7 +178,7 @@ class SpaceController: UIViewController {
     self.view.bringSubviewToFront(_bottomTapAreaView);
 
     let safeTop = view.safeAreaInsets.top
-    let tabH: CGFloat = 36
+    let tabH: CGFloat = 64
     _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
     if let v = _viewportsController.view {
       v.frame = CGRect(
@@ -349,6 +358,12 @@ Please go to your subscriptions and cancel one of them!
     nc.addObserver(self, selector: #selector(_UISceneWillEnterForegroundNotification(_:)),
                    name: UIScene.willEnterForegroundNotification, object: nil)
 
+    nc.addObserver(self, selector: #selector(_activeSessionDidChange),
+                   name: .blinkActiveSessionDidChange, object: nil)
+  }
+
+  @objc private func _activeSessionDidChange() {
+    DispatchQueue.main.async { [weak self] in self?._reloadTabBar() }
   }
                    
   @objc func _UISceneDidEnterBackgroundNotification(_ n: Notification) {
@@ -798,7 +813,16 @@ extension SpaceController {
   }
 
   fileprivate func _reloadTabBar() {
-    let titles = (0..<_viewportsKeys.count).map { "Tab \($0 + 1)" }
+    let titles: [String] = _viewportsKeys.enumerated().map { (idx, key) in
+      let term: TermController = SessionRegistry.shared[key]
+      if let p = term.mcpParams {
+        let name = BlinkMachineStore.effectiveTmuxSessionName(
+          workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+        term.meta.tabTitle = name
+        return name
+      }
+      return term.meta.tabTitle ?? "Tab \(idx + 1)"
+    }
     let current = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
     _tabBar.reload(titles: titles, currentIndex: current)
   }
@@ -1320,11 +1344,7 @@ extension SpaceController: BlinkTabBarDelegate {
   public func tabBarDidRequestSettings() {
     let vc = VoiceSettingsViewController(voiceView: nil)
     let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .pageSheet
-    if let sheet = nav.sheetPresentationController {
-      sheet.detents = [.medium(), .large()]
-      sheet.prefersGrabberVisible = true
-    }
+    nav.modalPresentationStyle = .fullScreen
     present(nav, animated: true)
   }
 

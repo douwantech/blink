@@ -73,6 +73,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   NSMutableArray *_touchesArray;
   
   id<UIInteraction> _editMenuIteraction;
+  UIPanGestureRecognizer *_dismissPan;
 }
 
 
@@ -165,8 +166,32 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   
    _gestureInteraction = [[WKWebViewGesturesInteraction alloc] initWithJsScrollerPath:@"t.scrollPort_.scroller_"];
   [_webView addInteraction:_gestureInteraction];
-  
+
+  UIPanGestureRecognizer *dismissPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(_dismissInputOnPan:)];
+  dismissPan.delegate = self;
+  dismissPan.cancelsTouchesInView = NO;
+  dismissPan.delaysTouchesBegan = NO;
+  dismissPan.delaysTouchesEnded = NO;
+  [self addGestureRecognizer:dismissPan];
+  _dismissPan = dismissPan;
+
   [self addSubview:_webView];
+}
+
+- (void)_dismissInputOnPan:(UIPanGestureRecognizer *)rec {
+  if (rec.state == UIGestureRecognizerStateBegan || rec.state == UIGestureRecognizerStateChanged) {
+    CGPoint vel = [rec velocityInView:rec.view];
+    if (fabs(vel.y) > fabs(vel.x) && fabs(vel.y) > 50) {
+      [self endEditing:YES];
+      rec.enabled = NO;
+      rec.enabled = YES;
+    }
+  }
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+  if (gr == _dismissPan) { return YES; }
+  return NO;
 }
 
 - (void)didMoveToSuperview {
