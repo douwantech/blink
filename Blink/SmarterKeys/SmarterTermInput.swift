@@ -633,6 +633,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   func voiceInputDidRequestClearLine(_ view: VoiceInputView) {
     device?.write("\u{15}")
   }
+
+  func voiceInputDidRequestCloseTab(_ view: VoiceInputView) {
+    spaceController?.closeShellAction()
+  }
 }
 
 extension SmarterTermInput: TermInput {

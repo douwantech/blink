@@ -128,7 +128,22 @@
     #else
     if (_device) {
       [Migrator setupAutoSSHKey];
-      [self enqueueCommand:@"ssh -t apple@100.69.35.59 \"/usr/local/bin/tmux new-session -A -s blink\""];
+      if ([BlinkMachineStore.shared hasAnyMachine]) {
+        NSString *machineId = self.sessionParams.machineId;
+        if (![BlinkMachineStore.shared machineExistsForId:machineId]) {
+          machineId = BlinkMachineStore.shared.currentMachineId;
+          self.sessionParams.machineId = machineId;
+        }
+        NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession];
+        if (cmd) {
+          [self enqueueCommand:cmd];
+        } else {
+          [_device prompt:@"blink> " secure:NO shell:YES];
+        }
+      } else {
+        [_device prompt:@"还没有机器，先在弹出的页面添加 → " secure:NO shell:YES];
+        [BlinkMachineStore presentAddMachineIfNeeded];
+      }
     }
     #endif
   });
@@ -468,6 +483,41 @@
   thread_stdout = NULL;
   thread_stdin = NULL;
   thread_stderr = NULL;
+  _currentActiveMCP = self;
+}
+
+static __weak MCPSession *_currentActiveMCP = nil;
+
++ (MCPSession *)currentActive {
+  return _currentActiveMCP;
+}
+
+- (void)switchToMachineId:(NSString *)machineId workDirId:(NSString *)workDirId tmuxSession:(NSString *)tmuxSession {
+  if (!_device) { return; }
+  self.sessionParams.machineId = machineId;
+  self.sessionParams.workDirId = workDirId;
+  self.sessionParams.tmuxSession = tmuxSession;
+  [self setActiveSession];
+  if (_sshClients.count > 0) {
+    dispatch_sync(_sshQueue, ^{
+      for (id client in _sshClients) {
+        [client kill];
+      }
+    });
+  } else if (_childSession) {
+    [_childSession kill];
+  } else if (_cmdStream) {
+    ios_kill();
+  }
+  __weak typeof(self) weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    typeof(self) strongSelf = weakSelf;
+    if (!strongSelf || !strongSelf->_device) { return; }
+    NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:workDirId tmuxSession:tmuxSession];
+    if (cmd) {
+      [strongSelf enqueueCommand:cmd];
+    }
+  });
 }
 
 - (void)lineSubmitted:(NSString *)line { 

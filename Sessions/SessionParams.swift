@@ -130,7 +130,16 @@ public extension EncodedStateBacked {
   /// Consumed once inside `MCPSession.executeWithArgs:`.
   @objc var initialCommand: String? = nil
 
-  private enum Key: CodingKey { case childSessionType, childSessionParams }
+  /// Persisted per-viewport machine id (BlinkMachineStore.machines[i].id).
+  @objc var machineId: String? = nil
+
+  /// Persisted per-viewport work-dir id (BlinkWorkDirStore.workDirs[i].id).
+  @objc var workDirId: String? = nil
+
+  /// Persisted per-viewport tmux session name. When nil, a name is auto-derived.
+  @objc var tmuxSession: String? = nil
+
+  private enum Key: CodingKey { case childSessionType, childSessionParams, machineId, workDirId, tmuxSession }
 
   override init() { super.init() }
 
@@ -140,6 +149,9 @@ public extension EncodedStateBacked {
   func encode(with coder: NSCoder) {
     coder.bk_encode(childSessionType, for: Key.childSessionType)
     coder.bk_encode(childSessionParams, for: Key.childSessionParams)
+    coder.bk_encode(machineId, for: Key.machineId)
+    coder.bk_encode(workDirId, for: Key.workDirId)
+    coder.bk_encode(tmuxSession, for: Key.tmuxSession)
   }
 
   required init?(coder: NSCoder) {
@@ -147,6 +159,9 @@ public extension EncodedStateBacked {
     self.childSessionType = coder.bk_decode(for: Key.childSessionType)
     // NOTE: include all known MCP children subclasses here for secure decoding
     self.childSessionParams = coder.bk_decode(of: [MoshParams.self], for: Key.childSessionParams)
+    self.machineId = coder.bk_decode(for: Key.machineId)
+    self.workDirId = coder.bk_decode(for: Key.workDirId)
+    self.tmuxSession = coder.bk_decode(for: Key.tmuxSession)
   }
 
   // MARK: - BKSessionParamsSnapshotting (forward)

@@ -300,13 +300,7 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   }
 
   @objc func _on2fTap(_ recognizer: UITapGestureRecognizer) {
-    switch recognizer.state {
-    case .recognized:
-      if let target = _wkWebView?.target(forAction: #selector(newShellAction), withSender: self) as? UIResponder {
-        target.perform(#selector(newShellAction), with: self)
-      }
-    default: break
-    }
+    // no-op: tabs are now created via the top tab bar's + button
   }
 
   @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {

@@ -55,4 +55,7 @@
 - (void)updateAllowedPaths;
 - (void)setActiveSession;
 
++ (MCPSession *)currentActive;
+- (void)switchToMachineId:(NSString *)machineId workDirId:(NSString *)workDirId tmuxSession:(NSString *)tmuxSession NS_SWIFT_NAME(switchToMachine(id:workDirId:tmuxSession:));
+
 @end

@@ -56,8 +56,12 @@ class SpaceController: UIViewController {
   
   var sceneRole: UISceneSession.Role = UISceneSession.Role.windowApplication
   
-  private var _viewportsKeys = [UUID]()
-  private var _currentKey: UUID? = nil
+  private var _viewportsKeys = [UUID]() {
+    didSet { _reloadTabBar() }
+  }
+  private var _currentKey: UUID? = nil {
+    didSet { _reloadTabBar() }
+  }
   
   private var _hud: MBProgressHUD? = nil
   
@@ -163,7 +167,19 @@ class SpaceController: UIViewController {
     _bottomTapAreaView.frame = CGRect(x: windowBounds.width * 0.5 - 250, y: windowBounds.height - height, width: 250 * 2, height: height)
 //    _bottomTapAreaView.backgroundColor = UIColor.red
     self.view.bringSubviewToFront(_bottomTapAreaView);
-    
+
+    let safeTop = view.safeAreaInsets.top
+    let tabH: CGFloat = 36
+    _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
+    if let v = _viewportsController.view {
+      v.frame = CGRect(
+        x: 0,
+        y: safeTop + tabH,
+        width: view.bounds.width,
+        height: max(0, view.bounds.height - safeTop - tabH)
+      )
+    }
+    view.bringSubviewToFront(_tabBar)
   }
   
   private func forEachActive(block:(TermController) -> ()) {
@@ -176,7 +192,7 @@ class SpaceController: UIViewController {
   
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
-    
+
     #if targetEnvironment(macCatalyst)
     guard let appBundleUrl = Bundle.main.builtInPlugInsURL else {
       return
@@ -229,34 +245,41 @@ class SpaceController: UIViewController {
     }
   }
   
+  private let _tabBar = BlinkTabBar()
+
   public override func viewDidLoad() {
     super.viewDidLoad()
-    
+
     _setupAppearance()
-    
+
     view.isOpaque = true
-    
+
     _viewportsController.view.isOpaque = true
     _viewportsController.dataSource = self
     _viewportsController.delegate = self
-    
-    
+
+
     addChild(_viewportsController)
-    
+
+    _tabBar.delegate = self
+    _tabBar.translatesAutoresizingMaskIntoConstraints = true
+    _tabBar.autoresizingMask = [.flexibleWidth]
+    view.addSubview(_tabBar)
+
     if let v = _viewportsController.view {
       v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
       v.layoutMargins = .zero
       v.frame = view.bounds
       view.addSubview(v)
     }
-    
+
     _viewportsController.didMove(toParent: self)
-    
+
     _overlay.isUserInteractionEnabled = false
     view.addSubview(_overlay)
-    
+
     _registerForNotifications()
-    
+
     setupOverlayConstraints()
     
     if _viewportsKeys.isEmpty {
@@ -281,8 +304,10 @@ class SpaceController: UIViewController {
 //    view.addSubview(_faceCam)
 //    addChild(_faceCam.controller)
     DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { self.alertSubscriptionGroupViolation() }
+
+    view.bringSubviewToFront(_tabBar)
   }
-  
+
   func alertSubscriptionGroupViolation() {
     // NOTE: Added just in case, as I have seen in RevCat some users ending up in both groups (bc
     // things can still be selected outside the App).
@@ -755,12 +780,27 @@ extension SpaceController {
     _createTerminal(userActivity: nil, animated: animated, sessionPayload: payload)
   }
 
+  fileprivate func _newShellWithMachine(_ machineId: String, workDirId: String?, tmuxSession: String?) {
+    let params = MCPParams()
+    params.machineId = machineId
+    params.workDirId = workDirId
+    params.tmuxSession = tmuxSession
+    let payload = MCPSessionPayload(params: params)
+    _createTerminal(userActivity: nil, animated: true, sessionPayload: payload)
+  }
+
   @objc func newShellAction() {
     _newShellAction()
   }
 
   @objc func closeShellAction() {
     _closeCurrentSpace()
+  }
+
+  fileprivate func _reloadTabBar() {
+    let titles = (0..<_viewportsKeys.count).map { "Tab \($0 + 1)" }
+    let current = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
+    _tabBar.reload(titles: titles, currentIndex: current)
   }
 
   private func _focusOtherWindowAction() {
@@ -1246,4 +1286,58 @@ extension SpaceController {
     }
   }
 
+}
+
+extension SpaceController: BlinkTabBarDelegate {
+  public func tabBarDidSelect(index: Int) {
+    guard _viewportsKeys.indices.contains(index) else { return }
+    let key = _viewportsKeys[index]
+    if key == _currentKey { return }
+    let term: TermController = SessionRegistry.shared[key]
+    term.delegate = self
+    term.bgColor = view.backgroundColor ?? .black
+    let curIdx = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
+    let direction: UIPageViewController.NavigationDirection = (index >= curIdx) ? .forward : .reverse
+    _viewportsController.setViewControllers([term], direction: direction, animated: true) { [weak self] _ in
+      self?._currentKey = key
+    }
+  }
+
+  public func tabBarDidRequestNew() {
+    let vc = NewTabViewController()
+    vc.onCreate = { [weak self] machineId, workDirId, tmuxSession in
+      self?._newShellWithMachine(machineId, workDirId: workDirId, tmuxSession: tmuxSession)
+    }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
+  }
+
+  public func tabBarDidRequestSettings() {
+    let vc = VoiceSettingsViewController(voiceView: nil)
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
+  }
+
+  public func tabBarDidRequestClose(index: Int) {
+    guard _viewportsKeys.indices.contains(index) else { return }
+    let key = _viewportsKeys[index]
+    if key != _currentKey {
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .black
+      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      _currentKey = key
+    }
+    closeShellAction()
+  }
 }

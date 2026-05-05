@@ -9,6 +9,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestDismiss(_ view: VoiceInputView)
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView)
   func voiceInputDidRequestClearLine(_ view: VoiceInputView)
+  func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -26,6 +27,7 @@ final class VoiceInputView: UIInputView {
   private let minimizeButton = UIButton(type: .system)
   private let escButton = UIButton(type: .system)
   private let clearTextButton = UIButton(type: .system)
+  private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
@@ -113,9 +115,16 @@ final class VoiceInputView: UIInputView {
     keyboardButton.tintColor = .secondaryLabel
     keyboardButton.addTarget(self, action: #selector(keyboardTapped), for: .touchUpInside)
 
-    settingsButton.setImage(UIImage(systemName: "gearshape"), for: .normal)
-    settingsButton.tintColor = .secondaryLabel
+    settingsButton.titleLabel?.font = .systemFont(ofSize: 11, weight: .medium)
+    settingsButton.titleLabel?.lineBreakMode = .byTruncatingTail
+    settingsButton.setTitleColor(.secondaryLabel, for: .normal)
+    settingsButton.contentHorizontalAlignment = .center
+    settingsButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+    settingsButton.layer.cornerRadius = 6
+    settingsButton.layer.borderWidth = 1
+    settingsButton.layer.borderColor = UIColor.secondaryLabel.withAlphaComponent(0.5).cgColor
     settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
+    refreshSettingsButtonTitle()
 
     minimizeButton.setImage(UIImage(systemName: "chevron.down"), for: .normal)
     minimizeButton.tintColor = .secondaryLabel
@@ -128,6 +137,10 @@ final class VoiceInputView: UIInputView {
     escButton.layer.borderWidth = 1
     escButton.layer.cornerRadius = 6
     escButton.addTarget(self, action: #selector(escTapped), for: .touchUpInside)
+
+    closeTabButton.setImage(UIImage(systemName: "xmark.circle"), for: .normal)
+    closeTabButton.tintColor = .systemRed
+    closeTabButton.addTarget(self, action: #selector(closeTabTapped), for: .touchUpInside)
 
     clearTextButton.setTitle("Clear", for: .normal)
     clearTextButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -142,16 +155,21 @@ final class VoiceInputView: UIInputView {
     hintLabel.textAlignment = .center
     hintLabel.text = currentLocaleTitle()
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, hintLabel].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, closeTabButton, hintLabel].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
 
     NSLayoutConstraint.activate([
       settingsButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-      settingsButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-      settingsButton.widthAnchor.constraint(equalToConstant: 40),
+      settingsButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
       settingsButton.heightAnchor.constraint(equalToConstant: 32),
+
+      closeTabButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 4),
+      closeTabButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
+      closeTabButton.widthAnchor.constraint(equalToConstant: 28),
+      closeTabButton.heightAnchor.constraint(equalToConstant: 28),
+      closeTabButton.trailingAnchor.constraint(lessThanOrEqualTo: clearTextButton.leadingAnchor, constant: -8),
 
       minimizeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
       minimizeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
@@ -407,8 +425,29 @@ final class VoiceInputView: UIInputView {
     delegate?.voiceInputDidRequestDismiss(self)
   }
 
+  @objc private func closeTabTapped() {
+    let alert = UIAlertController(title: "关闭当前标签？", message: nil, preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "关闭", style: .destructive) { [weak self] _ in
+      guard let self else { return }
+      self.delegate?.voiceInputDidRequestCloseTab(self)
+    })
+    findViewController()?.present(alert, animated: true)
+  }
+
   @objc private func settingsTapped() {
-    let vc = VoiceSettingsViewController(voiceView: self)
+    let mcp = MCPSession.currentActive()
+    let vc = NewTabViewController(
+      machineId: mcp?.sessionParams.machineId,
+      workDirId: mcp?.sessionParams.workDirId,
+      tmuxName: mcp?.sessionParams.tmuxSession
+    )
+    vc.customTitle = "切换机器 / 目录"
+    vc.actionTitle = "应用"
+    vc.onCreate = { [weak self] machineId, workDirId, tmuxSession in
+      MCPSession.currentActive()?.switchToMachine(id: machineId, workDirId: workDirId, tmuxSession: tmuxSession)
+      self?.refreshSettingsButtonTitle()
+    }
     let nav = UINavigationController(rootViewController: vc)
     nav.modalPresentationStyle = .pageSheet
     if let sheet = nav.sheetPresentationController {
@@ -416,6 +455,35 @@ final class VoiceInputView: UIInputView {
       sheet.prefersGrabberVisible = true
     }
     findViewController()?.present(nav, animated: true)
+  }
+
+  func refreshSettingsButtonTitle() {
+    let mcp = MCPSession.currentActive()
+    let mid = mcp?.sessionParams.machineId ?? BlinkMachineStore.shared.currentMachineId
+    let wid = mcp?.sessionParams.workDirId
+    let m = BlinkMachineStore.shared.machines.first { $0.id == mid }
+    let wd = BlinkWorkDirStore.shared.workDir(forId: wid)
+    let mText: String
+    if let m {
+      mText = m.name.isEmpty ? m.user : m.name
+    } else {
+      mText = "未配置"
+    }
+    let wText: String
+    if let wd {
+      let last = (wd.path as NSString).lastPathComponent
+      wText = " · \(last)"
+    } else {
+      wText = ""
+    }
+    settingsButton.setTitle("\(mText)\(wText)", for: .normal)
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window != nil {
+      refreshSettingsButtonTitle()
+    }
   }
 
   static var supportedLocalesPublic: [(title: String, id: String)] { supportedLocales }
@@ -793,14 +861,14 @@ final class VoiceSettingsViewController: UITableViewController {
 
   @objc private func closeTapped() { dismiss(animated: true) }
 
-  override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+  override func numberOfSections(in tableView: UITableView) -> Int { 4 }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-    ["识别", "AI 整理"][section]
+    ["机器", "工作目录", "识别", "AI 整理"][section]
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 2][section]
+    [1, 1, 1, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -808,17 +876,26 @@ final class VoiceSettingsViewController: UITableViewController {
     cell.selectionStyle = .default
     switch (indexPath.section, indexPath.row) {
     case (0, 0):
+      cell.textLabel?.text = "机器"
+      let m = BlinkMachineStore.shared.currentMachine
+      cell.detailTextLabel?.text = m.map { "\($0.user)@\($0.host)" } ?? "未配置"
+      cell.accessoryType = .disclosureIndicator
+    case (1, 0):
+      cell.textLabel?.text = "工作目录"
+      cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
+      cell.accessoryType = .disclosureIndicator
+    case (2, 0):
       cell.textLabel?.text = "识别语言"
       cell.detailTextLabel?.text = voiceView?.currentLocaleTitleForSettings() ?? "—"
       cell.accessoryType = .disclosureIndicator
-    case (1, 0):
+    case (3, 0):
       cell.textLabel?.text = "AI 整理"
       let sw = UISwitch()
       sw.isOn = AITextPolisher.shared.enabled
       sw.addTarget(self, action: #selector(toggleAI(_:)), for: .valueChanged)
       cell.accessoryView = sw
       cell.selectionStyle = .none
-    case (1, 1):
+    case (3, 1):
       cell.textLabel?.text = "AI 配置"
       cell.detailTextLabel?.text = AITextPolisher.shared.model
       cell.accessoryType = .disclosureIndicator
@@ -831,10 +908,16 @@ final class VoiceSettingsViewController: UITableViewController {
     tv.deselectRow(at: indexPath, animated: true)
     switch (indexPath.section, indexPath.row) {
     case (0, 0):
+      let list = MachineListViewController()
+      navigationController?.pushViewController(list, animated: true)
+    case (1, 0):
+      let list = WorkDirListViewController()
+      navigationController?.pushViewController(list, animated: true)
+    case (2, 0):
       let picker = LanguagePickerViewController()
       picker.voiceView = voiceView
       navigationController?.pushViewController(picker, animated: true)
-    case (1, 1):
+    case (3, 1):
       presentAISettings()
     default: break
     }
