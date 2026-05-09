@@ -66,6 +66,10 @@ class SpaceController: UIViewController {
   private var _currentKey: UUID? = nil {
     didSet {
       if oldValue != _currentKey {
+        if let key = _currentKey {
+          let term: TermController = SessionRegistry.shared[key]
+          term.meta.hasUnread = false
+        }
         _reloadTabBar()
         NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
       }
@@ -360,10 +364,24 @@ Please go to your subscriptions and cancel one of them!
 
     nc.addObserver(self, selector: #selector(_activeSessionDidChange),
                    name: .blinkActiveSessionDidChange, object: nil)
+
+    nc.addObserver(self, selector: #selector(_tabAttention(_:)),
+                   name: NSNotification.Name("BlinkTabAttention"), object: nil)
   }
 
   @objc private func _activeSessionDidChange() {
     DispatchQueue.main.async { [weak self] in self?._reloadTabBar() }
+  }
+
+  @objc private func _tabAttention(_ n: Notification) {
+    guard let term = n.object as? TermController else { return }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      guard self._viewportsKeys.contains(term.meta.key) else { return }
+      if term.meta.key == self._currentKey { return }
+      term.meta.hasUnread = true
+      self._reloadTabBar()
+    }
   }
                    
   @objc func _UISceneDidEnterBackgroundNotification(_ n: Notification) {
@@ -813,18 +831,24 @@ extension SpaceController {
   }
 
   fileprivate func _reloadTabBar() {
-    let titles: [String] = _viewportsKeys.enumerated().map { (idx, key) in
+    var titles: [String] = []
+    var unread: [Bool] = []
+    for (idx, key) in _viewportsKeys.enumerated() {
       let term: TermController = SessionRegistry.shared[key]
+      let title: String
       if let p = term.mcpParams {
         let name = BlinkMachineStore.effectiveTmuxSessionName(
           workDirId: p.workDirId, tmuxSession: p.tmuxSession)
         term.meta.tabTitle = name
-        return name
+        title = name
+      } else {
+        title = term.meta.tabTitle ?? "Tab \(idx + 1)"
       }
-      return term.meta.tabTitle ?? "Tab \(idx + 1)"
+      titles.append(title)
+      unread.append(term.meta.hasUnread)
     }
     let current = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
-    _tabBar.reload(titles: titles, currentIndex: current)
+    _tabBar.reload(titles: titles, unread: unread, currentIndex: current)
   }
 
   private func _focusOtherWindowAction() {

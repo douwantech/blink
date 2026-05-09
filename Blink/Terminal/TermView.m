@@ -663,8 +663,16 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   } else if ([operation isEqualToString:@"api"]) {
     [_device viewAPICall:data[@"name"] andJSONRequest:data[@"request"]];
   } else if ([operation isEqualToString:@"notify"]) {
-    [data setValue:[NSNumber numberWithInt:BKNotificationTypeOsc] forKey:@"type"];
-    [_device viewNotify:data];
+    NSString *body = data[@"body"];
+    if ([body isEqualToString:@"TAB_DONE"]) {
+      if (self.termController) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"BlinkTabAttention"
+                                                            object:self.termController];
+      }
+    } else {
+      [data setValue:[NSNumber numberWithInt:BKNotificationTypeOsc] forKey:@"type"];
+      [_device viewNotify:data];
+    }
   } else if ([operation isEqualToString:@"browser-ready"]) {
     [_browserView ready];
     [[NSNotificationCenter defaultCenter] postNotificationName:TermViewBrowserReadyNotificationKey object:self];

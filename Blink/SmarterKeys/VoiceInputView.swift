@@ -3,6 +3,10 @@ import Speech
 import AVFoundation
 import AudioToolbox
 
+enum VoiceInputArrow {
+  case up, down, left, right
+}
+
 protocol VoiceInputViewDelegate: AnyObject {
   func voiceInput(_ view: VoiceInputView, didCommitText text: String)
   func voiceInputDidRequestKeyboard(_ view: VoiceInputView)
@@ -10,6 +14,8 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView)
   func voiceInputDidRequestClearLine(_ view: VoiceInputView)
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
+  func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
+  func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -27,8 +33,15 @@ final class VoiceInputView: UIInputView {
   private let minimizeButton = UIButton(type: .system)
   private let escButton = UIButton(type: .system)
   private let clearTextButton = UIButton(type: .system)
+  private let claudeButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
+  private let arrowPadContainer = UIView()
+  private let arrowUpButton = UIButton(type: .system)
+  private let arrowDownButton = UIButton(type: .system)
+  private let arrowLeftButton = UIButton(type: .system)
+  private let arrowRightButton = UIButton(type: .system)
+  private let returnButton = UIButton(type: .system)
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
   private static let supportedLocales: [(title: String, id: String)] = [
@@ -70,11 +83,19 @@ final class VoiceInputView: UIInputView {
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
   @objc private func activeSessionDidChange() {
-    DispatchQueue.main.async { [weak self] in self?.refreshSettingsButtonTitle() }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.refreshSettingsButtonTitle()
+      if self.isRecording {
+        self.setMicButtonRecording(false)
+        self.stopRecording()
+      }
+      self.delegate?.voiceInputDidRequestDismiss(self)
+    }
   }
 
   override var intrinsicContentSize: CGSize {
-    CGSize(width: UIView.noIntrinsicMetric, height: 220)
+    CGSize(width: UIView.noIntrinsicMetric, height: 260)
   }
 
   private func setupUI() {
@@ -158,14 +179,36 @@ final class VoiceInputView: UIInputView {
     clearTextButton.layer.cornerRadius = 6
     clearTextButton.addTarget(self, action: #selector(clearTextTapped), for: .touchUpInside)
 
+    claudeButton.setTitle("Claude", for: .normal)
+    claudeButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+    claudeButton.setTitleColor(.systemOrange, for: .normal)
+    claudeButton.layer.borderColor = UIColor.systemOrange.cgColor
+    claudeButton.layer.borderWidth = 1
+    claudeButton.layer.cornerRadius = 6
+    claudeButton.addTarget(self, action: #selector(claudeTapped), for: .touchUpInside)
+
+    configureArrowButton(arrowUpButton, systemName: "arrow.up", action: #selector(arrowUpTapped))
+    configureArrowButton(arrowDownButton, systemName: "arrow.down", action: #selector(arrowDownTapped))
+    configureArrowButton(arrowLeftButton, systemName: "arrow.left", action: #selector(arrowLeftTapped))
+    configureArrowButton(arrowRightButton, systemName: "arrow.right", action: #selector(arrowRightTapped))
+    configureArrowButton(returnButton, systemName: "return", action: #selector(returnTapped))
+    returnButton.tintColor = .systemBlue
+    returnButton.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.6).cgColor
+    returnButton.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold), forImageIn: .normal)
+
     hintLabel.font = .systemFont(ofSize: 13)
     hintLabel.textColor = .tertiaryLabel
     hintLabel.textAlignment = .center
     hintLabel.text = currentLocaleTitle()
+    hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, closeTabButton, hintLabel].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
+    }
+    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton].forEach {
+      $0.translatesAutoresizingMaskIntoConstraints = false
+      arrowPadContainer.addSubview($0)
     }
 
     NSLayoutConstraint.activate([
@@ -177,7 +220,7 @@ final class VoiceInputView: UIInputView {
       closeTabButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
       closeTabButton.widthAnchor.constraint(equalToConstant: 28),
       closeTabButton.heightAnchor.constraint(equalToConstant: 28),
-      closeTabButton.trailingAnchor.constraint(lessThanOrEqualTo: clearTextButton.leadingAnchor, constant: -8),
+      closeTabButton.trailingAnchor.constraint(lessThanOrEqualTo: keyboardButton.leadingAnchor, constant: -8),
 
       minimizeButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
       minimizeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
@@ -189,10 +232,55 @@ final class VoiceInputView: UIInputView {
       keyboardButton.widthAnchor.constraint(equalToConstant: 40),
       keyboardButton.heightAnchor.constraint(equalToConstant: 32),
 
-      textView.topAnchor.constraint(equalTo: settingsButton.bottomAnchor, constant: 4),
+      clearTextButton.topAnchor.constraint(equalTo: settingsButton.bottomAnchor, constant: 6),
+      clearTextButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+      clearTextButton.widthAnchor.constraint(equalToConstant: 56),
+      clearTextButton.heightAnchor.constraint(equalToConstant: 30),
+
+      escButton.centerYAnchor.constraint(equalTo: clearTextButton.centerYAnchor),
+      escButton.leadingAnchor.constraint(equalTo: clearTextButton.trailingAnchor, constant: 6),
+      escButton.widthAnchor.constraint(equalToConstant: 44),
+      escButton.heightAnchor.constraint(equalToConstant: 30),
+
+      claudeButton.centerYAnchor.constraint(equalTo: clearTextButton.centerYAnchor),
+      claudeButton.leadingAnchor.constraint(equalTo: escButton.trailingAnchor, constant: 6),
+      claudeButton.widthAnchor.constraint(equalToConstant: 64),
+      claudeButton.heightAnchor.constraint(equalToConstant: 30),
+
+      textView.topAnchor.constraint(equalTo: clearTextButton.bottomAnchor, constant: 4),
       textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-      textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+      textView.trailingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor, constant: -8),
       textView.bottomAnchor.constraint(equalTo: micButton.topAnchor, constant: -8),
+
+      arrowPadContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      arrowPadContainer.centerYAnchor.constraint(equalTo: textView.centerYAnchor, constant: -10),
+      arrowPadContainer.widthAnchor.constraint(equalToConstant: 110),
+      arrowPadContainer.heightAnchor.constraint(equalToConstant: 110),
+
+      arrowUpButton.topAnchor.constraint(equalTo: arrowPadContainer.topAnchor),
+      arrowUpButton.centerXAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor),
+      arrowUpButton.widthAnchor.constraint(equalToConstant: 34),
+      arrowUpButton.heightAnchor.constraint(equalToConstant: 30),
+
+      arrowLeftButton.topAnchor.constraint(equalTo: arrowUpButton.bottomAnchor, constant: 4),
+      arrowLeftButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
+      arrowLeftButton.widthAnchor.constraint(equalToConstant: 34),
+      arrowLeftButton.heightAnchor.constraint(equalToConstant: 30),
+
+      arrowDownButton.topAnchor.constraint(equalTo: arrowUpButton.bottomAnchor, constant: 4),
+      arrowDownButton.centerXAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor),
+      arrowDownButton.widthAnchor.constraint(equalToConstant: 34),
+      arrowDownButton.heightAnchor.constraint(equalToConstant: 30),
+
+      arrowRightButton.topAnchor.constraint(equalTo: arrowUpButton.bottomAnchor, constant: 4),
+      arrowRightButton.trailingAnchor.constraint(equalTo: arrowPadContainer.trailingAnchor),
+      arrowRightButton.widthAnchor.constraint(equalToConstant: 34),
+      arrowRightButton.heightAnchor.constraint(equalToConstant: 30),
+
+      returnButton.bottomAnchor.constraint(equalTo: arrowPadContainer.bottomAnchor),
+      returnButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
+      returnButton.trailingAnchor.constraint(equalTo: arrowPadContainer.trailingAnchor),
+      returnButton.heightAnchor.constraint(equalToConstant: 36),
 
       placeholderLabel.centerXAnchor.constraint(equalTo: textView.centerXAnchor),
       placeholderLabel.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
@@ -204,29 +292,19 @@ final class VoiceInputView: UIInputView {
       micButton.widthAnchor.constraint(equalToConstant: 44),
       micButton.heightAnchor.constraint(equalToConstant: 44),
 
-      escButton.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -4),
-      escButton.centerYAnchor.constraint(equalTo: keyboardButton.centerYAnchor),
-      escButton.widthAnchor.constraint(equalToConstant: 44),
-      escButton.heightAnchor.constraint(equalToConstant: 30),
-
-      clearTextButton.trailingAnchor.constraint(equalTo: escButton.leadingAnchor, constant: -4),
-      clearTextButton.centerYAnchor.constraint(equalTo: escButton.centerYAnchor),
-      clearTextButton.widthAnchor.constraint(equalToConstant: 56),
-      clearTextButton.heightAnchor.constraint(equalToConstant: 30),
-
-      hintLabel.leadingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: 8),
-      hintLabel.centerYAnchor.constraint(equalTo: micButton.centerYAnchor),
-      hintLabel.trailingAnchor.constraint(lessThanOrEqualTo: cancelButton.leadingAnchor, constant: -8),
-
-      confirmButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
-      confirmButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-      confirmButton.widthAnchor.constraint(equalToConstant: 78),
-
       cancelButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
-      cancelButton.trailingAnchor.constraint(equalTo: confirmButton.leadingAnchor, constant: -8),
+      cancelButton.leadingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: 8),
       cancelButton.widthAnchor.constraint(equalToConstant: 72),
       cancelButton.heightAnchor.constraint(equalToConstant: 36),
+
+      confirmButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+      confirmButton.leadingAnchor.constraint(equalTo: cancelButton.trailingAnchor, constant: 8),
+      confirmButton.widthAnchor.constraint(equalToConstant: 78),
       confirmButton.heightAnchor.constraint(equalToConstant: 36),
+
+      hintLabel.leadingAnchor.constraint(equalTo: confirmButton.trailingAnchor, constant: 8),
+      hintLabel.centerYAnchor.constraint(equalTo: micButton.centerYAnchor),
+      hintLabel.trailingAnchor.constraint(lessThanOrEqualTo: arrowPadContainer.leadingAnchor, constant: -8),
     ])
   }
 
@@ -373,6 +451,7 @@ final class VoiceInputView: UIInputView {
     AITextPolisher.shared.recordHistory(text)
     delegate?.voiceInput(self, didCommitText: text)
     setText("")
+    delegate?.voiceInputDidRequestDismiss(self)
   }
 
   @objc private func cancelTapped() {
@@ -418,12 +497,80 @@ final class VoiceInputView: UIInputView {
     delegate?.voiceInputDidRequestClearLine(self)
   }
 
+  @objc private func claudeTapped() {
+    let entries: [(label: String, command: String)] = [
+      ("cc · 自定义快捷", "cc"),
+      ("/resume · 恢复会话", "/resume"),
+      ("/exit · 退出 Claude Code", "/exit"),
+      ("claude · 新会话", "claude"),
+      ("claude -c · 继续上次会话", "claude -c"),
+      ("claude -r · 选择会话恢复", "claude -r"),
+      ("claude --print · 非交互一次性问答", "claude --print "),
+      ("claude --version", "claude --version"),
+      ("claude --help", "claude --help"),
+      ("/clear · 清空当前对话", "/clear"),
+      ("/compact · 压缩上下文", "/compact"),
+      ("/init · 生成 CLAUDE.md", "/init"),
+      ("/rewind · 回退代码/对话（或连按两下 Esc）", "/rewind"),
+      ("/agents · 子代理", "/agents"),
+      ("/mcp · MCP 服务器", "/mcp"),
+      ("/model · 切换模型", "/model"),
+      ("/review · 代码评审", "/review"),
+      ("/security-review · 安全评审", "/security-review"),
+      ("/help · 帮助", "/help"),
+    ]
+    let alert = UIAlertController(title: "Claude 命令", message: "选中后直接发送到当前会话", preferredStyle: .actionSheet)
+    for entry in entries {
+      alert.addAction(UIAlertAction(title: entry.label, style: .default) { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.voiceInput(self, didCommitText: entry.command)
+        self.delegate?.voiceInputDidRequestDismiss(self)
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let pop = alert.popoverPresentationController {
+      pop.sourceView = claudeButton
+      pop.sourceRect = claudeButton.bounds
+    }
+    findViewController()?.present(alert, animated: true)
+  }
+
   @objc private func escTapped() {
     if isRecording {
       setMicButtonRecording(false)
       stopRecording()
     }
     delegate?.voiceInputDidRequestSendEsc(self)
+  }
+
+  private func configureArrowButton(_ button: UIButton, systemName: String, action: Selector) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+    button.setImage(UIImage(systemName: systemName, withConfiguration: cfg), for: .normal)
+    button.tintColor = .label
+    button.layer.borderColor = UIColor.secondaryLabel.withAlphaComponent(0.4).cgColor
+    button.layer.borderWidth = 1
+    button.layer.cornerRadius = 6
+    button.addTarget(self, action: action, for: .touchUpInside)
+  }
+
+  @objc private func arrowUpTapped() {
+    delegate?.voiceInput(self, didRequestSendArrow: .up)
+  }
+
+  @objc private func arrowDownTapped() {
+    delegate?.voiceInput(self, didRequestSendArrow: .down)
+  }
+
+  @objc private func arrowLeftTapped() {
+    delegate?.voiceInput(self, didRequestSendArrow: .left)
+  }
+
+  @objc private func arrowRightTapped() {
+    delegate?.voiceInput(self, didRequestSendArrow: .right)
+  }
+
+  @objc private func returnTapped() {
+    delegate?.voiceInputDidRequestSendReturn(self)
   }
 
   @objc private func minimizeTapped() {

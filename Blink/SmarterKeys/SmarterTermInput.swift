@@ -637,6 +637,21 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView) {
     spaceController?.closeShellAction()
   }
+
+  func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow) {
+    let seq: String
+    switch direction {
+    case .up: seq = "\u{1B}[A"
+    case .down: seq = "\u{1B}[B"
+    case .right: seq = "\u{1B}[C"
+    case .left: seq = "\u{1B}[D"
+    }
+    device?.write(seq)
+  }
+
+  func voiceInputDidRequestSendReturn(_ view: VoiceInputView) {
+    device?.write("\r")
+  }
 }
 
 extension SmarterTermInput: TermInput {

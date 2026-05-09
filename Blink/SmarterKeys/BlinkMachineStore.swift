@@ -132,7 +132,7 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
 
-    let tmuxCmd = "/usr/local/bin/tmux new-session -A -s \(session)"
+    let tmuxCmd = "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin tmux new-session -A -s \(session)"
     let remoteCmd: String
     if let p = workPath, !p.isEmpty {
       let escaped = p.replacingOccurrences(of: "\"", with: "\\\"")
@@ -513,12 +513,13 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidRequestSettings()
   }
 
-  @objc func reload(titles: [String], currentIndex: Int) {
+  @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
     stack1.arrangedSubviews.forEach { $0.removeFromSuperview() }
     stack2.arrangedSubviews.forEach { $0.removeFromSuperview() }
     let split = (titles.count + 1) / 2
     for (i, title) in titles.enumerated() {
-      let btn = makeTabButton(title: title, index: i, isCurrent: i == currentIndex)
+      let isUnread = i < unread.count && unread[i]
+      let btn = makeTabButton(title: title, index: i, isCurrent: i == currentIndex, hasUnread: isUnread)
       if i < split {
         stack1.addArrangedSubview(btn)
       } else {
@@ -543,21 +544,35 @@ final class HorizontalOnlyScrollView: UIScrollView {
     scroll.scrollRectToVisible(target, animated: animated)
   }
 
-  private func makeTabButton(title: String, index: Int, isCurrent: Bool) -> UIButton {
+  private func makeTabButton(title: String, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
     var cfg = UIButton.Configuration.plain()
     cfg.title = title
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 12, bottom: 4, trailing: hasUnread ? 18 : 12)
     cfg.baseForegroundColor = isCurrent ? .label : .secondaryLabel
     let btn = UIButton(configuration: cfg)
     btn.titleLabel?.font = .systemFont(ofSize: 13, weight: isCurrent ? .semibold : .regular)
     btn.layer.cornerRadius = 6
-    btn.layer.masksToBounds = true
+    btn.layer.masksToBounds = false
     btn.backgroundColor = isCurrent ? UIColor.systemBlue.withAlphaComponent(0.18) : .clear
     btn.tag = index
     btn.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
     let longPress = UILongPressGestureRecognizer(target: self, action: #selector(tabLongPressed(_:)))
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
+    if hasUnread {
+      let dot = UIView()
+      dot.translatesAutoresizingMaskIntoConstraints = false
+      dot.backgroundColor = .systemRed
+      dot.layer.cornerRadius = 4
+      dot.isUserInteractionEnabled = false
+      btn.addSubview(dot)
+      NSLayoutConstraint.activate([
+        dot.widthAnchor.constraint(equalToConstant: 8),
+        dot.heightAnchor.constraint(equalToConstant: 8),
+        dot.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -4),
+        dot.topAnchor.constraint(equalTo: btn.topAnchor, constant: 4),
+      ])
+    }
     return btn
   }
 
