@@ -652,6 +652,78 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView) {
     device?.write("\r")
   }
+
+  func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView) {
+    let js = """
+    (function(){
+      try {
+        var rows = Array.from(document.querySelectorAll('x-row'))
+          .map(function(r){ return r.textContent.replace(/\\u00A0/g,' ').replace(/\\s+$/,''); });
+        while (rows.length && rows[rows.length-1] === '') rows.pop();
+
+        var end = rows.length;
+        for (var i = rows.length - 1; i >= 0; i--) {
+          var line = rows[i];
+          if (line === '') { end = i; continue; }
+          if (/[╭╮╰╯│─]/.test(line)) { end = i; continue; }
+          if (/^\\s*\\?\\s+for/i.test(line)) { end = i; continue; }
+          if (/Bypass Permissions|accept edits on|plan mode on|bypass permissions on/i.test(line)) { end = i; continue; }
+          if (/^\\s*[✶✻⏵⏴◯●∙·❯]/.test(line)) { end = i; continue; }
+          if (/[⏵⏴]/.test(line)) { end = i; continue; }
+          if (/^\\s*~?\\/[\\w./\\-~]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
+          if (/^\\s*~[\\w./\\-]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
+          if (line.length < 120 && /^[~/].*[$#%>❯]\\s*$/.test(line)) { end = i; continue; }
+          if (/^\\s*\\[[\\w@.\\-]+:[^\\]]*\\*?/.test(line)) { end = i; continue; }
+          if (/^\\s*\\[[~/]/.test(line) || /^\\s*\\[\\S+\\]\\[\\S+\\]/.test(line)) { end = i; continue; }
+          if (/^\\s*(Cooked|Cooking|Forging|Pondering|Thinking|Working|Crafting|Mulling|Brewing|Stewing|Simmering|Hatching|Brewing|Wandering|Whisking|Spinning|Conjuring|Imagining|Plotting|Synthesizing)\\b/i.test(line)) { end = i; continue; }
+          if (/^\\s*❯\\s*$/.test(line)) { end = i; continue; }
+          break;
+        }
+
+        var start = 0;
+        for (var i = end - 1; i >= 0; i--) {
+          if (/^>\\s/.test(rows[i])) { start = i + 1; break; }
+        }
+        if (start === 0) {
+          for (var j = end - 1; j >= 0; j--) {
+            if (rows[j].indexOf('⏺') !== -1) {
+              for (var k = j; k >= 0; k--) {
+                if (rows[k].indexOf('⏺') !== -1) { start = k; }
+                else if (rows[k] === '') { break; }
+              }
+              break;
+            }
+          }
+        }
+        while (start < end && rows[start] === '') start++;
+
+        return rows.slice(start, end).join('\\n').replace(/^[\\s\\u23FA⏺]+/, '').trim();
+      } catch(e) { return ''; }
+    })()
+    """
+    evaluateJavaScript(js) { [weak view] result, _ in
+      guard let view else { return }
+      let text = (result as? String) ?? ""
+      if !text.isEmpty {
+        UIPasteboard.general.string = text
+        let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
+        view.showToast("已复制 · \(preview)")
+      } else {
+        view.showToast("没抓到内容", isError: true)
+      }
+    }
+  }
+
+  func voiceInputDidRequestPaste(_ view: VoiceInputView) {
+    guard let device = device else { return }
+    guard let text = UIPasteboard.general.string, !text.isEmpty else {
+      view.showToast("剪贴板是空的", isError: true)
+      return
+    }
+    device.write(text)
+    let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
+    view.showToast("已粘贴 · \(preview)")
+  }
 }
 
 extension SmarterTermInput: TermInput {

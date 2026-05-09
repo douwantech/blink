@@ -16,6 +16,8 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
+  func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
+  func voiceInputDidRequestPaste(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -42,6 +44,8 @@ final class VoiceInputView: UIInputView {
   private let arrowLeftButton = UIButton(type: .system)
   private let arrowRightButton = UIButton(type: .system)
   private let returnButton = UIButton(type: .system)
+  private let copyLastButton = UIButton(type: .system)
+  private let pasteButton = UIButton(type: .system)
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
   private static let supportedLocales: [(title: String, id: String)] = [
@@ -196,6 +200,14 @@ final class VoiceInputView: UIInputView {
     returnButton.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.6).cgColor
     returnButton.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold), forImageIn: .normal)
 
+    configureArrowButton(copyLastButton, systemName: "doc.on.clipboard", action: #selector(copyLastTapped))
+    copyLastButton.tintColor = .systemGreen
+    copyLastButton.layer.borderColor = UIColor.systemGreen.withAlphaComponent(0.6).cgColor
+
+    configureArrowButton(pasteButton, systemName: "arrow.down.doc", action: #selector(pasteTapped))
+    pasteButton.tintColor = .systemPurple
+    pasteButton.layer.borderColor = UIColor.systemPurple.withAlphaComponent(0.6).cgColor
+
     hintLabel.font = .systemFont(ofSize: 13)
     hintLabel.textColor = .tertiaryLabel
     hintLabel.textAlignment = .center
@@ -206,7 +218,7 @@ final class VoiceInputView: UIInputView {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
-    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton].forEach {
+    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       arrowPadContainer.addSubview($0)
     }
@@ -255,7 +267,7 @@ final class VoiceInputView: UIInputView {
       arrowPadContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
       arrowPadContainer.centerYAnchor.constraint(equalTo: textView.centerYAnchor, constant: -10),
       arrowPadContainer.widthAnchor.constraint(equalToConstant: 110),
-      arrowPadContainer.heightAnchor.constraint(equalToConstant: 110),
+      arrowPadContainer.heightAnchor.constraint(equalToConstant: 144),
 
       arrowUpButton.topAnchor.constraint(equalTo: arrowPadContainer.topAnchor),
       arrowUpButton.centerXAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor),
@@ -277,10 +289,20 @@ final class VoiceInputView: UIInputView {
       arrowRightButton.widthAnchor.constraint(equalToConstant: 34),
       arrowRightButton.heightAnchor.constraint(equalToConstant: 30),
 
-      returnButton.bottomAnchor.constraint(equalTo: arrowPadContainer.bottomAnchor),
+      returnButton.topAnchor.constraint(equalTo: arrowLeftButton.bottomAnchor, constant: 4),
       returnButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
       returnButton.trailingAnchor.constraint(equalTo: arrowPadContainer.trailingAnchor),
       returnButton.heightAnchor.constraint(equalToConstant: 36),
+
+      copyLastButton.topAnchor.constraint(equalTo: returnButton.bottomAnchor, constant: 4),
+      copyLastButton.trailingAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor, constant: -4),
+      copyLastButton.widthAnchor.constraint(equalToConstant: 34),
+      copyLastButton.heightAnchor.constraint(equalToConstant: 30),
+
+      pasteButton.topAnchor.constraint(equalTo: returnButton.bottomAnchor, constant: 4),
+      pasteButton.leadingAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor, constant: 4),
+      pasteButton.widthAnchor.constraint(equalToConstant: 34),
+      pasteButton.heightAnchor.constraint(equalToConstant: 30),
 
       placeholderLabel.centerXAnchor.constraint(equalTo: textView.centerXAnchor),
       placeholderLabel.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
@@ -361,7 +383,7 @@ final class VoiceInputView: UIInputView {
     }
   }
 
-  private func showToast(_ message: String, isError: Bool = false) {
+  func showToast(_ message: String, isError: Bool = false) {
     let scenes = UIApplication.shared.connectedScenes
     guard let window = scenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else { return }
 
@@ -387,7 +409,7 @@ final class VoiceInputView: UIInputView {
 
     NSLayoutConstraint.activate([
       container.centerXAnchor.constraint(equalTo: window.centerXAnchor),
-      container.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -80),
+      container.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor, constant: 60),
       container.leadingAnchor.constraint(greaterThanOrEqualTo: window.leadingAnchor, constant: 24),
       container.trailingAnchor.constraint(lessThanOrEqualTo: window.trailingAnchor, constant: -24),
 
@@ -571,6 +593,14 @@ final class VoiceInputView: UIInputView {
 
   @objc private func returnTapped() {
     delegate?.voiceInputDidRequestSendReturn(self)
+  }
+
+  @objc private func copyLastTapped() {
+    delegate?.voiceInputDidRequestCopyLastResponse(self)
+  }
+
+  @objc private func pasteTapped() {
+    delegate?.voiceInputDidRequestPaste(self)
   }
 
   @objc private func minimizeTapped() {
