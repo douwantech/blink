@@ -415,6 +415,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestNew()
   func tabBarDidRequestClose(index: Int)
   func tabBarDidRequestSettings()
+  func tabBarDidRequestMachineFilter()
 }
 
 final class HorizontalOnlyScrollView: UIScrollView {
@@ -437,6 +438,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let rowsStack = UIStackView()
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
+  private let filterChipButton = UIButton(type: .system)
 
   @objc init() {
     super.init(frame: .zero)
@@ -458,6 +460,21 @@ final class HorizontalOnlyScrollView: UIScrollView {
     addButton.translatesAutoresizingMaskIntoConstraints = false
     addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
     addSubview(addButton)
+
+    var chipCfg = UIButton.Configuration.plain()
+    chipCfg.title = "全部"
+    chipCfg.image = UIImage(systemName: "line.3.horizontal.decrease.circle")
+    chipCfg.imagePadding = 4
+    chipCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 10)
+    chipCfg.baseForegroundColor = .systemTeal
+    filterChipButton.configuration = chipCfg
+    filterChipButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+    filterChipButton.layer.cornerRadius = 6
+    filterChipButton.layer.borderWidth = 1
+    filterChipButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.5).cgColor
+    filterChipButton.translatesAutoresizingMaskIntoConstraints = false
+    filterChipButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
+    addSubview(filterChipButton)
 
     for sv in [scrollView1, scrollView2] {
       sv.translatesAutoresizingMaskIntoConstraints = false
@@ -490,7 +507,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
       addButton.widthAnchor.constraint(equalToConstant: 32),
       addButton.heightAnchor.constraint(equalToConstant: 28),
 
-      rowsStack.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 4),
+      filterChipButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 6),
+      filterChipButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      filterChipButton.heightAnchor.constraint(equalToConstant: 28),
+
+      rowsStack.leadingAnchor.constraint(equalTo: filterChipButton.trailingAnchor, constant: 6),
       rowsStack.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -4),
       rowsStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
       rowsStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
@@ -514,12 +535,25 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
+    reload(titles: titles, unread: unread, tags: Array(0..<titles.count), filterTitle: nil, currentTag: currentIndex)
+  }
+
+  @objc func reload(titles: [String], unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
     stack1.arrangedSubviews.forEach { $0.removeFromSuperview() }
     stack2.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+    var newCfg = filterChipButton.configuration
+    newCfg?.title = filterTitle ?? "全部"
+    filterChipButton.configuration = newCfg
+
+    var visibleIndexOfCurrent = -1
     let split = (titles.count + 1) / 2
+
     for (i, title) in titles.enumerated() {
       let isUnread = i < unread.count && unread[i]
-      let btn = makeTabButton(title: title, index: i, isCurrent: i == currentIndex, hasUnread: isUnread)
+      let tag = i < tags.count ? tags[i] : i
+      let btn = makeTabButton(title: title, index: tag, isCurrent: tag == currentTag, hasUnread: isUnread)
+      if tag == currentTag { visibleIndexOfCurrent = i }
       if i < split {
         stack1.addArrangedSubview(btn)
       } else {
@@ -527,21 +561,27 @@ final class HorizontalOnlyScrollView: UIScrollView {
       }
     }
     layoutIfNeeded()
-    scrollToTab(at: currentIndex, animated: true)
+    if visibleIndexOfCurrent >= 0 {
+      scrollToVisibleTab(at: visibleIndexOfCurrent, animated: true)
+    }
   }
 
-  private func scrollToTab(at index: Int, animated: Bool) {
+  private func scrollToVisibleTab(at visibleIndex: Int, animated: Bool) {
     let split = stack1.arrangedSubviews.count
     let (stack, scroll, localIdx): (UIStackView, UIScrollView, Int) =
-      index < split
-      ? (stack1, scrollView1, index)
-      : (stack2, scrollView2, index - split)
+      visibleIndex < split
+      ? (stack1, scrollView1, visibleIndex)
+      : (stack2, scrollView2, visibleIndex - split)
     guard stack.arrangedSubviews.indices.contains(localIdx) else { return }
     let btn = stack.arrangedSubviews[localIdx]
     let frameInScroll = btn.convert(btn.bounds, to: scroll)
     let pad: CGFloat = 24
     let target = frameInScroll.insetBy(dx: -pad, dy: 0)
     scroll.scrollRectToVisible(target, animated: animated)
+  }
+
+  @objc private func filterTapped() {
+    delegate?.tabBarDidRequestMachineFilter()
   }
 
   private func makeTabButton(title: String, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {

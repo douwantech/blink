@@ -198,6 +198,12 @@ class TermController: UIViewController {
 
   var mcpParams: MCPParams? { (_sessionPayload as? MCPSessionPayload)?.currentParams }
 
+  func bindRestoredMcpParams(_ params: MCPParams) {
+    if _sessionPayload == nil {
+      _sessionPayload = MCPSessionPayload(params: params)
+    }
+  }
+
   required init(meta: SessionMeta? = nil) {
     _meta = meta ?? SessionMeta()
     super.init(nibName: nil, bundle: nil)

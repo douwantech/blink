@@ -60,8 +60,63 @@ class SpaceController: UIViewController {
   
   var sceneRole: UISceneSession.Role = UISceneSession.Role.windowApplication
   
+  private static let kViewportsKeys = "BlinkViewportsKeys"
+  private static let kCurrentViewportKey = "BlinkCurrentViewportKey"
+  private static let kViewportsParams = "BlinkViewportsMcpParams"
+
+  private struct StoredMcp: Codable {
+    var machineId: String?
+    var workDirId: String?
+    var tmuxSession: String?
+  }
+
   private var _viewportsKeys = [UUID]() {
-    didSet { _reloadTabBar() }
+    didSet {
+      UserDefaults.standard.set(_viewportsKeys.map { $0.uuidString }, forKey: SpaceController.kViewportsKeys)
+      _writeViewportsParams()
+      _reloadTabBar()
+    }
+  }
+
+  private func _readViewportsParams() -> [String: StoredMcp] {
+    guard let data = UserDefaults.standard.data(forKey: SpaceController.kViewportsParams),
+          let map = try? JSONDecoder().decode([String: StoredMcp].self, from: data) else {
+      return [:]
+    }
+    return map
+  }
+
+  private func _writeViewportsParams() {
+    let existing = _readViewportsParams()
+    var map: [String: StoredMcp] = [:]
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      if let p = term.mcpParams {
+        map[key.uuidString] = StoredMcp(
+          machineId: p.machineId,
+          workDirId: p.workDirId,
+          tmuxSession: p.tmuxSession)
+      } else if let saved = existing[key.uuidString] {
+        map[key.uuidString] = saved
+      }
+    }
+    if let data = try? JSONEncoder().encode(map) {
+      UserDefaults.standard.set(data, forKey: SpaceController.kViewportsParams)
+    }
+  }
+
+  private func _bindRestoredParamsToAllTerms() {
+    let map = _readViewportsParams()
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      if term.mcpParams == nil, let stored = map[key.uuidString] {
+        let params = MCPParams()
+        params.machineId = stored.machineId
+        params.workDirId = stored.workDirId
+        params.tmuxSession = stored.tmuxSession
+        term.bindRestoredMcpParams(params)
+      }
+    }
   }
   private var _currentKey: UUID? = nil {
     didSet {
@@ -69,6 +124,9 @@ class SpaceController: UIViewController {
         if let key = _currentKey {
           let term: TermController = SessionRegistry.shared[key]
           term.meta.hasUnread = false
+          UserDefaults.standard.set(key.uuidString, forKey: SpaceController.kCurrentViewportKey)
+        } else {
+          UserDefaults.standard.removeObject(forKey: SpaceController.kCurrentViewportKey)
         }
         _reloadTabBar()
         NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
@@ -259,6 +317,17 @@ class SpaceController: UIViewController {
   }
   
   private let _tabBar = BlinkTabBar()
+  private static let kTabFilterMachineId = "BlinkTabFilterMachineId"
+  private var _tabFilterMachineId: String? {
+    get { UserDefaults.standard.string(forKey: SpaceController.kTabFilterMachineId) }
+    set {
+      if let v = newValue {
+        UserDefaults.standard.set(v, forKey: SpaceController.kTabFilterMachineId)
+      } else {
+        UserDefaults.standard.removeObject(forKey: SpaceController.kTabFilterMachineId)
+      }
+    }
+  }
 
   public override func viewDidLoad() {
     super.viewDidLoad()
@@ -295,6 +364,22 @@ class SpaceController: UIViewController {
 
     setupOverlayConstraints()
     
+    if _viewportsKeys.isEmpty {
+      if let stored = UserDefaults.standard.array(forKey: SpaceController.kViewportsKeys) as? [String] {
+        let recoveredKeys = stored.compactMap { UUID(uuidString: $0) }
+        if !recoveredKeys.isEmpty {
+          _viewportsKeys = recoveredKeys
+          if let curStr = UserDefaults.standard.string(forKey: SpaceController.kCurrentViewportKey),
+             let curUUID = UUID(uuidString: curStr),
+             recoveredKeys.contains(curUUID) {
+            _currentKey = curUUID
+          } else {
+            _currentKey = recoveredKeys.first
+          }
+        }
+      }
+    }
+    _bindRestoredParamsToAllTerms()
     if _viewportsKeys.isEmpty {
       _newShellAction(animated: false)
     } else if let key = _currentKey {
@@ -582,6 +667,7 @@ Please go to your subscriptions and cancel one of them!
 extension SpaceController: UIStateRestorable {
   func restore(withState state: UIState) {
     _viewportsKeys = state.keys
+    _bindRestoredParamsToAllTerms()
     _currentKey = state.currentKey
     if let bgColor = UIColor(codableColor: state.bgColor) {
       view.backgroundColor = bgColor
@@ -639,14 +725,14 @@ extension SpaceController: UIPageViewControllerDataSource {
       return nil
     }
     let key = ctrl.meta.key
+    let filtered = _filteredViewportsKeys()
     guard
-      let idx = _viewportsKeys.firstIndex(of: key)?.advanced(by: advancedBy),
-      _viewportsKeys.indices.contains(idx)
+      let pos = filtered.firstIndex(of: key)?.advanced(by: advancedBy),
+      filtered.indices.contains(pos)
     else {
       return nil
     }
-    
-    let newKey = _viewportsKeys[idx]
+    let newKey = filtered[pos]
     let newCtrl: TermController = SessionRegistry.shared[newKey]
     newCtrl.delegate = self
     //newCtrl.layoutProvider = self
@@ -833,22 +919,65 @@ extension SpaceController {
   fileprivate func _reloadTabBar() {
     var titles: [String] = []
     var unread: [Bool] = []
+    var tags: [Int] = []
+
+    let allMachineIds = BlinkMachineStore.shared.machines.map { $0.id }
+    let usedIds: [String] = _viewportsKeys.compactMap {
+      (SessionRegistry.shared[$0] as TermController).mcpParams?.machineId
+    }
+    var filterId = _tabFilterMachineId
+    let stale = filterId == nil
+      || !(filterId.map { allMachineIds.contains($0) } ?? false)
+      || (!usedIds.isEmpty && !(filterId.map { usedIds.contains($0) } ?? false))
+    if stale {
+      filterId = usedIds.first ?? allMachineIds.first
+      if filterId != nil {
+        _tabFilterMachineId = filterId
+      }
+    }
+    let curIndex = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? -1
     for (idx, key) in _viewportsKeys.enumerated() {
       let term: TermController = SessionRegistry.shared[key]
       let title: String
       if let p = term.mcpParams {
-        let name = BlinkMachineStore.effectiveTmuxSessionName(
-          workDirId: p.workDirId, tmuxSession: p.tmuxSession)
-        term.meta.tabTitle = name
-        title = name
+        let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
+        let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name : ""
+        var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
+        if !dirPart.isEmpty && !sessionPart.isEmpty {
+          if let lastDash = sessionPart.lastIndex(of: "-") {
+            sessionPart = String(sessionPart[sessionPart.index(after: lastDash)...])
+          }
+          if sessionPart == dirPart { sessionPart = "" }
+        }
+        let composed: String
+        if !dirPart.isEmpty && !sessionPart.isEmpty {
+          composed = "\(dirPart):\(sessionPart)"
+        } else if !dirPart.isEmpty {
+          composed = dirPart
+        } else if !sessionPart.isEmpty {
+          composed = sessionPart
+        } else {
+          composed = BlinkMachineStore.effectiveTmuxSessionName(
+            workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+        }
+        term.meta.tabTitle = composed
+        title = composed
       } else {
         title = term.meta.tabTitle ?? "Tab \(idx + 1)"
       }
+      let mid = term.mcpParams?.machineId
+      if let f = filterId, mid != f { continue }
       titles.append(title)
       unread.append(term.meta.hasUnread)
+      tags.append(idx)
     }
-    let current = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
-    _tabBar.reload(titles: titles, unread: unread, currentIndex: current)
+    let chipTitle: String
+    if let fid = filterId, let m = BlinkMachineStore.shared.machines.first(where: { $0.id == fid }) {
+      chipTitle = m.displayName
+    } else {
+      chipTitle = "全部"
+    }
+    _tabBar.reload(titles: titles, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
   }
 
   private func _focusOtherWindowAction() {
@@ -1231,32 +1360,39 @@ extension SpaceController {
     }
   }
   
+  private func _filteredViewportsKeys() -> [UUID] {
+    guard let filterId = _tabFilterMachineId else { return _viewportsKeys }
+    return _viewportsKeys.filter { key in
+      let term: TermController = SessionRegistry.shared[key]
+      return term.mcpParams?.machineId == filterId
+    }
+  }
+
   private func _advanceShell(by: Int, animated: Bool = true) {
+    let filtered = _filteredViewportsKeys()
     guard
       let currentKey = _currentKey,
-      let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: by)
+      let pos = filtered.firstIndex(of: currentKey)?.advanced(by: by),
+      filtered.indices.contains(pos),
+      let idx = _viewportsKeys.firstIndex(of: filtered[pos])
     else {
       return
     }
-        
     _moveToShell(idx: idx, animated: animated)
   }
-  
+
   private func _advanceShellCycling(by: Int, animated: Bool = true) {
-    guard
-      let currentKey = _currentKey,
-      _viewportsKeys.count > 1
-    else {
-      return
+    let filtered = _filteredViewportsKeys()
+    guard let currentKey = _currentKey, filtered.count > 1 else { return }
+    let target: UUID
+    if let pos = filtered.firstIndex(of: currentKey)?.advanced(by: by),
+       pos >= 0 && pos < filtered.count {
+      target = filtered[pos]
+    } else {
+      target = filtered[by > 0 ? 0 : filtered.count - 1]
     }
-    
-    if let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: by),
-      idx >= 0 && idx < _viewportsKeys.count {
-      _moveToShell(idx: idx, animated: animated)
-      return
-    }
-    
-    _moveToShell(idx: by > 0 ? 0 : _viewportsKeys.count - 1, animated: animated)
+    guard let idx = _viewportsKeys.firstIndex(of: target) else { return }
+    _moveToShell(idx: idx, animated: animated)
   }
   
 }
@@ -1383,5 +1519,31 @@ extension SpaceController: BlinkTabBarDelegate {
       _currentKey = key
     }
     closeShellAction()
+  }
+
+  public func tabBarDidRequestMachineFilter() {
+    let allMachines = BlinkMachineStore.shared.machines
+    let alert = UIAlertController(title: "选择机器", message: nil, preferredStyle: .actionSheet)
+    for m in allMachines {
+      let mark = (_tabFilterMachineId == m.id) ? " ✓" : ""
+      alert.addAction(UIAlertAction(title: m.displayName + mark, style: .default) { [weak self] _ in
+        guard let self else { return }
+        self._tabFilterMachineId = m.id
+        let filtered = self._filteredViewportsKeys()
+        if let cur = self._currentKey, filtered.contains(cur) {
+          self._reloadTabBar()
+        } else if let first = filtered.first, let idx = self._viewportsKeys.firstIndex(of: first) {
+          self._moveToShell(idx: idx, animated: false)
+        } else {
+          self._reloadTabBar()
+        }
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let pop = alert.popoverPresentationController {
+      pop.sourceView = _tabBar
+      pop.sourceRect = _tabBar.bounds
+    }
+    present(alert, animated: true)
   }
 }
