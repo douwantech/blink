@@ -60,77 +60,60 @@ class SpaceController: UIViewController {
   
   var sceneRole: UISceneSession.Role = UISceneSession.Role.windowApplication
   
-  private static let kViewportsKeys = "BlinkViewportsKeys"
-  private static let kCurrentViewportKey = "BlinkCurrentViewportKey"
-  private static let kViewportsParams = "BlinkViewportsMcpParams"
-
-  private struct StoredMcp: Codable {
-    var machineId: String?
-    var workDirId: String?
-    var tmuxSession: String?
-  }
-
   private var _viewportsKeys = [UUID]() {
     didSet {
-      UserDefaults.standard.set(_viewportsKeys.map { $0.uuidString }, forKey: SpaceController.kViewportsKeys)
-      _writeViewportsParams()
+      _persistTabsToStore()
       _reloadTabBar()
     }
   }
 
-  private func _readViewportsParams() -> [String: StoredMcp] {
-    guard let data = UserDefaults.standard.data(forKey: SpaceController.kViewportsParams),
-          let map = try? JSONDecoder().decode([String: StoredMcp].self, from: data) else {
-      return [:]
-    }
-    return map
-  }
-
-  private func _writeViewportsParams() {
-    let existing = _readViewportsParams()
-    var map: [String: StoredMcp] = [:]
-    for key in _viewportsKeys {
-      let term: TermController = SessionRegistry.shared[key]
-      if let p = term.mcpParams {
-        map[key.uuidString] = StoredMcp(
-          machineId: p.machineId,
-          workDirId: p.workDirId,
-          tmuxSession: p.tmuxSession)
-      } else if let saved = existing[key.uuidString] {
-        map[key.uuidString] = saved
-      }
-    }
-    if let data = try? JSONEncoder().encode(map) {
-      UserDefaults.standard.set(data, forKey: SpaceController.kViewportsParams)
-    }
-  }
-
-  private func _bindRestoredParamsToAllTerms() {
-    let map = _readViewportsParams()
-    for key in _viewportsKeys {
-      let term: TermController = SessionRegistry.shared[key]
-      if term.mcpParams == nil, let stored = map[key.uuidString] {
-        let params = MCPParams()
-        params.machineId = stored.machineId
-        params.workDirId = stored.workDirId
-        params.tmuxSession = stored.tmuxSession
-        term.bindRestoredMcpParams(params)
-      }
-    }
-  }
   private var _currentKey: UUID? = nil {
     didSet {
-      if oldValue != _currentKey {
-        if let key = _currentKey {
-          let term: TermController = SessionRegistry.shared[key]
-          term.meta.hasUnread = false
-          UserDefaults.standard.set(key.uuidString, forKey: SpaceController.kCurrentViewportKey)
-        } else {
-          UserDefaults.standard.removeObject(forKey: SpaceController.kCurrentViewportKey)
-        }
-        _reloadTabBar()
-        NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
+      guard oldValue != _currentKey else { return }
+      if let key = _currentKey {
+        let term: TermController = SessionRegistry.shared[key]
+        term.meta.hasUnread = false
       }
+      TabStateStore.shared.update { $0.currentId = self._currentKey }
+      _reloadTabBar()
+      NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
+    }
+  }
+
+  private func _persistTabsToStore() {
+    let entries: [TabEntry] = _viewportsKeys.map { key in
+      let term: TermController = SessionRegistry.shared[key]
+      let p = term.mcpParams
+      return TabEntry(id: key,
+                      machineId: p?.machineId,
+                      workDirId: p?.workDirId,
+                      tmuxSession: p?.tmuxSession)
+    }
+    TabStateStore.shared.update { state in
+      state.tabs = entries
+    }
+  }
+
+  private func _restoreFromStore() {
+    let snap = TabStateStore.shared.snapshot()
+    guard !snap.tabs.isEmpty else { return }
+    for entry in snap.tabs {
+      let term: TermController = SessionRegistry.shared[entry.id]
+      if term.mcpParams == nil,
+         entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil {
+        let p = MCPParams()
+        p.machineId = entry.machineId
+        p.workDirId = entry.workDirId
+        p.tmuxSession = entry.tmuxSession
+        term.bindRestoredMcpParams(p)
+      }
+    }
+    let keys = snap.tabs.map { $0.id }
+    _viewportsKeys = keys
+    if let cur = snap.currentId, keys.contains(cur) {
+      _currentKey = cur
+    } else {
+      _currentKey = keys.first
     }
   }
   
@@ -365,21 +348,8 @@ class SpaceController: UIViewController {
     setupOverlayConstraints()
     
     if _viewportsKeys.isEmpty {
-      if let stored = UserDefaults.standard.array(forKey: SpaceController.kViewportsKeys) as? [String] {
-        let recoveredKeys = stored.compactMap { UUID(uuidString: $0) }
-        if !recoveredKeys.isEmpty {
-          _viewportsKeys = recoveredKeys
-          if let curStr = UserDefaults.standard.string(forKey: SpaceController.kCurrentViewportKey),
-             let curUUID = UUID(uuidString: curStr),
-             recoveredKeys.contains(curUUID) {
-            _currentKey = curUUID
-          } else {
-            _currentKey = recoveredKeys.first
-          }
-        }
-      }
+      _restoreFromStore()
     }
-    _bindRestoredParamsToAllTerms()
     if _viewportsKeys.isEmpty {
       _newShellAction(animated: false)
     } else if let key = _currentKey {
@@ -452,6 +422,15 @@ Please go to your subscriptions and cancel one of them!
 
     nc.addObserver(self, selector: #selector(_tabAttention(_:)),
                    name: NSNotification.Name("BlinkTabAttention"), object: nil)
+
+    nc.addObserver(self, selector: #selector(_flushTabStateStore),
+                   name: UIApplication.willResignActiveNotification, object: nil)
+    nc.addObserver(self, selector: #selector(_flushTabStateStore),
+                   name: UIApplication.didEnterBackgroundNotification, object: nil)
+  }
+
+  @objc private func _flushTabStateStore() {
+    TabStateStore.shared.flushNow()
   }
 
   @objc private func _activeSessionDidChange() {
@@ -554,15 +533,15 @@ Please go to your subscriptions and cancel one of them!
     term.userActivity = userActivity
     term.bgColor = view.backgroundColor ?? .black
     
+    SessionRegistry.shared.track(session: term)
+
     if let currentKey = _currentKey,
       let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: 1) {
       _viewportsKeys.insert(term.meta.key, at: idx)
     } else {
       _viewportsKeys.insert(term.meta.key, at: _viewportsKeys.count)
     }
-    
-    SessionRegistry.shared.track(session: term)
-    
+
     _currentKey = term.meta.key
     
     _viewportsController.setViewControllers([term], direction: .forward, animated: animated) { (didComplete) in
@@ -666,32 +645,23 @@ Please go to your subscriptions and cancel one of them!
 // MARK: UIStateRestorable
 extension SpaceController: UIStateRestorable {
   func restore(withState state: UIState) {
-    _viewportsKeys = state.keys
-    _bindRestoredParamsToAllTerms()
-    _currentKey = state.currentKey
     if let bgColor = UIColor(codableColor: state.bgColor) {
       view.backgroundColor = bgColor
     }
   }
-  
+
   func dumpUIState() -> UIState {
-    return UIState(keys: _viewportsKeys,
-            currentKey: _currentKey,
+    return UIState(keys: [],
+            currentKey: nil,
             bgColor: CodableColor(uiColor: view.backgroundColor)
     )
   }
-  
+
   @objc static func onDidDiscardSceneSessions(_ sessions: Set<UISceneSession>) {
-    let registry = SessionRegistry.shared
-    sessions.forEach { session in
-      guard
-        let uiState = UIState(userActivity: session.stateRestorationActivity)
-      else {
-        return
-      }
-      
-      uiState.keys.forEach { registry.remove(forKey: $0) }
-    }
+    // Intentionally no-op. SessionRegistry has its own _cleanLostSessions sweep
+    // that reconciles orphan session files. The NSUserActivity path is no
+    // longer authoritative for tab keys (TabStateStore is), so discarding a
+    // scene must not touch the registry — that would wipe live tabs.
   }
 }
 
