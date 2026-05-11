@@ -724,6 +724,13 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
     view.showToast("已粘贴 · \(preview)")
   }
+
+  func voiceInput(_ view: VoiceInputView, didRequestPasteText text: String) {
+    guard let device = device, !text.isEmpty else { return }
+    device.write(text)
+    let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
+    view.showToast("已粘贴 · \(preview)")
+  }
 }
 
 extension SmarterTermInput: TermInput {

@@ -18,6 +18,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
   func voiceInputDidRequestPaste(_ view: VoiceInputView)
+  func voiceInput(_ view: VoiceInputView, didRequestPasteText text: String)
 }
 
 final class VoiceInputView: UIInputView {
@@ -600,7 +601,17 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func pasteTapped() {
-    delegate?.voiceInputDidRequestPaste(self)
+    guard let text = UIPasteboard.general.string, !text.isEmpty else {
+      showToast("剪贴板是空的", isError: true)
+      return
+    }
+    let vc = PasteSelectionViewController(text: text) { [weak self] selected in
+      guard let self else { return }
+      self.delegate?.voiceInput(self, didRequestPasteText: selected)
+    }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .fullScreen
+    findViewController()?.present(nav, animated: true)
   }
 
   @objc private func minimizeTapped() {
@@ -1502,4 +1513,110 @@ extension ASRTestViewController.Config {
     apiKeyDefaultsKey: "VoiceInputView.whisperAPIKey",
     extraFormFields: [:]
   )
+}
+
+// MARK: - Paste Selection
+
+final class PasteSelectionViewController: UITableViewController {
+  private let segments: [String]
+  private let fullText: String
+  private let onSelect: (String) -> Void
+
+  init(text: String, onSelect: @escaping (String) -> Void) {
+    self.fullText = text
+    self.onSelect = onSelect
+    let parts = text.components(separatedBy: "\n\n")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    self.segments = parts.isEmpty ? [text] : parts
+    super.init(style: .insetGrouped)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private lazy var pasteButton = UIBarButtonItem(
+    title: "粘贴", style: .done, target: self, action: #selector(pasteSelected))
+  private lazy var selectAllButton = UIBarButtonItem(
+    title: "全选", style: .plain, target: self, action: #selector(toggleSelectAll))
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "选择粘贴内容"
+    navigationItem.leftBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .cancel, target: self, action: #selector(cancelTapped))
+    navigationItem.rightBarButtonItems = [pasteButton, selectAllButton]
+    tableView.allowsSelection = true
+    tableView.allowsMultipleSelection = true
+    updateButtons()
+  }
+
+  @objc private func cancelTapped() {
+    dismiss(animated: true)
+  }
+
+  @objc private func pasteSelected() {
+    let indices = (tableView.indexPathsForSelectedRows ?? []).map { $0.row }.sorted()
+    let combined: String
+    if indices.isEmpty {
+      combined = fullText
+    } else {
+      combined = indices.map { segments[$0] }.joined(separator: "\n\n")
+    }
+    let cb = self.onSelect
+    dismiss(animated: true) {
+      cb(combined)
+    }
+  }
+
+  @objc private func toggleSelectAll() {
+    let allSelected = (tableView.indexPathsForSelectedRows?.count ?? 0) == segments.count
+    if allSelected {
+      for ip in tableView.indexPathsForSelectedRows ?? [] {
+        tableView.deselectRow(at: ip, animated: false)
+      }
+    } else {
+      for row in 0..<segments.count {
+        tableView.selectRow(at: IndexPath(row: row, section: 0), animated: false, scrollPosition: .none)
+      }
+    }
+    updateButtons()
+  }
+
+  private func updateButtons() {
+    let count = tableView.indexPathsForSelectedRows?.count ?? 0
+    if count == 0 {
+      pasteButton.title = "全部粘贴"
+    } else {
+      pasteButton.title = "粘贴 (\(count))"
+    }
+    selectAllButton.title = count == segments.count ? "取消全选" : "全选"
+  }
+
+  override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+
+  override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+    "共 \(segments.count) 段 · 点击多选，未选时点'全部粘贴'"
+  }
+
+  override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    segments.count
+  }
+
+  override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    let id = "seg"
+    let cell = tableView.dequeueReusableCell(withIdentifier: id) ?? UITableViewCell(style: .default, reuseIdentifier: id)
+    cell.textLabel?.numberOfLines = 0
+    cell.textLabel?.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+    cell.textLabel?.text = segments[indexPath.row]
+    cell.selectionStyle = .default
+    return cell
+  }
+
+  override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    updateButtons()
+  }
+
+  override func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
+    updateButtons()
+  }
 }
