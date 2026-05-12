@@ -486,7 +486,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     scrollView.addSubview(stack)
 
     rowsStack.axis = .vertical
-    rowsStack.spacing = 2
+    rowsStack.spacing = 6
     rowsStack.translatesAutoresizingMaskIntoConstraints = false
     rowsStack.addArrangedSubview(topRow)
     rowsStack.addArrangedSubview(scrollView)
