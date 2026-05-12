@@ -2,6 +2,7 @@ import UIKit
 import Speech
 import AVFoundation
 import AudioToolbox
+import PhotosUI
 
 enum VoiceInputArrow {
   case up, down, left, right
@@ -47,6 +48,7 @@ final class VoiceInputView: UIInputView {
   private let returnButton = UIButton(type: .system)
   private let copyLastButton = UIButton(type: .system)
   private let pasteButton = UIButton(type: .system)
+  private let imagePickButton = UIButton(type: .system)
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
   private static let supportedLocales: [(title: String, id: String)] = [
@@ -209,6 +211,10 @@ final class VoiceInputView: UIInputView {
     pasteButton.tintColor = .systemPurple
     pasteButton.layer.borderColor = UIColor.systemPurple.withAlphaComponent(0.6).cgColor
 
+    configureArrowButton(imagePickButton, systemName: "photo.on.rectangle", action: #selector(imagePickTapped))
+    imagePickButton.tintColor = .systemOrange
+    imagePickButton.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.6).cgColor
+
     hintLabel.font = .systemFont(ofSize: 13)
     hintLabel.textColor = .tertiaryLabel
     hintLabel.textAlignment = .center
@@ -219,7 +225,7 @@ final class VoiceInputView: UIInputView {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
-    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton].forEach {
+    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton, imagePickButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       arrowPadContainer.addSubview($0)
     }
@@ -296,13 +302,18 @@ final class VoiceInputView: UIInputView {
       returnButton.heightAnchor.constraint(equalToConstant: 36),
 
       copyLastButton.topAnchor.constraint(equalTo: returnButton.bottomAnchor, constant: 4),
-      copyLastButton.trailingAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor, constant: -4),
-      copyLastButton.widthAnchor.constraint(equalToConstant: 34),
+      copyLastButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
+      copyLastButton.widthAnchor.constraint(equalToConstant: 30),
       copyLastButton.heightAnchor.constraint(equalToConstant: 30),
 
+      imagePickButton.topAnchor.constraint(equalTo: returnButton.bottomAnchor, constant: 4),
+      imagePickButton.centerXAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor),
+      imagePickButton.widthAnchor.constraint(equalToConstant: 30),
+      imagePickButton.heightAnchor.constraint(equalToConstant: 30),
+
       pasteButton.topAnchor.constraint(equalTo: returnButton.bottomAnchor, constant: 4),
-      pasteButton.leadingAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor, constant: 4),
-      pasteButton.widthAnchor.constraint(equalToConstant: 34),
+      pasteButton.trailingAnchor.constraint(equalTo: arrowPadContainer.trailingAnchor),
+      pasteButton.widthAnchor.constraint(equalToConstant: 30),
       pasteButton.heightAnchor.constraint(equalToConstant: 30),
 
       placeholderLabel.centerXAnchor.constraint(equalTo: textView.centerXAnchor),
@@ -614,6 +625,15 @@ final class VoiceInputView: UIInputView {
     findViewController()?.present(nav, animated: true)
   }
 
+  @objc private func imagePickTapped() {
+    var cfg = PHPickerConfiguration()
+    cfg.filter = .images
+    cfg.selectionLimit = 1
+    let picker = PHPickerViewController(configuration: cfg)
+    picker.delegate = self
+    findViewController()?.present(picker, animated: true)
+  }
+
   @objc private func minimizeTapped() {
     if isRecording {
       stopRecording()
@@ -871,6 +891,27 @@ final class VoiceInputView: UIInputView {
 private extension Array {
   subscript(safe index: Int) -> Element? {
     indices.contains(index) ? self[index] : nil
+  }
+}
+
+extension VoiceInputView: PHPickerViewControllerDelegate {
+  func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+    picker.dismiss(animated: true)
+    guard let provider = results.first?.itemProvider,
+          provider.canLoadObject(ofClass: UIImage.self) else {
+      return
+    }
+    provider.loadObject(ofClass: UIImage.self) { [weak self] obj, _ in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        if let image = obj as? UIImage {
+          UIPasteboard.general.image = image
+          self.showToast("已复制图片到剪贴板")
+        } else {
+          self.showToast("图片加载失败", isError: true)
+        }
+      }
+    }
   }
 }
 
