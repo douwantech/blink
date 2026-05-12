@@ -224,7 +224,9 @@ class SpaceController: UIViewController {
 
     let safeTop = view.safeAreaInsets.top
     let tabH: CGFloat = 64
+    _statusBarBg.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: safeTop)
     _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
+    view.bringSubviewToFront(_statusBarBg)
     if let v = _viewportsController.view {
       v.frame = CGRect(
         x: 0,
@@ -300,6 +302,12 @@ class SpaceController: UIViewController {
   }
   
   private let _tabBar = BlinkTabBar()
+  private let _statusBarBg: UIView = {
+    let v = UIView()
+    v.backgroundColor = UIColor(white: 0.12, alpha: 1.0)
+    v.isUserInteractionEnabled = false
+    return v
+  }()
   private static let kTabFilterMachineId = "BlinkTabFilterMachineId"
   private var _tabFilterMachineId: String? {
     get { UserDefaults.standard.string(forKey: SpaceController.kTabFilterMachineId) }
@@ -325,6 +333,10 @@ class SpaceController: UIViewController {
 
 
     addChild(_viewportsController)
+
+    _statusBarBg.translatesAutoresizingMaskIntoConstraints = true
+    _statusBarBg.autoresizingMask = [.flexibleWidth]
+    view.addSubview(_statusBarBg)
 
     _tabBar.delegate = self
     _tabBar.translatesAutoresizingMaskIntoConstraints = true
