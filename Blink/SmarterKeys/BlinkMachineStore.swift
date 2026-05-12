@@ -431,11 +431,10 @@ final class HorizontalOnlyScrollView: UIScrollView {
 @objc final class BlinkTabBar: UIView {
   @objc weak var delegate: BlinkTabBarDelegate?
 
-  private let scrollView1 = HorizontalOnlyScrollView()
-  private let scrollView2 = HorizontalOnlyScrollView()
-  private let stack1 = UIStackView()
-  private let stack2 = UIStackView()
+  private let scrollView = HorizontalOnlyScrollView()
+  private let stack = UIStackView()
   private let rowsStack = UIStackView()
+  private let topRow = UIView()
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
   private let filterChipButton = UIButton(type: .system)
@@ -453,13 +452,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
     settingsButton.tintColor = .systemBlue
     settingsButton.translatesAutoresizingMaskIntoConstraints = false
     settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
-    addSubview(settingsButton)
 
     addButton.setImage(UIImage(systemName: "plus"), for: .normal)
     addButton.tintColor = .systemBlue
     addButton.translatesAutoresizingMaskIntoConstraints = false
     addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
-    addSubview(addButton)
 
     var chipCfg = UIButton.Configuration.plain()
     chipCfg.title = "全部"
@@ -474,59 +471,53 @@ final class HorizontalOnlyScrollView: UIScrollView {
     filterChipButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.5).cgColor
     filterChipButton.translatesAutoresizingMaskIntoConstraints = false
     filterChipButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
-    addSubview(filterChipButton)
 
-    for sv in [scrollView1, scrollView2] {
-      sv.translatesAutoresizingMaskIntoConstraints = false
-      sv.showsHorizontalScrollIndicator = false
-    }
-    for stk in [stack1, stack2] {
-      stk.axis = .horizontal
-      stk.spacing = 4
-      stk.translatesAutoresizingMaskIntoConstraints = false
-    }
-    scrollView1.addSubview(stack1)
-    scrollView2.addSubview(stack2)
+    topRow.translatesAutoresizingMaskIntoConstraints = false
+    topRow.addSubview(settingsButton)
+    topRow.addSubview(filterChipButton)
+    topRow.addSubview(addButton)
+
+    scrollView.translatesAutoresizingMaskIntoConstraints = false
+    scrollView.showsHorizontalScrollIndicator = false
+    stack.axis = .horizontal
+    stack.spacing = 4
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    scrollView.addSubview(stack)
 
     rowsStack.axis = .vertical
-    rowsStack.spacing = 4
-    rowsStack.distribution = .fillEqually
+    rowsStack.spacing = 2
     rowsStack.translatesAutoresizingMaskIntoConstraints = false
-    rowsStack.addArrangedSubview(scrollView1)
-    rowsStack.addArrangedSubview(scrollView2)
+    rowsStack.addArrangedSubview(topRow)
+    rowsStack.addArrangedSubview(scrollView)
     addSubview(rowsStack)
 
     NSLayoutConstraint.activate([
-      settingsButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-      settingsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      settingsButton.leadingAnchor.constraint(equalTo: topRow.leadingAnchor, constant: 8),
+      settingsButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
       settingsButton.widthAnchor.constraint(equalToConstant: 32),
       settingsButton.heightAnchor.constraint(equalToConstant: 28),
 
-      addButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-      addButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      filterChipButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 6),
+      filterChipButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+      filterChipButton.heightAnchor.constraint(equalToConstant: 26),
+
+      addButton.trailingAnchor.constraint(equalTo: topRow.trailingAnchor, constant: -8),
+      addButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
       addButton.widthAnchor.constraint(equalToConstant: 32),
       addButton.heightAnchor.constraint(equalToConstant: 28),
 
-      filterChipButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 6),
-      filterChipButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-      filterChipButton.heightAnchor.constraint(equalToConstant: 28),
+      topRow.heightAnchor.constraint(equalToConstant: 28),
 
-      rowsStack.leadingAnchor.constraint(equalTo: filterChipButton.trailingAnchor, constant: 6),
-      rowsStack.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -4),
+      rowsStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      rowsStack.trailingAnchor.constraint(equalTo: trailingAnchor),
       rowsStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
       rowsStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
 
-      stack1.topAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.topAnchor),
-      stack1.bottomAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.bottomAnchor),
-      stack1.leadingAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.leadingAnchor, constant: 8),
-      stack1.trailingAnchor.constraint(equalTo: scrollView1.contentLayoutGuide.trailingAnchor, constant: -8),
-      stack1.heightAnchor.constraint(equalTo: scrollView1.frameLayoutGuide.heightAnchor),
-
-      stack2.topAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.topAnchor),
-      stack2.bottomAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.bottomAnchor),
-      stack2.leadingAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.leadingAnchor, constant: 8),
-      stack2.trailingAnchor.constraint(equalTo: scrollView2.contentLayoutGuide.trailingAnchor, constant: -8),
-      stack2.heightAnchor.constraint(equalTo: scrollView2.frameLayoutGuide.heightAnchor),
+      stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+      stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+      stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 8),
+      stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -8),
+      stack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor),
     ])
   }
 
@@ -539,26 +530,19 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   @objc func reload(titles: [String], unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
-    stack1.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    stack2.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
     var newCfg = filterChipButton.configuration
     newCfg?.title = filterTitle ?? "全部"
     filterChipButton.configuration = newCfg
 
     var visibleIndexOfCurrent = -1
-    let split = (titles.count + 1) / 2
-
     for (i, title) in titles.enumerated() {
       let isUnread = i < unread.count && unread[i]
       let tag = i < tags.count ? tags[i] : i
       let btn = makeTabButton(title: title, index: tag, isCurrent: tag == currentTag, hasUnread: isUnread)
       if tag == currentTag { visibleIndexOfCurrent = i }
-      if i < split {
-        stack1.addArrangedSubview(btn)
-      } else {
-        stack2.addArrangedSubview(btn)
-      }
+      stack.addArrangedSubview(btn)
     }
     layoutIfNeeded()
     if visibleIndexOfCurrent >= 0 {
@@ -567,17 +551,12 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   private func scrollToVisibleTab(at visibleIndex: Int, animated: Bool) {
-    let split = stack1.arrangedSubviews.count
-    let (stack, scroll, localIdx): (UIStackView, UIScrollView, Int) =
-      visibleIndex < split
-      ? (stack1, scrollView1, visibleIndex)
-      : (stack2, scrollView2, visibleIndex - split)
-    guard stack.arrangedSubviews.indices.contains(localIdx) else { return }
-    let btn = stack.arrangedSubviews[localIdx]
-    let frameInScroll = btn.convert(btn.bounds, to: scroll)
+    guard stack.arrangedSubviews.indices.contains(visibleIndex) else { return }
+    let btn = stack.arrangedSubviews[visibleIndex]
+    let frameInScroll = btn.convert(btn.bounds, to: scrollView)
     let pad: CGFloat = 24
     let target = frameInScroll.insetBy(dx: -pad, dy: 0)
-    scroll.scrollRectToVisible(target, animated: animated)
+    scrollView.scrollRectToVisible(target, animated: animated)
   }
 
   @objc private func filterTapped() {
