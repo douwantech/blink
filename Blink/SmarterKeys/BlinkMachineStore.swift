@@ -132,7 +132,8 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
 
-    let tmuxCmd = "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin tmux new-session -A -s \(session)"
+    let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); echo $(date) S=$S >> /tmp/blink-detect.log 2>/dev/null; case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac;"#
+    let tmuxCmd = "\(detectSock) PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin tmux new-session -A -s \(session)"
     let remoteCmd: String
     if let p = workPath, !p.isEmpty {
       let escaped = p.replacingOccurrences(of: "\"", with: "\\\"")
