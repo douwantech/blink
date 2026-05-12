@@ -657,45 +657,91 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     let js = """
     (function(){
       try {
-        var rows = Array.from(document.querySelectorAll('x-row'))
-          .map(function(r){ return r.textContent.replace(/\\u00A0/g,' ').replace(/\\s+$/,''); });
+        var term = window.t;
+        var inAlt = !!(term && term.alternateScreen_ && term.screen_ === term.alternateScreen_);
+
+        // alt screen（Claude Code 这类 TUI）：DOM x-row 才是真实可见行
+        // primary screen：用 scrollback + 当前可见 rowsArray
+        var rows = [];
+        if (inAlt) {
+          rows = Array.from(document.querySelectorAll('x-row'))
+            .map(function(r){ return (r.textContent || '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''); });
+        } else if (term && term.scrollbackRows_ && term.screen_ && term.screen_.rowsArray) {
+          var sb = term.scrollbackRows_, vis = term.screen_.rowsArray;
+          for (var i = 0; i < sb.length; i++) {
+            var n = sb[i];
+            rows.push((n && n.textContent ? n.textContent : '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''));
+          }
+          for (var i = 0; i < vis.length; i++) {
+            var n = vis[i];
+            rows.push((n && n.textContent ? n.textContent : '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''));
+          }
+        } else {
+          rows = Array.from(document.querySelectorAll('x-row'))
+            .map(function(r){ return (r.textContent || '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''); });
+        }
         while (rows.length && rows[rows.length-1] === '') rows.pop();
 
-        var end = rows.length;
-        for (var i = rows.length - 1; i >= 0; i--) {
-          var line = rows[i];
-          if (line === '') { end = i; continue; }
-          if (/[╭╮╰╯│─]/.test(line)) { end = i; continue; }
-          if (/^\\s*\\?\\s+for/i.test(line)) { end = i; continue; }
-          if (/Bypass Permissions|accept edits on|plan mode on|bypass permissions on/i.test(line)) { end = i; continue; }
-          if (/^\\s*[✶✻⏵⏴◯●∙·❯]/.test(line)) { end = i; continue; }
-          if (/[⏵⏴]/.test(line)) { end = i; continue; }
-          if (/^\\s*~?\\/[\\w./\\-~]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
-          if (/^\\s*~[\\w./\\-]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
-          if (line.length < 120 && /^[~/].*[$#%>❯]\\s*$/.test(line)) { end = i; continue; }
-          if (/^\\s*\\[[\\w@.\\-]+:[^\\]]*\\*?/.test(line)) { end = i; continue; }
-          if (/^\\s*\\[[~/]/.test(line) || /^\\s*\\[\\S+\\]\\[\\S+\\]/.test(line)) { end = i; continue; }
-          if (/^\\s*(Cooked|Cooking|Forging|Pondering|Thinking|Working|Crafting|Mulling|Brewing|Stewing|Simmering|Hatching|Brewing|Wandering|Whisking|Spinning|Conjuring|Imagining|Plotting|Synthesizing)\\b/i.test(line)) { end = i; continue; }
-          if (/^\\s*❯\\s*$/.test(line)) { end = i; continue; }
-          break;
-        }
+        var start = 0, end = rows.length;
 
-        var start = 0;
-        for (var i = end - 1; i >= 0; i--) {
-          if (/^>\\s/.test(rows[i])) { start = i + 1; break; }
-        }
-        if (start === 0) {
-          for (var j = end - 1; j >= 0; j--) {
+        if (inAlt) {
+          // alt screen TUI：底部一定是 [输入框 ╭─╮ / │ > │ / ╰─╯] + status banner
+          // 从尾部往前丢这些；保留中间表格/分隔符
+          for (var i = rows.length - 1; i >= 0; i--) {
+            var line = rows[i];
+            if (line === '') { end = i; continue; }
+            // 输入框上下边（整行都是 ─ 和角字符）
+            if (/^\\s*[╭╰][─\\s]*[╮╯]\\s*$/.test(line)) { end = i; continue; }
+            // 输入框内行（│ ... │）
+            if (/^\\s*│.*│\\s*$/.test(line)) { end = i; continue; }
+            // status banner
+            if (/^\\s*\\?\\s+for/i.test(line)) { end = i; continue; }
+            if (/Bypass Permissions|accept edits on|plan mode on|bypass permissions on/i.test(line)) { end = i; continue; }
+            if (/^\\s*[✶✻⏵⏴◯●∙·❯]/.test(line)) { end = i; continue; }
+            if (/[⏵⏴]/.test(line)) { end = i; continue; }
+            if (/^\\s*(Cooked|Cooking|Forging|Pondering|Thinking|Working|Crafting|Mulling|Brewing|Stewing|Simmering|Hatching|Brewing|Wandering|Whisking|Spinning|Conjuring|Imagining|Plotting|Synthesizing)\\b/i.test(line)) { end = i; continue; }
+            break;
+          }
+          while (start < end && rows[start] === '') start++;
+        } else {
+          // 普通 shell / primary screen：找最近一行用户提交的 prompt
+          for (var i = rows.length - 1; i >= 0; i--) {
+            var line = rows[i];
+            if (line === '') { end = i; continue; }
+            if (/[╭╮╰╯│─]/.test(line)) { end = i; continue; }
+            if (/^\\s*\\?\\s+for/i.test(line)) { end = i; continue; }
+            if (/Bypass Permissions|accept edits on|plan mode on|bypass permissions on/i.test(line)) { end = i; continue; }
+            if (/^\\s*[✶✻⏵⏴◯●∙·❯]/.test(line)) { end = i; continue; }
+            if (/[⏵⏴]/.test(line)) { end = i; continue; }
+            if (/^\\s*~?\\/[\\w./\\-~]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
+            if (/^\\s*~[\\w./\\-]*(\\s*\\([^)]+\\))?\\s*$/.test(line)) { end = i; continue; }
+            if (line.length < 120 && /^[~/].*[$#%>❯]\\s*$/.test(line)) { end = i; continue; }
+            if (/^\\s*\\[[\\w@.\\-]+:[^\\]]*\\*?/.test(line)) { end = i; continue; }
+            if (/^\\s*\\[[~/]/.test(line) || /^\\s*\\[\\S+\\]\\[\\S+\\]/.test(line)) { end = i; continue; }
+            if (/^\\s*(Cooked|Cooking|Forging|Pondering|Thinking|Working|Crafting|Mulling|Brewing|Stewing|Simmering|Hatching|Brewing|Wandering|Whisking|Spinning|Conjuring|Imagining|Plotting|Synthesizing)\\b/i.test(line)) { end = i; continue; }
+            if (/^\\s*❯\\s*$/.test(line)) { end = i; continue; }
+            break;
+          }
+          var s = -1;
+          for (var i = end - 1; i >= 0; i--) {
+            if (/^>\\s+\\S/.test(rows[i])) { s = i + 1; break; }
+          }
+          if (s < 0) for (var i = end - 1; i >= 0; i--) {
+            if (/^>\\s/.test(rows[i])) { s = i + 1; break; }
+          }
+          if (s < 0) for (var j = end - 1; j >= 0; j--) {
             if (rows[j].indexOf('⏺') !== -1) {
-              for (var k = j; k >= 0; k--) {
-                if (rows[k].indexOf('⏺') !== -1) { start = k; }
-                else if (rows[k] === '') { break; }
+              s = j;
+              for (var k = j - 1; k >= 0; k--) {
+                if (rows[k].indexOf('⏺') !== -1) s = k;
+                else if (rows[k] === '') break;
               }
               break;
             }
           }
+          start = s < 0 ? 0 : s;
+          while (start < end && rows[start] === '') start++;
         }
-        while (start < end && rows[start] === '') start++;
 
         return rows.slice(start, end).join('\\n').replace(/^[\\s\\u23FA⏺]+/, '').trim();
       } catch(e) { return ''; }
