@@ -5,6 +5,7 @@ Catalog of wiki pages. See [CLAUDE.md](CLAUDE.md) for the schema.
 ## Concepts (platform gotchas / techniques)
 
 - [ios_system 命令字符串 escape 陷阱](ios-system-cmdline-escaping.md) — `\"` 在 dontExpand argv 里字面保留到远端，进 sh -c 单引号脚本后变字面引号字符，让 `[ -S \"$p\" ]` 永远 false
+- [hterm 文本抓取：alt screen vs primary + scrollback](blink-hterm-text-extraction.md) — TUI 切 alt screen 后 `term.screen_.rowsArray` 暴露为空，要走 DOM `x-row`；alt screen 没有 scrollback
 
 ## Entities (subsystems / modules)
 
