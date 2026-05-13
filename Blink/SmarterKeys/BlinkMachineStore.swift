@@ -944,6 +944,13 @@ final class NewTabViewController: UITableViewController {
   var customTitle: String = "新建标签"
   var actionTitle: String = "创建"
 
+  private struct PresetGroup {
+    let machineId: String
+    let machineDisplayName: String
+    var presets: [BlinkSessionPreset]
+  }
+  private var presetGroups: [PresetGroup] = []
+
   init(machineId: String? = nil, workDirId: String? = nil, tmuxName: String? = nil) {
     super.init(style: .insetGrouped)
     self.machineId = machineId ?? BlinkMachineStore.shared.currentMachineId
@@ -961,26 +968,49 @@ final class NewTabViewController: UITableViewController {
 
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
+    _reloadGroups()
     tableView.reloadData()
   }
 
-  override func numberOfSections(in tv: UITableView) -> Int { 2 }
+  private func _reloadGroups() {
+    let all = BlinkSessionPresetStore.shared.presets
+    var map: [String: [BlinkSessionPreset]] = [:]
+    for p in all { map[p.machineId, default: []].append(p) }
+    var groups: [PresetGroup] = []
+    var consumed = Set<String>()
+    for m in BlinkMachineStore.shared.machines {
+      guard let ps = map[m.id], !ps.isEmpty else { continue }
+      let dn = m.name.isEmpty ? "\(m.user)@\(m.host)" : m.name
+      groups.append(PresetGroup(machineId: m.id, machineDisplayName: dn, presets: ps))
+      consumed.insert(m.id)
+    }
+    for (mid, ps) in map where !consumed.contains(mid) {
+      groups.append(PresetGroup(machineId: mid, machineDisplayName: "未知机器", presets: ps))
+    }
+    presetGroups = groups
+  }
+
+  private var _newSection: Int { presetGroups.isEmpty ? 1 : presetGroups.count }
+
+  override func numberOfSections(in tv: UITableView) -> Int {
+    (presetGroups.isEmpty ? 1 : presetGroups.count) + 1
+  }
   override func tableView(_ tv: UITableView, titleForHeaderInSection s: Int) -> String? {
-    s == 0 ? "已有会话" : "新建"
+    if s == _newSection { return "新建" }
+    if presetGroups.isEmpty { return "已有会话" }
+    return presetGroups[s].machineDisplayName
   }
   override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
-    if s == 0 {
-      return max(BlinkSessionPresetStore.shared.presets.count, 1)
-    }
-    return 3
+    if s == _newSection { return 3 }
+    if presetGroups.isEmpty { return 1 }
+    return presetGroups[s].presets.count
   }
   override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
-    s == 1 ? "tmux 会话名：相同名字会 attach 进已存在的会话，否则新建。组合会保存到上方列表。" : nil
+    s == _newSection ? "tmux 会话名：相同名字会 attach 进已存在的会话，否则新建。组合会保存到上方列表。" : nil
   }
   override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-    if ip.section == 0 {
-      let presets = BlinkSessionPresetStore.shared.presets
-      if presets.isEmpty {
+    if ip.section != _newSection {
+      if presetGroups.isEmpty {
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
         cell.textLabel?.text = "暂无（在下方填一组并点 \(actionTitle)）"
         cell.textLabel?.textColor = .secondaryLabel
@@ -989,7 +1019,7 @@ final class NewTabViewController: UITableViewController {
         return cell
       }
       let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-      let p = presets[ip.row]
+      let p = presetGroups[ip.section].presets[ip.row]
       cell.textLabel?.text = p.displayTitle
       cell.detailTextLabel?.text = p.sessionName
       cell.detailTextLabel?.textColor = .secondaryLabel
@@ -1018,10 +1048,11 @@ final class NewTabViewController: UITableViewController {
 
   override func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
     tv.deselectRow(at: ip, animated: true)
-    if ip.section == 0 {
-      let presets = BlinkSessionPresetStore.shared.presets
-      guard !presets.isEmpty, ip.row < presets.count else { return }
-      let p = presets[ip.row]
+    if ip.section != _newSection {
+      guard !presetGroups.isEmpty,
+            ip.section < presetGroups.count,
+            ip.row < presetGroups[ip.section].presets.count else { return }
+      let p = presetGroups[ip.section].presets[ip.row]
       let cb = onCreate
       dismiss(animated: true) {
         cb?(p.machineId, p.workDirId, p.sessionName)
@@ -1050,15 +1081,17 @@ final class NewTabViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
-    guard editingStyle == .delete, ip.section == 0 else { return }
-    let presets = BlinkSessionPresetStore.shared.presets
-    guard !presets.isEmpty, ip.row < presets.count else { return }
-    BlinkSessionPresetStore.shared.delete(id: presets[ip.row].id)
+    guard editingStyle == .delete, ip.section != _newSection else { return }
+    guard !presetGroups.isEmpty,
+          ip.section < presetGroups.count,
+          ip.row < presetGroups[ip.section].presets.count else { return }
+    BlinkSessionPresetStore.shared.delete(id: presetGroups[ip.section].presets[ip.row].id)
+    _reloadGroups()
     tv.reloadData()
   }
 
   override func tableView(_ tv: UITableView, canEditRowAt ip: IndexPath) -> Bool {
-    ip.section == 0 && !BlinkSessionPresetStore.shared.presets.isEmpty
+    ip.section != _newSection && !presetGroups.isEmpty
   }
 
   private func promptTmuxName() {
