@@ -371,6 +371,7 @@ class SpaceController: UIViewController {
       term.bgColor = view.backgroundColor ?? .black
       _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     }
+    _sortTabsByMachineAndDir()
         
     self.view.addSubview(_bottomTapAreaView)
     
@@ -555,7 +556,8 @@ Please go to your subscriptions and cancel one of them!
     }
 
     _currentKey = term.meta.key
-    
+    _sortTabsByMachineAndDir()
+
     _viewportsController.setViewControllers([term], direction: .forward, animated: animated) { (didComplete) in
       self._displayHUD()
       self._attachInputToCurrentTerm()
@@ -1388,6 +1390,28 @@ extension SpaceController {
           let idx = _viewportsKeys.firstIndex(of: targetKey) else { return }
     _moveToShell(idx: idx, animated: animated)
     _reloadTabBar()
+  }
+
+  private func _sortTabsByMachineAndDir() {
+    let machineOrder = Dictionary(uniqueKeysWithValues:
+      BlinkMachineStore.shared.machines.enumerated().map { ($0.element.id, $0.offset) })
+    let workDirOrder = Dictionary(uniqueKeysWithValues:
+      BlinkWorkDirStore.shared.workDirs.enumerated().map { ($0.element.id, $0.offset) })
+
+    let indexed = _viewportsKeys.enumerated().map { (offset: $0.offset, key: $0.element) }
+    let sorted = indexed.sorted { a, b in
+      let ta: TermController = SessionRegistry.shared[a.key]
+      let tb: TermController = SessionRegistry.shared[b.key]
+      let mka = ta.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
+      let mkb = tb.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
+      if mka != mkb { return mka < mkb }
+      let dka = ta.mcpParams?.workDirId.flatMap { workDirOrder[$0] } ?? Int.max
+      let dkb = tb.mcpParams?.workDirId.flatMap { workDirOrder[$0] } ?? Int.max
+      if dka != dkb { return dka < dkb }
+      return a.offset < b.offset  // 同组内保持原序
+    }.map { $0.key }
+    if sorted == _viewportsKeys { return }
+    _viewportsKeys = sorted
   }
 
   private func _machineIdsWithTabs() -> [String] {
