@@ -6,6 +6,7 @@ Catalog of wiki pages. See [CLAUDE.md](CLAUDE.md) for the schema.
 
 - [ios_system 命令字符串 escape 陷阱](ios-system-cmdline-escaping.md) — `\"` 在 dontExpand argv 里字面保留到远端，进 sh -c 单引号脚本后变字面引号字符，让 `[ -S \"$p\" ]` 永远 false
 - [hterm 文本抓取：alt screen vs primary + scrollback](blink-hterm-text-extraction.md) — TUI 切 alt screen 后 `term.screen_.rowsArray` 暴露为空，要走 DOM `x-row`；alt screen 没有 scrollback
+- [macOS SSH key 进 Keychain](macos-ssh-key-keychain.md) — `git push` / 远程 ssh 在 Claude/tmux/Blink 二跳里"用一下又不好用"的根因，一次 `ssh-add --apple-use-keychain` 永久修
 
 ## Entities (subsystems / modules)
 

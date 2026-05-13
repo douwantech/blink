@@ -20,3 +20,9 @@ Append-only session log. One line per substantive op.
 - **TUI 切到 alt screen 时 hterm 状态反直觉**：`term.screen_ === term.alternateScreen_` 为 true，但 `term.screen_.rowsArray.length === 0`、`term.alternateScreen_.rowsArray.length === 31` 同时成立；`scrollbackRows_` 也是空（alt 无 scrollback）。**真正可见的内容只在 DOM `x-row`**。检测 alt screen 后必须走 `document.querySelectorAll('x-row')`，不能信 hterm 内部 array。
 
 详见 [blink-hterm-text-extraction](blink-hterm-text-extraction.md)。同一 session 还有图床上传（`210f097c` 已合并 origin/talkai）、状态栏底色对齐 tab bar、tab 两行间距 +4px 这几项轻量改动，已 build/烧机但**未 commit**，留给随后的 handoff。
+
+## [2026-05-12] snapshot | macOS SSH key 进 Keychain（一次性修反复 push 失败）
+
+`git push` 报 `Permission denied (publickey)`，Claude shell 里 `SSH_AUTH_SOCK` 空、`ssh-add -l` 拿不到 agent。`~/.ssh/config` 末尾全局 `AddKeysToAgent yes` + `UseKeychain yes` 配置都对，但**从没在 GUI Terminal 跑过 `ssh-add`**，所以 keychain 里查不到 `SSH:` 域 passphrase——这俩配置都是"先有一次交互种子"型，没种子全挂。一次 `ssh-add --apple-use-keychain ~/.ssh/id_rsa`（必须 GUI Terminal）后所有 ssh 调用都从 keychain 拿 passphrase，github + 远程 server 全通。push 完成：`210f097c..12fede68 → origin/talkai`（4 个 commit：状态栏底色 + tab 行间距 + 复制 alt-screen 修复 + 本次 wiki）。
+
+详见 [macos-ssh-key-keychain](macos-ssh-key-keychain.md)。
