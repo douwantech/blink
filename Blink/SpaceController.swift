@@ -694,6 +694,13 @@ extension SpaceController: UIPageViewControllerDelegate {
     }
     termController.resumeIfNeeded()
     _currentKey = termController.meta.key
+    // swipe 跨到了另一台机器：同步 filter 到新机器
+    if let curFilter = _tabFilterMachineId,
+       let mid = termController.mcpParams?.machineId,
+       mid != curFilter {
+      _tabFilterMachineId = mid
+      _reloadTabBar()
+    }
     _displayHUD()
     _attachInputToCurrentTerm()
 
@@ -703,21 +710,30 @@ extension SpaceController: UIPageViewControllerDelegate {
 // MARK: UIPageViewControllerDataSource
 extension SpaceController: UIPageViewControllerDataSource {
   private func _controller(controller: UIViewController, advancedBy: Int) -> UIViewController? {
-    guard let ctrl = controller as? TermController else {
-      return nil
-    }
+    guard let ctrl = controller as? TermController else { return nil }
     let key = ctrl.meta.key
     let filtered = _filteredViewportsKeys()
-    guard
-      let pos = filtered.firstIndex(of: key)?.advanced(by: advancedBy),
-      filtered.indices.contains(pos)
-    else {
-      return nil
+    if let pos = filtered.firstIndex(of: key)?.advanced(by: advancedBy),
+       filtered.indices.contains(pos) {
+      let newCtrl: TermController = SessionRegistry.shared[filtered[pos]]
+      newCtrl.delegate = self
+      newCtrl.bgColor = view.backgroundColor ?? .black
+      return newCtrl
     }
-    let newKey = filtered[pos]
-    let newCtrl: TermController = SessionRegistry.shared[newKey]
+    // 越界：filter 非 nil + ≥2 台机器 → 跨到下一台机器的端点 tab
+    guard let curFilter = _tabFilterMachineId else { return nil }
+    let machineIds = _machineIdsWithTabs()
+    guard machineIds.count > 1,
+          let curMid = machineIds.firstIndex(of: curFilter) else { return nil }
+    let nextMid = (curMid + (advancedBy > 0 ? 1 : -1) + machineIds.count) % machineIds.count
+    let nextFilterId = machineIds[nextMid]
+    let nextFiltered = _viewportsKeys.filter { k in
+      let t: TermController = SessionRegistry.shared[k]
+      return t.mcpParams?.machineId == nextFilterId
+    }
+    guard let targetKey = (advancedBy > 0 ? nextFiltered.first : nextFiltered.last) else { return nil }
+    let newCtrl: TermController = SessionRegistry.shared[targetKey]
     newCtrl.delegate = self
-    //newCtrl.layoutProvider = self
     newCtrl.bgColor = view.backgroundColor ?? .black
     return newCtrl
   }
@@ -1352,15 +1368,39 @@ extension SpaceController {
 
   private func _advanceShell(by: Int, animated: Bool = true) {
     let filtered = _filteredViewportsKeys()
-    guard
-      let currentKey = _currentKey,
-      let pos = filtered.firstIndex(of: currentKey)?.advanced(by: by),
-      filtered.indices.contains(pos),
-      let idx = _viewportsKeys.firstIndex(of: filtered[pos])
-    else {
+    guard let currentKey = _currentKey else { return }
+    if let pos = filtered.firstIndex(of: currentKey)?.advanced(by: by),
+       filtered.indices.contains(pos),
+       let idx = _viewportsKeys.firstIndex(of: filtered[pos]) {
+      _moveToShell(idx: idx, animated: animated)
       return
     }
+    // 当前 filter 内走到尽头：切到下一台机器（仅当 filter 非 nil 且有 >=2 台机器有 tab）
+    guard let curFilter = _tabFilterMachineId else { return }
+    let machineIds = _machineIdsWithTabs()
+    guard machineIds.count > 1,
+          let curMachinePos = machineIds.firstIndex(of: curFilter) else { return }
+    let nextMachinePos = (curMachinePos + (by > 0 ? 1 : -1) + machineIds.count) % machineIds.count
+    let newFilterId = machineIds[nextMachinePos]
+    _tabFilterMachineId = newFilterId
+    let newFiltered = _filteredViewportsKeys()
+    guard let targetKey = (by > 0 ? newFiltered.first : newFiltered.last),
+          let idx = _viewportsKeys.firstIndex(of: targetKey) else { return }
     _moveToShell(idx: idx, animated: animated)
+    _reloadTabBar()
+  }
+
+  private func _machineIdsWithTabs() -> [String] {
+    var seen = Set<String>()
+    var out: [String] = []
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      guard let mid = term.mcpParams?.machineId else { continue }
+      if seen.insert(mid).inserted {
+        out.append(mid)
+      }
+    }
+    return out
   }
 
   private func _advanceShellCycling(by: Int, animated: Bool = true) {
