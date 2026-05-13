@@ -30,6 +30,9 @@ final class VoiceInputView: UIInputView {
   private let placeholderLabel = UILabel()
   private let placeholderText = "点击下方按钮开始说话"
   private let micButton = UIButton(type: .custom)
+  private let pulseRing = UIView()
+  private var hintDotsTimer: Timer?
+  private var hintDotsStep = 0
   private let confirmButton = UIButton(type: .system)
   private let cancelButton = UIButton(type: .system)
   private let keyboardButton = UIButton(type: .system)
@@ -132,6 +135,12 @@ final class VoiceInputView: UIInputView {
     micButton.layer.cornerRadius = 22
     micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
+    pulseRing.backgroundColor = UIColor.systemRed
+    pulseRing.layer.cornerRadius = 22
+    pulseRing.alpha = 0
+    pulseRing.isUserInteractionEnabled = false
+    pulseRing.translatesAutoresizingMaskIntoConstraints = false
+
     var confirmCfg = UIButton.Configuration.filled()
     confirmCfg.title = "确定 ↵"
     confirmCfg.baseBackgroundColor = .systemBlue
@@ -225,6 +234,7 @@ final class VoiceInputView: UIInputView {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
+    insertSubview(pulseRing, belowSubview: micButton)
     [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton, imagePickButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       arrowPadContainer.addSubview($0)
@@ -325,6 +335,11 @@ final class VoiceInputView: UIInputView {
       micButton.centerYAnchor.constraint(equalTo: cancelButton.centerYAnchor),
       micButton.widthAnchor.constraint(equalToConstant: 44),
       micButton.heightAnchor.constraint(equalToConstant: 44),
+
+      pulseRing.centerXAnchor.constraint(equalTo: micButton.centerXAnchor),
+      pulseRing.centerYAnchor.constraint(equalTo: micButton.centerYAnchor),
+      pulseRing.widthAnchor.constraint(equalTo: micButton.widthAnchor),
+      pulseRing.heightAnchor.constraint(equalTo: micButton.heightAnchor),
 
       cancelButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
       cancelButton.leadingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: 8),
@@ -472,7 +487,58 @@ final class VoiceInputView: UIInputView {
       self.micButton.backgroundColor = recording ? UIColor.systemRed : UIColor.systemBlue
       self.micButton.transform = recording ? CGAffineTransform(scaleX: 1.1, y: 1.1) : .identity
     }
-    hintLabel.text = recording ? "正在听… 点击结束" : currentLocaleTitle()
+    if recording {
+      startPulseAnimation()
+      startHintDotsAnimation()
+    } else {
+      stopPulseAnimation()
+      stopHintDotsAnimation()
+      hintLabel.text = currentLocaleTitle()
+    }
+  }
+
+  private func startPulseAnimation() {
+    pulseRing.layer.removeAllAnimations()
+    pulseRing.alpha = 1.0
+
+    let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+    scaleAnim.fromValue = 1.0
+    scaleAnim.toValue = 1.8
+    scaleAnim.duration = 1.2
+    scaleAnim.repeatCount = .infinity
+    scaleAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+    pulseRing.layer.add(scaleAnim, forKey: "pulse.scale")
+
+    let opacityAnim = CABasicAnimation(keyPath: "opacity")
+    opacityAnim.fromValue = 0.55
+    opacityAnim.toValue = 0.0
+    opacityAnim.duration = 1.2
+    opacityAnim.repeatCount = .infinity
+    opacityAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+    pulseRing.layer.add(opacityAnim, forKey: "pulse.opacity")
+  }
+
+  private func stopPulseAnimation() {
+    pulseRing.layer.removeAllAnimations()
+    pulseRing.alpha = 0
+  }
+
+  private func startHintDotsAnimation() {
+    hintDotsTimer?.invalidate()
+    hintDotsStep = 0
+    hintLabel.text = "正在听 · 点击结束"
+    hintLabel.textColor = .systemRed
+    hintDotsTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+      guard let self else { return }
+      self.hintDotsStep = (self.hintDotsStep + 1) % 4
+      let dots = String(repeating: "·", count: max(self.hintDotsStep, 1))
+      self.hintLabel.text = "正在听 \(dots) 点击结束"
+    }
+  }
+
+  private func stopHintDotsAnimation() {
+    hintDotsTimer?.invalidate()
+    hintDotsTimer = nil
   }
 
   @objc private func commitTapped() {
