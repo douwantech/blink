@@ -483,6 +483,10 @@ final class VoiceInputView: UIInputView {
     let text = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     AITextPolisher.shared.recordHistory(text)
+    if let raw = lastAsrRaw {
+      AITextPolisher.shared.recordCorrection(asrRaw: raw, final: text)
+    }
+    lastAsrRaw = nil
     delegate?.voiceInput(self, didCommitText: text)
     setText("")
     delegate?.voiceInputDidRequestDismiss(self)
@@ -782,29 +786,20 @@ final class VoiceInputView: UIInputView {
   // MARK: - Permissions
 
   private func requestPermissionsThen(_ completion: @escaping (Bool) -> Void) {
-    SFSpeechRecognizer.requestAuthorization { speechStatus in
+    let micHandler: (Bool) -> Void = { granted in
       DispatchQueue.main.async {
-        guard speechStatus == .authorized else {
-          self.showPermissionDenied("语音识别")
+        if !granted {
+          self.showPermissionDenied("麦克风")
           completion(false)
-          return
-        }
-        let micHandler: (Bool) -> Void = { granted in
-          DispatchQueue.main.async {
-            if !granted {
-              self.showPermissionDenied("麦克风")
-              completion(false)
-            } else {
-              completion(true)
-            }
-          }
-        }
-        if #available(iOS 17.0, *) {
-          AVAudioApplication.requestRecordPermission(completionHandler: micHandler)
         } else {
-          AVAudioSession.sharedInstance().requestRecordPermission(micHandler)
+          completion(true)
         }
       }
+    }
+    if #available(iOS 17.0, *) {
+      AVAudioApplication.requestRecordPermission(completionHandler: micHandler)
+    } else {
+      AVAudioSession.sharedInstance().requestRecordPermission(micHandler)
     }
   }
 
@@ -815,76 +810,126 @@ final class VoiceInputView: UIInputView {
 
   // MARK: - Recording
 
+  private var glmRecorder: AVAudioRecorder?
+  private var glmRecordedFileURL: URL?
+  private var lastAsrRaw: String?
+
   private func startRecording() {
-    guard let recognizer, recognizer.isAvailable else {
-      hintLabel.text = "识别服务不可用"
-      hintLabel.textColor = .systemRed
-      return
-    }
-
-    task?.cancel()
-    task = nil
-
     let session = AVAudioSession.sharedInstance()
     do {
-      try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
-      try session.setActive(true, options: .notifyOthersOnDeactivation)
+      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+      try session.setActive(true)
     } catch {
       hintLabel.text = "音频会话失败: \(error.localizedDescription)"
       hintLabel.textColor = .systemRed
       return
     }
 
-    let req = SFSpeechAudioBufferRecognitionRequest()
-    req.shouldReportPartialResults = true
-    request = req
-
-    let inputNode = audioEngine.inputNode
-    let format = inputNode.outputFormat(forBus: 0)
-    inputNode.removeTap(onBus: 0)
-    inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-      self?.request?.append(buffer)
-    }
-
-    audioEngine.prepare()
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("voice-\(UUID().uuidString).wav")
+    let settings: [String: Any] = [
+      AVFormatIDKey: Int(kAudioFormatLinearPCM),
+      AVSampleRateKey: 16000.0,
+      AVNumberOfChannelsKey: 1,
+      AVLinearPCMBitDepthKey: 16,
+      AVLinearPCMIsFloatKey: false,
+      AVLinearPCMIsBigEndianKey: false,
+    ]
     do {
-      try audioEngine.start()
+      let r = try AVAudioRecorder(url: url, settings: settings)
+      r.prepareToRecord()
+      r.record()
+      glmRecorder = r
+      glmRecordedFileURL = url
+      isRecording = true
     } catch {
       hintLabel.text = "录音启动失败: \(error.localizedDescription)"
       hintLabel.textColor = .systemRed
-      return
-    }
-
-    isRecording = true
-
-    task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-      guard let self else { return }
-      if let result {
-        let text = result.bestTranscription.formattedString
-        DispatchQueue.main.async {
-          guard self.isRecording else { return }
-          self.setText(text)
-        }
-      }
-      if error != nil {
-        DispatchQueue.main.async {
-          if let err = error {
-            self.hintLabel.text = "识别失败: \(err.localizedDescription)"
-          }
-        }
-      }
     }
   }
 
   private func stopRecording() {
-    guard isRecording else { return }
-    isRecording = false
-    if audioEngine.isRunning {
-      audioEngine.stop()
-      audioEngine.inputNode.removeTap(onBus: 0)
+    guard isRecording, let r = glmRecorder, let url = glmRecordedFileURL else {
+      isRecording = false
+      return
     }
-    request?.endAudio()
-    request = nil
+    isRecording = false
+    r.stop()
+    glmRecorder = nil
+    glmRecordedFileURL = nil
+
+    let apiKey = AITextPolisher.shared.apiKey
+    guard !apiKey.isEmpty else {
+      hintLabel.text = "未配置 GLM API key（设置→AI 配置）"
+      hintLabel.textColor = .systemRed
+      try? FileManager.default.removeItem(at: url)
+      return
+    }
+
+    hintLabel.text = "识别中…"
+    hintLabel.textColor = .secondaryLabel
+
+    GLMASRClient.transcribe(fileURL: url, apiKey: apiKey) { [weak self] result in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        try? FileManager.default.removeItem(at: url)
+        switch result {
+        case .success(let text):
+          self.lastAsrRaw = text
+          self.setText(text)
+          self.hintLabel.text = self.currentLocaleTitle()
+          self.hintLabel.textColor = .tertiaryLabel
+        case .failure(let err):
+          self.hintLabel.text = "识别失败: \(err.localizedDescription)"
+          self.hintLabel.textColor = .systemRed
+        }
+      }
+    }
+  }
+}
+
+enum GLMASRClient {
+  private static let endpoint = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
+  private static let model = "glm-asr-2512"
+
+  static func transcribe(fileURL: URL, apiKey: String, completion: @escaping (Result<String, Error>) -> Void) {
+    guard let url = URL(string: endpoint) else {
+      completion(.failure(NSError(domain: "GLMASR", code: -1, userInfo: [NSLocalizedDescriptionKey: "bad endpoint"])))
+      return
+    }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.timeoutInterval = 60
+    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    let boundary = "Boundary-\(UUID().uuidString)"
+    req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+    var body = Data()
+    func append(_ s: String) { body.append(s.data(using: .utf8)!) }
+    append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n\(model)\r\n")
+    append("--\(boundary)\r\nContent-Disposition: form-data; name=\"stream\"\r\n\r\nfalse\r\n")
+    append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
+    if let data = try? Data(contentsOf: fileURL) { body.append(data) }
+    append("\r\n--\(boundary)--\r\n")
+    req.httpBody = body
+
+    URLSession.shared.dataTask(with: req) { data, resp, err in
+      if let err {
+        completion(.failure(err))
+        return
+      }
+      let http = resp as? HTTPURLResponse
+      let status = http?.statusCode ?? -1
+      guard status == 200,
+            let data,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let text = json["text"] as? String else {
+        let bodyText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let snippet = bodyText.prefix(200)
+        completion(.failure(NSError(domain: "GLMASR", code: status, userInfo: [NSLocalizedDescriptionKey: "HTTP \(status): \(snippet)"])))
+        return
+      }
+      completion(.success(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }.resume()
   }
 }
 
@@ -999,7 +1044,9 @@ final class AITextPolisher {
   private let kEnabled = "VoiceInputView.aiEnabled"
   private let kDebounce = "VoiceInputView.aiDebounce"
   private let kHistory = "VoiceInputView.aiHistory"
+  private let kCorrections = "VoiceInputView.aiCorrections"
   private let maxHistory = 30
+  private let maxCorrections = 30
 
   private init() {
     UserDefaults.standard.register(defaults: [
@@ -1036,20 +1083,43 @@ final class AITextPolisher {
   }
 
   private let systemPrompt = """
-    你是一个语音转文字的清理助手。我会给你：
-    1. 用户近期已提交的输入（作为上下文，里面包含用户常用的术语、命令、专有名词、代码标识符）
-    2. 这一次的语音识别结果
+    你是一个语音转文字的整理助手。我会给你：
+    1. 用户近期已提交的输入（作为上下文，里面包含常用术语、命令、专有名词、和最近在做的事）
+    2. 用户的修正记录（用户在 ASR 出文本后手动改过的对：左=ASR 原文，右=用户改后版本）
+    3. 这一次的语音识别结果
 
-    任务：
-    1. 根据上下文修正语音识别明显错听的词或词组（例如把"给客密"还原为"git commit"，把"倒克尔"还原为"docker"，把"卡了带"还原为"Claude"等）
-    2. 清理口语化卡顿（嗯、啊、那个、就是、就是说）、重复字词、自我修正
+    任务（按顺序做完）：
+
+    1. 修正 ASR 错听词。
+       **触发条件**：候选词必须在「用户近期已提交的输入」或「用户的修正记录」里出现过才允许替换。
+       **修正记录优先**：如果当前 ASR 文本里出现过「修正记录」左边的错听词/短语，且同一句话里上下文跟那条修正记录类似，直接按右边的版本改。例：修正记录有「table → tab」，本次 ASR 又出现"table"且上下文是"切 / 关 / 打开"等 → 直接改成"tab"。
+       常见模式（兜底，仅当修正记录不覆盖时用）：
+       - 中文同音/近音：历史里有 git commit → 把"给客密"改成"git commit"；历史里有 docker → 把"倒克尔"改成"docker"；历史里有 Claude → 把"卡了带 / 卡老的 / cloud"改成"Claude"。
+       - 英文同音 / 长短词扩展：历史里有 tab → 把"table"改成"tab"；shell ← share；grep ← grab；cd ← see d / seedy；push ← poosh。
+       - 中英混合句里的错词同样处理。
+
+    2. 清理口语化卡顿（嗯、啊、那个、就是、就是说）、自我修正、重复字词。
+
+    3. **指令化重写**：把口语化、含糊的请求改写成清晰、可直接交给开发工具/AI 执行的指令文本。
+       - 「把 X 修一下 / 改下」→ 「修复 X」/「修改 X」
+       - 「帮我东西看一下这个能不能 push 上去」→「帮我检查这个能否 push」
+       - 「先拉一下代码然后再 build 一下」→「先拉代码再 build」
+       - 保留时间/顺序词（先 / 然后 / 接着 / 刚才）
+
+    4. **指代消解 / 主动嵌上下文**：
+       - **只在指代带具体属性词时才做消解**。"那个 tab 的 bug"（属性词 = tab, bug）、"那个状态栏的 bug"（属性词 = 状态栏, bug）、"刚才 push 的那个"（属性词 = push）属于带具体属性词。
+       - "那个东西" / "那个" / "这个" 单独使用、不带具体属性 → **泛指**，**保留原指代**，不要消解。
+       - 做消解时：扫历史，找跟**属性词**直接相关的那条，把它的关键短语嵌进句子。
+         · 例：「把刚才那个 tab 的 bug 修一下」+ history 含「swipe 跳机器问题」→「修复刚才 swipe 跳机器那个 tab bug」
+         · 例：「把那个状态栏的 bug 解一下」+ history 含「状态栏底色对齐 tab bar」→「修复状态栏底色对齐 tab bar 那个 bug」
+       - 历史里没有跟属性词相关的条目 → **保留原指代**。
 
     严格遵守：
-    - 不要润色、不要换说法、不要美化用词
-    - 不要补充原文没有的内容
-    - 不要修改原文的语义；若上下文里没出现过的词不要强行替换
-    - 如果原文已经通顺无错听，原样输出
-    - 只输出清理后的文本，不要解释、不要加引号、不要 markdown、不要前后空白
+    - 不要无中生有：历史里没的事实/对象不要编出来
+    - 不要改变用户真实意图、不要扩展请求范围
+    - 不要加礼貌语、不要加结尾问候
+    - **保持原文的语言**：英文原文输出英文，中文原文输出中文，中英混合保持混合；不要翻译
+    - 只输出整理后的文本，不要解释、不要加引号、不要 markdown、不要前后空白
     """
 
   func recordHistory(_ text: String) {
@@ -1063,12 +1133,68 @@ final class AITextPolisher {
     UserDefaults.standard.set(arr, forKey: kHistory)
   }
 
+  var historyEntries: [String] {
+    UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+  }
+
+  func deleteHistory(at index: Int) {
+    var arr = historyEntries
+    guard arr.indices.contains(index) else { return }
+    arr.remove(at: index)
+    UserDefaults.standard.set(arr, forKey: kHistory)
+  }
+
+  func clearHistory() {
+    UserDefaults.standard.removeObject(forKey: kHistory)
+  }
+
+  func recordCorrection(asrRaw: String, final: String) {
+    let asrTrim = asrRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+    let finTrim = final.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !asrTrim.isEmpty, !finTrim.isEmpty, asrTrim != finTrim else { return }
+    var arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
+    arr.append([asrTrim, finTrim])
+    if arr.count > maxCorrections {
+      arr.removeFirst(arr.count - maxCorrections)
+    }
+    UserDefaults.standard.set(arr, forKey: kCorrections)
+  }
+
+  var correctionEntries: [(asrRaw: String, final: String)] {
+    let arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
+    return arr.compactMap { pair in
+      guard pair.count == 2 else { return nil }
+      return (pair[0], pair[1])
+    }
+  }
+
+  func deleteCorrection(at index: Int) {
+    var arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
+    guard arr.indices.contains(index) else { return }
+    arr.remove(at: index)
+    UserDefaults.standard.set(arr, forKey: kCorrections)
+  }
+
+  func clearCorrections() {
+    UserDefaults.standard.removeObject(forKey: kCorrections)
+  }
+
   private func historyBlock() -> String {
-    let arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
-    guard !arr.isEmpty else { return "" }
-    let recent = arr.suffix(maxHistory).reversed()
-    let body = recent.map { "- \($0)" }.joined(separator: "\n")
-    return "\n\n用户近期已提交的输入（按从新到旧）：\n\(body)"
+    var parts: [String] = []
+    let history = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+    if !history.isEmpty {
+      let recent = history.suffix(maxHistory).reversed()
+      let body = recent.map { "- \($0)" }.joined(separator: "\n")
+      parts.append("用户近期已提交的输入（按从新到旧）：\n\(body)")
+    }
+    let corrections = correctionEntries
+    if !corrections.isEmpty {
+      let recent = corrections.suffix(maxCorrections).reversed()
+      let body = recent.map { "- 「\($0.asrRaw)」 → 「\($0.final)」" }.joined(separator: "\n")
+      parts.append("用户的修正记录（左=ASR 原文，右=用户改后的版本，按从新到旧）：\n\(body)")
+    }
+    guard !parts.isEmpty else { return "" }
+    return "\n\n" + parts.joined(separator: "\n\n")
   }
 
   func polish(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
@@ -1166,7 +1292,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 1, 1, 2, 2][section]
+    [1, 1, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1197,6 +1323,10 @@ final class VoiceSettingsViewController: UITableViewController {
       cell.textLabel?.text = "AI 配置"
       cell.detailTextLabel?.text = AITextPolisher.shared.model
       cell.accessoryType = .disclosureIndicator
+    case (3, 2):
+      cell.textLabel?.text = "提交历史"
+      cell.detailTextLabel?.text = "\(AITextPolisher.shared.historyEntries.count) 条"
+      cell.accessoryType = .disclosureIndicator
     case (4, 0):
       cell.textLabel?.text = "测试 GLM-ASR"
       cell.detailTextLabel?.text = "bigmodel.cn"
@@ -1225,6 +1355,8 @@ final class VoiceSettingsViewController: UITableViewController {
       navigationController?.pushViewController(picker, animated: true)
     case (3, 1):
       presentAISettings()
+    case (3, 2):
+      navigationController?.pushViewController(AIHistoryViewController(), animated: true)
     case (4, 0):
       navigationController?.pushViewController(ASRTestViewController(config: .glm), animated: true)
     case (4, 1):
@@ -1276,6 +1408,132 @@ final class VoiceSettingsViewController: UITableViewController {
       }
       self?.tableView.reloadData()
     })
+    present(alert, animated: true)
+  }
+}
+
+final class AIHistoryViewController: UITableViewController {
+  init() { super.init(style: .insetGrouped) }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "提交历史"
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      title: "清空", style: .plain, target: self, action: #selector(clearTapped))
+  }
+
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    tableView.reloadData()
+  }
+
+  override func numberOfSections(in tv: UITableView) -> Int { 2 }
+
+  override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
+    if s == 0 { return max(AITextPolisher.shared.historyEntries.count, 1) }
+    return max(AITextPolisher.shared.correctionEntries.count, 1)
+  }
+
+  override func tableView(_ tv: UITableView, titleForHeaderInSection s: Int) -> String? {
+    if s == 0 {
+      let n = AITextPolisher.shared.historyEntries.count
+      return n > 0 ? "提交记录（共 \(n) 条，新→旧）" : "提交记录"
+    }
+    let n = AITextPolisher.shared.correctionEntries.count
+    return n > 0 ? "修正对（共 \(n) 对，左=ASR 原文，右=你改后版本）" : "修正对"
+  }
+
+  override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
+    if s == 0 {
+      return "每次在语音面板按提交时记一条；最多 30 条；作为上下文喂给 AI 整理。"
+    }
+    return "若 ASR 出文本后你做了修改，提交时把这对存下来。AI 整理会优先按这里的修正习惯改。最多 30 对。"
+  }
+
+  override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
+    if ip.section == 0 {
+      let entries = AITextPolisher.shared.historyEntries
+      let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+      if entries.isEmpty {
+        cell.textLabel?.text = "暂无（提交后这里就会出现）"
+        cell.textLabel?.textColor = .secondaryLabel
+        cell.textLabel?.font = .systemFont(ofSize: 14)
+        cell.selectionStyle = .none
+      } else {
+        let reversed = Array(entries.reversed())
+        cell.textLabel?.text = reversed[ip.row]
+        cell.textLabel?.numberOfLines = 0
+        cell.selectionStyle = .none
+      }
+      return cell
+    }
+    let corrections = AITextPolisher.shared.correctionEntries
+    let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+    if corrections.isEmpty {
+      cell.textLabel?.text = "暂无（语音转出文本后改一下再提交就会出现）"
+      cell.textLabel?.textColor = .secondaryLabel
+      cell.textLabel?.font = .systemFont(ofSize: 14)
+      cell.selectionStyle = .none
+      return cell
+    }
+    let reversed = Array(corrections.reversed())
+    let pair = reversed[ip.row]
+    cell.textLabel?.text = pair.final
+    cell.textLabel?.numberOfLines = 0
+    cell.detailTextLabel?.text = "原: \(pair.asrRaw)"
+    cell.detailTextLabel?.numberOfLines = 0
+    cell.detailTextLabel?.textColor = .secondaryLabel
+    cell.selectionStyle = .none
+    return cell
+  }
+
+  override func tableView(_ tv: UITableView, canEditRowAt ip: IndexPath) -> Bool {
+    if ip.section == 0 { return !AITextPolisher.shared.historyEntries.isEmpty }
+    return !AITextPolisher.shared.correctionEntries.isEmpty
+  }
+
+  override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
+    guard editingStyle == .delete else { return }
+    if ip.section == 0 {
+      let entries = AITextPolisher.shared.historyEntries
+      let realIndex = entries.count - 1 - ip.row
+      AITextPolisher.shared.deleteHistory(at: realIndex)
+    } else {
+      let corrections = AITextPolisher.shared.correctionEntries
+      let realIndex = corrections.count - 1 - ip.row
+      AITextPolisher.shared.deleteCorrection(at: realIndex)
+    }
+    tv.reloadData()
+  }
+
+  @objc private func clearTapped() {
+    let historyN = AITextPolisher.shared.historyEntries.count
+    let correctionN = AITextPolisher.shared.correctionEntries.count
+    let alert = UIAlertController(title: "清空哪一项？", message: nil, preferredStyle: .actionSheet)
+    if historyN > 0 {
+      alert.addAction(UIAlertAction(title: "清空提交记录 (\(historyN))", style: .destructive) { [weak self] _ in
+        AITextPolisher.shared.clearHistory()
+        self?.tableView.reloadData()
+      })
+    }
+    if correctionN > 0 {
+      alert.addAction(UIAlertAction(title: "清空修正对 (\(correctionN))", style: .destructive) { [weak self] _ in
+        AITextPolisher.shared.clearCorrections()
+        self?.tableView.reloadData()
+      })
+    }
+    if historyN > 0 && correctionN > 0 {
+      alert.addAction(UIAlertAction(title: "全部清空", style: .destructive) { [weak self] _ in
+        AITextPolisher.shared.clearHistory()
+        AITextPolisher.shared.clearCorrections()
+        self?.tableView.reloadData()
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let pop = alert.popoverPresentationController {
+      pop.barButtonItem = navigationItem.rightBarButtonItem
+    }
     present(alert, animated: true)
   }
 }
