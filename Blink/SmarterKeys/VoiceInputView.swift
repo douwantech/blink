@@ -33,6 +33,12 @@ final class VoiceInputView: UIInputView {
   private let pulseRing = UIView()
   private var hintDotsTimer: Timer?
   private var hintDotsStep = 0
+
+  private let thinkingOverlay = UIView()
+  private let thinkingImageView = UIImageView()
+  private let thinkingLabel = UILabel()
+  private var thinkingDotsTimer: Timer?
+  private var thinkingDotsStep = 0
   private let confirmButton = UIButton(type: .system)
   private let cancelButton = UIButton(type: .system)
   private let keyboardButton = UIButton(type: .system)
@@ -135,6 +141,30 @@ final class VoiceInputView: UIInputView {
     micButton.layer.cornerRadius = 22
     micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
+    let brainConfig = UIImage.SymbolConfiguration(pointSize: 38, weight: .regular)
+    if #available(iOS 18.1, *),
+       let intel = UIImage(systemName: "apple.intelligence",
+                           withConfiguration: brainConfig.applying(UIImage.SymbolConfiguration.preferringMulticolor())) {
+      thinkingImageView.image = intel
+    } else {
+      thinkingImageView.image = UIImage(systemName: "sparkles", withConfiguration: brainConfig)
+      thinkingImageView.tintColor = .systemBlue
+    }
+    thinkingImageView.contentMode = .scaleAspectFit
+    thinkingImageView.translatesAutoresizingMaskIntoConstraints = false
+
+    thinkingLabel.text = "AI 整理中…"
+    thinkingLabel.font = .systemFont(ofSize: 13, weight: .medium)
+    thinkingLabel.textColor = .systemBlue
+    thinkingLabel.textAlignment = .center
+    thinkingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    thinkingOverlay.translatesAutoresizingMaskIntoConstraints = false
+    thinkingOverlay.isUserInteractionEnabled = false
+    thinkingOverlay.isHidden = true
+    thinkingOverlay.addSubview(thinkingImageView)
+    thinkingOverlay.addSubview(thinkingLabel)
+
     pulseRing.backgroundColor = UIColor.systemRed
     pulseRing.layer.cornerRadius = 22
     pulseRing.alpha = 0
@@ -235,6 +265,7 @@ final class VoiceInputView: UIInputView {
       addSubview($0)
     }
     insertSubview(pulseRing, belowSubview: micButton)
+    addSubview(thinkingOverlay)
     [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton, imagePickButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       arrowPadContainer.addSubview($0)
@@ -341,6 +372,18 @@ final class VoiceInputView: UIInputView {
       pulseRing.widthAnchor.constraint(equalTo: micButton.widthAnchor),
       pulseRing.heightAnchor.constraint(equalTo: micButton.heightAnchor),
 
+      thinkingOverlay.centerXAnchor.constraint(equalTo: textView.centerXAnchor),
+      thinkingOverlay.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
+      thinkingImageView.topAnchor.constraint(equalTo: thinkingOverlay.topAnchor),
+      thinkingImageView.centerXAnchor.constraint(equalTo: thinkingOverlay.centerXAnchor),
+      thinkingImageView.widthAnchor.constraint(equalToConstant: 44),
+      thinkingImageView.heightAnchor.constraint(equalToConstant: 44),
+      thinkingLabel.topAnchor.constraint(equalTo: thinkingImageView.bottomAnchor, constant: 6),
+      thinkingLabel.centerXAnchor.constraint(equalTo: thinkingOverlay.centerXAnchor),
+      thinkingLabel.leadingAnchor.constraint(equalTo: thinkingOverlay.leadingAnchor),
+      thinkingLabel.trailingAnchor.constraint(equalTo: thinkingOverlay.trailingAnchor),
+      thinkingLabel.bottomAnchor.constraint(equalTo: thinkingOverlay.bottomAnchor),
+
       cancelButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
       cancelButton.leadingAnchor.constraint(equalTo: micButton.trailingAnchor, constant: 8),
       cancelButton.widthAnchor.constraint(equalToConstant: 72),
@@ -386,28 +429,70 @@ final class VoiceInputView: UIInputView {
     polishText()
   }
 
-  private func polishText() {
-    guard AITextPolisher.shared.enabled, !AITextPolisher.shared.apiKey.isEmpty else { return }
-    let text = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, !isPolishing else { return }
+  private func polishText(rawText: String? = nil) {
+    let source: String
+    if let raw = rawText {
+      source = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    } else {
+      source = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    guard !source.isEmpty else { return }
+    guard AITextPolisher.shared.enabled, !AITextPolisher.shared.apiKey.isEmpty else {
+      // polish 不可用：fallback 直接显示 raw
+      if rawText != nil { setText(source) }
+      return
+    }
+    guard !isPolishing else { return }
     isPolishing = true
-    hintLabel.text = "AI 整理中…"
-    hintLabel.textColor = .systemBlue
-    AITextPolisher.shared.polish(text) { [weak self] result in
+    startThinkingAnimation()
+    AITextPolisher.shared.polish(source) { [weak self] result in
       guard let self else { return }
       self.isPolishing = false
+      self.stopThinkingAnimation()
       switch result {
       case .success(let polished):
-        self.textView.text = polished
-        self.updatePlaceholderVisibility()
+        self.setText(polished)
         self.hintLabel.text = "已整理 · \(self.currentLocaleTitle())"
         self.hintLabel.textColor = .tertiaryLabel
       case .failure(let err):
+        self.setText(source)  // polish 失败 fallback 到 ASR 原文
         self.hintLabel.text = self.currentLocaleTitle()
         self.hintLabel.textColor = .tertiaryLabel
         self.showToast("AI 整理失败: \(err.localizedDescription)", isError: true)
       }
     }
+  }
+
+  private func startThinkingAnimation() {
+    thinkingOverlay.isHidden = false
+    placeholderLabel.isHidden = true
+    bringSubviewToFront(thinkingOverlay)
+
+    let scale = CABasicAnimation(keyPath: "transform.scale")
+    scale.fromValue = 1.0
+    scale.toValue = 1.18
+    scale.duration = 0.8
+    scale.autoreverses = true
+    scale.repeatCount = .infinity
+    scale.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    thinkingImageView.layer.add(scale, forKey: "brain.pulse")
+
+    thinkingDotsTimer?.invalidate()
+    thinkingDotsStep = 0
+    thinkingDotsTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+      guard let self else { return }
+      self.thinkingDotsStep = (self.thinkingDotsStep + 1) % 4
+      let dots = String(repeating: "·", count: max(self.thinkingDotsStep, 1))
+      self.thinkingLabel.text = "AI 整理中 \(dots)"
+    }
+  }
+
+  private func stopThinkingAnimation() {
+    thinkingOverlay.isHidden = true
+    thinkingImageView.layer.removeAllAnimations()
+    thinkingDotsTimer?.invalidate()
+    thinkingDotsTimer = nil
+    updatePlaceholderVisibility()
   }
 
   func showToast(_ message: String, isError: Bool = false) {
@@ -468,7 +553,6 @@ final class VoiceInputView: UIInputView {
       setMicButtonRecording(false)
       stopRecording()
       debounceTimer?.invalidate()
-      polishText()
       return
     }
     setMicButtonRecording(true)
@@ -941,9 +1025,9 @@ final class VoiceInputView: UIInputView {
         switch result {
         case .success(let text):
           self.lastAsrRaw = text
-          self.setText(text)
           self.hintLabel.text = self.currentLocaleTitle()
           self.hintLabel.textColor = .tertiaryLabel
+          self.polishText(rawText: text)
         case .failure(let err):
           self.hintLabel.text = "识别失败: \(err.localizedDescription)"
           self.hintLabel.textColor = .systemRed
@@ -1149,43 +1233,35 @@ final class AITextPolisher {
   }
 
   private let systemPrompt = """
-    你是一个语音转文字的整理助手。我会给你：
-    1. 用户近期已提交的输入（作为上下文，里面包含常用术语、命令、专有名词、和最近在做的事）
-    2. 用户的修正记录（用户在 ASR 出文本后手动改过的对：左=ASR 原文，右=用户改后版本）
+    你是一个语音转文字的清理助手。**最重要的原则：尽可能保留用户原话，只做最少必要的修改。**
+
+    我会给你：
+    1. 用户近期已提交的输入（作为上下文，里面包含常用术语、命令、专有名词）
+    2. 用户的修正记录（左=ASR 原文 右=用户改后版本）
     3. 这一次的语音识别结果
 
-    任务（按顺序做完）：
+    任务（只做这两件，其他一律不动）：
 
     1. 修正 ASR 错听词。
-       **触发条件**：候选词必须在「用户近期已提交的输入」或「用户的修正记录」里出现过才允许替换。
-       **修正记录优先**：如果当前 ASR 文本里出现过「修正记录」左边的错听词/短语，且同一句话里上下文跟那条修正记录类似，直接按右边的版本改。例：修正记录有「table → tab」，本次 ASR 又出现"table"且上下文是"切 / 关 / 打开"等 → 直接改成"tab"。
-       常见模式（兜底，仅当修正记录不覆盖时用）：
-       - 中文同音/近音：历史里有 git commit → 把"给客密"改成"git commit"；历史里有 docker → 把"倒克尔"改成"docker"；历史里有 Claude → 把"卡了带 / 卡老的 / cloud"改成"Claude"。
-       - 英文同音 / 长短词扩展：历史里有 tab → 把"table"改成"tab"；shell ← share；grep ← grab；cd ← see d / seedy；push ← poosh。
-       - 中英混合句里的错词同样处理。
+       触发条件：候选词必须在「用户近期已提交的输入」或「用户的修正记录」里实际出现过，才允许替换。
+       修正记录优先：如果当前 ASR 出现修正记录左边的词且上下文类似，按右边版本改。
+       常见模式（仅当修正记录未覆盖时用）：
+       - 中文同音/近音：历史里有 git commit → "给客密"改"git commit"；docker ← "倒克尔"；Claude ← "卡了带 / 卡老的 / cloud"
+       - 英文同音 / 长短词：历史里有 tab → "table"改"tab"；shell ← share；grep ← grab；cd ← see d / seedy；push ← poosh
+       - 中英混合句里的错词同样处理
 
-    2. 清理口语化卡顿（嗯、啊、那个、就是、就是说）、自我修正、重复字词。
-
-    3. **指令化重写**：把口语化、含糊的请求改写成清晰、可直接交给开发工具/AI 执行的指令文本。
-       - 「把 X 修一下 / 改下」→ 「修复 X」/「修改 X」
-       - 「帮我东西看一下这个能不能 push 上去」→「帮我检查这个能否 push」
-       - 「先拉一下代码然后再 build 一下」→「先拉代码再 build」
-       - 保留时间/顺序词（先 / 然后 / 接着 / 刚才）
-
-    4. **指代消解 / 主动嵌上下文**：
-       - **只在指代带具体属性词时才做消解**。"那个 tab 的 bug"（属性词 = tab, bug）、"那个状态栏的 bug"（属性词 = 状态栏, bug）、"刚才 push 的那个"（属性词 = push）属于带具体属性词。
-       - "那个东西" / "那个" / "这个" 单独使用、不带具体属性 → **泛指**，**保留原指代**，不要消解。
-       - 做消解时：扫历史，找跟**属性词**直接相关的那条，把它的关键短语嵌进句子。
-         · 例：「把刚才那个 tab 的 bug 修一下」+ history 含「swipe 跳机器问题」→「修复刚才 swipe 跳机器那个 tab bug」
-         · 例：「把那个状态栏的 bug 解一下」+ history 含「状态栏底色对齐 tab bar」→「修复状态栏底色对齐 tab bar 那个 bug」
-       - 历史里没有跟属性词相关的条目 → **保留原指代**。
+    2. 清理明显的口语化卡顿（仅限：嗯、啊、呃、那个、就是、就是说）+ 紧邻的字词重复（说错后立刻改口的那一遍）。
+       只删卡顿词本身和重复，不要重组剩下的句子。
 
     严格遵守：
-    - 不要无中生有：历史里没的事实/对象不要编出来
-    - 不要改变用户真实意图、不要扩展请求范围
+    - **保守原则**：原文无 ASR 错听、无明显卡顿，就**原样输出**，一个字都不改
+    - 不要润色、不要换说法、不要改句式、不要美化用词
+    - 不要做指代消解（"那个 tab"、"刚才那个 bug" 原样保留，不要主动嵌 history 内容）
+    - 不要把口语化请求"指令化"（"修一下"不要改成"修复"、"看一下"不要改成"检查"）
+    - 不要补充原文没有的内容、不要扩展请求范围
     - 不要加礼貌语、不要加结尾问候
-    - **保持原文的语言**：英文原文输出英文，中文原文输出中文，中英混合保持混合；不要翻译
-    - 只输出整理后的文本，不要解释、不要加引号、不要 markdown、不要前后空白
+    - 保持原文的语言：英文输出英文，中文输出中文，中英混合保持混合；不要翻译
+    - 只输出清理后的文本，不要解释、不要加引号、不要 markdown、不要前后空白
     """
 
   func recordHistory(_ text: String) {
