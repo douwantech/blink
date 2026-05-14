@@ -769,7 +769,8 @@ extension SpaceController: TermControlDelegate {
 // MARK: General tunning
 
 extension SpaceController {
-  public override var prefersStatusBarHidden: Bool { true }
+  public override var prefersStatusBarHidden: Bool { false }
+  public override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
   public override var prefersHomeIndicatorAutoHidden: Bool { true }
 }
 
