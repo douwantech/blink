@@ -917,6 +917,41 @@ extension SpaceController {
     _closeCurrentSpace()
   }
 
+  @objc func reloadCurrentShell() {
+    guard let oldTerm = currentTerm(),
+          let oldKey = _currentKey,
+          let oldIdx = _viewportsKeys.firstIndex(of: oldKey),
+          let p = oldTerm.mcpParams,
+          let machineId = p.machineId, !machineId.isEmpty else { return }
+
+    let params = MCPParams()
+    params.machineId = machineId
+    params.workDirId = p.workDirId
+    params.tmuxSession = p.tmuxSession
+    let payload = MCPSessionPayload(params: params)
+
+    let newTerm = TermController(sceneRole: sceneRole, sessionPayload: payload)
+    newTerm.delegate = self
+    newTerm.bgColor = view.backgroundColor ?? .black
+    SessionRegistry.shared.track(session: newTerm)
+
+    _viewportsKeys.insert(newTerm.meta.key, at: oldIdx + 1)
+    _currentKey = newTerm.meta.key
+
+    _viewportsController.setViewControllers([newTerm], direction: .forward, animated: true) { _ in
+      let stale: TermController = SessionRegistry.shared[oldKey]
+      stale.delegate = nil
+      stale.terminate()
+      if let removeIdx = self._viewportsKeys.firstIndex(of: oldKey) {
+        self._viewportsKeys.remove(at: removeIdx)
+      }
+      SessionRegistry.shared.remove(forKey: oldKey)
+      self._sortTabsByMachineAndDir()
+      self._displayHUD()
+      self._attachInputToCurrentTerm()
+    }
+  }
+
   fileprivate func _reloadTabBar() {
     var titles: [String] = []
     var unread: [Bool] = []

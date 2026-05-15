@@ -638,6 +638,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.closeShellAction()
   }
 
+  func voiceInputDidRequestReloadTab(_ view: VoiceInputView) {
+    spaceController?.reloadCurrentShell()
+  }
+
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow) {
     let seq: String
     switch direction {

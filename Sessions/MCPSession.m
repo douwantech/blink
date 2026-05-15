@@ -520,7 +520,7 @@ static __weak MCPSession *_currentActiveMCP = nil;
   });
 }
 
-- (void)lineSubmitted:(NSString *)line { 
+- (void)lineSubmitted:(NSString *)line {
   [self enqueueCommand:line];
 }
 
