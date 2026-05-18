@@ -127,21 +127,16 @@ enum HostReachability {
     }
     guard let m else { return nil }
 
-    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+    let host = Self.bestHost(for: m)
+    guard let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path, !workPath.isEmpty else {
+      return "ssh -t \(m.user)@\(host)"
+    }
 
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
-
-    let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); echo $(date) S=$S >> /tmp/blink-detect.log 2>/dev/null; case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac;"#
-    let tmuxCmd = "\(detectSock) PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin tmux new-session -A -s \(session)"
-    let remoteCmd: String
-    if let p = workPath, !p.isEmpty {
-      let escaped = p.replacingOccurrences(of: "\"", with: "\\\"")
-      remoteCmd = "cd \(escaped) && \(tmuxCmd)"
-    } else {
-      remoteCmd = tmuxCmd
-    }
-    return "ssh -t \(m.user)@\(Self.bestHost(for: m)) \"\(remoteCmd)\""
+    let escapedPath = workPath.replacingOccurrences(of: "\"", with: "\\\"")
+    let remoteCmd = "$SHELL -ic 'cd \(escapedPath) && cc --resume \(session)'"
+    return "ssh -t \(m.user)@\(host) \"\(remoteCmd)\""
   }
 
   static func bestHost(for m: BlinkMachine) -> String {
@@ -872,12 +867,7 @@ final class BlinkSessionPreset: Codable {
   }
 
   var sessionName: String {
-    let m = BlinkMachineStore.shared.machines.first { $0.id == machineId }
-    let w = workDirId.flatMap { id in BlinkWorkDirStore.shared.workDirs.first { $0.id == id } }
-    let mPart = BlinkSessionPreset.sanitize(m.flatMap { $0.name.isEmpty ? $0.user : $0.name } ?? "x")
-    let wPart = BlinkSessionPreset.sanitize(w.map { ($0.path as NSString).lastPathComponent } ?? "home")
-    let bPart = BlinkSessionPreset.sanitize(baseName.isEmpty ? "blink" : baseName)
-    return "\(mPart)-\(wPart)-\(bPart)"
+    BlinkSessionPreset.sanitize(baseName.isEmpty ? "blink" : baseName)
   }
 
   private static func sanitize(_ s: String) -> String {
