@@ -16,6 +16,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestClearLine(_ view: VoiceInputView)
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
   func voiceInputDidRequestReloadTab(_ view: VoiceInputView)
+  func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
@@ -49,6 +50,7 @@ final class VoiceInputView: UIInputView {
   private let clearTextButton = UIButton(type: .system)
   private let claudeButton = UIButton(type: .system)
   private let reloadButton = UIButton(type: .system)
+  private let transcriptButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
   private let arrowPadContainer = UIView()
@@ -242,6 +244,13 @@ final class VoiceInputView: UIInputView {
     reloadButton.layer.cornerRadius = 6
     reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
 
+    transcriptButton.setImage(UIImage(systemName: "doc.text"), for: .normal)
+    transcriptButton.tintColor = .systemIndigo
+    transcriptButton.layer.borderColor = UIColor.systemIndigo.cgColor
+    transcriptButton.layer.borderWidth = 1
+    transcriptButton.layer.cornerRadius = 6
+    transcriptButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
+
     configureArrowButton(arrowUpButton, systemName: "arrow.up", action: #selector(arrowUpTapped))
     configureArrowButton(arrowDownButton, systemName: "arrow.down", action: #selector(arrowDownTapped))
     configureArrowButton(arrowLeftButton, systemName: "arrow.left", action: #selector(arrowLeftTapped))
@@ -269,7 +278,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, transcriptButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -320,6 +329,11 @@ final class VoiceInputView: UIInputView {
       reloadButton.leadingAnchor.constraint(equalTo: claudeButton.trailingAnchor, constant: 6),
       reloadButton.widthAnchor.constraint(equalToConstant: 38),
       reloadButton.heightAnchor.constraint(equalToConstant: 30),
+
+      transcriptButton.centerYAnchor.constraint(equalTo: clearTextButton.centerYAnchor),
+      transcriptButton.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 6),
+      transcriptButton.widthAnchor.constraint(equalToConstant: 38),
+      transcriptButton.heightAnchor.constraint(equalToConstant: 30),
 
       textView.topAnchor.constraint(equalTo: clearTextButton.bottomAnchor, constant: 4),
       textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
@@ -744,6 +758,11 @@ final class VoiceInputView: UIInputView {
     }
     delegate?.voiceInputDidRequestReloadTab(self)
     showToast("关闭并重开 tab…")
+  }
+
+  @objc private func transcriptTapped() {
+    delegate?.voiceInputDidRequestDumpTranscript(self)
+    showToast("拉 transcript 中…")
   }
 
   @objc private func escTapped() {

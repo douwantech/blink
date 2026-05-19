@@ -642,6 +642,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.reloadCurrentShell()
   }
 
+  func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView) {
+    spaceController?.dumpTranscriptForCurrentShell()
+  }
+
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow) {
     let seq: String
     switch direction {

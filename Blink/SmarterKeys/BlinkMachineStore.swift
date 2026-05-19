@@ -139,6 +139,61 @@ enum HostReachability {
     return "ssh -t \(m.user)@\(host) \"\(remoteCmd)\""
   }
 
+  @objc func transcriptCommand(forMachineId machineId: String?, workDirId: String?, baseName: String) -> String? {
+    let arr = machines
+    let m: BlinkMachine?
+    if let id = machineId, let found = arr.first(where: { $0.id == id }) {
+      m = found
+    } else {
+      m = currentMachine
+    }
+    guard let m else { return nil }
+
+    let host = Self.bestHost(for: m)
+    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path ?? "/Users/\(m.user)"
+    let cwdEncoded = workPath
+      .replacingOccurrences(of: "/", with: "-")
+      .replacingOccurrences(of: ".", with: "-")
+    let name = baseName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+
+    let remoteScript = """
+    export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
+    DIR=~/.claude/projects/\(cwdEncoded)
+    F=$(grep -lE '"customTitle":"\(name)"' "$DIR"/*.jsonl 2>/dev/null | head -1)
+    if [ -z "$F" ]; then
+      MSG="NOT_FOUND for customTitle=\(name) in $DIR"
+      B64=$(printf '%s' "$MSG" | base64 | tr -d '\\n')
+      printf '\\033]52;c;%s\\a' "$B64"
+      echo READY
+      exit 1
+    fi
+    BODY=$(echo "=== $F ==="; jq -s -r '
+      [.[]
+        | select(.type=="user" or .type=="assistant")
+        | . as $d
+        | (if (.message.content | type) == "string" then
+             .message.content
+           else
+             [.message.content[]? | select(.type=="text") | .text] | join("\\n")
+           end) as $body
+        | select(($body | length) > 0)
+        | select($body != "Continue from where you left off."
+                 and $body != "No response requested."
+                 and ($body | test("^\\\\[Request interrupted by user[^\\\\]]*\\\\]") | not))
+        | {type: .type, body: $body}
+      ] |
+      .[-100:] |
+      .[] |
+      (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
+    ' "$F")
+    B64=$(printf '%s' "$BODY" | base64 | tr -d '\\n')
+    printf '\\033]52;c;%s\\a' "$B64"
+    echo READY
+    """
+    let encoded = Data(remoteScript.utf8).base64EncodedString()
+    return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d | bash\""
+  }
+
   static func bestHost(for m: BlinkMachine) -> String {
     let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
     if lan.isEmpty { return m.host }

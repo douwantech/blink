@@ -36,6 +36,7 @@
 
 import MBProgressHUD
 import SwiftUI
+import WebKit
 
 extension Notification.Name {
   static let blinkActiveSessionDidChange = Notification.Name("BlinkActiveSessionDidChange")
@@ -917,6 +918,173 @@ extension SpaceController {
     _closeCurrentSpace()
   }
 
+  @objc func dumpTranscriptForCurrentShell() {
+    guard let oldTerm = currentTerm(),
+          let p = oldTerm.mcpParams,
+          let machineId = p.machineId, !machineId.isEmpty,
+          let baseName = p.tmuxSession, !baseName.isEmpty,
+          let cmd = BlinkMachineStore.shared.transcriptCommand(
+            forMachineId: machineId, workDirId: p.workDirId, baseName: baseName) else { return }
+
+    let oldKey = _currentKey
+    let params = MCPParams()
+    params.initialCommand = cmd
+    let payload = MCPSessionPayload(params: params)
+
+    UIPasteboard.general.string = "__BLINK_TRANSCRIPT_PENDING__"
+
+    _createTerminal(userActivity: nil, animated: false, sessionPayload: payload) { [weak self] _ in
+      guard let self else { return }
+      let scratchKey = self._currentKey
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        guard let scratchKey,
+              let webView = (SessionRegistry.shared[scratchKey] as TermController).termDevice.view?.webView else {
+          self._finishTranscriptDump(scratchKey: scratchKey, oldKey: oldKey, text: "[scratch webView 不存在]")
+          return
+        }
+        webView.evaluateJavaScript("typeof term_setClipboardWrite === 'function' ? (term_setClipboardWrite(true), 'enabled') : 'no function'") { _, _ in
+          self._pollPasteboardForTranscript(scratchKey: scratchKey, oldKey: oldKey,
+                                            deadline: Date(timeIntervalSinceNow: 20))
+        }
+      }
+    }
+  }
+
+  private func _pollPasteboardForTranscript(scratchKey: UUID?, oldKey: UUID?, deadline: Date) {
+    let pb = UIPasteboard.general.string ?? ""
+    if pb != "__BLINK_TRANSCRIPT_PENDING__" && !pb.isEmpty {
+      let text: String
+      if let data = Data(base64Encoded: pb), let decoded = String(data: data, encoding: .utf8) {
+        text = decoded
+      } else {
+        text = pb
+      }
+      _finishTranscriptDump(scratchKey: scratchKey, oldKey: oldKey, text: text)
+      return
+    }
+    if Date() > deadline {
+      _finishTranscriptDump(scratchKey: scratchKey, oldKey: oldKey, text: "[超时未拿到剪贴板内容]")
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+      self?._pollPasteboardForTranscript(scratchKey: scratchKey, oldKey: oldKey, deadline: deadline)
+    }
+  }
+
+  private func _pollTranscriptSentinel(scratchKey: UUID?, deadline: Date,
+                                       callback: @escaping (String) -> Void) {
+    guard let scratchKey else { callback(""); return }
+    let term: TermController = SessionRegistry.shared[scratchKey]
+    guard let webView = term.termDevice.view?.webView else {
+      callback(""); return
+    }
+    let js = """
+    (function(){
+      try {
+        var t = window.t;
+        var sb0 = t && t.scrollbackRows_ && t.scrollbackRows_.length > 0 ? t.scrollbackRows_[5] : null;
+        var xr0 = document.querySelectorAll('x-row')[5];
+        var info = '[url=' + location.href.split('/').pop() +
+          ' hasT=' + (!!t) +
+          ' alt=' + (!!(t && t.alternateScreen_ && t.screen_ === t.alternateScreen_)) +
+          ' sb=' + (t && t.scrollbackRows_ ? t.scrollbackRows_.length : -1) +
+          ' priLen=' + (t && t.primaryScreen_ ? t.primaryScreen_.rowsArray.length : -1) +
+          ' xrow=' + document.querySelectorAll('x-row').length +
+          ' sb5_nodeName=' + (sb0 ? sb0.nodeName : 'NULL') +
+          ' sb5_text=' + (sb0 ? '"' + (sb0.textContent || '').substring(0,40) + '"' : 'NULL') +
+          ' xr5_outerHTML=' + (xr0 ? xr0.outerHTML.substring(0,80) : 'NULL') +
+          ' bodyTextLen=' + document.body.textContent.length + ']';
+        var rows = [];
+        if (t && t.scrollbackRows_ && t.screen_ && t.screen_.rowsArray) {
+          var sb = t.scrollbackRows_, vis = t.screen_.rowsArray;
+          for (var i = 0; i < sb.length; i++) {
+            rows.push((sb[i] && sb[i].textContent ? sb[i].textContent : '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''));
+          }
+          for (var i = 0; i < vis.length; i++) {
+            rows.push((vis[i] && vis[i].textContent ? vis[i].textContent : '').replace(/\\u00A0/g,' ').replace(/\\s+$/,''));
+          }
+        } else {
+          rows = Array.from(document.querySelectorAll('x-row')).map(function(r){
+            return (r.textContent || '').replace(/\\u00A0/g,' ').replace(/\\s+$/,'');
+          });
+        }
+        return info + '\\n' + rows.join('\\n');
+      } catch(e) { return '[js error: ' + e.message + ']'; }
+    })()
+    """
+    webView.evaluateJavaScript(js) { [weak self] result, _ in
+      guard let self else { return }
+      let text = (result as? String) ?? ""
+      if text.contains("===END_TRANSCRIPT===") {
+        callback(text)
+        return
+      }
+      if Date() > deadline {
+        let visible = text
+          .replacingOccurrences(of: " ", with: "·")
+          .replacingOccurrences(of: "\t", with: "→")
+        let trimmedLines = visible.components(separatedBy: "\n").map { line -> String in
+          let stripped = line.replacingOccurrences(of: "·", with: "").trimmingCharacters(in: .whitespaces)
+          return stripped.isEmpty ? "<空>" : line
+        }
+        let info = "[超时] count=\(text.count) lines=\(trimmedLines.count)\n---hterm dump (·=空格)---\n\(trimmedLines.joined(separator: "\n"))"
+        callback(info)
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        self._pollTranscriptSentinel(scratchKey: scratchKey, deadline: deadline, callback: callback)
+      }
+    }
+  }
+
+  private func _finishTranscriptDump(scratchKey: UUID?, oldKey: UUID?, text: String) {
+    let cleaned = _extractTranscriptBody(from: text)
+
+    guard let scratchKey, let oldKey,
+          let oldIdx = _viewportsKeys.firstIndex(of: oldKey) else {
+      _presentTranscriptModal(text: cleaned)
+      return
+    }
+
+    let oldTerm: TermController = SessionRegistry.shared[oldKey]
+    _currentKey = oldKey
+    _viewportsController.setViewControllers([oldTerm], direction: .reverse, animated: false) { [weak self] _ in
+      guard let self else { return }
+      let scratch: TermController = SessionRegistry.shared[scratchKey]
+      scratch.delegate = nil
+      scratch.terminate()
+      if let idx = self._viewportsKeys.firstIndex(of: scratchKey) {
+        self._viewportsKeys.remove(at: idx)
+      }
+      SessionRegistry.shared.remove(forKey: scratchKey)
+      _ = oldIdx
+      self._sortTabsByMachineAndDir()
+      self._displayHUD()
+      self._attachInputToCurrentTerm()
+      self._presentTranscriptModal(text: cleaned)
+    }
+  }
+
+  private func _extractTranscriptBody(from raw: String) -> String {
+    guard let endRange = raw.range(of: "===END_TRANSCRIPT===") else {
+      return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let lines = raw[..<endRange.lowerBound].components(separatedBy: "\n")
+    var start = 0
+    for (i, line) in lines.enumerated() {
+      if line.hasPrefix("=== ") && line.contains(".jsonl") { start = i; break }
+      if line.contains("NOT_FOUND") { start = i; break }
+    }
+    return lines[start..<lines.count].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func _presentTranscriptModal(text: String) {
+    let vc = TranscriptViewController(text: text.isEmpty ? "<empty>" : text)
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .pageSheet
+    present(nav, animated: true)
+  }
+
   @objc func reloadCurrentShell() {
     guard let oldTerm = currentTerm(),
           let oldKey = _currentKey,
@@ -1629,3 +1797,372 @@ extension SpaceController: BlinkTabBarDelegate {
     present(alert, animated: true)
   }
 }
+
+final class TranscriptViewController: UIViewController, WKNavigationDelegate {
+  private let webView = WKWebView()
+  private let bodyText: String
+  private var didFinishInitialLoad = false
+
+  init(text: String) {
+    self.bodyText = text
+    super.init(nibName: nil, bundle: nil)
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    view.backgroundColor = .systemBackground
+    title = "Transcript"
+    navigationItem.leftBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .done, target: self, action: #selector(closeTapped))
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .action, target: self, action: #selector(shareTapped))
+
+    webView.isOpaque = false
+    webView.backgroundColor = .systemBackground
+    webView.scrollView.backgroundColor = .systemBackground
+    webView.navigationDelegate = self
+    webView.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(webView)
+    NSLayoutConstraint.activate([
+      webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+    ])
+
+    webView.loadHTMLString(Self.htmlFor(transcript: bodyText), baseURL: nil)
+  }
+
+  private static func htmlFor(transcript: String) -> String {
+    let payloadB64 = Data(transcript.utf8).base64EncodedString()
+    return #"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+           padding: 16px 16px 40px; line-height: 1.55; color: #1d1d1f; background: #fff;
+           font-size: 15px; word-wrap: break-word; }
+    h1, h2, h3 { font-weight: 600; margin: 1em 0 0.5em; }
+    h1 { font-size: 1.4em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
+    .role { font-weight: 600; font-size: 1.05em; margin: 1.8em 0 0.5em;
+            padding-bottom: 4px; border-bottom: 1px solid #d2d2d7; }
+    .role-user { color: #007aff; }
+    .role-claude { color: #34c759; }
+    .meta { color: #86868b; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
+    pre { background: #f5f5f7; padding: 12px; border-radius: 8px; overflow-x: auto;
+          font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.45;
+          margin: 0.6em 0; }
+    code { background: #f0f0f3; padding: 2px 5px; border-radius: 4px;
+           font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; margin: 0.8em 0; display: block; overflow-x: auto;
+            font-size: 0.92em; }
+    th, td { border: 1px solid #d2d2d7; padding: 6px 10px; text-align: left; }
+    th { background: #f5f5f7; font-weight: 600; }
+    ul, ol { padding-left: 1.5em; margin: 0.5em 0; }
+    li { margin: 0.2em 0; }
+    a { color: #007aff; text-decoration: none; }
+    blockquote { border-left: 3px solid #d2d2d7; padding-left: 12px; margin: 0.6em 0;
+                 color: #515154; }
+    hr { border: none; border-top: 1px solid #d2d2d7; margin: 1.5em 0; }
+    p { margin: 0.5em 0; }
+    img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
+    #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.94); display: none; align-items: center;
+                justify-content: center; z-index: 9999; cursor: zoom-out; }
+    #lightbox.show { display: flex; }
+    #lightbox img { max-width: 96vw; max-height: 96vh; object-fit: contain; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #000; color: #f2f2f7; }
+      h1, h2, h3 { color: #f2f2f7; }
+      .role { border-bottom-color: #38383a; }
+      pre, code { background: #1c1c1e; }
+      th, td { border-color: #38383a; }
+      th { background: #1c1c1e; }
+      blockquote { border-left-color: #38383a; color: #98989d; }
+      hr { border-top-color: #38383a; }
+      .meta { color: #98989d; }
+      a { color: #0a84ff; }
+      .role-user { color: #0a84ff; }
+      .role-claude { color: #30d158; }
+    }
+    </style>
+    </head>
+    <body>
+    <div id="content">…</div>
+    <div id="lightbox"><img id="lightbox-img" src=""></div>
+    <script>
+    document.addEventListener('click', function(e) {
+      var lb = document.getElementById('lightbox');
+      if (e.target.tagName === 'IMG' && e.target.classList.contains('md-img')) {
+        document.getElementById('lightbox-img').src = e.target.src;
+        lb.classList.add('show');
+        e.preventDefault();
+      } else if (lb.classList.contains('show')) {
+        lb.classList.remove('show');
+        document.getElementById('lightbox-img').src = '';
+      }
+    });
+    function escapeHTML(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function decodeB64(b64) {
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+    function renderInline(s) {
+      s = s.replace(/`([^`]+)`/g, (_, c) => '<code>' + escapeHTML(c) + '</code>');
+      s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+      // markdown image ![alt](url)
+      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
+        '<img class="md-img" src="' + url + '" alt="' + alt + '">');
+      // markdown link [text](url) — image-like url 也转成图片
+      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+        if (/\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?.*)?$/i.test(url)) {
+          return '<img class="md-img" src="' + url + '" alt="' + text + '">';
+        }
+        return '<a href="' + url + '">' + text + '</a>';
+      });
+      // bare image URL
+      s = s.replace(/(?<![("'>=])(https?:\/\/[^\s<"]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"]*)?)/gi,
+        (m) => '<img class="md-img" src="' + m + '">');
+      return s;
+    }
+    function renderBlocks(text) {
+      const lines = text.split('\n');
+      let html = '';
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        // code block
+        if (/^```/.test(line)) {
+          const lang = line.slice(3).trim();
+          const body = [];
+          i++;
+          while (i < lines.length && !/^```/.test(lines[i])) { body.push(lines[i]); i++; }
+          i++;
+          html += '<pre><code>' + escapeHTML(body.join('\n')) + '</code></pre>';
+          continue;
+        }
+        // role marker
+        if (/^▶/.test(line)) {
+          html += '<div class="role role-user">你</div>';
+          i++; continue;
+        }
+        if (/^◆/.test(line)) {
+          html += '<div class="role role-claude">Claude</div>';
+          i++; continue;
+        }
+        // meta line
+        if (/^=== /.test(line)) {
+          html += '<div class="meta">' + escapeHTML(line) + '</div>';
+          i++; continue;
+        }
+        // header
+        const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
+        if (hMatch) {
+          const lvl = hMatch[1].length;
+          html += '<h' + lvl + '>' + renderInline(escapeHTML(hMatch[2])) + '</h' + lvl + '>';
+          i++; continue;
+        }
+        // table
+        if (/^\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s\-:|]+\|\s*$/.test(lines[i+1])) {
+          const head = line.split('|').slice(1, -1).map(s => s.trim());
+          i += 2;
+          const rows = [];
+          while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) {
+            rows.push(lines[i].split('|').slice(1, -1).map(s => s.trim()));
+            i++;
+          }
+          html += '<table><thead><tr>' +
+            head.map(h => '<th>' + renderInline(escapeHTML(h)) + '</th>').join('') +
+            '</tr></thead><tbody>' +
+            rows.map(r => '<tr>' + r.map(c => '<td>' + renderInline(escapeHTML(c)) + '</td>').join('') + '</tr>').join('') +
+            '</tbody></table>';
+          continue;
+        }
+        // list (bullet or numbered)
+        if (/^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+          const ordered = /^\s*\d+\.\s+/.test(line);
+          const items = [];
+          while (i < lines.length && (/^\s*[-*]\s+/.test(lines[i]) || /^\s*\d+\.\s+/.test(lines[i]))) {
+            const m = lines[i].match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
+            items.push(m ? m[1] : lines[i]);
+            i++;
+          }
+          html += (ordered ? '<ol>' : '<ul>') +
+            items.map(it => '<li>' + renderInline(escapeHTML(it)) + '</li>').join('') +
+            (ordered ? '</ol>' : '</ul>');
+          continue;
+        }
+        // blockquote
+        if (/^>\s+/.test(line)) {
+          const body = [];
+          while (i < lines.length && /^>\s+/.test(lines[i])) {
+            body.push(lines[i].replace(/^>\s+/, ''));
+            i++;
+          }
+          html += '<blockquote>' + renderInline(escapeHTML(body.join(' '))) + '</blockquote>';
+          continue;
+        }
+        // blank line
+        if (line.trim() === '') {
+          i++; continue;
+        }
+        // paragraph (merge with following non-blank, non-special lines)
+        const para = [line];
+        i++;
+        while (i < lines.length && lines[i].trim() !== '' &&
+               !/^(```|▶|◆|=== |#{1,6}\s|\s*[-*]\s|\s*\d+\.\s|>\s|\|.*\|\s*$)/.test(lines[i])) {
+          para.push(lines[i]);
+          i++;
+        }
+        html += '<p>' + renderInline(escapeHTML(para.join(' '))) + '</p>';
+      }
+      return html;
+    }
+    document.getElementById('content').innerHTML = renderBlocks(decodeB64("\#(payloadB64)"));
+    requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+    </script>
+    </body>
+    </html>
+    """#
+  }
+
+  private static func renderTranscript(_ raw: String) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    let metaFont = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let headerFont = UIFont.systemFont(ofSize: 14, weight: .semibold)
+    let headerSpacing = NSMutableParagraphStyle()
+    headerSpacing.paragraphSpacingBefore = 16
+    headerSpacing.paragraphSpacing = 4
+    let bodyPara = NSMutableParagraphStyle()
+    bodyPara.lineSpacing = 3
+    bodyPara.paragraphSpacing = 4
+
+    var buffer: [String] = []
+    var bufferIsBody = false
+
+    func flush() {
+      guard !buffer.isEmpty else { return }
+      let text = buffer.joined(separator: "\n")
+      buffer.removeAll()
+      if bufferIsBody {
+        out.append(Self.renderBody(text, paragraphStyle: bodyPara))
+      } else {
+        out.append(NSAttributedString(string: text + "\n", attributes: [
+          .font: metaFont,
+          .foregroundColor: UIColor.secondaryLabel,
+        ]))
+      }
+    }
+
+    for line in raw.components(separatedBy: "\n") {
+      if line.hasPrefix("▶") {
+        flush()
+        out.append(NSAttributedString(string: "你\n", attributes: [
+          .font: headerFont,
+          .foregroundColor: UIColor.systemBlue,
+          .paragraphStyle: headerSpacing,
+        ]))
+        bufferIsBody = true
+      } else if line.hasPrefix("◆") {
+        flush()
+        out.append(NSAttributedString(string: "Claude\n", attributes: [
+          .font: headerFont,
+          .foregroundColor: UIColor.systemGreen,
+          .paragraphStyle: headerSpacing,
+        ]))
+        bufferIsBody = true
+      } else if line.hasPrefix("=== ") {
+        flush()
+        bufferIsBody = false
+        buffer.append(line)
+        flush()
+      } else {
+        buffer.append(line)
+      }
+    }
+    flush()
+    return out
+  }
+
+  private static func renderBody(_ text: String, paragraphStyle: NSParagraphStyle) -> NSAttributedString {
+    let options = AttributedString.MarkdownParsingOptions(
+      allowsExtendedAttributes: false,
+      interpretedSyntax: .inlineOnlyPreservingWhitespace
+    )
+    let bodyFont = UIFont.systemFont(ofSize: 15)
+    if let attr = try? NSMutableAttributedString(
+      markdown: text + "\n",
+      options: options,
+      baseURL: nil
+    ) {
+      let full = NSRange(location: 0, length: attr.length)
+      attr.addAttributes([
+        .foregroundColor: UIColor.label,
+        .paragraphStyle: paragraphStyle,
+      ], range: full)
+      // 把 markdown 的 inline intent 翻译成 font
+      attr.enumerateAttribute(.inlinePresentationIntent,
+                              in: full, options: []) { value, range, _ in
+        let rawValue = (value as? UInt) ?? (value as? Int).map { UInt(bitPattern: $0) } ?? 0
+        var font = bodyFont
+        let intent = InlinePresentationIntent(rawValue: rawValue)
+        if intent.contains(.code) {
+          font = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        } else if intent.contains(.stronglyEmphasized) && intent.contains(.emphasized) {
+          let desc = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
+            .withSymbolicTraits([.traitBold, .traitItalic])
+          font = UIFont(descriptor: desc ?? bodyFont.fontDescriptor, size: 15)
+        } else if intent.contains(.stronglyEmphasized) {
+          font = UIFont.boldSystemFont(ofSize: 15)
+        } else if intent.contains(.emphasized) {
+          font = UIFont.italicSystemFont(ofSize: 15)
+        }
+        attr.addAttribute(.font, value: font, range: range)
+      }
+      // 没设 font 的地方设默认
+      attr.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
+        if value == nil {
+          attr.addAttribute(.font, value: bodyFont, range: range)
+        }
+      }
+      return attr
+    }
+    return NSAttributedString(string: text + "\n", attributes: [
+      .font: bodyFont,
+      .foregroundColor: UIColor.label,
+      .paragraphStyle: paragraphStyle,
+    ])
+  }
+
+  func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+               decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    if !didFinishInitialLoad {
+      didFinishInitialLoad = true
+      decisionHandler(.allow)
+      return
+    }
+    if let url = navigationAction.request.url, navigationAction.navigationType == .linkActivated {
+      UIApplication.shared.open(url)
+      decisionHandler(.cancel)
+      return
+    }
+    decisionHandler(.allow)
+  }
+
+  @objc private func closeTapped() { dismiss(animated: true) }
+
+  @objc private func shareTapped() {
+    let av = UIActivityViewController(activityItems: [bodyText], applicationActivities: nil)
+    av.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+    present(av, animated: true)
+  }
+}
+
