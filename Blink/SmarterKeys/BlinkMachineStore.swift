@@ -128,15 +128,34 @@ enum HostReachability {
     guard let m else { return nil }
 
     let host = Self.bestHost(for: m)
-    guard let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path, !workPath.isEmpty else {
-      return "ssh -t \(m.user)@\(host)"
-    }
+    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
 
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
+
+    if Self.useTmuxMode {
+      let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
+      let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
+      let remoteScript = """
+      \(detectSock)
+      PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+      exec tmux new-session -A -s \(session) $SHELL -ic 'cd \(pathArg) && cc --resume \(session)'
+      """
+      let encoded = Data(remoteScript.utf8).base64EncodedString()
+      return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d > /tmp/.blink-tmux-$$.sh && exec bash /tmp/.blink-tmux-$$.sh\""
+    }
+
+    guard let workPath, !workPath.isEmpty else {
+      return "ssh -t \(m.user)@\(host)"
+    }
     let escapedPath = workPath.replacingOccurrences(of: "\"", with: "\\\"")
     let remoteCmd = "$SHELL -ic 'cd \(escapedPath) && cc --resume \(session)'"
     return "ssh -t \(m.user)@\(host) \"\(remoteCmd)\""
+  }
+
+  @objc static var useTmuxMode: Bool {
+    get { UserDefaults.standard.bool(forKey: "BlinkUseTmuxMode") }
+    set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
   @objc func transcriptCommand(forMachineId machineId: String?, workDirId: String?, baseName: String) -> String? {

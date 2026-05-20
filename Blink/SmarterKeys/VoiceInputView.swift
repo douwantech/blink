@@ -51,6 +51,7 @@ final class VoiceInputView: UIInputView {
   private let claudeButton = UIButton(type: .system)
   private let reloadButton = UIButton(type: .system)
   private let transcriptButton = UIButton(type: .system)
+  private let tmuxModeButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
   private let arrowPadContainer = UIView()
@@ -251,6 +252,11 @@ final class VoiceInputView: UIInputView {
     transcriptButton.layer.cornerRadius = 6
     transcriptButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
 
+    tmuxModeButton.layer.borderWidth = 1
+    tmuxModeButton.layer.cornerRadius = 6
+    tmuxModeButton.addTarget(self, action: #selector(tmuxModeTapped), for: .touchUpInside)
+    updateTmuxModeButtonAppearance()
+
     configureArrowButton(arrowUpButton, systemName: "arrow.up", action: #selector(arrowUpTapped))
     configureArrowButton(arrowDownButton, systemName: "arrow.down", action: #selector(arrowDownTapped))
     configureArrowButton(arrowLeftButton, systemName: "arrow.left", action: #selector(arrowLeftTapped))
@@ -278,7 +284,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, transcriptButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, transcriptButton, tmuxModeButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -334,6 +340,11 @@ final class VoiceInputView: UIInputView {
       transcriptButton.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 6),
       transcriptButton.widthAnchor.constraint(equalToConstant: 38),
       transcriptButton.heightAnchor.constraint(equalToConstant: 30),
+
+      tmuxModeButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
+      tmuxModeButton.leadingAnchor.constraint(equalTo: closeTabButton.trailingAnchor, constant: 6),
+      tmuxModeButton.widthAnchor.constraint(equalToConstant: 38),
+      tmuxModeButton.heightAnchor.constraint(equalToConstant: 28),
 
       textView.topAnchor.constraint(equalTo: clearTextButton.bottomAnchor, constant: 4),
       textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
@@ -763,6 +774,21 @@ final class VoiceInputView: UIInputView {
   @objc private func transcriptTapped() {
     delegate?.voiceInputDidRequestDumpTranscript(self)
     showToast("拉 transcript 中…")
+  }
+
+  @objc private func tmuxModeTapped() {
+    let next = !BlinkMachineStore.useTmuxMode
+    BlinkMachineStore.useTmuxMode = next
+    updateTmuxModeButtonAppearance()
+    showToast(next ? "切到 tmux + cc，重连中…" : "切到直连 cc，重连中…")
+    delegate?.voiceInputDidRequestReloadTab(self)
+  }
+
+  private func updateTmuxModeButtonAppearance() {
+    let on = BlinkMachineStore.useTmuxMode
+    tmuxModeButton.setImage(UIImage(systemName: on ? "t.square.fill" : "t.square"), for: .normal)
+    tmuxModeButton.tintColor = on ? .systemOrange : .systemGray
+    tmuxModeButton.layer.borderColor = (on ? UIColor.systemOrange : UIColor.systemGray.withAlphaComponent(0.4)).cgColor
   }
 
   @objc private func escTapped() {
@@ -1476,7 +1502,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 1, 1, 3, 2][section]
+    [2, 1, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1488,6 +1514,14 @@ final class VoiceSettingsViewController: UITableViewController {
       let m = BlinkMachineStore.shared.currentMachine
       cell.detailTextLabel?.text = m.map { "\($0.user)@\($0.host)" } ?? "未配置"
       cell.accessoryType = .disclosureIndicator
+    case (0, 1):
+      cell.textLabel?.text = "tmux 模式"
+      cell.detailTextLabel?.text = BlinkMachineStore.useTmuxMode ? "ssh + tmux attach" : "ssh + cc --resume"
+      let sw = UISwitch()
+      sw.isOn = BlinkMachineStore.useTmuxMode
+      sw.addTarget(self, action: #selector(toggleTmux(_:)), for: .valueChanged)
+      cell.accessoryView = sw
+      cell.selectionStyle = .none
     case (1, 0):
       cell.textLabel?.text = "工作目录"
       cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
@@ -1552,6 +1586,12 @@ final class VoiceSettingsViewController: UITableViewController {
   @objc private func toggleAI(_ sw: UISwitch) {
     AITextPolisher.shared.enabled = sw.isOn
     voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
+  }
+
+  @objc private func toggleTmux(_ sw: UISwitch) {
+    BlinkMachineStore.useTmuxMode = sw.isOn
+    voiceView?.setHintForSettingsChange(sw.isOn ? "已切到 tmux 模式（新 tab 生效）" : "已切到 cc 模式（新 tab 生效）")
+    tableView.reloadRows(at: [IndexPath(row: 1, section: 0)], with: .none)
   }
 
   private func presentAISettings() {
