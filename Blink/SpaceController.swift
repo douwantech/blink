@@ -1798,16 +1798,25 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 }
 
-final class TranscriptViewController: UIViewController, WKNavigationDelegate {
-  private let webView = WKWebView()
+final class TranscriptViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
+  private let webView: WKWebView
   private let bodyText: String
   private var didFinishInitialLoad = false
 
   init(text: String) {
     self.bodyText = text
+    let config = WKWebViewConfiguration()
+    config.userContentController = WKUserContentController()
+    self.webView = WKWebView(frame: .zero, configuration: config)
     super.init(nibName: nil, bundle: nil)
+    webView.configuration.userContentController.add(self, name: "copy")
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+  func userContentController(_ ctrl: WKUserContentController, didReceive msg: WKScriptMessage) {
+    guard msg.name == "copy", let text = msg.body as? String else { return }
+    UIPasteboard.general.string = text
+  }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -1848,10 +1857,17 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate {
            font-size: 15px; word-wrap: break-word; }
     h1, h2, h3 { font-weight: 600; margin: 1em 0 0.5em; }
     h1 { font-size: 1.4em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
-    .role { font-weight: 600; font-size: 1.05em; margin: 1.8em 0 0.5em;
-            padding-bottom: 4px; border-bottom: 1px solid #d2d2d7; }
+    .msg-head { display: flex; align-items: center; justify-content: space-between;
+                margin: 1.8em 0 0.5em; padding-bottom: 4px; border-bottom: 1px solid #d2d2d7; }
+    .role { font-weight: 600; font-size: 1.05em; }
     .role-user { color: #007aff; }
     .role-claude { color: #34c759; }
+    .copy-btn { font: 12px -apple-system, sans-serif; color: #007aff; background: transparent;
+                border: 1px solid #007aff; border-radius: 5px; padding: 3px 10px; cursor: pointer;
+                -webkit-tap-highlight-color: transparent; }
+    .copy-btn:active { background: rgba(0,122,255,0.15); }
+    .copy-btn.copied { color: #34c759; border-color: #34c759; }
+    .msg-body { margin-bottom: 0.5em; }
     .meta { color: #86868b; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
     pre { background: #f5f5f7; padding: 12px; border-radius: 8px; overflow-x: auto;
           font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.45;
@@ -1879,7 +1895,9 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate {
     @media (prefers-color-scheme: dark) {
       body { background: #000; color: #f2f2f7; }
       h1, h2, h3 { color: #f2f2f7; }
-      .role { border-bottom-color: #38383a; }
+      .msg-head { border-bottom-color: #38383a; }
+      .copy-btn { color: #0a84ff; border-color: #0a84ff; }
+      .copy-btn.copied { color: #30d158; border-color: #30d158; }
       pre, code { background: #1c1c1e; }
       th, td { border-color: #38383a; }
       th { background: #1c1c1e; }
@@ -1933,12 +1951,38 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate {
         (m) => '<img class="md-img" src="' + m + '">');
       return s;
     }
+    function utf8B64(s) {
+      return btoa(unescape(encodeURIComponent(s)));
+    }
     function renderBlocks(text) {
       const lines = text.split('\n');
       let html = '';
       let i = 0;
       while (i < lines.length) {
         const line = lines[i];
+        // role marker: 把 role 块（直到下一个 role/===）整体包成 msg-block
+        if (/^[▶◆]/.test(line)) {
+          const isUser = /^▶/.test(line);
+          const roleLabel = isUser ? '你' : 'Claude';
+          const roleClass = isUser ? 'role-user' : 'role-claude';
+          i++;
+          const bodyLines = [];
+          while (i < lines.length && !/^[▶◆]/.test(lines[i]) && !/^=== /.test(lines[i])) {
+            bodyLines.push(lines[i]); i++;
+          }
+          // trim trailing blanks
+          while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop();
+          const rawForCopy = bodyLines.join('\n');
+          const bodyHtml = renderBlocks(rawForCopy);
+          html += '<div class="msg-block">' +
+            '<div class="msg-head">' +
+              '<span class="role ' + roleClass + '">' + roleLabel + '</span>' +
+              '<button class="copy-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="copyMsg(this)">复制</button>' +
+            '</div>' +
+            '<div class="msg-body">' + bodyHtml + '</div>' +
+          '</div>';
+          continue;
+        }
         // code block
         if (/^```/.test(line)) {
           const lang = line.slice(3).trim();
@@ -1948,15 +1992,6 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate {
           i++;
           html += '<pre><code>' + escapeHTML(body.join('\n')) + '</code></pre>';
           continue;
-        }
-        // role marker
-        if (/^▶/.test(line)) {
-          html += '<div class="role role-user">你</div>';
-          i++; continue;
-        }
-        if (/^◆/.test(line)) {
-          html += '<div class="role role-claude">Claude</div>';
-          i++; continue;
         }
         // meta line
         if (/^=== /.test(line)) {
@@ -2025,6 +2060,18 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate {
         html += '<p>' + renderInline(escapeHTML(para.join(' '))) + '</p>';
       }
       return html;
+    }
+    function copyMsg(btn) {
+      const enc = btn.getAttribute('data-content') || '';
+      let text = '';
+      try { text = decodeURIComponent(escape(atob(enc))); } catch (e) { text = atob(enc); }
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.copy) {
+        window.webkit.messageHandlers.copy.postMessage(text);
+      }
+      const orig = btn.textContent;
+      btn.classList.add('copied');
+      btn.textContent = '✓ 已复制';
+      setTimeout(() => { btn.classList.remove('copied'); btn.textContent = orig; }, 1500);
     }
     document.getElementById('content').innerHTML = renderBlocks(decodeB64("\#(payloadB64)"));
     requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));

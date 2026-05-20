@@ -50,7 +50,6 @@ final class VoiceInputView: UIInputView {
   private let clearTextButton = UIButton(type: .system)
   private let claudeButton = UIButton(type: .system)
   private let reloadButton = UIButton(type: .system)
-  private let transcriptButton = UIButton(type: .system)
   private let tmuxModeButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
@@ -245,13 +244,6 @@ final class VoiceInputView: UIInputView {
     reloadButton.layer.cornerRadius = 6
     reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
 
-    transcriptButton.setImage(UIImage(systemName: "doc.text"), for: .normal)
-    transcriptButton.tintColor = .systemIndigo
-    transcriptButton.layer.borderColor = UIColor.systemIndigo.cgColor
-    transcriptButton.layer.borderWidth = 1
-    transcriptButton.layer.cornerRadius = 6
-    transcriptButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
-
     tmuxModeButton.layer.borderWidth = 1
     tmuxModeButton.layer.cornerRadius = 6
     tmuxModeButton.addTarget(self, action: #selector(tmuxModeTapped), for: .touchUpInside)
@@ -266,9 +258,9 @@ final class VoiceInputView: UIInputView {
     returnButton.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.6).cgColor
     returnButton.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold), forImageIn: .normal)
 
-    configureArrowButton(copyLastButton, systemName: "doc.on.clipboard", action: #selector(copyLastTapped))
-    copyLastButton.tintColor = .systemGreen
-    copyLastButton.layer.borderColor = UIColor.systemGreen.withAlphaComponent(0.6).cgColor
+    configureArrowButton(copyLastButton, systemName: "doc.text", action: #selector(transcriptTapped))
+    copyLastButton.tintColor = .systemIndigo
+    copyLastButton.layer.borderColor = UIColor.systemIndigo.withAlphaComponent(0.6).cgColor
 
     configureArrowButton(pasteButton, systemName: "arrow.down.doc", action: #selector(pasteTapped))
     pasteButton.tintColor = .systemPurple
@@ -284,7 +276,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, transcriptButton, tmuxModeButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -335,11 +327,6 @@ final class VoiceInputView: UIInputView {
       reloadButton.leadingAnchor.constraint(equalTo: claudeButton.trailingAnchor, constant: 6),
       reloadButton.widthAnchor.constraint(equalToConstant: 38),
       reloadButton.heightAnchor.constraint(equalToConstant: 30),
-
-      transcriptButton.centerYAnchor.constraint(equalTo: clearTextButton.centerYAnchor),
-      transcriptButton.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 6),
-      transcriptButton.widthAnchor.constraint(equalToConstant: 38),
-      transcriptButton.heightAnchor.constraint(equalToConstant: 30),
 
       tmuxModeButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
       tmuxModeButton.leadingAnchor.constraint(equalTo: closeTabButton.trailingAnchor, constant: 6),
@@ -834,17 +821,7 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func pasteTapped() {
-    guard let text = UIPasteboard.general.string, !text.isEmpty else {
-      showToast("剪贴板是空的", isError: true)
-      return
-    }
-    let vc = PasteSelectionViewController(text: text) { [weak self] selected in
-      guard let self else { return }
-      self.delegate?.voiceInput(self, didRequestPasteText: selected)
-    }
-    let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .fullScreen
-    findViewController()?.present(nav, animated: true)
+    delegate?.voiceInputDidRequestPaste(self)
   }
 
   @objc private func imagePickTapped() {
