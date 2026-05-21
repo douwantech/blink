@@ -134,7 +134,7 @@
           machineId = BlinkMachineStore.shared.currentMachineId;
           self.sessionParams.machineId = machineId;
         }
-        NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession];
+        NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
         if (cmd) {
           [self enqueueCommand:cmd];
         } else {
@@ -497,6 +497,7 @@ static __weak MCPSession *_currentActiveMCP = nil;
   self.sessionParams.machineId = machineId;
   self.sessionParams.workDirId = workDirId;
   self.sessionParams.tmuxSession = tmuxSession;
+  BOOL useTmux = self.sessionParams.useTmux;
   [self setActiveSession];
   if (_sshClients.count > 0) {
     dispatch_sync(_sshQueue, ^{
@@ -513,7 +514,7 @@ static __weak MCPSession *_currentActiveMCP = nil;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     typeof(self) strongSelf = weakSelf;
     if (!strongSelf || !strongSelf->_device) { return; }
-    NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:workDirId tmuxSession:tmuxSession];
+    NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:workDirId tmuxSession:tmuxSession useTmux:useTmux];
     if (cmd) {
       [strongSelf enqueueCommand:cmd];
     }

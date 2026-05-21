@@ -1096,6 +1096,7 @@ extension SpaceController {
     params.machineId = machineId
     params.workDirId = p.workDirId
     params.tmuxSession = p.tmuxSession
+    params.useTmux = p.useTmux
     let payload = MCPSessionPayload(params: params)
 
     let newTerm = TermController(sceneRole: sceneRole, sessionPayload: payload)

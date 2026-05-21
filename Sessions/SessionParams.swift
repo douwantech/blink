@@ -139,7 +139,11 @@ public extension EncodedStateBacked {
   /// Persisted per-viewport tmux session name. When nil, a name is auto-derived.
   @objc var tmuxSession: String? = nil
 
-  private enum Key: CodingKey { case childSessionType, childSessionParams, machineId, workDirId, tmuxSession }
+  /// Per-tab toggle: when true, ssh wraps the remote command in `tmux new-session -A`.
+  /// Default false (direct ssh + cc --resume).
+  @objc var useTmux: Bool = false
+
+  private enum Key: CodingKey { case childSessionType, childSessionParams, machineId, workDirId, tmuxSession, useTmux }
 
   override init() { super.init() }
 
@@ -152,6 +156,7 @@ public extension EncodedStateBacked {
     coder.bk_encode(machineId, for: Key.machineId)
     coder.bk_encode(workDirId, for: Key.workDirId)
     coder.bk_encode(tmuxSession, for: Key.tmuxSession)
+    coder.bk_encode(useTmux, for: Key.useTmux)
   }
 
   required init?(coder: NSCoder) {
@@ -162,6 +167,7 @@ public extension EncodedStateBacked {
     self.machineId = coder.bk_decode(for: Key.machineId)
     self.workDirId = coder.bk_decode(for: Key.workDirId)
     self.tmuxSession = coder.bk_decode(for: Key.tmuxSession)
+    self.useTmux = coder.bk_decode(for: Key.useTmux)
   }
 
   // MARK: - BKSessionParamsSnapshotting (forward)

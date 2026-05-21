@@ -114,10 +114,14 @@ enum HostReachability {
   }
 
   @objc func sshCommand(forMachineId machineId: String?, tmuxSession: String?) -> String? {
-    sshCommand(forMachineId: machineId, workDirId: nil, tmuxSession: tmuxSession)
+    sshCommand(forMachineId: machineId, workDirId: nil, tmuxSession: tmuxSession, useTmux: Self.useTmuxMode)
   }
 
   @objc func sshCommand(forMachineId machineId: String?, workDirId: String?, tmuxSession: String?) -> String? {
+    sshCommand(forMachineId: machineId, workDirId: workDirId, tmuxSession: tmuxSession, useTmux: Self.useTmuxMode)
+  }
+
+  @objc func sshCommand(forMachineId machineId: String?, workDirId: String?, tmuxSession: String?, useTmux: Bool) -> String? {
     let arr = machines
     let m: BlinkMachine?
     if let id = machineId, let found = arr.first(where: { $0.id == id }) {
@@ -133,7 +137,7 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
 
-    if Self.useTmuxMode {
+    if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
       let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
       let remoteScript = """

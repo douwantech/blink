@@ -22,6 +22,8 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
   func voiceInputDidRequestPaste(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestPasteText text: String)
+  func voiceInputCurrentTabUseTmux(_ view: VoiceInputView) -> Bool
+  func voiceInputDidToggleTmuxMode(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -764,15 +766,15 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func tmuxModeTapped() {
-    let next = !BlinkMachineStore.useTmuxMode
-    BlinkMachineStore.useTmuxMode = next
+    let currentlyOn = delegate?.voiceInputCurrentTabUseTmux(self) ?? false
+    let next = !currentlyOn
+    showToast(next ? "本 tab 切到 tmux + cc，重连中…" : "本 tab 切到直连 cc，重连中…")
+    delegate?.voiceInputDidToggleTmuxMode(self)
     updateTmuxModeButtonAppearance()
-    showToast(next ? "切到 tmux + cc，重连中…" : "切到直连 cc，重连中…")
-    delegate?.voiceInputDidRequestReloadTab(self)
   }
 
-  private func updateTmuxModeButtonAppearance() {
-    let on = BlinkMachineStore.useTmuxMode
+  func updateTmuxModeButtonAppearance() {
+    let on = delegate?.voiceInputCurrentTabUseTmux(self) ?? false
     tmuxModeButton.setImage(UIImage(systemName: on ? "t.square.fill" : "t.square"), for: .normal)
     tmuxModeButton.tintColor = on ? .systemOrange : .systemGray
     tmuxModeButton.layer.borderColor = (on ? UIColor.systemOrange : UIColor.systemGray.withAlphaComponent(0.4)).cgColor
@@ -905,6 +907,7 @@ final class VoiceInputView: UIInputView {
     super.didMoveToWindow()
     if window != nil {
       refreshSettingsButtonTitle()
+      updateTmuxModeButtonAppearance()
     }
   }
 
@@ -1499,7 +1502,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [2, 1, 1, 3, 2][section]
+    [1, 1, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1511,14 +1514,6 @@ final class VoiceSettingsViewController: UITableViewController {
       let m = BlinkMachineStore.shared.currentMachine
       cell.detailTextLabel?.text = m.map { "\($0.user)@\($0.host)" } ?? "未配置"
       cell.accessoryType = .disclosureIndicator
-    case (0, 1):
-      cell.textLabel?.text = "tmux 模式"
-      cell.detailTextLabel?.text = BlinkMachineStore.useTmuxMode ? "ssh + tmux attach" : "ssh + cc --resume"
-      let sw = UISwitch()
-      sw.isOn = BlinkMachineStore.useTmuxMode
-      sw.addTarget(self, action: #selector(toggleTmux(_:)), for: .valueChanged)
-      cell.accessoryView = sw
-      cell.selectionStyle = .none
     case (1, 0):
       cell.textLabel?.text = "工作目录"
       cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
@@ -1583,12 +1578,6 @@ final class VoiceSettingsViewController: UITableViewController {
   @objc private func toggleAI(_ sw: UISwitch) {
     AITextPolisher.shared.enabled = sw.isOn
     voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
-  }
-
-  @objc private func toggleTmux(_ sw: UISwitch) {
-    BlinkMachineStore.useTmuxMode = sw.isOn
-    voiceView?.setHintForSettingsChange(sw.isOn ? "已切到 tmux 模式（新 tab 生效）" : "已切到 cc 模式（新 tab 生效）")
-    tableView.reloadRows(at: [IndexPath(row: 1, section: 0)], with: .none)
   }
 
   private func presentAISettings() {
