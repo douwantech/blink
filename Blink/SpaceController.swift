@@ -944,7 +944,7 @@ extension SpaceController {
         }
         webView.evaluateJavaScript("typeof term_setClipboardWrite === 'function' ? (term_setClipboardWrite(true), 'enabled') : 'no function'") { _, _ in
           self._pollPasteboardForTranscript(scratchKey: scratchKey, oldKey: oldKey,
-                                            deadline: Date(timeIntervalSinceNow: 20))
+                                            deadline: Date(timeIntervalSinceNow: 3))
         }
       }
     }
@@ -1889,9 +1889,15 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
     #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
                 background: rgba(0,0,0,0.94); display: none; align-items: center;
-                justify-content: center; z-index: 9999; cursor: zoom-out; }
+                justify-content: center; z-index: 9999; touch-action: none; }
     #lightbox.show { display: flex; }
-    #lightbox img { max-width: 96vw; max-height: 96vh; object-fit: contain; }
+    #lightbox img { max-width: 96vw; max-height: 96vh; object-fit: contain;
+                    touch-action: none; user-select: none; -webkit-user-select: none;
+                    will-change: transform; transform-origin: center center; }
+    #lightbox-close { position: absolute; top: max(16px, env(safe-area-inset-top));
+                      right: 16px; width: 40px; height: 40px; border-radius: 20px;
+                      background: rgba(255,255,255,0.18); color: #fff; border: none;
+                      font-size: 20px; line-height: 40px; text-align: center; padding: 0; }
     @media (prefers-color-scheme: dark) {
       body { background: #000; color: #f2f2f7; }
       h1, h2, h3 { color: #f2f2f7; }
@@ -1912,19 +1918,82 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     </head>
     <body>
     <div id="content">…</div>
-    <div id="lightbox"><img id="lightbox-img" src=""></div>
+    <div id="lightbox"><img id="lightbox-img" src=""><button id="lightbox-close">✕</button></div>
     <script>
-    document.addEventListener('click', function(e) {
+    (function() {
       var lb = document.getElementById('lightbox');
-      if (e.target.tagName === 'IMG' && e.target.classList.contains('md-img')) {
-        document.getElementById('lightbox-img').src = e.target.src;
-        lb.classList.add('show');
-        e.preventDefault();
-      } else if (lb.classList.contains('show')) {
-        lb.classList.remove('show');
-        document.getElementById('lightbox-img').src = '';
-      }
-    });
+      var lbImg = document.getElementById('lightbox-img');
+      var lbClose = document.getElementById('lightbox-close');
+      var scale = 1, tx = 0, ty = 0;
+      var startDist = 0, startScale = 1;
+      var startX = 0, startY = 0, startTx = 0, startTy = 0;
+      var mode = 'idle'; // idle | pan | pinch
+      var movedSignificantly = false;
+      var lastTap = 0;
+      function apply() { lbImg.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')'; }
+      function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+      function dist(a, b) { var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY; return Math.sqrt(dx*dx + dy*dy); }
+      function close() { lb.classList.remove('show'); lbImg.src = ''; reset(); }
+
+      document.addEventListener('click', function(e) {
+        if (e.target.tagName === 'IMG' && e.target.classList.contains('md-img')) {
+          lbImg.src = e.target.src;
+          reset();
+          lb.classList.add('show');
+          e.preventDefault();
+        }
+      });
+      lbClose.addEventListener('click', function(e) { close(); e.stopPropagation(); });
+      lb.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+          mode = 'pinch';
+          startDist = dist(e.touches[0], e.touches[1]);
+          startScale = scale;
+          startTx = tx; startTy = ty;
+          movedSignificantly = true;
+          e.preventDefault();
+        } else if (e.touches.length === 1) {
+          startX = e.touches[0].clientX;
+          startY = e.touches[0].clientY;
+          startTx = tx; startTy = ty;
+          mode = scale > 1 ? 'pan' : 'maybe-tap';
+          movedSignificantly = false;
+        }
+      }, { passive: false });
+      lb.addEventListener('touchmove', function(e) {
+        if (mode === 'pinch' && e.touches.length === 2) {
+          var d = dist(e.touches[0], e.touches[1]);
+          scale = Math.max(1, Math.min(5, startScale * d / startDist));
+          if (scale === 1) { tx = 0; ty = 0; } else { tx = startTx; ty = startTy; }
+          apply();
+          e.preventDefault();
+        } else if ((mode === 'pan' || mode === 'maybe-tap') && e.touches.length === 1) {
+          var dx = e.touches[0].clientX - startX;
+          var dy = e.touches[0].clientY - startY;
+          if (Math.abs(dx) > 6 || Math.abs(dy) > 6) movedSignificantly = true;
+          if (scale > 1) {
+            tx = startTx + dx; ty = startTy + dy; apply(); e.preventDefault();
+          }
+        }
+      }, { passive: false });
+      lb.addEventListener('touchend', function(e) {
+        if (mode === 'maybe-tap' && !movedSignificantly && e.touches.length === 0) {
+          var now = Date.now();
+          if (now - lastTap < 300) {
+            scale = scale > 1 ? 1 : 2.5;
+            if (scale === 1) { tx = 0; ty = 0; }
+            apply();
+            lastTap = 0;
+          } else {
+            lastTap = now;
+            setTimeout(function() {
+              if (Date.now() - lastTap >= 290 && scale === 1) close();
+            }, 300);
+          }
+        }
+        if (e.touches.length === 0) mode = 'idle';
+      });
+    })();
     function escapeHTML(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -1933,22 +2002,24 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       return new TextDecoder('utf-8').decode(bytes);
     }
     function renderInline(s) {
+      // 1. inline code 先做（避免 code 内 markdown 被解析）
       s = s.replace(/`([^`]+)`/g, (_, c) => '<code>' + escapeHTML(c) + '</code>');
-      s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-      s = s.replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-      // markdown image ![alt](url)
+      // 2. markdown image ![alt](url)
       s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
         '<img class="md-img" src="' + url + '" alt="' + alt + '">');
-      // markdown link [text](url) — image-like url 也转成图片
+      // 3. markdown link [text](url) — image-like url 也转成图片
       s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
         if (/\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?.*)?$/i.test(url)) {
           return '<img class="md-img" src="' + url + '" alt="' + text + '">';
         }
         return '<a href="' + url + '">' + text + '</a>';
       });
-      // bare image URL
-      s = s.replace(/(?<![("'>=])(https?:\/\/[^\s<"]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"]*)?)/gi,
+      // 4. bare image URL — 必须在 bold/italic 之前处理，否则会被 ** 包成 plain 粗体
+      s = s.replace(/(https?:\/\/[^\s<"\)]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)]*)?)/gi,
         (m) => '<img class="md-img" src="' + m + '">');
+      // 5. bold / italic（此时 image URL 已经是 <img>，不会被吞）
+      s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
       return s;
     }
     function utf8B64(s) {

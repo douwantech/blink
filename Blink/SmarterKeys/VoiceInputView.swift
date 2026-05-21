@@ -821,6 +821,26 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func pasteTapped() {
+    let text = UIPasteboard.general.string ?? ""
+    if text.isEmpty {
+      showToast("剪贴板是空的", isError: true)
+      return
+    }
+    if text.count > 300 {
+      let preview = String(text.prefix(80))
+      let alert = UIAlertController(
+        title: "内容较长",
+        message: "剪贴板有 \(text.count) 字符，确定粘贴？\n\n预览：\(preview)…",
+        preferredStyle: .alert
+      )
+      alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+      alert.addAction(UIAlertAction(title: "粘贴", style: .default) { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.voiceInputDidRequestPaste(self)
+      })
+      findViewController()?.present(alert, animated: true)
+      return
+    }
     delegate?.voiceInputDidRequestPaste(self)
   }
 
