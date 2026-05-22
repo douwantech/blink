@@ -114,14 +114,23 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   private let tabBarScroll = UIScrollView()
   private let tabStack = UIStackView()
   private let addTabButton = UIButton(type: .system)
+  private let urlBar = UIView()
   private let urlField = UITextField()
+  private let urlLockIcon = UIImageView()
+  private let urlSpinner = UIActivityIndicatorView(style: .medium)
+  private let urlReloadButton = UIButton(type: .system)
   private let backButton = UIButton(type: .system)
   private let forwardButton = UIButton(type: .system)
-  private let reloadButton = UIButton(type: .system)
   private let closeButton = UIButton(type: .system)
+  private let bottomBar = UIView()
   private let progressBar = UIProgressView(progressViewStyle: .bar)
   private var webView: WKWebView!
   private var progressObs: NSKeyValueObservation?
+  private var loadingObs: NSKeyValueObservation?
+  private var titleObs: NSKeyValueObservation?
+  private var canGoBackObs: NSKeyValueObservation?
+  private var canGoForwardObs: NSKeyValueObservation?
+  private var emptyStateView: UIView?
 
   private var tabs: [BrowserTabItem] = []
   private var currentIndex: Int? = nil
@@ -163,14 +172,10 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     topBar.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(topBar)
 
-    let grabber = UIView()
-    grabber.translatesAutoresizingMaskIntoConstraints = false
-    grabber.backgroundColor = UIColor.tertiaryLabel
-    grabber.layer.cornerRadius = 2.5
-    topBar.addSubview(grabber)
-
-    closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+    closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
     closeButton.tintColor = .secondaryLabel
+    closeButton.backgroundColor = .secondarySystemFill
+    closeButton.layer.cornerRadius = 14
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
     closeButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(closeButton)
@@ -181,35 +186,38 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
     tabStack.translatesAutoresizingMaskIntoConstraints = false
     tabStack.axis = .horizontal
-    tabStack.spacing = 6
+    tabStack.spacing = 4
     tabStack.alignment = .center
     tabBarScroll.addSubview(tabStack)
 
-    addTabButton.setImage(UIImage(systemName: "plus.circle.fill"), for: .normal)
+    addTabButton.setImage(UIImage(systemName: "plus"), for: .normal)
     addTabButton.tintColor = .systemIndigo
+    addTabButton.backgroundColor = .secondarySystemFill
+    addTabButton.layer.cornerRadius = 14
     addTabButton.addTarget(self, action: #selector(addTabTapped), for: .touchUpInside)
     addTabButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(addTabButton)
 
-    let navBar = UIView()
-    navBar.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(navBar)
+    urlBar.translatesAutoresizingMaskIntoConstraints = false
+    urlBar.backgroundColor = .secondarySystemFill
+    urlBar.layer.cornerRadius = 16
+    view.addSubview(urlBar)
 
-    backButton.setImage(UIImage(systemName: "chevron.left"), for: .normal)
-    backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
-    forwardButton.setImage(UIImage(systemName: "chevron.right"), for: .normal)
-    forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
-    reloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
-    reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
-    for b in [backButton, forwardButton, reloadButton] {
-      b.tintColor = .label
-      b.translatesAutoresizingMaskIntoConstraints = false
-      navBar.addSubview(b)
-    }
+    urlLockIcon.translatesAutoresizingMaskIntoConstraints = false
+    urlLockIcon.contentMode = .scaleAspectFit
+    urlLockIcon.tintColor = .secondaryLabel
+    urlLockIcon.preferredSymbolConfiguration = .init(pointSize: 12, weight: .medium)
+    urlBar.addSubview(urlLockIcon)
+
+    urlSpinner.translatesAutoresizingMaskIntoConstraints = false
+    urlSpinner.hidesWhenStopped = true
+    urlSpinner.color = .secondaryLabel
+    urlBar.addSubview(urlSpinner)
 
     urlField.translatesAutoresizingMaskIntoConstraints = false
-    urlField.placeholder = "输入网址或搜索"
-    urlField.borderStyle = .roundedRect
+    urlField.placeholder = "搜索或输入网址"
+    urlField.borderStyle = .none
+    urlField.backgroundColor = .clear
     urlField.autocapitalizationType = .none
     urlField.autocorrectionType = .no
     urlField.keyboardType = .URL
@@ -217,11 +225,21 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     urlField.clearButtonMode = .whileEditing
     urlField.delegate = self
     urlField.font = .systemFont(ofSize: 14)
-    navBar.addSubview(urlField)
+    urlField.textAlignment = .center
+    urlField.addTarget(self, action: #selector(urlFieldDidBeginEditing), for: .editingDidBegin)
+    urlField.addTarget(self, action: #selector(urlFieldDidEndEditing), for: .editingDidEnd)
+    urlBar.addSubview(urlField)
+
+    urlReloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+    urlReloadButton.tintColor = .secondaryLabel
+    urlReloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
+    urlReloadButton.translatesAutoresizingMaskIntoConstraints = false
+    urlBar.addSubview(urlReloadButton)
 
     progressBar.translatesAutoresizingMaskIntoConstraints = false
     progressBar.progressTintColor = .systemIndigo
     progressBar.trackTintColor = .clear
+    progressBar.alpha = 0
     view.addSubview(progressBar)
 
     let config = WKWebViewConfiguration()
@@ -232,40 +250,84 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     webView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(webView)
 
+    bottomBar.translatesAutoresizingMaskIntoConstraints = false
+    bottomBar.backgroundColor = .secondarySystemBackground
+    view.addSubview(bottomBar)
+
+    let topBorder = UIView()
+    topBorder.translatesAutoresizingMaskIntoConstraints = false
+    topBorder.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
+    bottomBar.addSubview(topBorder)
+
+    backButton.setImage(UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+    backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
+    forwardButton.setImage(UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)), for: .normal)
+    forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
+    for b in [backButton, forwardButton] {
+      b.tintColor = .label
+      b.translatesAutoresizingMaskIntoConstraints = false
+      bottomBar.addSubview(b)
+    }
+
     progressObs = webView.observe(\.estimatedProgress) { [weak self] wv, _ in
-      self?.progressBar.setProgress(Float(wv.estimatedProgress), animated: true)
-      if wv.estimatedProgress >= 1.0 {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-          self?.progressBar.setProgress(0, animated: false)
+      guard let self else { return }
+      let p = Float(wv.estimatedProgress)
+      self.progressBar.setProgress(p, animated: true)
+      if p >= 1.0 {
+        UIView.animate(withDuration: 0.25, delay: 0.15, options: []) {
+          self.progressBar.alpha = 0
+        } completion: { _ in
+          self.progressBar.setProgress(0, animated: false)
+        }
+      } else if self.progressBar.alpha < 1 {
+        UIView.animate(withDuration: 0.15) { self.progressBar.alpha = 1 }
+      }
+    }
+    loadingObs = webView.observe(\.isLoading) { [weak self] wv, _ in
+      self?.updateLoadingChrome(loading: wv.isLoading)
+    }
+    titleObs = webView.observe(\.title) { [weak self] wv, _ in
+      guard let self, let cur = self.currentIndex, self.tabs.indices.contains(cur) else { return }
+      if let t = wv.title, !t.isEmpty, self.tabs[cur].title.isEmpty {
+        // 仅 transient tab 才用页面 title 顶替显示，pinned tab 用户填的就别覆盖
+        if self.tabs[cur].isTransient {
+          self.tabs[cur].title = t
+          self.rebuildTabBar()
         }
       }
     }
+    canGoBackObs = webView.observe(\.canGoBack) { [weak self] wv, _ in
+      self?.backButton.isEnabled = wv.canGoBack
+      self?.backButton.alpha = wv.canGoBack ? 1 : 0.3
+    }
+    canGoForwardObs = webView.observe(\.canGoForward) { [weak self] wv, _ in
+      self?.forwardButton.isEnabled = wv.canGoForward
+      self?.forwardButton.alpha = wv.canGoForward ? 1 : 0.3
+    }
+    backButton.isEnabled = false; backButton.alpha = 0.3
+    forwardButton.isEnabled = false; forwardButton.alpha = 0.3
+    updateLockIcon(forURLString: nil)
 
     NSLayoutConstraint.activate([
-      topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
       topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      topBar.heightAnchor.constraint(equalToConstant: 56),
+      topBar.heightAnchor.constraint(equalToConstant: 36),
 
-      grabber.topAnchor.constraint(equalTo: topBar.topAnchor, constant: 6),
-      grabber.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-      grabber.widthAnchor.constraint(equalToConstant: 36),
-      grabber.heightAnchor.constraint(equalToConstant: 5),
-
-      closeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor, constant: 6),
+      closeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
       closeButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
       closeButton.widthAnchor.constraint(equalToConstant: 28),
       closeButton.heightAnchor.constraint(equalToConstant: 28),
 
-      addTabButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor, constant: 6),
+      addTabButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
       addTabButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
       addTabButton.widthAnchor.constraint(equalToConstant: 28),
       addTabButton.heightAnchor.constraint(equalToConstant: 28),
 
-      tabBarScroll.centerYAnchor.constraint(equalTo: topBar.centerYAnchor, constant: 6),
+      tabBarScroll.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
       tabBarScroll.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
       tabBarScroll.trailingAnchor.constraint(equalTo: addTabButton.leadingAnchor, constant: -6),
-      tabBarScroll.heightAnchor.constraint(equalToConstant: 30),
+      tabBarScroll.heightAnchor.constraint(equalToConstant: 32),
 
       tabStack.topAnchor.constraint(equalTo: tabBarScroll.topAnchor),
       tabStack.bottomAnchor.constraint(equalTo: tabBarScroll.bottomAnchor),
@@ -273,40 +335,58 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       tabStack.trailingAnchor.constraint(equalTo: tabBarScroll.trailingAnchor),
       tabStack.heightAnchor.constraint(equalTo: tabBarScroll.heightAnchor),
 
-      navBar.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-      navBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-      navBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      navBar.heightAnchor.constraint(equalToConstant: 40),
+      urlBar.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 6),
+      urlBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+      urlBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+      urlBar.heightAnchor.constraint(equalToConstant: 32),
 
-      backButton.leadingAnchor.constraint(equalTo: navBar.leadingAnchor, constant: 8),
-      backButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
-      backButton.widthAnchor.constraint(equalToConstant: 32),
-      backButton.heightAnchor.constraint(equalToConstant: 32),
+      urlLockIcon.leadingAnchor.constraint(equalTo: urlBar.leadingAnchor, constant: 10),
+      urlLockIcon.centerYAnchor.constraint(equalTo: urlBar.centerYAnchor),
+      urlLockIcon.widthAnchor.constraint(equalToConstant: 14),
+      urlLockIcon.heightAnchor.constraint(equalToConstant: 14),
 
-      forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 4),
-      forwardButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
-      forwardButton.widthAnchor.constraint(equalToConstant: 32),
-      forwardButton.heightAnchor.constraint(equalToConstant: 32),
+      urlSpinner.centerXAnchor.constraint(equalTo: urlLockIcon.centerXAnchor),
+      urlSpinner.centerYAnchor.constraint(equalTo: urlLockIcon.centerYAnchor),
 
-      reloadButton.trailingAnchor.constraint(equalTo: navBar.trailingAnchor, constant: -8),
-      reloadButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
-      reloadButton.widthAnchor.constraint(equalToConstant: 32),
-      reloadButton.heightAnchor.constraint(equalToConstant: 32),
+      urlReloadButton.trailingAnchor.constraint(equalTo: urlBar.trailingAnchor, constant: -6),
+      urlReloadButton.centerYAnchor.constraint(equalTo: urlBar.centerYAnchor),
+      urlReloadButton.widthAnchor.constraint(equalToConstant: 28),
+      urlReloadButton.heightAnchor.constraint(equalToConstant: 28),
 
-      urlField.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 6),
-      urlField.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -6),
-      urlField.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
-      urlField.heightAnchor.constraint(equalToConstant: 30),
+      urlField.leadingAnchor.constraint(equalTo: urlLockIcon.trailingAnchor, constant: 6),
+      urlField.trailingAnchor.constraint(equalTo: urlReloadButton.leadingAnchor, constant: -6),
+      urlField.centerYAnchor.constraint(equalTo: urlBar.centerYAnchor),
+      urlField.heightAnchor.constraint(equalToConstant: 28),
 
-      progressBar.topAnchor.constraint(equalTo: navBar.bottomAnchor),
+      progressBar.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 2),
       progressBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       progressBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      progressBar.heightAnchor.constraint(equalToConstant: 2),
+      progressBar.heightAnchor.constraint(equalToConstant: 1.5),
 
-      webView.topAnchor.constraint(equalTo: progressBar.bottomAnchor),
+      webView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 6),
       webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      webView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+
+      bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      bottomBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      bottomBar.heightAnchor.constraint(equalToConstant: 56),
+
+      topBorder.topAnchor.constraint(equalTo: bottomBar.topAnchor),
+      topBorder.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor),
+      topBorder.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor),
+      topBorder.heightAnchor.constraint(equalToConstant: 0.5),
+
+      backButton.centerYAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 22),
+      backButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 36),
+      backButton.widthAnchor.constraint(equalToConstant: 44),
+      backButton.heightAnchor.constraint(equalToConstant: 44),
+
+      forwardButton.centerYAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 22),
+      forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 48),
+      forwardButton.widthAnchor.constraint(equalToConstant: 44),
+      forwardButton.heightAnchor.constraint(equalToConstant: 44),
     ])
 
     tabs = PinnedTabsStore.shared.tabs.map {
@@ -320,23 +400,81 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     }
   }
 
+  private func updateLoadingChrome(loading: Bool) {
+    if loading {
+      urlSpinner.startAnimating()
+      urlLockIcon.isHidden = true
+      urlReloadButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+    } else {
+      urlSpinner.stopAnimating()
+      urlLockIcon.isHidden = false
+      urlReloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+    }
+  }
+
+  private func updateLockIcon(forURLString s: String?) {
+    let name: String
+    let raw = s ?? ""
+    if raw.hasPrefix("https://") { name = "lock.fill" }
+    else if raw.hasPrefix("http://") { name = "exclamationmark.triangle.fill" }
+    else if raw.hasPrefix("file://") { name = "doc.text.fill" }
+    else { name = "globe" }
+    urlLockIcon.image = UIImage(systemName: name)
+    urlLockIcon.tintColor = (name == "exclamationmark.triangle.fill") ? .systemOrange : .secondaryLabel
+  }
+
+  @objc private func urlFieldDidBeginEditing() {
+    urlField.textAlignment = .left
+    DispatchQueue.main.async { [weak self] in self?.urlField.selectAll(nil) }
+  }
+
+  @objc private func urlFieldDidEndEditing() {
+    urlField.textAlignment = .center
+  }
+
   deinit {
     progressObs?.invalidate()
+    loadingObs?.invalidate()
+    titleObs?.invalidate()
+    canGoBackObs?.invalidate()
+    canGoForwardObs?.invalidate()
   }
 
   private func showEmptyHint() {
     urlField.text = ""
+    emptyStateView?.removeFromSuperview()
+    let container = UIView()
+    container.translatesAutoresizingMaskIntoConstraints = false
+    let icon = UIImageView(image: UIImage(systemName: "rectangle.stack.badge.plus"))
+    icon.tintColor = .tertiaryLabel
+    icon.preferredSymbolConfiguration = .init(pointSize: 38, weight: .regular)
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(icon)
     let label = UILabel()
-    label.text = "还没有标签，点右上角 + 添加"
-    label.textColor = .tertiaryLabel
+    label.text = "还没有标签\n点右上角 + 添加常用网址"
+    label.numberOfLines = 0
+    label.textColor = .secondaryLabel
     label.textAlignment = .center
-    label.font = .systemFont(ofSize: 15)
+    label.font = .systemFont(ofSize: 14)
     label.translatesAutoresizingMaskIntoConstraints = false
-    webView.addSubview(label)
+    container.addSubview(label)
+    webView.addSubview(container)
     NSLayoutConstraint.activate([
-      label.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
-      label.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
+      container.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
+      container.centerYAnchor.constraint(equalTo: webView.centerYAnchor, constant: -40),
+      icon.topAnchor.constraint(equalTo: container.topAnchor),
+      icon.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+      label.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12),
+      label.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      label.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      label.bottomAnchor.constraint(equalTo: container.bottomAnchor),
     ])
+    emptyStateView = container
+  }
+
+  private func hideEmptyHint() {
+    emptyStateView?.removeFromSuperview()
+    emptyStateView = nil
   }
 
   private func rebuildTabBar() {
@@ -350,27 +488,51 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
   private func makeTabChip(title: String, index: Int, selected: Bool, transient: Bool) -> UIView {
     let chip = UIButton(type: .system)
-    let visibleTitle = transient ? title + "  ✕" : title
-    chip.setTitle(visibleTitle, for: .normal)
-    chip.titleLabel?.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
-    chip.setTitleColor(selected ? .white : .label, for: .normal)
-    let bg: UIColor
-    if selected {
-      bg = transient ? UIColor.systemTeal : UIColor.systemIndigo
-    } else {
-      bg = transient ? UIColor.systemTeal.withAlphaComponent(0.2) : UIColor.secondarySystemFill
-    }
+    let truncated = title.count > 14 ? String(title.prefix(13)) + "…" : title
+    let displayTitle = transient ? "  " + truncated + "    " : truncated
+    chip.setTitle(displayTitle, for: .normal)
+    chip.titleLabel?.font = .systemFont(ofSize: 12, weight: selected ? .semibold : .regular)
+    let accent: UIColor = transient ? .systemTeal : .systemIndigo
+    let fg: UIColor = selected ? .white : .label
+    let bg: UIColor = selected ? accent : .secondarySystemFill
+    chip.setTitleColor(fg, for: .normal)
     chip.backgroundColor = bg
     chip.layer.cornerRadius = 14
-    chip.contentEdgeInsets = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+    chip.contentEdgeInsets = UIEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     chip.tag = index
     if transient {
+      let leadIcon = UIImageView(image: UIImage(systemName: "doc.text"))
+      leadIcon.tintColor = fg
+      leadIcon.preferredSymbolConfiguration = .init(pointSize: 10, weight: .medium)
+      leadIcon.translatesAutoresizingMaskIntoConstraints = false
+      chip.addSubview(leadIcon)
+      let xIcon = UIImageView(image: UIImage(systemName: "xmark"))
+      xIcon.tintColor = fg.withAlphaComponent(0.85)
+      xIcon.preferredSymbolConfiguration = .init(pointSize: 9, weight: .semibold)
+      xIcon.translatesAutoresizingMaskIntoConstraints = false
+      chip.addSubview(xIcon)
+      NSLayoutConstraint.activate([
+        leadIcon.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        leadIcon.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
+        leadIcon.widthAnchor.constraint(equalToConstant: 11),
+        leadIcon.heightAnchor.constraint(equalToConstant: 11),
+        xIcon.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        xIcon.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -8),
+        xIcon.widthAnchor.constraint(equalToConstant: 10),
+        xIcon.heightAnchor.constraint(equalToConstant: 10),
+      ])
       chip.addTarget(self, action: #selector(transientChipTapped(_:event:)), for: .touchUpInside)
     } else {
       chip.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
       let lp = UILongPressGestureRecognizer(target: self, action: #selector(tabLongPressed(_:)))
       lp.minimumPressDuration = 0.5
       chip.addGestureRecognizer(lp)
+    }
+    if selected {
+      chip.layer.shadowColor = accent.cgColor
+      chip.layer.shadowRadius = 4
+      chip.layer.shadowOpacity = 0.25
+      chip.layer.shadowOffset = CGSize(width: 0, height: 1)
     }
     return chip
   }
@@ -398,6 +560,9 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
         } else {
           webView.load(URLRequest(url: URL(string: "about:blank")!))
           lastLoadedURLString = nil
+          urlField.text = ""
+          updateLockIcon(forURLString: nil)
+          showEmptyHint()
         }
       } else if cur > i {
         currentIndex = cur - 1
@@ -443,11 +608,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
   private func selectTab(at i: Int) {
     guard i >= 0, i < tabs.count else { return }
+    hideEmptyHint()
     currentIndex = i
     let tab = tabs[i]
     activeAuthUser = (tab.authUser?.isEmpty == false) ? tab.authUser : nil
     activeAuthPassword = (tab.authPassword?.isEmpty == false) ? tab.authPassword : nil
     urlField.text = tab.url
+    updateLockIcon(forURLString: tab.url)
     if tab.url == lastLoadedURLString {
       rebuildTabBar()
       return
@@ -562,7 +729,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
   @objc private func backTapped() { webView.goBack() }
   @objc private func forwardTapped() { webView.goForward() }
-  @objc private func reloadTapped() { webView.reload() }
+  @objc private func reloadTapped() {
+    if webView.isLoading {
+      webView.stopLoading()
+    } else {
+      webView.reload()
+    }
+  }
   @objc private func closeTapped() { dismiss(animated: true) }
 
   func textFieldShouldReturn(_ tf: UITextField) -> Bool {
@@ -574,7 +747,16 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    if let u = webView.url?.absoluteString { urlField.text = u }
+    if let u = webView.url?.absoluteString {
+      urlField.text = u
+      updateLockIcon(forURLString: u)
+    }
+  }
+
+  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+    if let u = webView.url?.absoluteString {
+      updateLockIcon(forURLString: u)
+    }
   }
 
   static func normalizeURL(_ raw: String) -> URL? {
