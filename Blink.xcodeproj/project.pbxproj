@@ -384,6 +384,7 @@
 		D29568B921BE629100480A83 /* bk_getopts.c in Sources */ = {isa = PBXBuildFile; fileRef = D29568B821BE629100480A83 /* bk_getopts.c */; };
 		D297F00F29012FDB002A24F9 /* CachedAsyncImage in Frameworks */ = {isa = PBXBuildFile; productRef = D297F00E29012FDB002A24F9 /* CachedAsyncImage */; };
 		D29B4A92274D206C00C66ED9 /* BrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29B4A8D274D1E9F00C66ED9 /* BrowserController.swift */; };
+		D2BB880A2E45A12300000001 /* PinnedBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB880A2E45A12300000002 /* PinnedBrowser.swift */; };
 		D29D6C3122DB9CA700A84173 /* TermController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29D6C3022DB9CA700A84173 /* TermController.swift */; };
 		D29FE54A208DC860004679D0 /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D29FE548208DC860004679D0 /* commandDictionary.plist */; };
 		D29FE54B208DC860004679D0 /* extraCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */; };
@@ -1147,6 +1148,7 @@
 		D29568B721BE629100480A83 /* bk_getopts.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bk_getopts.h; sourceTree = "<group>"; };
 		D29568B821BE629100480A83 /* bk_getopts.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bk_getopts.c; sourceTree = "<group>"; };
 		D29B4A8D274D1E9F00C66ED9 /* BrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserController.swift; sourceTree = "<group>"; };
+		D2BB880A2E45A12300000002 /* PinnedBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedBrowser.swift; sourceTree = "<group>"; };
 		D29D6C3022DB9CA700A84173 /* TermController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermController.swift; sourceTree = "<group>"; };
 		D29FE548208DC860004679D0 /* commandDictionary.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = commandDictionary.plist; sourceTree = "<group>"; };
 		D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = extraCommandsDictionary.plist; sourceTree = "<group>"; };
@@ -1489,6 +1491,7 @@
 				0795F29B1DC11C6B00CC8B83 /* Blink.entitlements */,
 				0716B53C1CFFAB9300268B5B /* Info.plist */,
 				D29B4A8D274D1E9F00C66ED9 /* BrowserController.swift */,
+				D2BB880A2E45A12300000002 /* PinnedBrowser.swift */,
 				D2AD8E5D27A2BAD600DED28D /* StatusBarLessViewController.swift */,
 				0716B5291CFFAB9300268B5B /* AppDelegate.h */,
 				0716B52A1CFFAB9300268B5B /* AppDelegate.m */,
@@ -3475,6 +3478,7 @@
 				BD818A052AAFC18400956488 /* mosh.swift in Sources */,
 				C94E9B631D6BA21C00DA4DD6 /* DismissSegue.m in Sources */,
 				D29B4A92274D206C00C66ED9 /* BrowserController.swift in Sources */,
+				D2BB880A2E45A12300000001 /* PinnedBrowser.swift in Sources */,
 				803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */,
 				D2C2441C238E44AB0082C69C /* NavButton.swift in Sources */,
 				0716B5721CFFAB9300268B5B /* AppDelegate.m in Sources */,

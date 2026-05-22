@@ -4,13 +4,15 @@ final class BlinkMachine: Codable {
   let id: String
   var name: String
   var host: String
+  var host2: String?
   var lanHost: String?
   var user: String
 
-  init(id: String = UUID().uuidString, name: String = "", host: String, lanHost: String? = nil, user: String) {
+  init(id: String = UUID().uuidString, name: String = "", host: String, host2: String? = nil, lanHost: String? = nil, user: String) {
     self.id = id
     self.name = name
     self.host = host
+    self.host2 = host2
     self.lanHost = lanHost
     self.user = user
   }
@@ -219,8 +221,14 @@ enum HostReachability {
 
   static func bestHost(for m: BlinkMachine) -> String {
     let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
-    if lan.isEmpty { return m.host }
-    return HostReachability.isReachable(host: lan) ? lan : m.host
+    let host2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
+    if !lan.isEmpty, HostReachability.isReachable(host: lan) { return lan }
+    if host2.isEmpty {
+      return m.host
+    }
+    if HostReachability.isReachable(host: m.host) { return m.host }
+    if HostReachability.isReachable(host: host2) { return host2 }
+    return m.host
   }
 
   @objc static func effectiveTmuxSessionName(workDirId: String?, tmuxSession: String?) -> String {
@@ -344,6 +352,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   private let nameField = UITextField()
   private let hostField = UITextField()
+  private let host2Field = UITextField()
   private let lanHostField = UITextField()
   private let userField = UITextField()
 
@@ -368,6 +377,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
     configureField(nameField, placeholder: "可选，留空显示 user@host", value: machine.name, returnKey: .next, keyboard: .default)
     configureField(hostField, placeholder: "外网/Tailscale，如 mac.tail.ts.net", value: machine.host, returnKey: .next, keyboard: .URL)
+    configureField(host2Field, placeholder: "可选，备用外网 IP/域名", value: machine.host2 ?? "", returnKey: .next, keyboard: .URL)
     configureField(lanHostField, placeholder: "可选，局域网 IP，如 192.168.1.10", value: machine.lanHost ?? "", returnKey: .next, keyboard: .URL)
     configureField(userField, placeholder: "apple", value: machine.user, returnKey: .done, keyboard: .default)
   }
@@ -393,11 +403,11 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   override func numberOfSections(in tv: UITableView) -> Int { isNew ? 1 : 2 }
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    section == 0 ? 4 : 1
+    section == 0 ? 5 : 1
   }
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
     guard section == 0 else { return nil }
-    return "填写内网主机后，连接时优先尝试内网（300ms 探测），不可达自动回退外网。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
+    return "连接顺序：内网（300ms 探测）→ 外网1 → 外网2，第一个可达的拿来用。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -413,9 +423,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     let (label, field): (String, UITextField) = {
       switch indexPath.row {
       case 0: return ("名称", nameField)
-      case 1: return ("外网", hostField)
-      case 2: return ("内网", lanHostField)
-      case 3: return ("用户", userField)
+      case 1: return ("外网1", hostField)
+      case 2: return ("外网2", host2Field)
+      case 3: return ("内网", lanHostField)
+      case 4: return ("用户", userField)
       default: return ("", UITextField())
       }
     }()
@@ -443,7 +454,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   func textFieldShouldReturn(_ textField: UITextField) -> Bool {
     if textField === nameField { hostField.becomeFirstResponder() }
-    else if textField === hostField { lanHostField.becomeFirstResponder() }
+    else if textField === hostField { host2Field.becomeFirstResponder() }
+    else if textField === host2Field { lanHostField.becomeFirstResponder() }
     else if textField === lanHostField { userField.becomeFirstResponder() }
     else { saveTapped() }
     return false
@@ -465,17 +477,19 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   @objc private func saveTapped() {
     let host = (hostField.text ?? "").trimmingCharacters(in: .whitespaces)
+    let host2 = (host2Field.text ?? "").trimmingCharacters(in: .whitespaces)
     let lan = (lanHostField.text ?? "").trimmingCharacters(in: .whitespaces)
     let user = (userField.text ?? "").trimmingCharacters(in: .whitespaces)
     let name = (nameField.text ?? "").trimmingCharacters(in: .whitespaces)
     if host.isEmpty || user.isEmpty {
-      let alert = UIAlertController(title: "缺少字段", message: "外网主机和用户必填", preferredStyle: .alert)
+      let alert = UIAlertController(title: "缺少字段", message: "外网1 和用户必填", preferredStyle: .alert)
       alert.addAction(UIAlertAction(title: "确定", style: .default))
       present(alert, animated: true)
       return
     }
     machine.name = name
     machine.host = host
+    machine.host2 = host2.isEmpty ? nil : host2
     machine.lanHost = lan.isEmpty ? nil : lan
     machine.user = user
     BlinkMachineStore.shared.addOrUpdate(machine)

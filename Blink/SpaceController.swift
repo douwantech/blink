@@ -127,6 +127,9 @@ class SpaceController: UIViewController {
   private var _snippetsVC: SnippetsViewController? = nil
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
+  private var _floatingBrowserButton = FloatingBrowserButton(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
+  private var _floatingBrowserButtonPlaced = false
+  private var _pinnedBrowserVC: PinnedBrowserViewController?
 
   // Snips Input Mode tracking
   private var _isSnipsInputModeActive: Bool = false {
@@ -237,8 +240,38 @@ class SpaceController: UIViewController {
       )
     }
     view.bringSubviewToFront(_tabBar)
+    if !_floatingBrowserButtonPlaced {
+      _floatingBrowserButton.restorePosition(in: view)
+      _floatingBrowserButtonPlaced = true
+    }
+    view.bringSubviewToFront(_floatingBrowserButton)
   }
-  
+
+  @objc func _openPinnedBrowser() {
+    _presentSharedBrowser()
+  }
+
+  @discardableResult
+  private func _presentSharedBrowser() -> PinnedBrowserViewController {
+    let vc = _pinnedBrowserVC ?? PinnedBrowserViewController()
+    _pinnedBrowserVC = vc
+    if vc.presentingViewController != nil {
+      return vc
+    }
+    if let sheet = vc.sheetPresentationController {
+      sheet.detents = [.large()]
+      sheet.selectedDetentIdentifier = .large
+      sheet.prefersGrabberVisible = false
+      sheet.preferredCornerRadius = 16
+      sheet.prefersScrollingExpandsWhenScrolledToEdge = false
+    }
+    vc.modalPresentationStyle = .pageSheet
+    var top: UIViewController = self
+    while let presented = top.presentedViewController { top = presented }
+    top.present(vc, animated: true)
+    return vc
+  }
+
   private func forEachActive(block:(TermController) -> ()) {
     for key in _viewportsKeys {
       if let ctrl: TermController = SessionRegistry.shared.sessionFromIndexWith(key: key) {
@@ -375,7 +408,11 @@ class SpaceController: UIViewController {
     _sortTabsByMachineAndDir()
         
     self.view.addSubview(_bottomTapAreaView)
-    
+
+    _floatingBrowserButton.frame = CGRect(x: 0, y: 0, width: 56, height: 56)
+    _floatingBrowserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
+    view.addSubview(_floatingBrowserButton)
+
     let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleQuickActionsAction))
     doubleTap.numberOfTapsRequired = 2
     doubleTap.numberOfTouchesRequired = 1
@@ -944,7 +981,7 @@ extension SpaceController {
         }
         webView.evaluateJavaScript("typeof term_setClipboardWrite === 'function' ? (term_setClipboardWrite(true), 'enabled') : 'no function'") { _, _ in
           self._pollPasteboardForTranscript(scratchKey: scratchKey, oldKey: oldKey,
-                                            deadline: Date(timeIntervalSinceNow: 3))
+                                            deadline: Date(timeIntervalSinceNow: 5))
         }
       }
     }
@@ -1079,10 +1116,33 @@ extension SpaceController {
   }
 
   private func _presentTranscriptModal(text: String) {
-    let vc = TranscriptViewController(text: text.isEmpty ? "<empty>" : text)
-    let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .pageSheet
-    present(nav, animated: true)
+    let body = text.isEmpty ? "<empty>" : text
+    let html = TranscriptViewController.htmlFor(transcript: body)
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let stamp = Int(Date().timeIntervalSince1970)
+    let file = dir.appendingPathComponent("blink-transcript-\(stamp).html")
+    do {
+      try html.write(to: file, atomically: true, encoding: .utf8)
+    } catch {
+      let vc = TranscriptViewController(text: body)
+      let nav = UINavigationController(rootViewController: vc)
+      nav.modalPresentationStyle = .pageSheet
+      present(nav, animated: true)
+      return
+    }
+    let label = _transcriptTabLabel(forCurrentTerm: currentTerm())
+    let vc = _presentSharedBrowser()
+    vc.appendTransientTab(title: label, url: file)
+  }
+
+  private func _transcriptTabLabel(forCurrentTerm term: TermController?) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm"
+    let time = f.string(from: Date())
+    if let name = term?.mcpParams?.tmuxSession, !name.isEmpty {
+      return "\(name) \(time)"
+    }
+    return "对话记录 \(time)"
   }
 
   @objc func reloadCurrentShell() {
@@ -1844,7 +1904,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     webView.loadHTMLString(Self.htmlFor(transcript: bodyText), baseURL: nil)
   }
 
-  private static func htmlFor(transcript: String) -> String {
+  static func htmlFor(transcript: String) -> String {
     let payloadB64 = Data(transcript.utf8).base64EncodedString()
     return #"""
     <!DOCTYPE html>
