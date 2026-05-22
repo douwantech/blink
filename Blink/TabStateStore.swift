@@ -5,6 +5,7 @@ struct TabEntry: Codable {
   var machineId: String?
   var workDirId: String?
   var tmuxSession: String?
+  var useTmux: Bool?
 }
 
 struct TabState: Codable {

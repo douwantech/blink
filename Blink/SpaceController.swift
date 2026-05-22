@@ -88,7 +88,8 @@ class SpaceController: UIViewController {
       return TabEntry(id: key,
                       machineId: p?.machineId,
                       workDirId: p?.workDirId,
-                      tmuxSession: p?.tmuxSession)
+                      tmuxSession: p?.tmuxSession,
+                      useTmux: p?.useTmux)
     }
     TabStateStore.shared.update { state in
       state.tabs = entries
@@ -106,6 +107,7 @@ class SpaceController: UIViewController {
         p.machineId = entry.machineId
         p.workDirId = entry.workDirId
         p.tmuxSession = entry.tmuxSession
+        p.useTmux = entry.useTmux ?? false
         term.bindRestoredMcpParams(p)
       }
     }
