@@ -35,6 +35,52 @@ final class PinnedTabsStore {
   }
 }
 
+struct RecentBrowserTab: Codable, Equatable {
+  var title: String
+  var url: String
+  var createdAt: Date
+}
+
+final class RecentBrowserTabsStore {
+  static let shared = RecentBrowserTabsStore()
+  private let key = "RecentBrowserTabsStore.tabs"
+  private let maxCount = 20
+
+  var tabs: [RecentBrowserTab] {
+    get {
+      guard let data = UserDefaults.standard.data(forKey: key),
+            let arr = try? JSONDecoder().decode([RecentBrowserTab].self, from: data) else {
+        return []
+      }
+      // 过滤掉文件已经被系统清掉的（Caches 可能被回收）
+      return arr.filter { url in
+        guard let u = URL(string: url.url) else { return false }
+        if u.isFileURL {
+          return FileManager.default.fileExists(atPath: u.path)
+        }
+        return true
+      }
+    }
+    set {
+      var arr = newValue
+      if arr.count > maxCount { arr.removeFirst(arr.count - maxCount) }
+      let data = (try? JSONEncoder().encode(arr)) ?? Data()
+      UserDefaults.standard.set(data, forKey: key)
+    }
+  }
+
+  func add(title: String, url: String) {
+    var arr = tabs
+    arr.removeAll { $0.url == url }
+    arr.append(RecentBrowserTab(title: title, url: url, createdAt: Date()))
+    tabs = arr
+  }
+
+  func remove(url: String) {
+    tabs = tabs.filter { $0.url != url }
+  }
+}
+
 final class FloatingBrowserButton: UIButton {
   private static let kPosX = "FloatingBrowserButton.posX"
   private static let kPosY = "FloatingBrowserButton.posY"
@@ -143,16 +189,20 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
-  func appendTransientTab(title: String, url: URL) {
+  func appendTransientTab(title: String, url: URL, persistent: Bool = false) {
     if !isViewLoaded {
       _ = view // force load
     }
-    if let i = tabs.firstIndex(where: { $0.isTransient && $0.url == url.absoluteString }) {
+    let urlString = url.absoluteString
+    if let i = tabs.firstIndex(where: { $0.isTransient && $0.url == urlString }) {
       selectTab(at: i)
       return
     }
-    let item = BrowserTabItem(title: title, url: url.absoluteString, authUser: nil, authPassword: nil, isTransient: true)
+    let item = BrowserTabItem(title: title, url: urlString, authUser: nil, authPassword: nil, isTransient: true)
     tabs.append(item)
+    if persistent {
+      RecentBrowserTabsStore.shared.add(title: title, url: urlString)
+    }
     rebuildTabBar()
     selectTab(at: tabs.count - 1)
     scrollTabsToEnd()
@@ -175,7 +225,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
     closeButton.tintColor = .secondaryLabel
     closeButton.backgroundColor = .secondarySystemFill
-    closeButton.layer.cornerRadius = 14
+    closeButton.layer.cornerRadius = 15
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
     closeButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(closeButton)
@@ -186,14 +236,14 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
     tabStack.translatesAutoresizingMaskIntoConstraints = false
     tabStack.axis = .horizontal
-    tabStack.spacing = 4
+    tabStack.spacing = 6
     tabStack.alignment = .center
     tabBarScroll.addSubview(tabStack)
 
     addTabButton.setImage(UIImage(systemName: "plus"), for: .normal)
     addTabButton.tintColor = .systemIndigo
     addTabButton.backgroundColor = .secondarySystemFill
-    addTabButton.layer.cornerRadius = 14
+    addTabButton.layer.cornerRadius = 15
     addTabButton.addTarget(self, action: #selector(addTabTapped), for: .touchUpInside)
     addTabButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(addTabButton)
@@ -312,22 +362,22 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
       topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      topBar.heightAnchor.constraint(equalToConstant: 36),
+      topBar.heightAnchor.constraint(equalToConstant: 76),
 
-      closeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+      closeButton.topAnchor.constraint(equalTo: topBar.topAnchor),
       closeButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
-      closeButton.widthAnchor.constraint(equalToConstant: 28),
-      closeButton.heightAnchor.constraint(equalToConstant: 28),
+      closeButton.widthAnchor.constraint(equalToConstant: 30),
+      closeButton.heightAnchor.constraint(equalToConstant: 30),
 
-      addTabButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-      addTabButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
-      addTabButton.widthAnchor.constraint(equalToConstant: 28),
-      addTabButton.heightAnchor.constraint(equalToConstant: 28),
+      addTabButton.topAnchor.constraint(equalTo: topBar.topAnchor),
+      addTabButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
+      addTabButton.widthAnchor.constraint(equalToConstant: 30),
+      addTabButton.heightAnchor.constraint(equalToConstant: 30),
 
-      tabBarScroll.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+      tabBarScroll.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
       tabBarScroll.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
-      tabBarScroll.trailingAnchor.constraint(equalTo: addTabButton.leadingAnchor, constant: -6),
-      tabBarScroll.heightAnchor.constraint(equalToConstant: 32),
+      tabBarScroll.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
+      tabBarScroll.heightAnchor.constraint(equalToConstant: 38),
 
       tabStack.topAnchor.constraint(equalTo: tabBarScroll.topAnchor),
       tabStack.bottomAnchor.constraint(equalTo: tabBarScroll.bottomAnchor),
@@ -389,9 +439,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       forwardButton.heightAnchor.constraint(equalToConstant: 44),
     ])
 
-    tabs = PinnedTabsStore.shared.tabs.map {
+    let pinned = PinnedTabsStore.shared.tabs.map {
       BrowserTabItem(title: $0.title, url: $0.url, authUser: $0.authUser, authPassword: $0.authPassword, isTransient: false)
     }
+    let recent = RecentBrowserTabsStore.shared.tabs.map {
+      BrowserTabItem(title: $0.title, url: $0.url, authUser: nil, authPassword: nil, isTransient: true)
+    }
+    tabs = pinned + recent
     rebuildTabBar()
     if !tabs.isEmpty {
       selectTab(at: 0)
@@ -488,38 +542,38 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
   private func makeTabChip(title: String, index: Int, selected: Bool, transient: Bool) -> UIView {
     let chip = UIButton(type: .system)
-    let truncated = title.count > 14 ? String(title.prefix(13)) + "…" : title
-    let displayTitle = transient ? "  " + truncated + "    " : truncated
+    let truncated = title.count > 16 ? String(title.prefix(15)) + "…" : title
+    let displayTitle = transient ? "  " + truncated + "      " : truncated
     chip.setTitle(displayTitle, for: .normal)
-    chip.titleLabel?.font = .systemFont(ofSize: 12, weight: selected ? .semibold : .regular)
+    chip.titleLabel?.font = .systemFont(ofSize: 14, weight: selected ? .semibold : .regular)
     let accent: UIColor = transient ? .systemTeal : .systemIndigo
     let fg: UIColor = selected ? .white : .label
     let bg: UIColor = selected ? accent : .secondarySystemFill
     chip.setTitleColor(fg, for: .normal)
     chip.backgroundColor = bg
-    chip.layer.cornerRadius = 14
-    chip.contentEdgeInsets = UIEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
+    chip.layer.cornerRadius = 17
+    chip.contentEdgeInsets = UIEdgeInsets(top: 7, left: 14, bottom: 7, right: 14)
     chip.tag = index
     if transient {
       let leadIcon = UIImageView(image: UIImage(systemName: "doc.text"))
       leadIcon.tintColor = fg
-      leadIcon.preferredSymbolConfiguration = .init(pointSize: 10, weight: .medium)
+      leadIcon.preferredSymbolConfiguration = .init(pointSize: 12, weight: .medium)
       leadIcon.translatesAutoresizingMaskIntoConstraints = false
       chip.addSubview(leadIcon)
       let xIcon = UIImageView(image: UIImage(systemName: "xmark"))
       xIcon.tintColor = fg.withAlphaComponent(0.85)
-      xIcon.preferredSymbolConfiguration = .init(pointSize: 9, weight: .semibold)
+      xIcon.preferredSymbolConfiguration = .init(pointSize: 11, weight: .semibold)
       xIcon.translatesAutoresizingMaskIntoConstraints = false
       chip.addSubview(xIcon)
       NSLayoutConstraint.activate([
         leadIcon.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-        leadIcon.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
-        leadIcon.widthAnchor.constraint(equalToConstant: 11),
-        leadIcon.heightAnchor.constraint(equalToConstant: 11),
+        leadIcon.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 10),
+        leadIcon.widthAnchor.constraint(equalToConstant: 13),
+        leadIcon.heightAnchor.constraint(equalToConstant: 13),
         xIcon.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-        xIcon.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -8),
-        xIcon.widthAnchor.constraint(equalToConstant: 10),
-        xIcon.heightAnchor.constraint(equalToConstant: 10),
+        xIcon.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -10),
+        xIcon.widthAnchor.constraint(equalToConstant: 12),
+        xIcon.heightAnchor.constraint(equalToConstant: 12),
       ])
       chip.addTarget(self, action: #selector(transientChipTapped(_:event:)), for: .touchUpInside)
     } else {
@@ -551,7 +605,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
   private func closeTransientTab(at i: Int) {
     guard i >= 0, i < tabs.count, tabs[i].isTransient else { return }
+    let removedURL = tabs[i].url
     tabs.remove(at: i)
+    RecentBrowserTabsStore.shared.remove(url: removedURL)
+    if let u = URL(string: removedURL), u.isFileURL,
+       u.path.contains("BlinkTranscripts") {
+      try? FileManager.default.removeItem(at: u)
+    }
     if let cur = currentIndex {
       if cur == i {
         currentIndex = nil
@@ -750,6 +810,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     if let u = webView.url?.absoluteString {
       urlField.text = u
       updateLockIcon(forURLString: u)
+    }
+    if let u = webView.url, u.isFileURL, u.path.contains("BlinkTranscripts") {
+      let js = "window.scrollTo(0, document.documentElement.scrollHeight);"
+      webView.evaluateJavaScript(js, completionHandler: nil)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak webView] in
+        webView?.evaluateJavaScript(js, completionHandler: nil)
+      }
     }
   }
 

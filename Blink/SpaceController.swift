@@ -1120,7 +1120,10 @@ extension SpaceController {
   private func _presentTranscriptModal(text: String) {
     let body = text.isEmpty ? "<empty>" : text
     let html = TranscriptViewController.htmlFor(transcript: body)
-    let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let cacheRoot = (try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+      ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let dir = cacheRoot.appendingPathComponent("BlinkTranscripts", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let stamp = Int(Date().timeIntervalSince1970)
     let file = dir.appendingPathComponent("blink-transcript-\(stamp).html")
     do {
@@ -1134,7 +1137,7 @@ extension SpaceController {
     }
     let label = _transcriptTabLabel(forCurrentTerm: currentTerm())
     let vc = _presentSharedBrowser()
-    vc.appendTransientTab(title: label, url: file)
+    vc.appendTransientTab(title: label, url: file, persistent: true)
   }
 
   private func _transcriptTabLabel(forCurrentTerm term: TermController?) -> String {
@@ -2208,7 +2211,15 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       setTimeout(() => { btn.classList.remove('copied'); btn.textContent = orig; }, 1500);
     }
     document.getElementById('content').innerHTML = renderBlocks(decodeB64("\#(payloadB64)"));
-    requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+    function scrollToBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
+    requestAnimationFrame(scrollToBottom);
+    window.addEventListener('load', scrollToBottom);
+    // 图片加载完会撑高文档，所有图加载完后再滚一次
+    Array.from(document.images).forEach(img => {
+      if (!img.complete) img.addEventListener('load', scrollToBottom, { once: true });
+    });
+    setTimeout(scrollToBottom, 300);
+    setTimeout(scrollToBottom, 1000);
     </script>
     </body>
     </html>
