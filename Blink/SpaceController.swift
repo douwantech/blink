@@ -2083,7 +2083,24 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       // 4. bare image URL — 必须在 bold/italic 之前处理，否则会被 ** 包成 plain 粗体
       s = s.replace(/(https?:\/\/[^\s<"\)]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)]*)?)/gi,
         (m) => '<img class="md-img" src="' + m + '">');
-      // 5. bold / italic（此时 image URL 已经是 <img>，不会被吞）
+      // 5. bare URL → <a> ，已有的 <a>/<img>/<code> 先 stash 起来避免重复包裹
+      var placeholders = [];
+      function stash(m) { placeholders.push(m); return '\x00P' + (placeholders.length - 1) + '\x00'; }
+      s = s.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, stash);
+      s = s.replace(/<img\b[^>]*>/gi, stash);
+      s = s.replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, stash);
+      s = s.replace(/(https?:\/\/[^\s<>"'`]+)/gi, (m) => {
+        var trail = '';
+        var clean = m;
+        var trailing = clean.match(/[.,;:!?\]\)]+$/);
+        if (trailing) {
+          trail = trailing[0];
+          clean = clean.slice(0, -trail.length);
+        }
+        return '<a href="' + clean + '">' + clean + '</a>' + trail;
+      });
+      s = s.replace(/\x00P(\d+)\x00/g, (_, i) => placeholders[parseInt(i, 10)]);
+      // 6. bold / italic（此时 image URL 已经是 <img>，不会被吞）
       s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
       s = s.replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
       return s;

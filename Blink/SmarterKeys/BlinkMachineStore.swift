@@ -183,10 +183,31 @@ enum HostReachability {
 
     let remoteScript = """
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
-    DIR=~/.claude/projects/\(cwdEncoded)
-    F=$(grep -lE '"customTitle":"\(name)"' "$DIR"/*.jsonl 2>/dev/null | head -1)
+    PROJ=~/.claude/projects
+    DIR=$PROJ/\(cwdEncoded)
+    pick_latest_by_mtime() {
+      while read f; do
+        [ -z "$f" ] && continue
+        printf '%d\\t%s\\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
+      done | sort -rn | head -1 | cut -f2-
+    }
+    F=$( (ls "$DIR"/*.jsonl 2>/dev/null) | xargs -I{} grep -lE '"customTitle":"\(name)"' "{}" 2>/dev/null | pick_latest_by_mtime)
     if [ -z "$F" ]; then
-      MSG="NOT_FOUND for customTitle=\(name) in $DIR"
+      # Fallback 1: 全局 customTitle 匹配
+      F=$(grep -rlE '"customTitle":"\(name)"' "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+    fi
+    if [ -z "$F" ]; then
+      # Fallback 2: 同前缀目录里最近修改的 jsonl（cc 实际 cwd 比配的 workDir 深时）
+      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
+    fi
+    if [ -z "$F" ]; then
+      # Fallback 3: 配的 DIR 本身有 jsonl 时取最近修改
+      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+    fi
+    if [ -z "$F" ]; then
+      HINT=$(ls "$PROJ" 2>/dev/null | head -20 | tr '\\n' ' ')
+      MATCHES=$(grep -rlE '"customTitle"' "$PROJ" --include='*.jsonl' 2>/dev/null | head -5 | xargs -I{} sh -c 'jq -r ".customTitle // empty" {} 2>/dev/null | head -1' | sort -u | tr '\\n' ',' )
+      MSG="NOT_FOUND customTitle='\(name)' in $DIR (含全局/前缀/最近 fallback 都没匹配)\\n\\n要让历史能拉到，二选一：\\n  A) cc 里跑一次 \\\"/title \(name)\\\" 给 session 命名（推荐，命过一次就稳）\\n  B) 把 Blink 的 workDir 改成 cc 真实启动目录（cd 完哪里就配哪里）\\n\\n候选项目目录: $HINT\\n附近已有 customTitle: $MATCHES"
       B64=$(printf '%s' "$MSG" | base64 | tr -d '\\n')
       printf '\\033]52;c;%s\\a' "$B64"
       echo READY
@@ -200,7 +221,22 @@ enum HostReachability {
              .message.content
            else
              [.message.content[]? | select(.type=="text") | .text] | join("\\n")
-           end) as $body
+           end) as $rawBody
+        | ($rawBody
+            | gsub("(?s)<system-reminder>.*?</system-reminder>"; "")
+            | gsub("(?s)<task-notification>.*?</task-notification>"; "")
+            | gsub("(?s)<local-command-stdout>.*?</local-command-stdout>"; "")
+            | gsub("(?s)<local-command-stderr>.*?</local-command-stderr>"; "")
+            | gsub("(?s)<command-name>.*?</command-name>"; "")
+            | gsub("(?s)<command-message>.*?</command-message>"; "")
+            | gsub("(?s)<command-args>.*?</command-args>"; "")
+            | gsub("(?s)<user-prompt-submit-hook>.*?</user-prompt-submit-hook>"; "")
+            | gsub("(?s)<bash-input>.*?</bash-input>"; "")
+            | gsub("(?s)<bash-stdout>.*?</bash-stdout>"; "")
+            | gsub("(?s)<bash-stderr>.*?</bash-stderr>"; "")
+            | sub("^\\\\s+"; "")
+            | sub("\\\\s+$"; "")
+          ) as $body
         | select(($body | length) > 0)
         | select($body != "Continue from where you left off."
                  and $body != "No response requested."
