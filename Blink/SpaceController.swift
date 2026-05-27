@@ -132,6 +132,21 @@ class SpaceController: UIViewController {
   private var _floatingBrowserButton = FloatingBrowserButton(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
   private var _floatingBrowserButtonPlaced = false
   private var _pinnedBrowserVC: PinnedBrowserViewController?
+  private lazy var _floatingMicButton: UIButton = {
+    let b = UIButton(type: .system)
+    let cfg = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+    b.setImage(UIImage(systemName: "mic.fill", withConfiguration: cfg), for: .normal)
+    b.tintColor = .white
+    b.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.95)
+    b.layer.cornerRadius = 28
+    b.layer.shadowColor = UIColor.black.cgColor
+    b.layer.shadowOpacity = 0.3
+    b.layer.shadowRadius = 6
+    b.layer.shadowOffset = CGSize(width: 0, height: 2)
+    b.frame = CGRect(x: 0, y: 0, width: 56, height: 56)
+    b.isHidden = true
+    return b
+  }()
 
   // Snips Input Mode tracking
   private var _isSnipsInputModeActive: Bool = false {
@@ -247,6 +262,50 @@ class SpaceController: UIViewController {
       _floatingBrowserButtonPlaced = true
     }
     view.bringSubviewToFront(_floatingBrowserButton)
+    _layoutFloatingMicButton()
+    view.bringSubviewToFront(_floatingMicButton)
+  }
+
+  private func _layoutFloatingMicButton() {
+    let insets = view.safeAreaInsets
+    let size: CGFloat = 56
+    let x = view.bounds.width - size - 16 - insets.right
+    let y = view.bounds.height - size - 16 - insets.bottom
+    _floatingMicButton.frame = CGRect(x: x, y: y, width: size, height: size)
+  }
+
+  @objc private func _voiceInputAutoShowChanged() {
+    DispatchQueue.main.async { [weak self] in self?._updateFloatingMicVisibility() }
+  }
+
+  @objc private func _keyboardDidShowForMic() {
+    // input panel 已经弹出来了，mic 没必要显示
+    if !SmarterTermInput.voiceInputAutoShow {
+      SmarterTermInput.voiceInputAutoShow = true
+    } else {
+      _updateFloatingMicVisibility()
+    }
+  }
+
+  @objc private func _keyboardDidHideForMic() {
+    // 不管是 voice、系统键盘，还是滑动 dismiss，input 一收起就把 mic 显出来
+    if SmarterTermInput.voiceInputAutoShow {
+      SmarterTermInput.voiceInputAutoShow = false
+    } else {
+      _updateFloatingMicVisibility()
+    }
+  }
+
+  private func _updateFloatingMicVisibility() {
+    _floatingMicButton.isHidden = SmarterTermInput.voiceInputAutoShow
+    if !_floatingMicButton.isHidden {
+      view.bringSubviewToFront(_floatingMicButton)
+    }
+  }
+
+  @objc private func _unhideVoiceInput() {
+    SmarterTermInput.voiceInputAutoShow = true
+    _focusOnShell()
   }
 
   @objc func _openPinnedBrowser() {
@@ -414,6 +473,13 @@ class SpaceController: UIViewController {
     _floatingBrowserButton.frame = CGRect(x: 0, y: 0, width: 56, height: 56)
     _floatingBrowserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
     view.addSubview(_floatingBrowserButton)
+
+    _floatingMicButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
+    view.addSubview(_floatingMicButton)
+    NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
+    NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
+    NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidHideForMic), name: UIResponder.keyboardDidHideNotification, object: nil)
+    _updateFloatingMicVisibility()
 
     let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleQuickActionsAction))
     doubleTap.numberOfTapsRequired = 2

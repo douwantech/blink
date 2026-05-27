@@ -12,6 +12,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInput(_ view: VoiceInputView, didCommitText text: String)
   func voiceInputDidRequestKeyboard(_ view: VoiceInputView)
   func voiceInputDidRequestDismiss(_ view: VoiceInputView)
+  func voiceInputDidRequestMinimize(_ view: VoiceInputView)
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView)
   func voiceInputDidRequestClearLine(_ view: VoiceInputView)
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
@@ -859,7 +860,7 @@ final class VoiceInputView: UIInputView {
     if isRecording {
       stopRecording()
     }
-    delegate?.voiceInputDidRequestDismiss(self)
+    delegate?.voiceInputDidRequestMinimize(self)
   }
 
   @objc private func closeTabTapped() {

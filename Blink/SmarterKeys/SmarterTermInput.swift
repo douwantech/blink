@@ -48,6 +48,12 @@ import Combine
   private var _voiceInputView: VoiceInputView?
   private(set) var useVoiceInput: Bool = true
 
+  static var voiceInputAutoShow: Bool = true {
+    didSet {
+      NotificationCenter.default.post(name: .voiceInputAutoShowChanged, object: nil)
+    }
+  }
+
   var isHardwareKB: Bool { kbView.traits.isHKBAttached }
   
   weak var device: TermDevice? = nil {
@@ -142,6 +148,11 @@ import Combine
   override func becomeFirstResponder() -> Bool {
     // Don't become first responder if blocked (e.g., during Snips Input Mode)
     if device?.shouldBlockFirstResponder == true {
+      return false
+    }
+    if !Self.voiceInputAutoShow {
+      // 用户主动隐藏了语音输入，任何屏幕点击都不要再弹起来
+      // 由 SpaceController 的浮动 mic 按钮重新触发 focus
       return false
     }
 
@@ -611,6 +622,10 @@ extension SmarterTermInput {
 }
 
 
+extension Notification.Name {
+  static let voiceInputAutoShowChanged = Notification.Name("voiceInputAutoShowChanged")
+}
+
 extension SmarterTermInput: VoiceInputViewDelegate {
   func voiceInput(_ view: VoiceInputView, didCommitText text: String) {
     guard let device = device else { return }
@@ -623,6 +638,11 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   }
 
   func voiceInputDidRequestDismiss(_ view: VoiceInputView) {
+    _ = resignFirstResponder()
+  }
+
+  func voiceInputDidRequestMinimize(_ view: VoiceInputView) {
+    Self.voiceInputAutoShow = false
     _ = resignFirstResponder()
   }
 
