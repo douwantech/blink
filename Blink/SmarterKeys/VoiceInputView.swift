@@ -1806,16 +1806,43 @@ final class VoiceEditTextViewController: UIViewController {
       textView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
     ])
 
-    navigationItem.leftBarButtonItem = UIBarButtonItem(
+    let cancelItem = UIBarButtonItem(
       barButtonSystemItem: .cancel,
       target: self,
       action: #selector(cancelTapped)
     )
+    let historyItem = UIBarButtonItem(
+      image: UIImage(systemName: "clock.arrow.circlepath"),
+      style: .plain,
+      target: self,
+      action: #selector(historyTapped)
+    )
+    navigationItem.leftBarButtonItems = [cancelItem, historyItem]
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done,
       target: self,
       action: #selector(doneTapped)
     )
+  }
+
+  @objc private func historyTapped() {
+    let picker = VoiceHistoryPickerViewController()
+    picker.onPick = { [weak self] text in
+      guard let self else { return }
+      if let range = self.textView.selectedTextRange {
+        self.textView.replace(range, withText: text)
+      } else {
+        self.textView.text = (self.textView.text ?? "") + text
+      }
+      self.textView.becomeFirstResponder()
+    }
+    let nav = UINavigationController(rootViewController: picker)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -1832,6 +1859,91 @@ final class VoiceEditTextViewController: UIViewController {
   @objc private func doneTapped() {
     onDone?(textView.text ?? "")
     dismiss(animated: true)
+  }
+}
+
+
+// MARK: - 历史记录选择（编辑识别结果时直接再选）
+
+final class VoiceHistoryPickerViewController: UITableViewController {
+  var onPick: ((String) -> Void)?
+
+  // 最新的排在最上面
+  private var entries: [String] { AITextPolisher.shared.historyEntries.reversed() }
+
+  init() { super.init(style: .insetGrouped) }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "历史记录"
+    tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .done, target: self, action: #selector(doneTapped))
+    if !entries.isEmpty {
+      navigationItem.leftBarButtonItem = UIBarButtonItem(
+        title: "清空", style: .plain, target: self, action: #selector(clearTapped))
+      navigationItem.leftBarButtonItem?.tintColor = .systemRed
+    }
+  }
+
+  @objc private func doneTapped() { dismiss(animated: true) }
+
+  @objc private func clearTapped() {
+    let alert = UIAlertController(title: "清空全部历史？", message: nil, preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+      AITextPolisher.shared.clearHistory()
+      self?.navigationItem.leftBarButtonItem = nil
+      self?.tableView.reloadData()
+    })
+    present(alert, animated: true)
+  }
+
+  override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    max(entries.count, 1)
+  }
+
+  override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
+    let list = entries
+    if list.isEmpty {
+      cell.textLabel?.text = "暂无历史记录"
+      cell.textLabel?.textColor = .secondaryLabel
+      cell.textLabel?.numberOfLines = 1
+      cell.selectionStyle = .none
+    } else {
+      cell.textLabel?.text = list[indexPath.row]
+      cell.textLabel?.textColor = .label
+      cell.textLabel?.numberOfLines = 3
+      cell.selectionStyle = .default
+    }
+    return cell
+  }
+
+  override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    tableView.deselectRow(at: indexPath, animated: true)
+    let list = entries
+    guard list.indices.contains(indexPath.row) else { return }
+    let text = list[indexPath.row]
+    dismiss(animated: true) { [weak self] in self?.onPick?(text) }
+  }
+
+  override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+    !entries.isEmpty
+  }
+
+  override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+    guard editingStyle == .delete else { return }
+    let storeCount = AITextPolisher.shared.historyEntries.count
+    let storeIndex = storeCount - 1 - indexPath.row
+    AITextPolisher.shared.deleteHistory(at: storeIndex)
+    if AITextPolisher.shared.historyEntries.isEmpty {
+      navigationItem.leftBarButtonItem = nil
+      tableView.reloadData()
+    } else {
+      tableView.deleteRows(at: [indexPath], with: .automatic)
+    }
   }
 }
 
