@@ -1263,6 +1263,7 @@ final class AITextPolisher {
   private let kEnabled = "VoiceInputView.aiEnabled"
   private let kDebounce = "VoiceInputView.aiDebounce"
   private let kHistory = "VoiceInputView.aiHistory"
+  private let kFavorites = "VoiceInputView.aiFavorites"
   private let kCorrections = "VoiceInputView.aiCorrections"
   private let maxHistory = 30
   private let maxCorrections = 30
@@ -1357,6 +1358,41 @@ final class AITextPolisher {
 
   func clearHistory() {
     UserDefaults.standard.removeObject(forKey: kHistory)
+  }
+
+  // MARK: - 收藏（手动收藏的输入，去重，无上限）
+
+  var favoriteEntries: [String] {
+    UserDefaults.standard.stringArray(forKey: kFavorites) ?? []
+  }
+
+  func isFavorited(_ text: String) -> Bool {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !t.isEmpty && favoriteEntries.contains(t)
+  }
+
+  func addFavorite(_ text: String) {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !t.isEmpty else { return }
+    var arr = favoriteEntries
+    guard !arr.contains(t) else { return }
+    arr.append(t)
+    UserDefaults.standard.set(arr, forKey: kFavorites)
+  }
+
+  func removeFavorite(_ text: String) {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    var arr = favoriteEntries
+    arr.removeAll { $0 == t }
+    UserDefaults.standard.set(arr, forKey: kFavorites)
+  }
+
+  func toggleFavorite(_ text: String) {
+    if isFavorited(text) { removeFavorite(text) } else { addFavorite(text) }
+  }
+
+  func clearFavorites() {
+    UserDefaults.standard.removeObject(forKey: kFavorites)
   }
 
   func recordCorrection(asrRaw: String, final: String) {
@@ -1817,7 +1853,14 @@ final class VoiceEditTextViewController: UIViewController {
       target: self,
       action: #selector(historyTapped)
     )
-    navigationItem.leftBarButtonItems = [cancelItem, historyItem]
+    let favoritesItem = UIBarButtonItem(
+      image: UIImage(systemName: "star"),
+      style: .plain,
+      target: self,
+      action: #selector(favoritesTapped)
+    )
+    favoritesItem.tintColor = .systemYellow
+    navigationItem.leftBarButtonItems = [cancelItem, historyItem, favoritesItem]
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done,
       target: self,
@@ -1825,15 +1868,17 @@ final class VoiceEditTextViewController: UIViewController {
     )
   }
 
-  @objc private func historyTapped() {
-    let picker = VoiceHistoryPickerViewController()
+  @objc private func historyTapped() { presentPicker(mode: .history) }
+  @objc private func favoritesTapped() { presentPicker(mode: .favorites) }
+
+  private func presentPicker(mode: VoiceHistoryPickerViewController.Mode) {
+    let picker = VoiceHistoryPickerViewController(mode: mode)
     picker.onPick = { [weak self] text in
       guard let self else { return }
-      if let range = self.textView.selectedTextRange {
-        self.textView.replace(range, withText: text)
-      } else {
-        self.textView.text = (self.textView.text ?? "") + text
-      }
+      // 先清空原有文本，再填入选中的这条
+      self.textView.text = text
+      let end = self.textView.text.count
+      self.textView.selectedRange = NSRange(location: end, length: 0)
       self.textView.becomeFirstResponder()
     }
     let nav = UINavigationController(rootViewController: picker)
@@ -1863,39 +1908,62 @@ final class VoiceEditTextViewController: UIViewController {
 }
 
 
-// MARK: - 历史记录选择（编辑识别结果时直接再选）
+// MARK: - 历史/收藏选择（编辑识别结果时直接再选）
 
 final class VoiceHistoryPickerViewController: UITableViewController {
+  enum Mode { case history, favorites }
+
+  let mode: Mode
   var onPick: ((String) -> Void)?
 
   // 最新的排在最上面
-  private var entries: [String] { AITextPolisher.shared.historyEntries.reversed() }
+  private var entries: [String] {
+    switch mode {
+    case .history: return AITextPolisher.shared.historyEntries.reversed()
+    case .favorites: return AITextPolisher.shared.favoriteEntries.reversed()
+    }
+  }
 
-  init() { super.init(style: .insetGrouped) }
+  private var emptyText: String { mode == .history ? "暂无历史记录" : "暂无收藏" }
+
+  init(mode: Mode = .history) {
+    self.mode = mode
+    super.init(style: .insetGrouped)
+  }
   required init?(coder: NSCoder) { fatalError() }
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "历史记录"
+    title = mode == .history ? "历史记录" : "收藏"
     tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done, target: self, action: #selector(doneTapped))
-    if !entries.isEmpty {
-      navigationItem.leftBarButtonItem = UIBarButtonItem(
+    updateClearButton()
+  }
+
+  private func updateClearButton() {
+    if entries.isEmpty {
+      navigationItem.leftBarButtonItem = nil
+    } else {
+      let item = UIBarButtonItem(
         title: "清空", style: .plain, target: self, action: #selector(clearTapped))
-      navigationItem.leftBarButtonItem?.tintColor = .systemRed
+      item.tintColor = .systemRed
+      navigationItem.leftBarButtonItem = item
     }
   }
 
   @objc private func doneTapped() { dismiss(animated: true) }
 
   @objc private func clearTapped() {
-    let alert = UIAlertController(title: "清空全部历史？", message: nil, preferredStyle: .alert)
+    let what = mode == .history ? "历史" : "收藏"
+    let alert = UIAlertController(title: "清空全部\(what)？", message: nil, preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
-      AITextPolisher.shared.clearHistory()
-      self?.navigationItem.leftBarButtonItem = nil
-      self?.tableView.reloadData()
+      guard let self else { return }
+      if self.mode == .history { AITextPolisher.shared.clearHistory() }
+      else { AITextPolisher.shared.clearFavorites() }
+      self.updateClearButton()
+      self.tableView.reloadData()
     })
     present(alert, animated: true)
   }
@@ -1908,15 +1976,26 @@ final class VoiceHistoryPickerViewController: UITableViewController {
     let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
     let list = entries
     if list.isEmpty {
-      cell.textLabel?.text = "暂无历史记录"
+      cell.textLabel?.text = emptyText
       cell.textLabel?.textColor = .secondaryLabel
       cell.textLabel?.numberOfLines = 1
       cell.selectionStyle = .none
+      cell.accessoryView = nil
     } else {
-      cell.textLabel?.text = list[indexPath.row]
+      let text = list[indexPath.row]
+      cell.textLabel?.text = text
       cell.textLabel?.textColor = .label
       cell.textLabel?.numberOfLines = 3
       cell.selectionStyle = .default
+      // 历史里已收藏的条目右侧标个黄星
+      if mode == .history, AITextPolisher.shared.isFavorited(text) {
+        let star = UIImageView(image: UIImage(systemName: "star.fill"))
+        star.tintColor = .systemYellow
+        star.sizeToFit()
+        cell.accessoryView = star
+      } else {
+        cell.accessoryView = nil
+      }
     }
     return cell
   }
@@ -1933,17 +2012,46 @@ final class VoiceHistoryPickerViewController: UITableViewController {
     !entries.isEmpty
   }
 
-  override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-    guard editingStyle == .delete else { return }
-    let storeCount = AITextPolisher.shared.historyEntries.count
-    let storeIndex = storeCount - 1 - indexPath.row
-    AITextPolisher.shared.deleteHistory(at: storeIndex)
-    if AITextPolisher.shared.historyEntries.isEmpty {
-      navigationItem.leftBarButtonItem = nil
-      tableView.reloadData()
-    } else {
-      tableView.deleteRows(at: [indexPath], with: .automatic)
+  // 左滑：收藏/取消收藏（历史模式）
+  override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+    let list = entries
+    guard mode == .history, list.indices.contains(indexPath.row) else { return nil }
+    let text = list[indexPath.row]
+    let faved = AITextPolisher.shared.isFavorited(text)
+    let action = UIContextualAction(style: .normal, title: faved ? "取消收藏" : "收藏") { _, _, done in
+      AITextPolisher.shared.toggleFavorite(text)
+      tableView.reloadRows(at: [indexPath], with: .none)
+      done(true)
     }
+    action.backgroundColor = .systemYellow
+    action.image = UIImage(systemName: faved ? "star.slash.fill" : "star.fill")
+    return UISwipeActionsConfiguration(actions: [action])
+  }
+
+  // 右滑：删除
+  override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+    let list = entries
+    guard list.indices.contains(indexPath.row) else { return nil }
+    let text = list[indexPath.row]
+    let action = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
+      guard let self else { done(false); return }
+      switch self.mode {
+      case .history:
+        let storeCount = AITextPolisher.shared.historyEntries.count
+        AITextPolisher.shared.deleteHistory(at: storeCount - 1 - indexPath.row)
+      case .favorites:
+        AITextPolisher.shared.removeFavorite(text)
+      }
+      let nowEmpty = self.entries.isEmpty
+      if nowEmpty {
+        self.updateClearButton()
+        self.tableView.reloadData()
+      } else {
+        self.tableView.deleteRows(at: [indexPath], with: .automatic)
+      }
+      done(true)
+    }
+    return UISwipeActionsConfiguration(actions: [action])
   }
 }
 

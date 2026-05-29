@@ -2270,14 +2270,18 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           i++; continue;
         }
         // paragraph (merge with following non-blank, non-special lines)
-        const para = [line];
+        let para = line;
         i++;
         while (i < lines.length && lines[i].trim() !== '' &&
                !/^(```|▶|◆|=== |#{1,6}\s|\s*[-*]\s|\s*\d+\.\s|>\s|\|.*\|\s*$)/.test(lines[i])) {
-          para.push(lines[i]);
+          // 终端折行会把长 URL 从中间断开（上一行以未结束 URL 收尾，下一行紧接 URL 字符），
+          // 这种情况无空格拼回，避免点链接时丢掉后半段；下一行是中文/普通正文则照常加空格
+          const wrappedURL = /https?:\/\/[^\s<>"'`]+$/.test(para) &&
+                             /^[A-Za-z0-9._~:\/?#\[\]@!$&'()*+,;=%-]/.test(lines[i]);
+          para += wrappedURL ? lines[i] : (' ' + lines[i]);
           i++;
         }
-        html += '<p>' + renderInline(escapeHTML(para.join(' '))) + '</p>';
+        html += '<p>' + renderInline(escapeHTML(para)) + '</p>';
       }
       return html;
     }
