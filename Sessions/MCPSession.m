@@ -136,6 +136,10 @@
         }
         NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
         if (cmd) {
+          NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
+          if (hostInfo) {
+            [_device write:[NSString stringWithFormat:@"%@\r\n", hostInfo]];
+          }
           [self enqueueCommand:cmd];
         } else {
           [_device prompt:@"blink> " secure:NO shell:YES];
@@ -516,6 +520,10 @@ static __weak MCPSession *_currentActiveMCP = nil;
     if (!strongSelf || !strongSelf->_device) { return; }
     NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:workDirId tmuxSession:tmuxSession useTmux:useTmux];
     if (cmd) {
+      NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
+      if (hostInfo) {
+        [strongSelf->_device write:[NSString stringWithFormat:@"%@\r\n", hostInfo]];
+      }
       [strongSelf enqueueCommand:cmd];
     }
   });

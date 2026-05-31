@@ -255,16 +255,32 @@ enum HostReachability {
     return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d | bash\""
   }
 
-  static func bestHost(for m: BlinkMachine) -> String {
+  static func resolveHost(for m: BlinkMachine) -> (host: String, source: String) {
     let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
     let host2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
-    if !lan.isEmpty, HostReachability.isReachable(host: lan) { return lan }
+    if !lan.isEmpty, HostReachability.isReachable(host: lan) { return (lan, "LAN") }
+    let lanNote = lan.isEmpty ? "" : "（LAN 不通）"
     if host2.isEmpty {
-      return m.host
+      return (m.host, "外网1\(lanNote)")
     }
-    if HostReachability.isReachable(host: m.host) { return m.host }
-    if HostReachability.isReachable(host: host2) { return host2 }
-    return m.host
+    if HostReachability.isReachable(host: m.host) { return (m.host, "外网1\(lanNote)") }
+    if HostReachability.isReachable(host: host2) { return (host2, "外网2（外网1\(lan.isEmpty ? "" : "/LAN")不通）") }
+    return (m.host, "外网1 fallback（全部不通）")
+  }
+
+  static func bestHost(for m: BlinkMachine) -> String { resolveHost(for: m).host }
+
+  @objc func chosenHostInfo(forMachineId machineId: String?) -> String? {
+    let arr = machines
+    let m: BlinkMachine?
+    if let id = machineId, let found = arr.first(where: { $0.id == id }) { m = found }
+    else { m = currentMachine }
+    guard let m else { return nil }
+    let r = Self.resolveHost(for: m)
+    let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
+    let h2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
+    let cfg = "LAN=\(lan.isEmpty ? "-" : lan) 外网1=\(m.host) 外网2=\(h2.isEmpty ? "-" : h2)"
+    return "[blink] 选用 \(r.host) (\(r.source))  ·  \(cfg)"
   }
 
   @objc static func effectiveTmuxSessionName(workDirId: String?, tmuxSession: String?) -> String {
