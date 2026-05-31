@@ -54,6 +54,7 @@ final class VoiceInputView: UIInputView {
   private let claudeButton = UIButton(type: .system)
   private let reloadButton = UIButton(type: .system)
   private let tmuxModeButton = UIButton(type: .system)
+  private let favoritesQuickButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
   private let arrowPadContainer = UIView()
@@ -252,6 +253,13 @@ final class VoiceInputView: UIInputView {
     tmuxModeButton.addTarget(self, action: #selector(tmuxModeTapped), for: .touchUpInside)
     updateTmuxModeButtonAppearance()
 
+    favoritesQuickButton.setImage(UIImage(systemName: "star.fill"), for: .normal)
+    favoritesQuickButton.tintColor = .systemYellow
+    favoritesQuickButton.layer.borderColor = UIColor.systemYellow.withAlphaComponent(0.6).cgColor
+    favoritesQuickButton.layer.borderWidth = 1
+    favoritesQuickButton.layer.cornerRadius = 6
+    favoritesQuickButton.addTarget(self, action: #selector(favoritesQuickTapped), for: .touchUpInside)
+
     configureArrowButton(arrowUpButton, systemName: "arrow.up", action: #selector(arrowUpTapped))
     configureArrowButton(arrowDownButton, systemName: "arrow.down", action: #selector(arrowDownTapped))
     configureArrowButton(arrowLeftButton, systemName: "arrow.left", action: #selector(arrowLeftTapped))
@@ -279,7 +287,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, favoritesQuickButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -335,6 +343,11 @@ final class VoiceInputView: UIInputView {
       tmuxModeButton.leadingAnchor.constraint(equalTo: closeTabButton.trailingAnchor, constant: 6),
       tmuxModeButton.widthAnchor.constraint(equalToConstant: 38),
       tmuxModeButton.heightAnchor.constraint(equalToConstant: 28),
+
+      favoritesQuickButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
+      favoritesQuickButton.leadingAnchor.constraint(equalTo: tmuxModeButton.trailingAnchor, constant: 6),
+      favoritesQuickButton.widthAnchor.constraint(equalToConstant: 38),
+      favoritesQuickButton.heightAnchor.constraint(equalToConstant: 28),
 
       textView.topAnchor.constraint(equalTo: clearTextButton.bottomAnchor, constant: 4),
       textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
@@ -764,6 +777,30 @@ final class VoiceInputView: UIInputView {
   @objc private func transcriptTapped() {
     delegate?.voiceInputDidRequestDumpTranscript(self)
     showToast("拉 transcript 中…")
+  }
+
+  @objc private func favoritesQuickTapped() {
+    if isRecording {
+      setMicButtonRecording(false)
+      stopRecording()
+    }
+    let picker = VoiceHistoryPickerViewController(mode: .favorites)
+    picker.onPick = { [weak self] text in
+      guard let self else { return }
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return }
+      AITextPolisher.shared.recordHistory(trimmed)
+      self.delegate?.voiceInput(self, didCommitText: trimmed)
+      self.setText("")
+      self.delegate?.voiceInputDidRequestDismiss(self)
+    }
+    let nav = UINavigationController(rootViewController: picker)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    findViewController()?.present(nav, animated: true)
   }
 
   @objc private func tmuxModeTapped() {

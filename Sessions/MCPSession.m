@@ -138,7 +138,7 @@
         if (cmd) {
           NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
           if (hostInfo) {
-            [_device write:[NSString stringWithFormat:@"%@\r\n", hostInfo]];
+            [_device writeOutLn:hostInfo];
           }
           [self enqueueCommand:cmd];
         } else {
@@ -522,7 +522,7 @@ static __weak MCPSession *_currentActiveMCP = nil;
     if (cmd) {
       NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
       if (hostInfo) {
-        [strongSelf->_device write:[NSString stringWithFormat:@"%@\r\n", hostInfo]];
+        [strongSelf->_device writeOutLn:hostInfo];
       }
       [strongSelf enqueueCommand:cmd];
     }
