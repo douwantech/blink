@@ -2019,6 +2019,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     hr { border: none; border-top: 1px solid #d2d2d7; margin: 1.5em 0; }
     p { margin: 0.5em 0; }
     img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
+    video.md-video { max-width: 100%; border-radius: 8px; margin: 0.5em 0; display: block; background: #000; }
     #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
                 background: rgba(0,0,0,0.94); display: none; align-items: center;
                 justify-content: center; z-index: 9999; touch-action: none; }
@@ -2139,23 +2140,31 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       // 2. markdown image ![alt](url)
       s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
         '<img class="md-img" src="' + url + '" alt="' + alt + '">');
-      // 3. markdown link [text](url) — image-like url 也转成图片
+      // 3. markdown link [text](url) — image/video url 也转成内联媒体
       s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
         if (/\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?.*)?$/i.test(url)) {
           return '<img class="md-img" src="' + url + '" alt="' + text + '">';
         }
+        if (/\.(?:mp4|mov|m4v|webm|ogv)(?:\?.*)?$/i.test(url)) {
+          return '<video class="md-video" src="' + url + '" controls preload="metadata"></video>';
+        }
         return '<a href="' + url + '">' + text + '</a>';
       });
       // 4. bare image URL — 必须在 bold/italic 之前处理，否则会被 ** 包成 plain 粗体
-      s = s.replace(/(https?:\/\/[^\s<"\)]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)]*)?)/gi,
+      //    URL char 类排除 * ，防止 **url** 把闭合 ** 吞进 URL
+      s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)*]*)?)/gi,
         (m) => '<img class="md-img" src="' + m + '">');
-      // 5. bare URL → <a> ，已有的 <a>/<img>/<code> 先 stash 起来避免重复包裹
+      // 4.5. bare video URL → 内联 <video controls>
+      s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:mp4|mov|m4v|webm|ogv)(?:\?[^\s<"\)*]*)?)/gi,
+        (m) => '<video class="md-video" src="' + m + '" controls preload="metadata"></video>');
+      // 5. bare URL → <a> ，已有的 <a>/<img>/<video>/<code> 先 stash 起来避免重复包裹
       var placeholders = [];
       function stash(m) { placeholders.push(m); return '\x00P' + (placeholders.length - 1) + '\x00'; }
       s = s.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, stash);
       s = s.replace(/<img\b[^>]*>/gi, stash);
+      s = s.replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, stash);
       s = s.replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, stash);
-      s = s.replace(/(https?:\/\/[^\s<>"'`]+)/gi, (m) => {
+      s = s.replace(/(https?:\/\/[^\s<>"'`*]+)/gi, (m) => {
         var trail = '';
         var clean = m;
         var trailing = clean.match(/[.,;:!?\]\)]+$/);

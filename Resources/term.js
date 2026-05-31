@@ -280,18 +280,70 @@ function term_reportMouseClick(x, y, buttons, display) {
 }
 
 function blink_url_at_point(x, y) {
+  var URL_CHAR = "[\\w\\-._~:\\/?#\\[\\]@!$&'()*+,;=%]";
+  var URL_RE = new RegExp("https?:\\/\\/" + URL_CHAR + "+", "g");
+  var URL_HEAD_RE = new RegExp("^" + URL_CHAR + "+");
+  var URL_TAIL_RE = new RegExp(URL_CHAR + "+$");
+
+  function rowOf(node) {
+    var p = node && node.parentNode;
+    while (p) {
+      if (p.nodeName === 'X-ROW') return p;
+      p = p.parentNode;
+    }
+    return null;
+  }
+
+  function offsetWithinRow(doc, row, node, off) {
+    if (!row) return off;
+    var walker = doc.createTreeWalker(row, NodeFilter.SHOW_TEXT, null, false);
+    var n, total = 0;
+    while ((n = walker.nextNode())) {
+      if (n === node) return total + off;
+      total += (n.textContent || '').length;
+    }
+    return off;
+  }
+
   function findIn(doc, lx, ly) {
     var range = doc.caretRangeFromPoint ? doc.caretRangeFromPoint(lx, ly) : null;
     if (!range) return '';
     var node = range.startContainer;
     if (!node || node.nodeType !== Node.TEXT_NODE) return '';
-    var text = node.textContent || '';
-    var off = range.startOffset;
-    var re = /https?:\/\/[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+/g;
+    var row = rowOf(node);
+    var text = row ? (row.textContent || '') : (node.textContent || '');
+    var off = row ? offsetWithinRow(doc, row, node, range.startOffset) : range.startOffset;
     var m;
-    while ((m = re.exec(text))) {
+    URL_RE.lastIndex = 0;
+    while ((m = URL_RE.exec(text))) {
       if (off >= m.index && off <= m.index + m[0].length) {
-        return m[0];
+        var url = m[0];
+        // 终端折行：URL 一直到行末 → 看后续行是否以 URL 字符续起
+        if (row && m.index + url.length >= text.length) {
+          var nxt = row.nextElementSibling;
+          while (nxt && nxt.nodeName === 'X-ROW') {
+            var nt = nxt.textContent || '';
+            var cont = nt.match(URL_HEAD_RE);
+            if (!cont) break;
+            url += cont[0];
+            if (cont[0].length < nt.length) break;  // 该行没占满，URL 结束
+            nxt = nxt.nextElementSibling;
+          }
+        }
+        // URL 从行首开始 → 看前一行末尾是否是 URL 字符
+        if (row && m.index === 0) {
+          var prv = row.previousElementSibling;
+          while (prv && prv.nodeName === 'X-ROW') {
+            var pt = prv.textContent || '';
+            var schemeHit = pt.match(/(https?:\/\/[\w\-._~:\/?#\[\]@!$&'()*+,;=%]*)$/);
+            if (schemeHit) { url = schemeHit[0] + url; break; }
+            var tail = pt.match(URL_TAIL_RE);
+            if (!tail || tail[0].length < pt.length) break;  // 没占满或没字符 → 不连续
+            url = tail[0] + url;
+            prv = prv.previousElementSibling;
+          }
+        }
+        return url;
       }
     }
     return '';
