@@ -887,7 +887,7 @@ final class VoiceInputView: UIInputView {
   @objc private func imagePickTapped() {
     var cfg = PHPickerConfiguration()
     cfg.filter = .images
-    cfg.selectionLimit = 1
+    cfg.selectionLimit = 0  // 0 = 无上限
     let picker = PHPickerViewController(configuration: cfg)
     picker.delegate = self
     findViewController()?.present(picker, animated: true)
@@ -1198,28 +1198,44 @@ private extension Array {
 extension VoiceInputView: PHPickerViewControllerDelegate {
   func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
     picker.dismiss(animated: true)
-    guard let provider = results.first?.itemProvider,
-          provider.canLoadObject(ofClass: UIImage.self) else {
-      return
-    }
-    showToast("上传中…")
-    provider.loadObject(ofClass: UIImage.self) { [weak self] obj, _ in
-      guard let self else { return }
-      guard let image = obj as? UIImage,
-            let data = image.jpegData(compressionQuality: 0.75) else {
-        DispatchQueue.main.async { self.showToast("图片加载失败", isError: true) }
-        return
-      }
-      ImageHostUploader.upload(jpegData: data) { [weak self] url in
-        DispatchQueue.main.async {
-          guard let self else { return }
-          if let url {
-            UIPasteboard.general.string = url
-            self.showToast("URL 已复制：\(url)")
-          } else {
-            self.showToast("上传失败", isError: true)
+    let providers = results
+      .map { $0.itemProvider }
+      .filter { $0.canLoadObject(ofClass: UIImage.self) }
+    guard !providers.isEmpty else { return }
+    let total = providers.count
+    showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
+
+    var urls: [String?] = Array(repeating: nil, count: total)  // 保序
+    let group = DispatchGroup()
+    for (idx, provider) in providers.enumerated() {
+      group.enter()
+      provider.loadObject(ofClass: UIImage.self) { obj, _ in
+        guard let image = obj as? UIImage,
+              let data = image.jpegData(compressionQuality: 0.75) else {
+          DispatchQueue.main.async { group.leave() }
+          return
+        }
+        ImageHostUploader.upload(jpegData: data) { url in
+          DispatchQueue.main.async {
+            urls[idx] = url
+            group.leave()
           }
         }
+      }
+    }
+    group.notify(queue: .main) { [weak self] in
+      guard let self else { return }
+      let good = urls.compactMap { $0 }
+      if good.isEmpty {
+        self.showToast("全部上传失败", isError: true)
+        return
+      }
+      UIPasteboard.general.string = good.joined(separator: "\n")
+      if good.count == total {
+        let msg = total == 1 ? "URL 已复制：\(good[0])" : "\(good.count) 个 URL 已复制"
+        self.showToast(msg)
+      } else {
+        self.showToast("\(good.count)/\(total) 已复制，失败 \(total - good.count) 张", isError: true)
       }
     }
   }

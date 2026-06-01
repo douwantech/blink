@@ -280,7 +280,44 @@ enum HostReachability {
     let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
     let h2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
     let cfg = "LAN=\(lan.isEmpty ? "-" : lan) 外网1=\(m.host) 外网2=\(h2.isEmpty ? "-" : h2)"
-    return "[blink] 选用 \(r.host) (\(r.source))  ·  \(cfg)"
+    var line = "[blink] 选用 \(r.host) (\(r.source))  ·  \(cfg)"
+    let warns = Self.hostWarnings(for: m)
+    if !warns.isEmpty {
+      line += "\r\n[blink] ⚠️  " + warns.joined(separator: "；")
+    }
+    return line
+  }
+
+  /// 配置异常检测：返回需要警示的项，空数组表示一切正常
+  private static func hostWarnings(for m: BlinkMachine) -> [String] {
+    let host = m.host.trimmingCharacters(in: .whitespaces)
+    let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
+    let h2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
+
+    func looksMalformed(_ s: String) -> Bool {
+      if s.isEmpty { return false }
+      let allDotDigit = s.allSatisfy { $0.isNumber || $0 == "." }
+      if allDotDigit {
+        let parts = s.split(separator: ".")
+        if parts.count != 4 { return true }
+        for p in parts {
+          if let n = Int(p), n >= 0, n <= 255 { continue }
+          return true
+        }
+        return false
+      }
+      // 含字母 → 当域名，至少要有点
+      return !s.contains(".")
+    }
+
+    var warns: [String] = []
+    if !lan.isEmpty, looksMalformed(lan) { warns.append("LAN「\(lan)」不是合法 IP/域名") }
+    if looksMalformed(host) { warns.append("外网1「\(host)」不是合法 IP/域名") }
+    if !h2.isEmpty, looksMalformed(h2) { warns.append("外网2「\(h2)」不是合法 IP/域名") }
+    if !h2.isEmpty, h2 == host { warns.append("外网2 跟外网1 一样") }
+    if !lan.isEmpty, lan == host { warns.append("LAN 跟外网1 一样") }
+    if !lan.isEmpty, !h2.isEmpty, lan == h2 { warns.append("LAN 跟外网2 一样") }
+    return warns
   }
 
   @objc static func effectiveTmuxSessionName(workDirId: String?, tmuxSession: String?) -> String {
