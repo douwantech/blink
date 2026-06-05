@@ -55,6 +55,7 @@ final class VoiceInputView: UIInputView {
   private let reloadButton = UIButton(type: .system)
   private let tmuxModeButton = UIButton(type: .system)
   private let favoritesQuickButton = UIButton(type: .system)
+  private let historyQuickButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
   private let hintLabel = UILabel()
   private let arrowPadContainer = UIView()
@@ -260,6 +261,13 @@ final class VoiceInputView: UIInputView {
     favoritesQuickButton.layer.cornerRadius = 6
     favoritesQuickButton.addTarget(self, action: #selector(favoritesQuickTapped), for: .touchUpInside)
 
+    historyQuickButton.setImage(UIImage(systemName: "clock.arrow.circlepath"), for: .normal)
+    historyQuickButton.tintColor = .systemTeal
+    historyQuickButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.6).cgColor
+    historyQuickButton.layer.borderWidth = 1
+    historyQuickButton.layer.cornerRadius = 6
+    historyQuickButton.addTarget(self, action: #selector(historyQuickTapped), for: .touchUpInside)
+
     configureArrowButton(arrowUpButton, systemName: "arrow.up", action: #selector(arrowUpTapped))
     configureArrowButton(arrowDownButton, systemName: "arrow.down", action: #selector(arrowDownTapped))
     configureArrowButton(arrowLeftButton, systemName: "arrow.left", action: #selector(arrowLeftTapped))
@@ -287,7 +295,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, favoritesQuickButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, favoritesQuickButton, historyQuickButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -348,6 +356,11 @@ final class VoiceInputView: UIInputView {
       favoritesQuickButton.leadingAnchor.constraint(equalTo: tmuxModeButton.trailingAnchor, constant: 6),
       favoritesQuickButton.widthAnchor.constraint(equalToConstant: 38),
       favoritesQuickButton.heightAnchor.constraint(equalToConstant: 28),
+
+      historyQuickButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
+      historyQuickButton.leadingAnchor.constraint(equalTo: favoritesQuickButton.trailingAnchor, constant: 6),
+      historyQuickButton.widthAnchor.constraint(equalToConstant: 38),
+      historyQuickButton.heightAnchor.constraint(equalToConstant: 28),
 
       textView.topAnchor.constraint(equalTo: clearTextButton.bottomAnchor, constant: 4),
       textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
@@ -505,7 +518,7 @@ final class VoiceInputView: UIInputView {
     }
   }
 
-  private func startThinkingAnimation() {
+  private func startThinkingAnimation(baseText: String = "AI 整理中") {
     thinkingOverlay.isHidden = false
     placeholderLabel.isHidden = true
     bringSubviewToFront(thinkingOverlay)
@@ -521,11 +534,12 @@ final class VoiceInputView: UIInputView {
 
     thinkingDotsTimer?.invalidate()
     thinkingDotsStep = 0
+    thinkingLabel.text = "\(baseText) ·"
     thinkingDotsTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
       guard let self else { return }
       self.thinkingDotsStep = (self.thinkingDotsStep + 1) % 4
       let dots = String(repeating: "·", count: max(self.thinkingDotsStep, 1))
-      self.thinkingLabel.text = "AI 整理中 \(dots)"
+      self.thinkingLabel.text = "\(baseText) \(dots)"
     }
   }
 
@@ -779,12 +793,15 @@ final class VoiceInputView: UIInputView {
     showToast("拉 transcript 中…")
   }
 
-  @objc private func favoritesQuickTapped() {
+  @objc private func favoritesQuickTapped() { presentQuickPicker(mode: .favorites) }
+  @objc private func historyQuickTapped() { presentQuickPicker(mode: .history) }
+
+  private func presentQuickPicker(mode: VoiceHistoryPickerViewController.Mode) {
     if isRecording {
       setMicButtonRecording(false)
       stopRecording()
     }
-    let picker = VoiceHistoryPickerViewController(mode: .favorites)
+    let picker = VoiceHistoryPickerViewController(mode: mode)
     picker.onPick = { [weak self] text in
       guard let self else { return }
       let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1123,17 +1140,19 @@ final class VoiceInputView: UIInputView {
 
     hintLabel.text = "识别中…"
     hintLabel.textColor = .secondaryLabel
+    startThinkingAnimation(baseText: "识别中")
 
     GLMASRClient.transcribe(fileURL: url, apiKey: apiKey) { [weak self] result in
       DispatchQueue.main.async {
         guard let self else { return }
         try? FileManager.default.removeItem(at: url)
+        self.stopThinkingAnimation()
         switch result {
         case .success(let text):
           self.lastAsrRaw = text
           self.hintLabel.text = self.currentLocaleTitle()
           self.hintLabel.textColor = .tertiaryLabel
-          self.polishText(rawText: text)
+          self.polishText(rawText: text)  // polishText 会自己再开 thinking 动画
         case .failure(let err):
           self.hintLabel.text = "识别失败: \(err.localizedDescription)"
           self.hintLabel.textColor = .systemRed
@@ -1318,8 +1337,10 @@ final class AITextPolisher {
   private let kHistory = "VoiceInputView.aiHistory"
   private let kFavorites = "VoiceInputView.aiFavorites"
   private let kCorrections = "VoiceInputView.aiCorrections"
+  private let kTerms = "VoiceInputView.aiTerms"  // 词级错→对映射，{wrong: {correct: count}}
   private let maxHistory = 30
   private let maxCorrections = 30
+  private let maxTermsInPrompt = 40
 
   private init() {
     UserDefaults.standard.register(defaults: [
@@ -1391,6 +1412,7 @@ final class AITextPolisher {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     var arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+    arr.removeAll { $0 == trimmed }  // 去重：已有就移除，再追加到末尾
     arr.append(trimmed)
     if arr.count > maxHistory {
       arr.removeFirst(arr.count - maxHistory)
@@ -1399,13 +1421,26 @@ final class AITextPolisher {
   }
 
   var historyEntries: [String] {
-    UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+    let raw = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+    // 去重：从后向前看，每条只保留最新一次出现的位置
+    var seen = Set<String>()
+    var out: [String] = []
+    for s in raw.reversed() {
+      if seen.insert(s).inserted { out.append(s) }
+    }
+    return out.reversed()
   }
 
   func deleteHistory(at index: Int) {
     var arr = historyEntries
     guard arr.indices.contains(index) else { return }
     arr.remove(at: index)
+    UserDefaults.standard.set(arr, forKey: kHistory)
+  }
+
+  func deleteHistory(text: String) {
+    var arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
+    arr.removeAll { $0 == text }
     UserDefaults.standard.set(arr, forKey: kHistory)
   }
 
@@ -1453,25 +1488,152 @@ final class AITextPolisher {
     let finTrim = final.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !asrTrim.isEmpty, !finTrim.isEmpty, asrTrim != finTrim else { return }
     var arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
+    arr.removeAll { $0.count == 2 && $0[0] == asrTrim && $0[1] == finTrim }  // 去重
     arr.append([asrTrim, finTrim])
     if arr.count > maxCorrections {
       arr.removeFirst(arr.count - maxCorrections)
     }
     UserDefaults.standard.set(arr, forKey: kCorrections)
+    // 顺手抽词级映射，喂给 polish prompt 用
+    accumulateTermPairs(asrRaw: asrTrim, final: finTrim)
+  }
+
+  // MARK: - 词级"错→对"映射
+
+  /// 把混合中英文按 CJK 单字 / 英文/数字连续段 / 标点 切成 token
+  private func tokenize(_ s: String) -> [String] {
+    var tokens: [String] = []
+    var buf = ""
+    for c in s {
+      if (c.isLetter && c.isASCII) || c.isNumber {
+        buf.append(c)
+      } else {
+        if !buf.isEmpty { tokens.append(buf); buf = "" }
+        if !c.isWhitespace {
+          tokens.append(String(c))
+        }
+      }
+    }
+    if !buf.isEmpty { tokens.append(buf) }
+    return tokens
+  }
+
+  private enum DiffOp { case equal, insert, delete }
+
+  /// 标准 LCS DP，输出按顺序排好的 (op, token) 序列
+  private func tokenDiff(_ a: [String], _ b: [String]) -> [(DiffOp, String)] {
+    let n = a.count, m = b.count
+    var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+    for i in 0..<n {
+      for j in 0..<m {
+        if a[i] == b[j] { dp[i + 1][j + 1] = dp[i][j] + 1 }
+        else { dp[i + 1][j + 1] = max(dp[i + 1][j], dp[i][j + 1]) }
+      }
+    }
+    var ops: [(DiffOp, String)] = []
+    var i = n, j = m
+    while i > 0 || j > 0 {
+      if i > 0, j > 0, a[i - 1] == b[j - 1] {
+        ops.append((.equal, a[i - 1])); i -= 1; j -= 1
+      } else if j > 0, i == 0 || dp[i][j - 1] >= dp[i - 1][j] {
+        ops.append((.insert, b[j - 1])); j -= 1
+      } else {
+        ops.append((.delete, a[i - 1])); i -= 1
+      }
+    }
+    return ops.reversed()
+  }
+
+  private func extractTermPairs(asr: String, final: String) -> [(String, String)] {
+    let ops = tokenDiff(tokenize(asr), tokenize(final))
+    var pairs: [(String, String)] = []
+    var delBuf = "", insBuf = ""
+    func flush() {
+      if !delBuf.isEmpty, !insBuf.isEmpty {
+        // 过滤纯标点 / 单字符噪音
+        let isNoise = { (s: String) -> Bool in
+          s.allSatisfy { $0.isPunctuation || $0.isWhitespace }
+        }
+        if !isNoise(delBuf), !isNoise(insBuf) {
+          pairs.append((delBuf, insBuf))
+        }
+      }
+      delBuf = ""; insBuf = ""
+    }
+    for (op, tok) in ops {
+      switch op {
+      case .equal:  flush()
+      case .delete: delBuf += tok
+      case .insert: insBuf += tok
+      }
+    }
+    flush()
+    return pairs
+  }
+
+  /// 把本次修正抽出的 (错→对) 累加进词表
+  private func accumulateTermPairs(asrRaw: String, final: String) {
+    let pairs = extractTermPairs(asr: asrRaw, final: final)
+    guard !pairs.isEmpty else { return }
+    var map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
+    for (wrong, correct) in pairs {
+      var sub = map[wrong] ?? [:]
+      sub[correct, default: 0] += 1
+      map[wrong] = sub
+    }
+    UserDefaults.standard.set(map, forKey: kTerms)
+  }
+
+  /// 词表条目（按总频次降序）
+  var termEntries: [(wrong: String, correct: String, count: Int)] {
+    let map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
+    var out: [(String, String, Int)] = []
+    for (wrong, subs) in map {
+      for (correct, cnt) in subs {
+        out.append((wrong, correct, cnt))
+      }
+    }
+    return out.sorted { $0.2 > $1.2 }
+  }
+
+  func clearTerms() {
+    UserDefaults.standard.removeObject(forKey: kTerms)
+  }
+
+  func deleteTerm(wrong: String, correct: String) {
+    var map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
+    guard var sub = map[wrong] else { return }
+    sub.removeValue(forKey: correct)
+    if sub.isEmpty { map.removeValue(forKey: wrong) } else { map[wrong] = sub }
+    UserDefaults.standard.set(map, forKey: kTerms)
   }
 
   var correctionEntries: [(asrRaw: String, final: String)] {
     let arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
-    return arr.compactMap { pair in
+    let pairs = arr.compactMap { pair -> (String, String)? in
       guard pair.count == 2 else { return nil }
       return (pair[0], pair[1])
     }
+    // 去重：同一 (asr, final) 对只保留最新一次
+    var seen = Set<String>()
+    var out: [(String, String)] = []
+    for p in pairs.reversed() {
+      let key = "\(p.0)\u{0000}\(p.1)"
+      if seen.insert(key).inserted { out.append(p) }
+    }
+    return out.reversed()
   }
 
   func deleteCorrection(at index: Int) {
     var arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
     guard arr.indices.contains(index) else { return }
     arr.remove(at: index)
+    UserDefaults.standard.set(arr, forKey: kCorrections)
+  }
+
+  func deleteCorrection(asrRaw: String, final: String) {
+    var arr = UserDefaults.standard.array(forKey: kCorrections) as? [[String]] ?? []
+    arr.removeAll { $0.count == 2 && $0[0] == asrRaw && $0[1] == final }
     UserDefaults.standard.set(arr, forKey: kCorrections)
   }
 
@@ -1487,11 +1649,16 @@ final class AITextPolisher {
       let body = recent.map { "- \($0)" }.joined(separator: "\n")
       parts.append("用户近期已提交的输入（按从新到旧）：\n\(body)")
     }
+    let terms = termEntries.prefix(maxTermsInPrompt)
+    if !terms.isEmpty {
+      let body = terms.map { "- 「\($0.wrong)」 → 「\($0.correct)」（\($0.count) 次）" }.joined(separator: "\n")
+      parts.append("用户的高频错读词表（左=ASR 容易听成，右=用户实际想说，按频次降序；这是最重要的纠错依据，遇到表里左侧出现请优先按右侧改）：\n\(body)")
+    }
     let corrections = correctionEntries
     if !corrections.isEmpty {
       let recent = corrections.suffix(maxCorrections).reversed()
       let body = recent.map { "- 「\($0.asrRaw)」 → 「\($0.final)」" }.joined(separator: "\n")
-      parts.append("用户的修正记录（左=ASR 原文，右=用户改后的版本，按从新到旧）：\n\(body)")
+      parts.append("用户的修正记录（左=ASR 原文，右=用户改后的版本，按从新到旧；用于参考上下文）：\n\(body)")
     }
     guard !parts.isEmpty else { return "" }
     return "\n\n" + parts.joined(separator: "\n\n")
@@ -1624,8 +1791,11 @@ final class VoiceSettingsViewController: UITableViewController {
       cell.detailTextLabel?.text = AITextPolisher.shared.model
       cell.accessoryType = .disclosureIndicator
     case (3, 2):
-      cell.textLabel?.text = "提交历史"
-      cell.detailTextLabel?.text = "\(AITextPolisher.shared.historyEntries.count) 条"
+      cell.textLabel?.text = "AI 历史 / 修正 / 词表"
+      let h = AITextPolisher.shared.historyEntries.count
+      let c = AITextPolisher.shared.correctionEntries.count
+      let t = AITextPolisher.shared.termEntries.count
+      cell.detailTextLabel?.text = "\(h) 条 · \(c) 对 · \(t) 词"
       cell.accessoryType = .disclosureIndicator
     case (4, 0):
       cell.textLabel?.text = "测试 GLM-ASR"
@@ -1718,7 +1888,7 @@ final class AIHistoryViewController: UITableViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "提交历史"
+    title = "AI 历史 / 修正 / 词表"
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       title: "清空", style: .plain, target: self, action: #selector(clearTapped))
   }
@@ -1728,31 +1898,44 @@ final class AIHistoryViewController: UITableViewController {
     tableView.reloadData()
   }
 
-  override func numberOfSections(in tv: UITableView) -> Int { 2 }
+  override func numberOfSections(in tv: UITableView) -> Int { 3 }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
-    if s == 0 { return max(AITextPolisher.shared.historyEntries.count, 1) }
-    return max(AITextPolisher.shared.correctionEntries.count, 1)
+    switch s {
+    case 0: return max(AITextPolisher.shared.historyEntries.count, 1)
+    case 1: return max(AITextPolisher.shared.correctionEntries.count, 1)
+    default: return max(AITextPolisher.shared.termEntries.count, 1)
+    }
   }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection s: Int) -> String? {
-    if s == 0 {
+    switch s {
+    case 0:
       let n = AITextPolisher.shared.historyEntries.count
       return n > 0 ? "提交记录（共 \(n) 条，新→旧）" : "提交记录"
+    case 1:
+      let n = AITextPolisher.shared.correctionEntries.count
+      return n > 0 ? "整句修正对（共 \(n) 对）" : "整句修正对"
+    default:
+      let n = AITextPolisher.shared.termEntries.count
+      return n > 0 ? "高频错读词表（共 \(n) 项，频次降序）" : "高频错读词表"
     }
-    let n = AITextPolisher.shared.correctionEntries.count
-    return n > 0 ? "修正对（共 \(n) 对，左=ASR 原文，右=你改后版本）" : "修正对"
   }
 
   override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
-    if s == 0 {
+    switch s {
+    case 0:
       return "每次在语音面板按提交时记一条；最多 30 条；作为上下文喂给 AI 整理。"
+    case 1:
+      return "若 ASR 出文本后你做了修改，提交时把这对存下来。AI 整理会优先按这里的修正习惯改。最多 30 对。"
+    default:
+      return "从每次修正自动抽出的词级映射（错→对），累加频次；polish 把它当作首要纠错表使用。左滑删除单条。"
     }
-    return "若 ASR 出文本后你做了修改，提交时把这对存下来。AI 整理会优先按这里的修正习惯改。最多 30 对。"
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-    if ip.section == 0 {
+    switch ip.section {
+    case 0:
       let entries = AITextPolisher.shared.historyEntries
       let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
       if entries.isEmpty {
@@ -1767,42 +1950,73 @@ final class AIHistoryViewController: UITableViewController {
         cell.selectionStyle = .none
       }
       return cell
-    }
-    let corrections = AITextPolisher.shared.correctionEntries
-    let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-    if corrections.isEmpty {
-      cell.textLabel?.text = "暂无（语音转出文本后改一下再提交就会出现）"
-      cell.textLabel?.textColor = .secondaryLabel
-      cell.textLabel?.font = .systemFont(ofSize: 14)
+    case 1:
+      let corrections = AITextPolisher.shared.correctionEntries
+      let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+      if corrections.isEmpty {
+        cell.textLabel?.text = "暂无（语音转出文本后改一下再提交就会出现）"
+        cell.textLabel?.textColor = .secondaryLabel
+        cell.textLabel?.font = .systemFont(ofSize: 14)
+        cell.selectionStyle = .none
+        return cell
+      }
+      let reversed = Array(corrections.reversed())
+      let pair = reversed[ip.row]
+      cell.textLabel?.text = pair.final
+      cell.textLabel?.numberOfLines = 0
+      cell.detailTextLabel?.text = "原: \(pair.asrRaw)"
+      cell.detailTextLabel?.numberOfLines = 0
+      cell.detailTextLabel?.textColor = .secondaryLabel
+      cell.selectionStyle = .none
+      return cell
+    default:
+      let terms = AITextPolisher.shared.termEntries
+      let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+      if terms.isEmpty {
+        cell.textLabel?.text = "暂无（修正几次后会自动累积）"
+        cell.textLabel?.textColor = .secondaryLabel
+        cell.textLabel?.font = .systemFont(ofSize: 14)
+        cell.selectionStyle = .none
+        return cell
+      }
+      let t = terms[ip.row]
+      cell.textLabel?.text = "「\(t.wrong)」  →  「\(t.correct)」"
+      cell.textLabel?.numberOfLines = 0
+      cell.detailTextLabel?.text = "\(t.count)"
+      cell.detailTextLabel?.textColor = .secondaryLabel
       cell.selectionStyle = .none
       return cell
     }
-    let reversed = Array(corrections.reversed())
-    let pair = reversed[ip.row]
-    cell.textLabel?.text = pair.final
-    cell.textLabel?.numberOfLines = 0
-    cell.detailTextLabel?.text = "原: \(pair.asrRaw)"
-    cell.detailTextLabel?.numberOfLines = 0
-    cell.detailTextLabel?.textColor = .secondaryLabel
-    cell.selectionStyle = .none
-    return cell
   }
 
   override func tableView(_ tv: UITableView, canEditRowAt ip: IndexPath) -> Bool {
-    if ip.section == 0 { return !AITextPolisher.shared.historyEntries.isEmpty }
-    return !AITextPolisher.shared.correctionEntries.isEmpty
+    switch ip.section {
+    case 0: return !AITextPolisher.shared.historyEntries.isEmpty
+    case 1: return !AITextPolisher.shared.correctionEntries.isEmpty
+    default: return !AITextPolisher.shared.termEntries.isEmpty
+    }
   }
 
   override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
     guard editingStyle == .delete else { return }
-    if ip.section == 0 {
-      let entries = AITextPolisher.shared.historyEntries
-      let realIndex = entries.count - 1 - ip.row
-      AITextPolisher.shared.deleteHistory(at: realIndex)
-    } else {
-      let corrections = AITextPolisher.shared.correctionEntries
-      let realIndex = corrections.count - 1 - ip.row
-      AITextPolisher.shared.deleteCorrection(at: realIndex)
+    switch ip.section {
+    case 0:
+      let reversed = Array(AITextPolisher.shared.historyEntries.reversed())
+      if reversed.indices.contains(ip.row) {
+        AITextPolisher.shared.deleteHistory(text: reversed[ip.row])
+      }
+    case 1:
+      let reversed = Array(AITextPolisher.shared.correctionEntries.reversed())
+      if reversed.indices.contains(ip.row) {
+        let p = reversed[ip.row]
+        AITextPolisher.shared.deleteCorrection(asrRaw: p.asrRaw, final: p.final)
+      }
+    default:
+      let terms = AITextPolisher.shared.termEntries
+      if terms.indices.contains(ip.row) {
+        let t = terms[ip.row]
+        AITextPolisher.shared.deleteTerm(wrong: t.wrong, correct: t.correct)
+      }
     }
     tv.reloadData()
   }
@@ -1810,6 +2024,7 @@ final class AIHistoryViewController: UITableViewController {
   @objc private func clearTapped() {
     let historyN = AITextPolisher.shared.historyEntries.count
     let correctionN = AITextPolisher.shared.correctionEntries.count
+    let termN = AITextPolisher.shared.termEntries.count
     let alert = UIAlertController(title: "清空哪一项？", message: nil, preferredStyle: .actionSheet)
     if historyN > 0 {
       alert.addAction(UIAlertAction(title: "清空提交记录 (\(historyN))", style: .destructive) { [weak self] _ in
@@ -1818,15 +2033,22 @@ final class AIHistoryViewController: UITableViewController {
       })
     }
     if correctionN > 0 {
-      alert.addAction(UIAlertAction(title: "清空修正对 (\(correctionN))", style: .destructive) { [weak self] _ in
+      alert.addAction(UIAlertAction(title: "清空整句修正对 (\(correctionN))", style: .destructive) { [weak self] _ in
         AITextPolisher.shared.clearCorrections()
         self?.tableView.reloadData()
       })
     }
-    if historyN > 0 && correctionN > 0 {
+    if termN > 0 {
+      alert.addAction(UIAlertAction(title: "清空错读词表 (\(termN))", style: .destructive) { [weak self] _ in
+        AITextPolisher.shared.clearTerms()
+        self?.tableView.reloadData()
+      })
+    }
+    if historyN + correctionN + termN > 0 {
       alert.addAction(UIAlertAction(title: "全部清空", style: .destructive) { [weak self] _ in
         AITextPolisher.shared.clearHistory()
         AITextPolisher.shared.clearCorrections()
+        AITextPolisher.shared.clearTerms()
         self?.tableView.reloadData()
       })
     }

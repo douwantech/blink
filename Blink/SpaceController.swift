@@ -2150,6 +2150,9 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
         }
         return '<a href="' + url + '">' + text + '</a>';
       });
+      // 3.5. markdown autolink <url> — escapeHTML 后变成 &lt;url&gt;，
+      //     先把尖括号包裹剥掉，避免 bare URL 把 &gt; 吞进 href（点完会变 %3E）
+      s = s.replace(/&lt;(https?:\/\/[^\s]+?)&gt;/gi, '$1');
       // 4. bare image URL — 必须在 bold/italic 之前处理，否则会被 ** 包成 plain 粗体
       //    URL char 类排除 * ，防止 **url** 把闭合 ** 吞进 URL
       s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)*]*)?)/gi,
