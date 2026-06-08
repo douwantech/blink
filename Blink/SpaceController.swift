@@ -1254,6 +1254,7 @@ extension SpaceController {
 
   fileprivate func _reloadTabBar() {
     var titles: [String] = []
+    var icons: [UIImage?] = []
     var unread: [Bool] = []
     var tags: [Int] = []
 
@@ -1304,6 +1305,13 @@ extension SpaceController {
       let mid = term.mcpParams?.machineId
       if let f = filterId, mid != f { continue }
       titles.append(title)
+      // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
+      var icon: UIImage? = nil
+      if let wid = term.mcpParams?.workDirId,
+         let img = BlinkWorkDirStore.shared.workDir(forId: wid)?.iconImage {
+        icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 22, height: 22))
+      }
+      icons.append(icon)
       unread.append(term.meta.hasUnread)
       tags.append(idx)
     }
@@ -1313,7 +1321,7 @@ extension SpaceController {
     } else {
       chipTitle = "全部"
     }
-    _tabBar.reload(titles: titles, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
+    _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
   }
 
   private func _focusOtherWindowAction() {

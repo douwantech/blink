@@ -703,10 +703,17 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
-    reload(titles: titles, unread: unread, tags: Array(0..<titles.count), filterTitle: nil, currentTag: currentIndex)
+    reload(titles: titles, icons: nil, unread: unread,
+           tags: Array(0..<titles.count), filterTitle: nil, currentTag: currentIndex)
   }
 
   @objc func reload(titles: [String], unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
+    reload(titles: titles, icons: nil, unread: unread, tags: tags,
+           filterTitle: filterTitle, currentTag: currentTag)
+  }
+
+  /// 主入口：可选传 icons 给每个 tab 加前置头像图
+  func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
     var newCfg = filterChipButton.configuration
@@ -717,7 +724,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
     for (i, title) in titles.enumerated() {
       let isUnread = i < unread.count && unread[i]
       let tag = i < tags.count ? tags[i] : i
-      let btn = makeTabButton(title: title, index: tag, isCurrent: tag == currentTag, hasUnread: isUnread)
+      let icon: UIImage? = (icons.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
+      let btn = makeTabButton(title: title, icon: icon, index: tag,
+                              isCurrent: tag == currentTag, hasUnread: isUnread)
       if tag == currentTag { visibleIndexOfCurrent = i }
       stack.addArrangedSubview(btn)
     }
@@ -740,10 +749,16 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidRequestMachineFilter()
   }
 
-  private func makeTabButton(title: String, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
+  private func makeTabButton(title: String, icon: UIImage?, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
     var cfg = UIButton.Configuration.plain()
     cfg.title = title
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 12, bottom: 4, trailing: hasUnread ? 18 : 12)
+    if let icon {
+      cfg.image = icon
+      cfg.imagePadding = 6
+      cfg.imagePlacement = .leading
+    }
+    let leadingInset: CGFloat = icon != nil ? 8 : 12
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: leadingInset, bottom: 4, trailing: hasUnread ? 18 : 12)
     cfg.baseForegroundColor = isCurrent ? .label : .secondaryLabel
     let btn = UIButton(configuration: cfg)
     btn.titleLabel?.font = .systemFont(ofSize: 13, weight: isCurrent ? .semibold : .regular)
@@ -792,11 +807,19 @@ final class BlinkWorkDir: Codable {
   let id: String
   var name: String
   var path: String
+  /// 选中头像的 PNG 字节（来自 DiceBear），离线可用
+  var iconImageData: Data?
 
-  init(id: String = UUID().uuidString, name: String = "", path: String) {
+  init(id: String = UUID().uuidString, name: String = "", path: String, iconImageData: Data? = nil) {
     self.id = id
     self.name = name
     self.path = path
+    self.iconImageData = iconImageData
+  }
+
+  var iconImage: UIImage? {
+    guard let d = iconImageData else { return nil }
+    return UIImage(data: d)
   }
 
   var displayName: String {
@@ -896,6 +919,12 @@ final class WorkDirListViewController: UITableViewController {
     cell.textLabel?.text = wd.displayName
     cell.detailTextLabel?.text = wd.path
     cell.detailTextLabel?.textColor = .secondaryLabel
+    if let img = wd.iconImage {
+      cell.imageView?.image = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 36, height: 36))
+    } else {
+      cell.imageView?.image = UIImage(systemName: "folder")
+      cell.imageView?.tintColor = .tertiaryLabel
+    }
     cell.accessoryType = .detailButton
     return cell
   }
@@ -989,8 +1018,23 @@ final class WorkDirFormViewController: UITableViewController, UITextFieldDelegat
   }
 
   override func numberOfSections(in tv: UITableView) -> Int { 1 }
-  override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int { 2 }
+  override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int { 3 }
   override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
+    if ip.row == 2 {
+      let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+      cell.textLabel?.text = "头像"
+      cell.textLabel?.font = .systemFont(ofSize: 16)
+      if let img = wd.iconImage {
+        cell.detailTextLabel?.text = "已选"
+        cell.imageView?.image = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 36, height: 36))
+      } else {
+        cell.detailTextLabel?.text = "未选"
+        cell.imageView?.image = UIImage(systemName: "person.crop.circle.dashed")
+        cell.imageView?.tintColor = .tertiaryLabel
+      }
+      cell.accessoryType = .disclosureIndicator
+      return cell
+    }
     let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
     cell.selectionStyle = .none
     let (label, field): (String, UITextField) = ip.row == 0 ? ("名称", nameField) : ("路径", pathField)
@@ -1011,6 +1055,17 @@ final class WorkDirFormViewController: UITableViewController, UITextFieldDelegat
       field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
     ])
     return cell
+  }
+
+  override func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
+    tv.deselectRow(at: ip, animated: true)
+    guard ip.row == 2 else { return }
+    let picker = AvatarPickerViewController()
+    picker.onPick = { [weak self] data in
+      self?.wd.iconImageData = data
+      self?.tableView.reloadRows(at: [ip], with: .none)
+    }
+    navigationController?.pushViewController(picker, animated: true)
   }
 
   func textFieldShouldReturn(_ tf: UITextField) -> Bool {
@@ -1401,4 +1456,217 @@ final class NewTabWorkDirPickerViewController: UITableViewController {
     }
     navigationController?.pushViewController(form, animated: true)
   }
+}
+
+// MARK: - 头像渲染辅助
+
+enum AvatarRenderer {
+  /// 把图片裁成圆角缩略图，方便 UITableViewCell.imageView 用
+  static func roundedThumbnail(from image: UIImage, size: CGSize, cornerRadius: CGFloat? = nil) -> UIImage {
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { _ in
+      let rect = CGRect(origin: .zero, size: size)
+      let r = cornerRadius ?? min(size.width, size.height) / 2  // 默认正圆
+      let path = UIBezierPath(roundedRect: rect, cornerRadius: r)
+      path.addClip()
+      image.draw(in: rect)
+    }
+  }
+}
+
+// MARK: - 头像选择器（DiceBear，公开 API）
+
+final class AvatarPickerViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+
+  /// 每个 style 提供这一组 seed，组合出 ~150 个头像
+  static let seeds: [String] = [
+    "aria","bear","cloud","dream","echo","flame","glow","halo","iris","jade",
+    "kite","lake","moon","nova","ocean","peach","quartz","river","star","tide",
+  ]
+  /// DiceBear 9.x 风格，每行 = (展示名, style id)
+  static let styles: [(title: String, id: String)] = [
+    ("人物（卡通）", "adventurer"),
+    ("人物（线条）", "lorelei"),
+    ("人物（圆润）", "micah"),
+    ("人物（Notion）", "notionists"),
+    ("人物（Memoji）", "personas"),
+    ("Avataaars", "avataaars"),
+    ("Big Smile", "big-smile"),
+    ("机器人", "bottts"),
+    ("Emoji", "fun-emoji"),
+    ("像素", "pixel-art"),
+  ]
+
+  var onPick: ((Data) -> Void)?
+  private let collectionView: UICollectionView
+
+  init() {
+    let layout = UICollectionViewFlowLayout()
+    layout.itemSize = CGSize(width: 68, height: 68)
+    layout.minimumLineSpacing = 12
+    layout.minimumInteritemSpacing = 12
+    layout.sectionInset = UIEdgeInsets(top: 12, left: 16, bottom: 20, right: 16)
+    layout.headerReferenceSize = CGSize(width: 0, height: 36)
+    self.collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+    super.init(nibName: nil, bundle: nil)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "选择头像"
+    view.backgroundColor = .systemBackground
+    collectionView.backgroundColor = .systemBackground
+    collectionView.dataSource = self
+    collectionView.delegate = self
+    collectionView.register(AvatarCell.self, forCellWithReuseIdentifier: "avatar")
+    collectionView.register(AvatarSectionHeader.self,
+                            forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader,
+                            withReuseIdentifier: "h")
+    collectionView.frame = view.bounds
+    collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    view.addSubview(collectionView)
+  }
+
+  func numberOfSections(in cv: UICollectionView) -> Int { Self.styles.count }
+
+  func collectionView(_ cv: UICollectionView, numberOfItemsInSection s: Int) -> Int {
+    Self.seeds.count
+  }
+
+  func collectionView(_ cv: UICollectionView, viewForSupplementaryElementOfKind kind: String, at ip: IndexPath) -> UICollectionReusableView {
+    let h = cv.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "h", for: ip) as! AvatarSectionHeader
+    h.titleLabel.text = Self.styles[ip.section].title
+    return h
+  }
+
+  func collectionView(_ cv: UICollectionView, cellForItemAt ip: IndexPath) -> UICollectionViewCell {
+    let cell = cv.dequeueReusableCell(withReuseIdentifier: "avatar", for: ip) as! AvatarCell
+    let url = Self.urlFor(style: Self.styles[ip.section].id, seed: Self.seeds[ip.item], size: 160)
+    cell.load(url: url)
+    return cell
+  }
+
+  func collectionView(_ cv: UICollectionView, didSelectItemAt ip: IndexPath) {
+    let url = Self.urlFor(style: Self.styles[ip.section].id, seed: Self.seeds[ip.item], size: 256)
+    DiceBearLoader.shared.fetch(url: url) { [weak self] data in
+      guard let self, let data else { return }
+      DispatchQueue.main.async {
+        self.onPick?(data)
+        self.navigationController?.popViewController(animated: true)
+      }
+    }
+  }
+
+  static func urlFor(style: String, seed: String, size: Int) -> URL {
+    var comps = URLComponents(string: "https://api.dicebear.com/9.x/\(style)/png")!
+    comps.queryItems = [
+      URLQueryItem(name: "seed", value: seed),
+      URLQueryItem(name: "size", value: String(size)),
+    ]
+    return comps.url!
+  }
+}
+
+/// 简单的 URL→Data 内存缓存 + 单飞合并
+final class DiceBearLoader {
+  static let shared = DiceBearLoader()
+  private let cache = NSCache<NSURL, NSData>()
+  private let queue = DispatchQueue(label: "dicebear.loader")
+  private var inflight: [NSURL: [(Data?) -> Void]] = [:]
+
+  init() { cache.countLimit = 300 }
+
+  func cached(url: URL) -> Data? {
+    cache.object(forKey: url as NSURL) as Data?
+  }
+
+  func fetch(url: URL, completion: @escaping (Data?) -> Void) {
+    if let d = cached(url: url) { completion(d); return }
+    queue.async {
+      if var arr = self.inflight[url as NSURL] {
+        arr.append(completion)
+        self.inflight[url as NSURL] = arr
+        return
+      }
+      self.inflight[url as NSURL] = [completion]
+      URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        guard let self else { return }
+        if let data { self.cache.setObject(data as NSData, forKey: url as NSURL) }
+        self.queue.async {
+          let callbacks = self.inflight.removeValue(forKey: url as NSURL) ?? []
+          for cb in callbacks { cb(data) }
+        }
+      }.resume()
+    }
+  }
+}
+
+final class AvatarCell: UICollectionViewCell {
+  private let iv = UIImageView()
+  private let spinner = UIActivityIndicatorView(style: .medium)
+  private var currentURL: URL?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    contentView.layer.cornerRadius = 12
+    contentView.backgroundColor = .secondarySystemBackground
+    contentView.clipsToBounds = true
+
+    iv.contentMode = .scaleAspectFit
+    iv.translatesAutoresizingMaskIntoConstraints = false
+    spinner.translatesAutoresizingMaskIntoConstraints = false
+    contentView.addSubview(iv)
+    contentView.addSubview(spinner)
+    NSLayoutConstraint.activate([
+      iv.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+      iv.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+      iv.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+      iv.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+      spinner.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+      spinner.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+    ])
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func prepareForReuse() {
+    super.prepareForReuse()
+    iv.image = nil
+    currentURL = nil
+    spinner.stopAnimating()
+  }
+
+  func load(url: URL) {
+    currentURL = url
+    if let d = DiceBearLoader.shared.cached(url: url) {
+      iv.image = UIImage(data: d)
+      spinner.stopAnimating()
+      return
+    }
+    spinner.startAnimating()
+    DiceBearLoader.shared.fetch(url: url) { [weak self] data in
+      DispatchQueue.main.async {
+        guard let self, self.currentURL == url else { return }  // cell 已复用
+        self.spinner.stopAnimating()
+        if let data { self.iv.image = UIImage(data: data) }
+      }
+    }
+  }
+}
+
+final class AvatarSectionHeader: UICollectionReusableView {
+  let titleLabel = UILabel()
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+    titleLabel.textColor = .secondaryLabel
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(titleLabel)
+    NSLayoutConstraint.activate([
+      titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16),
+      titleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+    ])
+  }
+  required init?(coder: NSCoder) { fatalError() }
 }
