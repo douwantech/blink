@@ -1024,6 +1024,15 @@ extension SpaceController {
   }
 
   @objc func dumpTranscriptForCurrentShell() {
+    // 先刷新页面（重 attach tmux），等 view 切换完再真正 dump，让 hterm 拿到最新一帧
+    _reloadCurrentShell { [weak self] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        self?._doDumpTranscript()
+      }
+    }
+  }
+
+  private func _doDumpTranscript() {
     guard let oldTerm = currentTerm(),
           let p = oldTerm.mcpParams,
           let machineId = p.machineId, !machineId.isEmpty,
@@ -1217,11 +1226,15 @@ extension SpaceController {
   }
 
   @objc func reloadCurrentShell() {
+    _reloadCurrentShell(completion: nil)
+  }
+
+  private func _reloadCurrentShell(completion: (() -> Void)?) {
     guard let oldTerm = currentTerm(),
           let oldKey = _currentKey,
           let oldIdx = _viewportsKeys.firstIndex(of: oldKey),
           let p = oldTerm.mcpParams,
-          let machineId = p.machineId, !machineId.isEmpty else { return }
+          let machineId = p.machineId, !machineId.isEmpty else { completion?(); return }
 
     let params = MCPParams()
     params.machineId = machineId
@@ -1249,6 +1262,7 @@ extension SpaceController {
       self._sortTabsByMachineAndDir()
       self._displayHUD()
       self._attachInputToCurrentTerm()
+      completion?()
     }
   }
 
