@@ -139,24 +139,37 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"")
 
+    // cc --resume <name> 找不到 customTitle 时会弹 cc 自己的 resume 选择器（光标停在那等输入），
+    // 不会以非零退出，所以 || cc 兜不住。改成先在 jsonl 里查 customTitle 拿 UUID 直接 resume，
+    // 找不到就起新会话并 send-keys 注入 /title <name> 自动命名（这样下次开能直接 resume）。
+    // 用 find 替代 glob 避开 zsh nomatch；不用 exec 以兼容 cc 是 alias 的情形。
+    let resumeOrNew: (String) -> String = { cdTarget in
+      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="$(basename "$PWD")-\#(session)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="blink-cc-$$"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
+    }
+
     if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
       let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
+      let inner = resumeOrNew(pathArg)
       let remoteScript = """
       \(detectSock)
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-      exec tmux new-session -A -s \(session) $SHELL -ic 'cd \(pathArg) && cc --resume \(session)'
+      exec tmux new-session -A -s \(session) $SHELL -ic '\(inner)'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
-      return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d > /tmp/.blink-tmux-$$.sh && exec bash /tmp/.blink-tmux-$$.sh\""
+        // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析
+      return "ssh -t \(m.user)@\(host) -- \"echo \(encoded) | base64 -d > /tmp/.blink-tmux-$$.sh && exec bash /tmp/.blink-tmux-$$.sh\""
     }
 
     guard let workPath, !workPath.isEmpty else {
       return "ssh -t \(m.user)@\(host)"
     }
-    let escapedPath = workPath.replacingOccurrences(of: "\"", with: "\\\"")
-    let remoteCmd = "$SHELL -ic 'cd \(escapedPath) && cc --resume \(session)'"
-    return "ssh -t \(m.user)@\(host) \"\(remoteCmd)\""
+    // 非 tmux 分支也要用 base64 包裹，否则 Blink 本地 shell 会把 $HOME / $(pwd) 等先在
+    // iOS 沙箱里展开掉再传给远端，导致 inner 里全是空值或 iOS 路径。
+    let inner = resumeOrNew(workPath)
+    let remoteScript = "exec $SHELL -ic '\(inner)'"
+    let encoded = Data(remoteScript.utf8).base64EncodedString()
+    return "ssh -t \(m.user)@\(host) -- \"echo \(encoded) | base64 -d > /tmp/.blink-cc-$$.sh && exec bash /tmp/.blink-cc-$$.sh\""
   }
 
   @objc static var useTmuxMode: Bool {
