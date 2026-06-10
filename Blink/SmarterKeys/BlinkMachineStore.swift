@@ -137,7 +137,7 @@ enum HostReachability {
     let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
 
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
-    session = session.replacingOccurrences(of: "\"", with: "\\\"")
+    session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
 
     // cc --resume <name> 找不到 customTitle 时会弹 cc 自己的 resume 选择器（光标停在那等输入），
     // 不会以非零退出，所以 || cc 兜不住。改成先在 jsonl 里查 customTitle 拿 UUID 直接 resume，
