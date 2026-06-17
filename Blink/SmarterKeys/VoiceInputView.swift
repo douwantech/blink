@@ -807,6 +807,9 @@ final class VoiceInputView: UIInputView {
       let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { return }
       AITextPolisher.shared.recordHistory(trimmed)
+      if mode == .favorites {
+        AITextPolisher.shared.incrementFavoriteUseCount(trimmed)
+      }
       self.delegate?.voiceInput(self, didCommitText: trimmed)
       self.setText("")
       self.delegate?.voiceInputDidRequestDismiss(self)
@@ -1336,6 +1339,7 @@ final class AITextPolisher {
   private let kDebounce = "VoiceInputView.aiDebounce"
   private let kHistory = "VoiceInputView.aiHistory"
   private let kFavorites = "VoiceInputView.aiFavorites"
+  private let kFavoriteCounts = "VoiceInputView.aiFavoriteCounts"  // 每条收藏的使用次数
   private let kCorrections = "VoiceInputView.aiCorrections"
   private let kTerms = "VoiceInputView.aiTerms"  // 词级错→对映射，{wrong: {correct: count}}
   private let maxHistory = 30
@@ -1462,19 +1466,39 @@ final class AITextPolisher {
 
   // MARK: - 收藏（手动收藏的输入，去重，无上限）
 
-  var favoriteEntries: [String] {
+  /// 原始存储顺序（按加入时间，旧→新）
+  private var rawFavorites: [String] {
     UserDefaults.standard.stringArray(forKey: kFavorites) ?? []
+  }
+
+  private var favoriteCounts: [String: Int] {
+    UserDefaults.standard.dictionary(forKey: kFavoriteCounts) as? [String: Int] ?? [:]
+  }
+
+  /// 排好序的收藏：count 倒序；count 相同时，按加入顺序新→旧
+  var favoriteEntries: [String] {
+    let counts = favoriteCounts
+    let raw = rawFavorites
+    // 用 enumerated 拿原始下标，下标越大越新；同 count 时下标大的优先
+    return raw.enumerated()
+      .sorted { lhs, rhs in
+        let lc = counts[lhs.element] ?? 0
+        let rc = counts[rhs.element] ?? 0
+        if lc != rc { return lc > rc }
+        return lhs.offset > rhs.offset
+      }
+      .map { $0.element }
   }
 
   func isFavorited(_ text: String) -> Bool {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return !t.isEmpty && favoriteEntries.contains(t)
+    return !t.isEmpty && rawFavorites.contains(t)
   }
 
   func addFavorite(_ text: String) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !t.isEmpty else { return }
-    var arr = favoriteEntries
+    var arr = rawFavorites
     guard !arr.contains(t) else { return }
     arr.append(t)
     UserDefaults.standard.set(arr, forKey: kFavorites)
@@ -1482,9 +1506,12 @@ final class AITextPolisher {
 
   func removeFavorite(_ text: String) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    var arr = favoriteEntries
+    var arr = rawFavorites
     arr.removeAll { $0 == t }
     UserDefaults.standard.set(arr, forKey: kFavorites)
+    var counts = favoriteCounts
+    counts.removeValue(forKey: t)
+    UserDefaults.standard.set(counts, forKey: kFavoriteCounts)
   }
 
   func toggleFavorite(_ text: String) {
@@ -1493,6 +1520,16 @@ final class AITextPolisher {
 
   func clearFavorites() {
     UserDefaults.standard.removeObject(forKey: kFavorites)
+    UserDefaults.standard.removeObject(forKey: kFavoriteCounts)
+  }
+
+  /// 标记一条收藏被使用过一次，用于排序。
+  func incrementFavoriteUseCount(_ text: String) {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !t.isEmpty, rawFavorites.contains(t) else { return }
+    var counts = favoriteCounts
+    counts[t, default: 0] += 1
+    UserDefaults.standard.set(counts, forKey: kFavoriteCounts)
   }
 
   func recordCorrection(asrRaw: String, final: String) {
@@ -1688,7 +1725,7 @@ final class AITextPolisher {
       "model": model,
       "messages": [
         ["role": "system", "content": fullSystem],
-        ["role": "user", "content": "本次识别结果：\n\(text)"],
+        ["role": "user", "content": text],
       ],
       "temperature": 0.3,
       "stream": false,
@@ -2203,11 +2240,11 @@ final class VoiceHistoryPickerViewController: UITableViewController {
   let mode: Mode
   var onPick: ((String) -> Void)?
 
-  // 最新的排在最上面
+  // history 按最新排上面；favorites 已经在 polisher 里按使用次数排过，直接用
   private var entries: [String] {
     switch mode {
     case .history: return AITextPolisher.shared.historyEntries.reversed()
-    case .favorites: return AITextPolisher.shared.favoriteEntries.reversed()
+    case .favorites: return AITextPolisher.shared.favoriteEntries
     }
   }
 

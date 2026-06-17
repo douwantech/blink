@@ -144,7 +144,11 @@ enum HostReachability {
     // 找不到就起新会话并 send-keys 注入 /title <name> 自动命名（这样下次开能直接 resume）。
     // 用 find 替代 glob 避开 zsh nomatch；不用 exec 以兼容 cc 是 alias 的情形。
     let resumeOrNew: (String) -> String = { cdTarget in
-      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="$(basename "$PWD")-\#(session)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="blink-cc-$$"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
+      // 注意：inner 被外层 `$SHELL -ic '...'` 单引号包裹，所以这里不能再用单引号——
+      // 用 `tr A-Z a-z` 替代 `tr '[:upper:]' '[:lower:]'`，避免破坏外层单引号造成 $TITLE 残缺。
+      // TITLE = <basename(PWD)>-<session>，但如果 session 已经以 basename- 开头或就是 basename，
+      // 不要再 prepend basename，避免 "jack-jack-talkai" 这种重复前缀。
+      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; B=$(basename "$PWD" | tr A-Z a-z); ST="\#(session)"; case "$ST" in "$B"|"$B"-*) TITLE="$ST" ;; *) TITLE="$B-$ST" ;; esac; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="blink-cc-$$"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
     }
 
     if useTmux {
@@ -192,7 +196,17 @@ enum HostReachability {
     let cwdEncoded = workPath
       .replacingOccurrences(of: "/", with: "-")
       .replacingOccurrences(of: ".", with: "-")
-    let name = baseName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
+    // cc 写入 jsonl 的 customTitle 跟 sshCommand 里 /rename 注入的 TITLE 保持一致：
+    // 默认 "<basename(workPath)>-<session>"；若 session 已以 basename- 开头或就是 basename，则不再 prepend，
+    // 避免 jack-jack-talkai 这种重复前缀。
+    let session = baseName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "").lowercased()
+    let dirBasename = (workPath as NSString).lastPathComponent.lowercased()
+    let name: String
+    if session == dirBasename || session.hasPrefix("\(dirBasename)-") {
+      name = session
+    } else {
+      name = "\(dirBasename)-\(session)"
+    }
 
     let remoteScript = """
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
@@ -204,18 +218,17 @@ enum HostReachability {
         printf '%d\\t%s\\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
       done | sort -rn | head -1 | cut -f2-
     }
-    F=$( (ls "$DIR"/*.jsonl 2>/dev/null) | xargs -I{} grep -lE '"customTitle":"\(name)"' "{}" 2>/dev/null | pick_latest_by_mtime)
+    # cc 把 jsonl 写到 ~/.claude/projects/<启动时 cwd 编码>/ 下，启动时 cwd 由 sshCommand cd 决定。
+    # 当前正在 append 的会话 jsonl 一定是该目录下 mtime 最新的——直接选它，不依赖 customTitle 匹配
+    # （customTitle 行可能因为 /rename 还没生效而暂时缺失，或被别的同名旧 jsonl 干扰）。
+    F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
     if [ -z "$F" ]; then
-      # Fallback 1: 全局 customTitle 匹配
-      F=$(grep -rlE '"customTitle":"\(name)"' "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
-    fi
-    if [ -z "$F" ]; then
-      # Fallback 2: 同前缀目录里最近修改的 jsonl（cc 实际 cwd 比配的 workDir 深时）
+      # Fallback: 同前缀目录（cc 实际 cwd 比配的 workDir 深一层时）
       F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
     fi
     if [ -z "$F" ]; then
-      # Fallback 3: 配的 DIR 本身有 jsonl 时取最近修改
-      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+      # 最后兜底：全局 customTitle 匹配
+      F=$(grep -rlE '"customTitle":"\(name)"' "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
     fi
     if [ -z "$F" ]; then
       HINT=$(ls "$PROJ" 2>/dev/null | head -20 | tr '\\n' ' ')

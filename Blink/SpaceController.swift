@@ -2323,8 +2323,25 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       const enc = btn.getAttribute('data-content') || '';
       let text = '';
       try { text = decodeURIComponent(escape(atob(enc))); } catch (e) { text = atob(enc); }
+      // 多重 fallback：1) native bridge（专属 webView），2) navigator.clipboard，3) textarea+execCommand
+      let copied = false;
       if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.copy) {
-        window.webkit.messageHandlers.copy.postMessage(text);
+        try { window.webkit.messageHandlers.copy.postMessage(text); copied = true; } catch (e) {}
+      }
+      if (!copied && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+        copied = true;
+      }
+      if (!copied) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus(); ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        } catch (e) {}
       }
       const orig = btn.textContent;
       btn.classList.add('copied');
