@@ -218,17 +218,29 @@ enum HostReachability {
         printf '%d\\t%s\\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
       done | sort -rn | head -1 | cut -f2-
     }
-    # cc 把 jsonl 写到 ~/.claude/projects/<启动时 cwd 编码>/ 下，启动时 cwd 由 sshCommand cd 决定。
-    # 当前正在 append 的会话 jsonl 一定是该目录下 mtime 最新的——直接选它，不依赖 customTitle 匹配
-    # （customTitle 行可能因为 /rename 还没生效而暂时缺失，或被别的同名旧 jsonl 干扰）。
-    F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+    # 多 tab 共用同一 workDir 时（比如 Jack:talkai / Jack:printer 都在 /Users/apple/Codes/Jack），
+    # 所有 cc session 的 jsonl 都堆在同一个项目目录下，单纯 "mtime 最新" 会拉到别 tab 刚活跃过的 session。
+    # 所以以 customTitle 精确匹配为主：sshCommand 在新建 cc 时会自动 /rename <TITLE>，cc 把 TITLE 写入 jsonl。
+    TITLE='\(name)'
+    # Step 1: 同目录 customTitle 精确匹配（取 mtime 最新，防同 TITLE 多份残留）
+    F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    # Step 2: 同前缀目录（cc 实际 cwd 比配的 workDir 深一层）
     if [ -z "$F" ]; then
-      # Fallback: 同前缀目录（cc 实际 cwd 比配的 workDir 深一层时）
-      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
+      F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
+    # Step 3: 全局兜底（cc 启动时 cwd 跟 workDir 不一致）
+    if [ -z "$F" ]; then
+      F=$(grep -rlF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+    fi
+    # Step 4: customTitle 还没写入（cc 刚建、/rename 没生效）才退回同目录 mtime 最新
+    WARN=""
+    if [ -z "$F" ]; then
+      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同目录 mtime 最新 jsonl（可能是别 tab 的 session）"
     fi
     if [ -z "$F" ]; then
-      # 最后兜底：全局 customTitle 匹配
-      F=$(grep -rlE '"customTitle":"\(name)"' "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
+      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同前缀目录 mtime 最新 jsonl"
     fi
     if [ -z "$F" ]; then
       HINT=$(ls "$PROJ" 2>/dev/null | head -20 | tr '\\n' ' ')
@@ -239,7 +251,7 @@ enum HostReachability {
       echo READY
       exit 1
     fi
-    BODY=$(echo "=== $F ==="; jq -s -r '
+    BODY=$( { [ -n "$WARN" ] && echo "$WARN"; echo "=== $F ==="; } ; jq -s -r '
       [.[]
         | select(.type=="user" or .type=="assistant")
         | . as $d
