@@ -395,6 +395,8 @@
 		D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229A230D279B0010AC04 /* VoiceInputView.swift */; };
 		D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */; };
 		D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */; };
+		D2A52297230D279B0010BC01 /* BlinkAssistantChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */; };
+		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
 		D2A54CB129801062009D79FE /* BuildAccountModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A54CB029801062009D79FE /* BuildAccountModel.swift */; };
 		D2A6398928CFA0B90066FD18 /* SwiftCBOR in Frameworks */ = {isa = PBXBuildFile; productRef = D2A6398828CFA0B90066FD18 /* SwiftCBOR */; };
 		D2A80979270713D200CD0FAF /* FeatureFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A80978270713D200CD0FAF /* FeatureFlags.swift */; };
@@ -1158,6 +1160,8 @@
 		D2A5229A230D279B0010AC04 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
 		D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkImageViewerController.swift; sourceTree = "<group>"; };
 		D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkMachineStore.swift; sourceTree = "<group>"; };
+		D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkAssistantChat.swift; sourceTree = "<group>"; };
+		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
 		D2A54CB029801062009D79FE /* BuildAccountModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildAccountModel.swift; sourceTree = "<group>"; };
 		D2A80978270713D200CD0FAF /* FeatureFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureFlags.swift; sourceTree = "<group>"; };
 		D2AB611D23AB5ACD00BE6585 /* UIApplication+Version.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "UIApplication+Version.m"; sourceTree = "<group>"; };
@@ -2200,6 +2204,8 @@
 				D2A5229A230D279B0010AC04 /* VoiceInputView.swift */,
 				D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */,
 				D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */,
+				D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */,
+				D2A52297230D279B0010CC02 /* CloudConfigSync.swift */,
 				D2B1F8DC23265A0600634D67 /* CommandsHUDView.swift */,
 				D2B1F8DE23265A4700634D67 /* CommandControl.swift */,
 			);
@@ -3562,6 +3568,8 @@
 				D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */,
 				D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */,
 				D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */,
+				D2A52297230D279B0010BC01 /* BlinkAssistantChat.swift in Sources */,
+				D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */,
 				D2B1DEB52A669342001C6D3B /* 1620Migration.swift in Sources */,
 				D23D258823438B15002850CA /* UIColor.swift in Sources */,
 				D2AD8E7627A2BAFA00DED28D /* Purchases.swift in Sources */,
