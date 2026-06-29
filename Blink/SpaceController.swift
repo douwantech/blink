@@ -467,6 +467,7 @@ class SpaceController: UIViewController {
       _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     }
     _sortTabsByMachineAndDir()
+    _ensureAssistantTabFirst()
         
     self.view.addSubview(_bottomTapAreaView)
 
@@ -1058,7 +1059,7 @@ extension SpaceController {
         }
         webView.evaluateJavaScript("typeof term_setClipboardWrite === 'function' ? (term_setClipboardWrite(true), 'enabled') : 'no function'") { _, _ in
           self._pollPasteboardForTranscript(scratchKey: scratchKey, oldKey: oldKey,
-                                            deadline: Date(timeIntervalSinceNow: 5))
+                                            deadline: Date(timeIntervalSinceNow: 15))
         }
       }
     }
@@ -1291,6 +1292,22 @@ extension SpaceController {
       let term: TermController = SessionRegistry.shared[key]
       let title: String
       if let p = term.mcpParams {
+        // 助手 tab：标题就显示「助手」，不拼 sessionPart
+        if p.workDirId == BlinkWorkDirStore.assistantWorkDirId {
+          term.meta.tabTitle = "助手"
+          title = "助手"
+          let mid = term.mcpParams?.machineId
+          if let f = filterId, mid != f { continue }
+          titles.append(title)
+          var icon: UIImage? = nil
+          if let img = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)?.iconImage {
+            icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 22, height: 22))
+          }
+          icons.append(icon)
+          unread.append(term.meta.hasUnread)
+          tags.append(idx)
+          continue
+        }
         let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
         let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name : ""
         var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
@@ -1756,6 +1773,13 @@ extension SpaceController {
     let workDirOrder = Dictionary(uniqueKeysWithValues:
       BlinkWorkDirStore.shared.workDirs.enumerated().map { ($0.element.id, $0.offset) })
 
+    // 助手 workDir 永远排在每个机器组的最前面
+    let assistantWdId = BlinkWorkDirStore.assistantWorkDirId
+    func dkey(_ wd: String?) -> Int {
+      if wd == assistantWdId { return -1 }
+      return wd.flatMap { workDirOrder[$0] } ?? Int.max
+    }
+
     let indexed = _viewportsKeys.enumerated().map { (offset: $0.offset, key: $0.element) }
     let sorted = indexed.sorted { a, b in
       let ta: TermController = SessionRegistry.shared[a.key]
@@ -1763,8 +1787,8 @@ extension SpaceController {
       let mka = ta.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
       let mkb = tb.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
       if mka != mkb { return mka < mkb }
-      let dka = ta.mcpParams?.workDirId.flatMap { workDirOrder[$0] } ?? Int.max
-      let dkb = tb.mcpParams?.workDirId.flatMap { workDirOrder[$0] } ?? Int.max
+      let dka = dkey(ta.mcpParams?.workDirId)
+      let dkb = dkey(tb.mcpParams?.workDirId)
       if dka != dkb { return dka < dkb }
       return a.offset < b.offset  // 同组内保持原序
     }.map { $0.key }
@@ -1912,6 +1936,62 @@ extension SpaceController: BlinkTabBarDelegate {
     present(nav, animated: true)
   }
 
+  public func tabBarDidRequestAssistantChat() {
+    // 顶栏 sparkles 入口：打开气泡 chat UI（独立 modal，不是终端 tab）
+    let chat = BlinkAssistantChatViewController()
+    let nav = UINavigationController(rootViewController: chat)
+    nav.modalPresentationStyle = .fullScreen
+    present(nav, animated: true)
+  }
+
+  public func tabBarDidRequestAssistant() {
+    // 旧入口保留兼容：跟 _ensureAssistantTabFirst 一样的逻辑
+    _ensureAssistantTabFirst(switchTo: true)
+  }
+
+  /// 启动时调；保证助手终端 tab 一定存在且排在 _viewportsKeys[0]
+  /// - 若已存在：移动到 index 0
+  /// - 若不存在：创建并 insert 到 index 0
+  /// - switchTo=true 时切到这个 tab
+  fileprivate func _ensureAssistantTabFirst(switchTo: Bool = false) {
+    guard let machineId = BlinkMachineStore.shared.currentMachine?.id else { return }
+    _ = BlinkWorkDirStore.shared.ensureAssistantWorkDir()
+    let session = BlinkWorkDirStore.assistantTmuxSession
+    let workDirId = BlinkWorkDirStore.assistantWorkDirId
+
+    if let curIdx = _viewportsKeys.firstIndex(where: { key in
+      let term: TermController = SessionRegistry.shared[key]
+      let p = term.mcpParams
+      return p?.machineId == machineId && p?.tmuxSession == session
+    }) {
+      if curIdx != 0 {
+        let key = _viewportsKeys.remove(at: curIdx)
+        _viewportsKeys.insert(key, at: 0)
+      }
+      if switchTo { tabBarDidSelect(index: 0) }
+      return
+    }
+
+    // 不存在 → 创建并放到 index 0
+    let params = MCPParams()
+    params.machineId = machineId
+    params.workDirId = workDirId
+    params.tmuxSession = session
+    let payload = MCPSessionPayload(params: params)
+    let term = TermController(sceneRole: sceneRole, sessionPayload: payload)
+    term.delegate = self
+    term.bgColor = view.backgroundColor ?? .black
+    SessionRegistry.shared.track(session: term)
+    _viewportsKeys.insert(term.meta.key, at: 0)
+    if switchTo {
+      _currentKey = term.meta.key
+      _viewportsController.setViewControllers([term], direction: .forward, animated: true) { [weak self] _ in
+        self?._displayHUD()
+        self?._attachInputToCurrentTerm()
+      }
+    }
+  }
+
   public func tabBarDidRequestClose(index: Int) {
     guard _viewportsKeys.indices.contains(index) else { return }
     let key = _viewportsKeys[index]
@@ -1961,6 +2041,9 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     self.bodyText = text
     let config = WKWebViewConfiguration()
     config.userContentController = WKUserContentController()
+    // 允许 <video> 内联播放（否则 mp4 在 iPhone 上不显示）
+    config.allowsInlineMediaPlayback = true
+    config.mediaTypesRequiringUserActionForPlayback = []
     self.webView = WKWebView(frame: .zero, configuration: config)
     super.init(nibName: nil, bundle: nil)
     webView.configuration.userContentController.add(self, name: "copy")
@@ -2041,7 +2124,8 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     hr { border: none; border-top: 1px solid #d2d2d7; margin: 1.5em 0; }
     p { margin: 0.5em 0; }
     img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
-    video.md-video { max-width: 100%; border-radius: 8px; margin: 0.5em 0; display: block; background: #000; }
+    video.md-video { width: 100%; max-width: 100%; min-height: 180px; border-radius: 8px; margin: 0.5em 0 0; display: block; background: #000; }
+    a.md-video-link { display: inline-block; font-size: 13px; color: #007aff; margin: 0.2em 0 0.7em; text-decoration: none; }
     #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
                 background: rgba(0,0,0,0.94); display: none; align-items: center;
                 justify-content: center; z-index: 9999; touch-action: none; }
@@ -2168,7 +2252,8 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           return '<img class="md-img" src="' + url + '" alt="' + text + '">';
         }
         if (/\.(?:mp4|mov|m4v|webm|ogv)(?:\?.*)?$/i.test(url)) {
-          return '<video class="md-video" src="' + url + '" controls preload="metadata"></video>';
+          return '<video class="md-video" src="' + url + '" controls playsinline webkit-playsinline preload="metadata"></video>' +
+                 '<a class="md-video-link" href="' + url + '">▶ ' + text + '</a>';
         }
         return '<a href="' + url + '">' + text + '</a>';
       });
@@ -2181,7 +2266,8 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
         (m) => '<img class="md-img" src="' + m + '">');
       // 4.5. bare video URL → 内联 <video controls>
       s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:mp4|mov|m4v|webm|ogv)(?:\?[^\s<"\)*]*)?)/gi,
-        (m) => '<video class="md-video" src="' + m + '" controls preload="metadata"></video>');
+        (m) => '<video class="md-video" src="' + m + '" controls playsinline webkit-playsinline preload="metadata"></video>' +
+               '<a class="md-video-link" href="' + m + '">▶ 打开视频</a>');
       // 5. bare URL → <a> ，已有的 <a>/<img>/<video>/<code> 先 stash 起来避免重复包裹
       var placeholders = [];
       function stash(m) { placeholders.push(m); return '\x00P' + (placeholders.length - 1) + '\x00'; }

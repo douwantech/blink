@@ -464,9 +464,52 @@ function term_getCurrentSelection() {
 
   const rect = `{{${r.x}, ${r.y}},{${r.width},${r.height}}}`;
 
+  let base = selection.baseNode ? selection.baseNode.textContent : '';
+  let offset = selection.baseOffset;
+
+  // 跨行 URL 修正：长 URL 在行宽处会被截断到下一行，有两种成因——
+  //  1) hterm 软换行（续行节点带 line-overflow 属性）；
+  //  2) 上游程序（如 cc/Claude Code 用 Ink/wrap-ansi）把 URL 从中间硬折，插了真实 \n（在 / 处断）。
+  // 两种情况 baseNode.textContent 都只拿到光标那一个可视行，URL 结尾（如 .../index.html）丢失，
+  // 点击在浏览器里就打开被截断的地址。判定「边界贴死」= 上一行非空白结尾 且 下一行非空白开头
+  // （或带 line-overflow），把这些行拼成一条逻辑串，再换算绝对 offset 给 NSDataDetector 识别。
+  const isTight = (cur, next) => {
+    if (!next || next.nodeName !== 'X-ROW') return false;
+    if (cur.nodeName === 'X-ROW' && cur.hasAttribute('line-overflow')) return true;
+    const a = cur.textContent, b = next.textContent;
+    if (!a.length || !b.length) return false;
+    return !/\s$/.test(a) && !/^\s/.test(b);
+  };
+  let xrow = selection.baseNode;
+  while (xrow && xrow.nodeName !== 'X-ROW') xrow = xrow.parentNode;
+  if (xrow) {
+    const MAX_ROWS = 12;  // 防极端情况（整屏无空白）无限拼接
+    // 回退到逻辑串起点
+    let start = xrow, back = 0;
+    while (back < MAX_ROWS && start.previousSibling && isTight(start.previousSibling, start)) {
+      start = start.previousSibling; back++;
+    }
+    // 行内绝对偏移 = 起点行到当前行之间所有文本长度 + 当前行内光标前文本长度
+    let before = 0;
+    for (let n = start; n && n !== xrow; n = n.nextSibling) {
+      before += n.textContent.length;
+    }
+    const within = document.createRange();
+    within.selectNodeContents(xrow);
+    try { within.setEnd(selection.baseNode, selection.baseOffset); } catch (e) {}
+    offset = before + within.toString().length;
+    // 向后拼接贴死的行
+    let full = '', n = start, fwd = 0;
+    while (n) {
+      full += n.textContent;
+      if (fwd++ < MAX_ROWS && isTight(n, n.nextSibling)) n = n.nextSibling; else break;
+    }
+    base = full;
+  }
+
   return {
-    base: selection.baseNode.textContent,
-    offset: selection.baseOffset,
+    base,
+    offset,
     text: selection.toString() || "",
     rect,
   };

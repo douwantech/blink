@@ -139,17 +139,37 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
 
+    // 算 TITLE = customTitle，跟 transcriptCommand 保持一致：
+    // 默认 <basename(workPath)>-<session>；session 已是 basename 或 basename- 开头则不再 prepend。
+    // workPath 缺省时 basename 退化到 machine.user。
+    let dirBasename: String
+    if let wp = workPath, !wp.isEmpty {
+      dirBasename = (wp as NSString).lastPathComponent.lowercased()
+    } else {
+      dirBasename = m.user.lowercased()
+    }
+    let title: String
+    if session == dirBasename || session.hasPrefix("\(dirBasename)-") {
+      title = session
+    } else {
+      title = "\(dirBasename)-\(session)"
+    }
+    // 每个 tab 的外层 tmux session 名固定 cc-<TITLE>，跟 jsonl customTitle 一一对应——
+    // 助手 cc 可以 `tmux send-keys -t cc-<TITLE>` 直接往任意 tab 注入。
+    let outerSession = "cc-\(title)"
+
     // cc --resume <name> 找不到 customTitle 时会弹 cc 自己的 resume 选择器（光标停在那等输入），
     // 不会以非零退出，所以 || cc 兜不住。改成先在 jsonl 里查 customTitle 拿 UUID 直接 resume，
     // 找不到就起新会话并 send-keys 注入 /title <name> 自动命名（这样下次开能直接 resume）。
     // 用 find 替代 glob 避开 zsh nomatch；不用 exec 以兼容 cc 是 alias 的情形。
     let resumeOrNew: (String) -> String = { cdTarget in
-      // 注意：inner 被外层 `$SHELL -ic '...'` 单引号包裹，所以这里不能再用单引号——
-      // 用 `tr A-Z a-z` 替代 `tr '[:upper:]' '[:lower:]'`，避免破坏外层单引号造成 $TITLE 残缺。
-      // TITLE = <basename(PWD)>-<session>，但如果 session 已经以 basename- 开头或就是 basename，
-      // 不要再 prepend basename，避免 "jack-jack-talkai" 这种重复前缀。
-      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; B=$(basename "$PWD" | tr A-Z a-z); ST="\#(session)"; case "$ST" in "$B"|"$B"-*) TITLE="$ST" ;; *) TITLE="$B-$ST" ;; esac; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="blink-cc-$$"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
+      // inner 被外层 `$SHELL -ic '...'` 单引号包裹，里面只能用双引号；TITLE 由 Swift 端预先算好。
+      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
     }
+
+    // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
+    // 升级时如果旧 session 还在跑（里面有 cc），rename 一下以保活，避免用户丢上下文。
+    let migrate = #"if [ "\#(session)" != "\#(outerSession)" ] && tmux has-session -t "\#(session)" 2>/dev/null && ! tmux has-session -t "\#(outerSession)" 2>/dev/null; then tmux rename-session -t "\#(session)" "\#(outerSession)" 2>/dev/null; fi"#
 
     if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
@@ -158,7 +178,8 @@ enum HostReachability {
       let remoteScript = """
       \(detectSock)
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-      exec tmux new-session -A -s \(session) $SHELL -ic '\(inner)'
+      \(migrate)
+      exec tmux new-session -A -s \(outerSession) $SHELL -ic '\(inner)'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
         // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析
@@ -177,7 +198,11 @@ enum HostReachability {
   }
 
   @objc static var useTmuxMode: Bool {
-    get { UserDefaults.standard.bool(forKey: "BlinkUseTmuxMode") }
+    // 没设过 key 时默认 true：重新打开标签默认走 tmux 模式（外层 cc-<TITLE> session，可被助手 send-keys 注入）
+    get {
+      if UserDefaults.standard.object(forKey: "BlinkUseTmuxMode") == nil { return true }
+      return UserDefaults.standard.bool(forKey: "BlinkUseTmuxMode")
+    }
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
@@ -631,6 +656,9 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestClose(index: Int)
   func tabBarDidRequestSettings()
   func tabBarDidRequestMachineFilter()
+  func tabBarDidRequestAssistant()
+  /// 顶栏 sparkles 入口 → 打开气泡 chat UI（与 kAssistantTabTag 的终端 tab 互补）
+  func tabBarDidRequestAssistantChat()
 }
 
 final class HorizontalOnlyScrollView: UIScrollView {
@@ -653,6 +681,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
   private let filterChipButton = UIButton(type: .system)
+  private let assistantButton = UIButton(type: .system)
 
   @objc init() {
     super.init(frame: .zero)
@@ -673,6 +702,12 @@ final class HorizontalOnlyScrollView: UIScrollView {
     addButton.translatesAutoresizingMaskIntoConstraints = false
     addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
 
+    // 顶栏的 sparkles 按钮：打开气泡 chat UI（跟新加的"助手 tab"=终端 互补）
+    assistantButton.setImage(UIImage(systemName: "sparkles"), for: .normal)
+    assistantButton.tintColor = .systemPurple
+    assistantButton.translatesAutoresizingMaskIntoConstraints = false
+    assistantButton.addTarget(self, action: #selector(assistantTapped), for: .touchUpInside)
+
     var chipCfg = UIButton.Configuration.plain()
     chipCfg.title = "全部"
     chipCfg.image = UIImage(systemName: "line.3.horizontal.decrease.circle")
@@ -690,6 +725,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     topRow.translatesAutoresizingMaskIntoConstraints = false
     topRow.addSubview(settingsButton)
     topRow.addSubview(filterChipButton)
+    topRow.addSubview(assistantButton)
     topRow.addSubview(addButton)
 
     scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -721,6 +757,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
       addButton.widthAnchor.constraint(equalToConstant: 32),
       addButton.heightAnchor.constraint(equalToConstant: 28),
 
+      assistantButton.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -2),
+      assistantButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+      assistantButton.widthAnchor.constraint(equalToConstant: 32),
+      assistantButton.heightAnchor.constraint(equalToConstant: 28),
+
       topRow.heightAnchor.constraint(equalToConstant: 28),
 
       rowsStack.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -738,6 +779,10 @@ final class HorizontalOnlyScrollView: UIScrollView {
 
   @objc private func settingsTapped() {
     delegate?.tabBarDidRequestSettings()
+  }
+
+  @objc private func assistantTapped() {
+    delegate?.tabBarDidRequestAssistantChat()
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
@@ -868,12 +913,23 @@ final class BlinkWorkDir: Codable {
 @objc final class BlinkWorkDirStore: NSObject {
   @objc static let shared = BlinkWorkDirStore()
   private let kKey = "BlinkWorkDirStore.workDirs"
+  @objc static let assistantWorkDirId = "seed-blink-assistant"
+  @objc static let assistantTmuxSession = "blink-assistant"
+
+  /// 助手 workDir 是 seed 之一；如果用户老版本升级后 store 里没有，自动补一条
+  func ensureAssistantWorkDir() -> BlinkWorkDir {
+    if let existing = workDir(forId: Self.assistantWorkDirId) { return existing }
+    let wd = BlinkWorkDir(id: Self.assistantWorkDirId, name: "助手", path: "/Users/apple/blink-assistant")
+    addOrUpdate(wd)
+    return wd
+  }
 
   private override init() {
     super.init()
     let seeds: [BlinkWorkDir] = [
       BlinkWorkDir(id: "seed-blink", name: "blink", path: "/Users/apple/Codes/IPHONE/blink"),
       BlinkWorkDir(id: "seed-talkai", name: "talkAI", path: "/Users/apple/Codes/IPHONE/talkai"),
+      BlinkWorkDir(id: Self.assistantWorkDirId, name: "助手", path: "/Users/apple/blink-assistant"),
     ]
     if let data = try? JSONEncoder().encode(seeds) {
       UserDefaults.standard.register(defaults: [kKey: data])
@@ -1006,6 +1062,83 @@ final class WorkDirListViewController: UITableViewController {
   @objc private func addTapped() {
     let form = WorkDirFormViewController(editing: nil)
     navigationController?.pushViewController(form, animated: true)
+  }
+}
+
+final class PeopleListViewController: UITableViewController {
+  init() { super.init(style: .insetGrouped) }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "员工头像"
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .add, target: self, action: #selector(addTapped))
+  }
+
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    tableView.reloadData()
+  }
+
+  override func numberOfSections(in tv: UITableView) -> Int { 1 }
+  override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
+    BlinkPeopleStore.shared.knownNames.count
+  }
+  override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
+    "助手在 PATROL 巡检报告里就用这里的头像。点员工换一张 DiceBear。"
+  }
+  override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
+    let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+    let name = BlinkPeopleStore.shared.knownNames[ip.row]
+    cell.textLabel?.text = name
+    if let img = BlinkPeopleStore.shared.iconSync(for: name, size: 72) {
+      cell.imageView?.image = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 36, height: 36))
+    } else {
+      cell.imageView?.image = UIImage(systemName: "person.crop.circle.dashed")
+      cell.imageView?.tintColor = .tertiaryLabel
+      // 异步取一次默认 DiceBear，下次进来就有了
+      BlinkPeopleStore.shared.iconAsync(for: name, size: 72) { [weak tv] _ in
+        tv?.reloadData()
+      }
+    }
+    cell.accessoryType = .disclosureIndicator
+    return cell
+  }
+
+  override func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
+    tv.deselectRow(at: ip, animated: true)
+    let name = BlinkPeopleStore.shared.knownNames[ip.row]
+    let picker = AvatarPickerViewController()
+    picker.title = "选 \(name) 的头像"
+    picker.onPick = { [weak self] data in
+      BlinkPeopleStore.shared.setIcon(data, for: name, style: AvatarPickerViewController.lastPickedStyle)
+      self?.tableView.reloadData()
+    }
+    navigationController?.pushViewController(picker, animated: true)
+  }
+
+  override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
+    if editingStyle == .delete {
+      let name = BlinkPeopleStore.shared.knownNames[ip.row]
+      BlinkPeopleStore.shared.removeName(name)
+      tv.deleteRows(at: [ip], with: .automatic)
+    }
+  }
+
+  @objc private func addTapped() {
+    let alert = UIAlertController(title: "添加员工", message: "输入员工名（小写英文，如 dave）", preferredStyle: .alert)
+    alert.addTextField { tf in
+      tf.placeholder = "name"
+      tf.autocapitalizationType = .none
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
+      let name = alert.textFields?.first?.text ?? ""
+      BlinkPeopleStore.shared.addName(name)
+      self?.tableView.reloadData()
+    })
+    present(alert, animated: true)
   }
 }
 
@@ -1228,6 +1361,31 @@ final class NewTabViewController: UITableViewController {
     title = customTitle
     navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(closeTapped))
     navigationItem.rightBarButtonItem = UIBarButtonItem(title: actionTitle, style: .done, target: self, action: #selector(createTapped))
+    _installVersionFooter()
+  }
+
+  /// 表格底部显示版本号 + 构建时间，方便确认装的是不是最新包
+  private func _installVersionFooter() {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    // 可执行文件 mtime 每次重新构建都会变，作为「构建时间」指纹
+    var buildTime = ""
+    if let exe = Bundle.main.executableURL,
+       let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path),
+       let date = attrs[.modificationDate] as? Date {
+      let f = DateFormatter()
+      f.dateFormat = "MM-dd HH:mm"
+      buildTime = " · 构建 " + f.string(from: date)
+    }
+    let label = UILabel()
+    label.text = "Blink v\(short) (\(build))\(buildTime)"
+    label.font = .systemFont(ofSize: 12)
+    label.textColor = .tertiaryLabel
+    label.textAlignment = .center
+    label.numberOfLines = 0
+    label.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 44)
+    tableView.tableFooterView = label
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -1536,6 +1694,8 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
   ]
 
   var onPick: ((Data) -> Void)?
+  /// 最近一次选过的 style id，调用方需要时可读（人物头像 store 用它）
+  static var lastPickedStyle: String = "adventurer"
   private let collectionView: UICollectionView
 
   init() {
@@ -1586,9 +1746,11 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
   }
 
   func collectionView(_ cv: UICollectionView, didSelectItemAt ip: IndexPath) {
-    let url = Self.urlFor(style: Self.styles[ip.section].id, seed: Self.seeds[ip.item], size: 256)
+    let style = Self.styles[ip.section].id
+    let url = Self.urlFor(style: style, seed: Self.seeds[ip.item], size: 256)
     DiceBearLoader.shared.fetch(url: url) { [weak self] data in
       guard let self, let data else { return }
+      Self.lastPickedStyle = style
       DispatchQueue.main.async {
         self.onPick?(data)
         self.navigationController?.popViewController(animated: true)
@@ -1603,6 +1765,101 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
       URLQueryItem(name: "size", value: String(size)),
     ]
     return comps.url!
+  }
+}
+
+/// 员工头像 store：员工名 → PNG 数据。没自定义就 fallback 到 DiceBear 自动生成（seed = 员工名）
+@objc final class BlinkPeopleStore: NSObject {
+  @objc static let shared = BlinkPeopleStore()
+  private let kKey = "BlinkPeopleStore.avatars"   // [name: Data] base64-string
+  private let kStyleKey = "BlinkPeopleStore.styles"  // [name: styleId]
+  private let kNamesKey = "BlinkPeopleStore.names"   // [String]，员工名单（手动维护）
+  static let defaultStyle = "thumbs"
+  static let defaultNames = ["tom", "candy", "bella", "apple", "jack", "dave", "adam", "alice"]
+
+  private override init() {
+    super.init()
+    if let data = try? JSONEncoder().encode(Self.defaultNames) {
+      UserDefaults.standard.register(defaults: [kNamesKey: data])
+    }
+  }
+
+  var knownNames: [String] {
+    get {
+      guard let data = UserDefaults.standard.data(forKey: kNamesKey),
+            let arr = try? JSONDecoder().decode([String].self, from: data) else {
+        return Self.defaultNames
+      }
+      return arr
+    }
+    set {
+      if let data = try? JSONEncoder().encode(newValue) {
+        UserDefaults.standard.set(data, forKey: kNamesKey)
+      }
+    }
+  }
+
+  func addName(_ name: String) {
+    let n = name.trimmingCharacters(in: .whitespaces).lowercased()
+    guard !n.isEmpty else { return }
+    var arr = knownNames
+    if !arr.contains(n) { arr.append(n); knownNames = arr }
+  }
+
+  func removeName(_ name: String) {
+    let n = name.lowercased()
+    knownNames = knownNames.filter { $0 != n }
+    var m = avatarMap; m.removeValue(forKey: n); avatarMap = m
+    var sm = styleMap; sm.removeValue(forKey: n); styleMap = sm
+  }
+
+  private var avatarMap: [String: Data] {
+    get {
+      guard let dict = UserDefaults.standard.dictionary(forKey: kKey) as? [String: String] else { return [:] }
+      var out: [String: Data] = [:]
+      for (k, v) in dict { if let d = Data(base64Encoded: v) { out[k] = d } }
+      return out
+    }
+    set {
+      let encoded = newValue.mapValues { $0.base64EncodedString() }
+      UserDefaults.standard.set(encoded, forKey: kKey)
+    }
+  }
+
+  private var styleMap: [String: String] {
+    get { (UserDefaults.standard.dictionary(forKey: kStyleKey) as? [String: String]) ?? [:] }
+    set { UserDefaults.standard.set(newValue, forKey: kStyleKey) }
+  }
+
+  func customIcon(for name: String) -> UIImage? {
+    guard let d = avatarMap[name.lowercased()], let img = UIImage(data: d) else { return nil }
+    return img
+  }
+
+  func setIcon(_ data: Data, for name: String, style: String? = nil) {
+    var m = avatarMap; m[name.lowercased()] = data; avatarMap = m
+    if let s = style { var sm = styleMap; sm[name.lowercased()] = s; styleMap = sm }
+  }
+
+  func style(for name: String) -> String {
+    styleMap[name.lowercased()] ?? Self.defaultStyle
+  }
+
+  /// 取头像（同步 fast-path）：先看自定义；没有就看 DiceBear 缓存；都没有返 nil（让调用方异步 fetch）
+  func iconSync(for name: String, size: Int = 96) -> UIImage? {
+    if let img = customIcon(for: name) { return img }
+    let url = AvatarPickerViewController.urlFor(style: style(for: name), seed: name.lowercased(), size: size)
+    if let d = DiceBearLoader.shared.cached(url: url), let img = UIImage(data: d) { return img }
+    return nil
+  }
+
+  /// 异步取头像：custom > 缓存 > 远端 fetch
+  func iconAsync(for name: String, size: Int = 96, completion: @escaping (UIImage?) -> Void) {
+    if let img = iconSync(for: name, size: size) { completion(img); return }
+    let url = AvatarPickerViewController.urlFor(style: style(for: name), seed: name.lowercased(), size: size)
+    DiceBearLoader.shared.fetch(url: url) { data in
+      DispatchQueue.main.async { completion(data.flatMap { UIImage(data: $0) }) }
+    }
   }
 }
 

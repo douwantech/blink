@@ -303,6 +303,9 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
 
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
+    // 允许 HTML5 <video> 内联渲染/播放（iPhone 默认 false，会导致历史页里的视频整个不显示）
+    config.allowsInlineMediaPlayback = true
+    config.mediaTypesRequiringUserActionForPlayback = []
     webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = self
     webView.allowsBackForwardNavigationGestures = true

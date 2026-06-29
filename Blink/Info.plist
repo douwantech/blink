@@ -127,6 +127,8 @@
 	<string>用于将你的语音转换为文字命令</string>
 	<key>NSSiriUsageDescription</key>
 	<string>storing commands</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于选取截图上传，并在上传成功后删除原图</string>
 	<key>NSUbiquitousContainers</key>
 	<dict>
 		<key>iCloud.sh.blink.blinkshell</key>

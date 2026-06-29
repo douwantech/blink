@@ -3,6 +3,7 @@ import Speech
 import AVFoundation
 import AudioToolbox
 import PhotosUI
+import Photos
 
 enum VoiceInputArrow {
   case up, down, left, right
@@ -905,7 +906,8 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func imagePickTapped() {
-    var cfg = PHPickerConfiguration()
+    // 传 photoLibrary: .shared() 才能让 result 带回 assetIdentifier，上传成功后据此删原图
+    var cfg = PHPickerConfiguration(photoLibrary: .shared())
     cfg.filter = .images
     cfg.selectionLimit = 0  // 0 = 无上限
     let picker = PHPickerViewController(configuration: cfg)
@@ -1220,18 +1222,18 @@ private extension Array {
 extension VoiceInputView: PHPickerViewControllerDelegate {
   func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
     picker.dismiss(animated: true)
-    let providers = results
-      .map { $0.itemProvider }
-      .filter { $0.canLoadObject(ofClass: UIImage.self) }
-    guard !providers.isEmpty else { return }
-    let total = providers.count
+    // 保留 provider 与 assetIdentifier 的对齐：上传成功的那几张才删原图
+    let items = results.filter { $0.itemProvider.canLoadObject(ofClass: UIImage.self) }
+    guard !items.isEmpty else { return }
+    let total = items.count
+    let assetIds: [String?] = items.map { $0.assetIdentifier }
     showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
 
     var urls: [String?] = Array(repeating: nil, count: total)  // 保序
     let group = DispatchGroup()
-    for (idx, provider) in providers.enumerated() {
+    for (idx, item) in items.enumerated() {
       group.enter()
-      provider.loadObject(ofClass: UIImage.self) { obj, _ in
+      item.itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
         guard let image = obj as? UIImage,
               let data = image.jpegData(compressionQuality: 0.75) else {
           DispatchQueue.main.async { group.leave() }
@@ -1258,6 +1260,34 @@ extension VoiceInputView: PHPickerViewControllerDelegate {
         self.showToast(msg)
       } else {
         self.showToast("\(good.count)/\(total) 已复制，失败 \(total - good.count) 张", isError: true)
+      }
+      // 上传成功的截图从相册删掉（iOS 会自带一个系统删除确认，用户点确认才真删）
+      let idsToDelete = (0..<total).compactMap { urls[$0] != nil ? assetIds[$0] : nil }
+      self.deletePickedAssets(localIdentifiers: idsToDelete)
+    }
+  }
+
+  /// 删除刚上传成功的原图。iOS 对 deleteAssets 会强制弹一个系统确认，删不了静默，所以这里不用再自己确认。
+  private func deletePickedAssets(localIdentifiers ids: [String]) {
+    guard !ids.isEmpty else { return }
+    let assets = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+    guard assets.count > 0 else { return }
+    let proceed = {
+      PHPhotoLibrary.shared().performChanges {
+        PHAssetChangeRequest.deleteAssets(assets)
+      } completionHandler: { success, _ in
+        DispatchQueue.main.async {
+          if success { self.showToast(assets.count == 1 ? "已从相册删除原图" : "已从相册删除 \(assets.count) 张原图") }
+        }
+      }
+    }
+    // 删除需要 readWrite 授权；没授权先请求一次（带回 .limited 也能删用户选中的这几张）
+    let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    if status == .authorized || status == .limited {
+      proceed()
+    } else if status == .notDetermined {
+      PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
+        if newStatus == .authorized || newStatus == .limited { proceed() }
       }
     }
   }
@@ -1788,12 +1818,36 @@ final class VoiceSettingsViewController: UITableViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "语音输入设置"
+    title = "设置"
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done,
       target: self,
       action: #selector(closeTapped)
     )
+    _installVersionFooter()
+  }
+
+  /// 设置页最底部显示版本号 + 构建时间，方便确认装的是不是最新包
+  private func _installVersionFooter() {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    var buildTime = ""
+    if let exe = Bundle.main.executableURL,
+       let attrs = try? FileManager.default.attributesOfItem(atPath: exe.path),
+       let date = attrs[.modificationDate] as? Date {
+      let f = DateFormatter()
+      f.dateFormat = "MM-dd HH:mm"
+      buildTime = " · 构建 " + f.string(from: date)
+    }
+    let label = UILabel()
+    label.text = "Blink v\(short) (\(build))\(buildTime)"
+    label.font = .systemFont(ofSize: 12)
+    label.textColor = .tertiaryLabel
+    label.textAlignment = .center
+    label.numberOfLines = 0
+    label.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 50)
+    tableView.tableFooterView = label
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -1815,7 +1869,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 1, 1, 3, 2][section]
+    [1, 2, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1830,6 +1884,10 @@ final class VoiceSettingsViewController: UITableViewController {
     case (1, 0):
       cell.textLabel?.text = "工作目录"
       cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
+      cell.accessoryType = .disclosureIndicator
+    case (1, 1):
+      cell.textLabel?.text = "员工头像"
+      cell.detailTextLabel?.text = "\(BlinkPeopleStore.shared.knownNames.count) 人"
       cell.accessoryType = .disclosureIndicator
     case (2, 0):
       cell.textLabel?.text = "识别语言"
@@ -1875,6 +1933,8 @@ final class VoiceSettingsViewController: UITableViewController {
     case (1, 0):
       let list = WorkDirListViewController()
       navigationController?.pushViewController(list, animated: true)
+    case (1, 1):
+      navigationController?.pushViewController(PeopleListViewController(), animated: true)
     case (2, 0):
       let picker = LanguagePickerViewController()
       picker.voiceView = voiceView
