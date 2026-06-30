@@ -2104,6 +2104,40 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
                 -webkit-tap-highlight-color: transparent; }
     .copy-btn:active { background: rgba(0,122,255,0.15); }
     .copy-btn.copied { color: #34c759; border-color: #34c759; }
+    .head-btns { display: flex; gap: 6px; flex: 0 0 auto; }
+    .sel-btn { font: 12px -apple-system, sans-serif; color: #8e8e93; background: transparent;
+               border: 1px solid #c7c7cc; border-radius: 5px; padding: 3px 10px; cursor: pointer;
+               -webkit-tap-highlight-color: transparent; }
+    .sel-btn:active { background: rgba(142,142,147,0.15); }
+    /* 选择复制整页 */
+    #selpage { position: fixed; inset: 0; background: #f7f7f8; z-index: 10000;
+               display: none; flex-direction: column; }
+    #selpage.show { display: flex; }
+    .sel-top { display: flex; align-items: center; gap: 8px; background: #fff; flex: 0 0 auto;
+               padding: max(12px, env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid #d2d2d7; }
+    .sel-title { font-weight: 600; font-size: 16px; flex: 1 1 auto; }
+    .sel-top button { font: 14px -apple-system, sans-serif; color: #007aff; background: transparent;
+                      border: none; padding: 6px 4px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .sel-list { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 12px 12px; }
+    .sel-card { position: relative; border: 1.5px solid #d2d2d7; border-radius: 10px; background: #fff;
+                margin: 8px 0; padding: 12px 12px 12px 42px; cursor: pointer; overflow-x: auto; }
+    .sel-card.on { border-color: #007aff; background: rgba(0,122,255,0.06); }
+    .sel-card .chk { position: absolute; left: 12px; top: 12px; width: 20px; height: 20px;
+                     border-radius: 11px; border: 1.5px solid #c7c7cc; box-sizing: border-box; }
+    .sel-card.on .chk { background: #007aff; border-color: #007aff; }
+    .sel-card.on .chk::after { content: '✓'; color: #fff; font-size: 13px; line-height: 20px;
+                               display: block; text-align: center; }
+    .sel-card > .msg-body, .sel-card > p:first-of-type, .sel-card > pre:first-child { margin-top: 0; }
+    .sel-bottom { flex: 0 0 auto; background: #fff; border-top: 1px solid #d2d2d7;
+                  padding: 10px 14px max(12px, env(safe-area-inset-bottom)); }
+    .sel-copy { width: 100%; font: 600 16px -apple-system, sans-serif; color: #fff; background: #007aff;
+                border: none; border-radius: 10px; padding: 12px; cursor: pointer;
+                -webkit-tap-highlight-color: transparent; }
+    .sel-copy:disabled { background: #c7c7cc; }
+    .sel-toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
+                 background: rgba(0,0,0,0.82); color: #fff; padding: 8px 16px; border-radius: 18px;
+                 font-size: 14px; opacity: 0; transition: opacity 0.2s; z-index: 10001; pointer-events: none; }
+    .sel-toast.show { opacity: 1; }
     .msg-body { margin-bottom: 0.5em; }
     .meta { color: #86868b; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
     pre { background: #f5f5f7; padding: 12px; border-radius: 8px; overflow-x: auto;
@@ -2143,6 +2177,13 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       .msg-head { border-bottom-color: #38383a; }
       .copy-btn { color: #0a84ff; border-color: #0a84ff; }
       .copy-btn.copied { color: #30d158; border-color: #30d158; }
+      .sel-btn { color: #98989d; border-color: #48484a; }
+      #selpage { background: #000; }
+      .sel-top, .sel-bottom { background: #1c1c1e; border-color: #38383a; }
+      .sel-card { background: #1c1c1e; border-color: #38383a; }
+      .sel-card.on { border-color: #0a84ff; background: rgba(10,132,255,0.12); }
+      .sel-card .chk { border-color: #48484a; }
+      .sel-card.on .chk { background: #0a84ff; border-color: #0a84ff; }
       pre, code { background: #1c1c1e; }
       th, td { border-color: #38383a; }
       th { background: #1c1c1e; }
@@ -2158,6 +2199,19 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     <body>
     <div id="content">…</div>
     <div id="lightbox"><img id="lightbox-img" src=""><button id="lightbox-close">✕</button></div>
+    <div id="selpage">
+      <div class="sel-top">
+        <button onclick="closeSelect()">关闭</button>
+        <span class="sel-title">选择要复制的块</span>
+        <button onclick="selAll(true)">全选</button>
+        <button onclick="selAll(false)">清空</button>
+      </div>
+      <div class="sel-list" id="sel-list"></div>
+      <div class="sel-bottom">
+        <button class="sel-copy" id="sel-copy" onclick="copySelected()">复制所选</button>
+      </div>
+    </div>
+    <div class="sel-toast" id="sel-toast"></div>
     <script>
     (function() {
       var lb = document.getElementById('lightbox');
@@ -2317,7 +2371,10 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           html += '<div class="msg-block">' +
             '<div class="msg-head">' +
               '<span class="role ' + roleClass + '">' + roleLabel + '</span>' +
-              '<button class="copy-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="copyMsg(this)">复制</button>' +
+              '<span class="head-btns">' +
+                '<button class="sel-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="openSelect(this)">选择复制</button>' +
+                '<button class="copy-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="copyMsg(this)">复制</button>' +
+              '</span>' +
             '</div>' +
             '<div class="msg-body">' + bodyHtml + '</div>' +
           '</div>';
@@ -2405,11 +2462,8 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       }
       return html;
     }
-    function copyMsg(btn) {
-      const enc = btn.getAttribute('data-content') || '';
-      let text = '';
-      try { text = decodeURIComponent(escape(atob(enc))); } catch (e) { text = atob(enc); }
-      // 多重 fallback：1) native bridge（专属 webView），2) navigator.clipboard，3) textarea+execCommand
+    // 多重 fallback：1) native bridge（专属 webView），2) navigator.clipboard，3) textarea+execCommand
+    function doCopy(text) {
       let copied = false;
       if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.copy) {
         try { window.webkit.messageHandlers.copy.postMessage(text); copied = true; } catch (e) {}
@@ -2429,10 +2483,104 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           document.body.removeChild(ta);
         } catch (e) {}
       }
+    }
+    function decodeContent(btn) {
+      const enc = btn.getAttribute('data-content') || '';
+      try { return decodeURIComponent(escape(atob(enc))); } catch (e) { return atob(enc); }
+    }
+    function copyMsg(btn) {
+      doCopy(decodeContent(btn));
       const orig = btn.textContent;
       btn.classList.add('copied');
       btn.textContent = '✓ 已复制';
       setTimeout(() => { btn.classList.remove('copied'); btn.textContent = orig; }, 1500);
+    }
+    // 把一条消息正文切成可勾选的块：代码块/表格/列表/引用/标题各算一块，连续非空行算一段
+    function splitBlocks(text) {
+      const lines = text.split('\n');
+      const blocks = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === '') { i++; continue; }
+        if (/^```/.test(line)) {
+          const start = i; i++;
+          while (i < lines.length && !/^```/.test(lines[i])) i++;
+          if (i < lines.length) i++;
+          blocks.push(lines.slice(start, i).join('\n')); continue;
+        }
+        if (/^#{1,6}\s+/.test(line)) { blocks.push(line); i++; continue; }
+        if (/^\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s\-:|]+\|\s*$/.test(lines[i+1])) {
+          const start = i; i += 2;
+          while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) i++;
+          blocks.push(lines.slice(start, i).join('\n')); continue;
+        }
+        if (/^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+          const start = i;
+          while (i < lines.length && (/^\s*[-*]\s+/.test(lines[i]) || /^\s*\d+\.\s+/.test(lines[i]))) i++;
+          blocks.push(lines.slice(start, i).join('\n')); continue;
+        }
+        if (/^>\s+/.test(line)) {
+          const start = i;
+          while (i < lines.length && /^>\s+/.test(lines[i])) i++;
+          blocks.push(lines.slice(start, i).join('\n')); continue;
+        }
+        const start = i; i++;
+        while (i < lines.length && lines[i].trim() !== '' &&
+               !/^(```|=== |#{1,6}\s|\s*[-*]\s|\s*\d+\.\s|>\s|\|.*\|\s*$)/.test(lines[i])) i++;
+        blocks.push(lines.slice(start, i).join('\n'));
+      }
+      return blocks;
+    }
+    var selBlocks = [], selChosen = [];
+    function updateSelCount() {
+      const n = selChosen.filter(Boolean).length;
+      const btn = document.getElementById('sel-copy');
+      btn.textContent = n ? ('复制所选 (' + n + ')') : '复制所选';
+      btn.disabled = n === 0;
+    }
+    function renderSelList() {
+      const list = document.getElementById('sel-list');
+      list.innerHTML = '';
+      selBlocks.forEach((raw, idx) => {
+        const card = document.createElement('div');
+        card.className = 'sel-card' + (selChosen[idx] ? ' on' : '');
+        card.innerHTML = '<span class="chk"></span>' + renderBlocks(raw);
+        card.addEventListener('click', function(e) {
+          if (e.target.tagName === 'A' || (e.target.tagName === 'IMG' && e.target.classList.contains('md-img'))) return;
+          selChosen[idx] = !selChosen[idx];
+          card.classList.toggle('on', selChosen[idx]);
+          updateSelCount();
+        });
+        list.appendChild(card);
+      });
+      updateSelCount();
+    }
+    function openSelect(btn) {
+      selBlocks = splitBlocks(decodeContent(btn));
+      selChosen = selBlocks.map(() => true);
+      renderSelList();
+      document.getElementById('sel-list').scrollTop = 0;
+      document.getElementById('selpage').classList.add('show');
+    }
+    function closeSelect() { document.getElementById('selpage').classList.remove('show'); }
+    function selAll(v) {
+      selChosen = selBlocks.map(() => v);
+      Array.from(document.querySelectorAll('#sel-list .sel-card')).forEach(c => c.classList.toggle('on', v));
+      updateSelCount();
+    }
+    function showSelToast(msg) {
+      const t = document.getElementById('sel-toast');
+      t.textContent = msg; t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1400);
+    }
+    function copySelected() {
+      const parts = [];
+      selBlocks.forEach((raw, i) => { if (selChosen[i]) parts.push(raw); });
+      if (!parts.length) return;
+      doCopy(parts.join('\n\n'));
+      showSelToast('已复制 ' + parts.length + ' 块');
+      setTimeout(closeSelect, 450);
     }
     document.getElementById('content').innerHTML = renderBlocks(decodeB64("\#(payloadB64)"));
     function scrollToBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
