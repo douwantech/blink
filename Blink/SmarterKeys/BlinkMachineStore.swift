@@ -1693,6 +1693,15 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
     ("像素", "pixel-art"),
   ]
 
+  /// 选择头像列表用 Alohe 免费头像包（A 风格：Memoji / 立体卡通），CDN 直链
+  static let aloheSections: [(title: String, prefix: String, count: Int)] = [
+    ("Memoji", "memo", 35),
+    ("立体卡通", "vibrent", 27),
+  ]
+  static func aloheURL(prefix: String, index: Int) -> URL {
+    URL(string: "https://cdn.jsdelivr.net/gh/alohe/avatars/png/\(prefix)_\(index).png")!
+  }
+
   var onPick: ((Data) -> Void)?
   /// 最近一次选过的 style id，调用方需要时可读（人物头像 store 用它）
   static var lastPickedStyle: String = "adventurer"
@@ -1726,31 +1735,29 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
     view.addSubview(collectionView)
   }
 
-  func numberOfSections(in cv: UICollectionView) -> Int { Self.styles.count }
+  func numberOfSections(in cv: UICollectionView) -> Int { Self.aloheSections.count }
 
   func collectionView(_ cv: UICollectionView, numberOfItemsInSection s: Int) -> Int {
-    Self.seeds.count
+    Self.aloheSections[s].count
   }
 
   func collectionView(_ cv: UICollectionView, viewForSupplementaryElementOfKind kind: String, at ip: IndexPath) -> UICollectionReusableView {
     let h = cv.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "h", for: ip) as! AvatarSectionHeader
-    h.titleLabel.text = Self.styles[ip.section].title
+    h.titleLabel.text = Self.aloheSections[ip.section].title
     return h
   }
 
   func collectionView(_ cv: UICollectionView, cellForItemAt ip: IndexPath) -> UICollectionViewCell {
     let cell = cv.dequeueReusableCell(withReuseIdentifier: "avatar", for: ip) as! AvatarCell
-    let url = Self.urlFor(style: Self.styles[ip.section].id, seed: Self.seeds[ip.item], size: 160)
+    let url = Self.aloheURL(prefix: Self.aloheSections[ip.section].prefix, index: ip.item + 1)
     cell.load(url: url)
     return cell
   }
 
   func collectionView(_ cv: UICollectionView, didSelectItemAt ip: IndexPath) {
-    let style = Self.styles[ip.section].id
-    let url = Self.urlFor(style: style, seed: Self.seeds[ip.item], size: 256)
+    let url = Self.aloheURL(prefix: Self.aloheSections[ip.section].prefix, index: ip.item + 1)
     DiceBearLoader.shared.fetch(url: url) { [weak self] data in
       guard let self, let data else { return }
-      Self.lastPickedStyle = style
       DispatchQueue.main.async {
         self.onPick?(data)
         self.navigationController?.popViewController(animated: true)
