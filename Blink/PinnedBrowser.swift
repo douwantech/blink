@@ -225,6 +225,16 @@ final class FloatingDockBar: UIView {
     addSubview(micButton)
   }
 
+  /// 录音中：mic 钮换成停止图标 + 变红；停止后还原。
+  func setMicRecording(_ recording: Bool) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+    let name = recording ? "stop.fill" : "mic.fill"
+    micButton.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
+    UIView.animate(withDuration: 0.15) {
+      self.micButton.backgroundColor = recording ? .systemRed : .systemTeal
+    }
+  }
+
   private func _configCircle(_ b: UIButton, icon: String, color: UIColor) {
     let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
     b.setImage(UIImage(systemName: icon, withConfiguration: cfg), for: .normal)

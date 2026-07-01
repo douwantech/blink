@@ -107,6 +107,9 @@ final class VoiceInputView: UIInputView {
     NotificationCenter.default.addObserver(
       self, selector: #selector(autoRecordRequested),
       name: Self.startRecordingNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(stopRecordingRequested),
+      name: Self.stopRecordingNotification, object: nil)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -636,6 +639,15 @@ final class VoiceInputView: UIInputView {
   /// 谁想触发就置 true + 发通知；已在窗口上的实例立刻录，还没上窗口的等 didMoveToWindow 再录。
   static var wantsAutoRecord = false
   static let startRecordingNotification = Notification.Name("VoiceInputView.startRecording")
+  static let stopRecordingNotification = Notification.Name("VoiceInputView.stopRecording")
+  static let recordingStateChangedNotification = Notification.Name("VoiceInputView.recordingStateChanged")
+
+  @objc private func stopRecordingRequested() {
+    guard window != nil, isRecording else { return }
+    setMicButtonRecording(false)
+    stopRecording()
+    debounceTimer?.invalidate()
+  }
 
   @objc private func autoRecordRequested() {
     guard window != nil else { return }   // 只有正在显示的那个实例响应
@@ -645,6 +657,9 @@ final class VoiceInputView: UIInputView {
   }
 
   private func setMicButtonRecording(_ recording: Bool) {
+    // 通知浮动条同步 mic/停止 图标
+    NotificationCenter.default.post(name: Self.recordingStateChangedNotification,
+                                    object: nil, userInfo: ["recording": recording])
     UIView.animate(withDuration: 0.15) {
       self.micButton.backgroundColor = recording ? UIColor.systemRed : UIColor.systemBlue
       self.micButton.transform = recording ? CGAffineTransform(scaleX: 1.1, y: 1.1) : .identity

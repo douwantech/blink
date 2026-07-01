@@ -131,6 +131,7 @@ class SpaceController: UIViewController {
   private var _bottomTapAreaView = UIView()
   private var _floatingDock = FloatingDockBar()
   private var _floatingDockPlaced = false
+  private var _voiceIsRecording = false
   private var _pinnedBrowserVC: PinnedBrowserViewController?
 
   // Snips Input Mode tracking
@@ -277,8 +278,19 @@ class SpaceController: UIViewController {
     view.bringSubviewToFront(_floatingDock)
   }
 
-  // 浮动条语音钮：单点只弹面板，不开录
+  // 录音状态变化：浮动条 mic 钮切 停止/mic 图标
+  @objc private func _voiceRecordingStateChanged(_ note: Notification) {
+    let recording = (note.userInfo?["recording"] as? Bool) ?? false
+    _voiceIsRecording = recording
+    _floatingDock.setMicRecording(recording)
+  }
+
+  // 浮动条语音钮：录音中单点=停止；否则=弹面板（不开录）
   @objc private func _unhideVoiceInput() {
+    if _voiceIsRecording {
+      NotificationCenter.default.post(name: VoiceInputView.stopRecordingNotification, object: nil)
+      return
+    }
     SmarterTermInput.voiceInputAutoShow = true
     _focusOnShell()
   }
@@ -286,6 +298,7 @@ class SpaceController: UIViewController {
   // 浮动条语音钮：长按才弹面板 + 直接开录
   @objc private func _voiceMicLongPressed(_ g: UILongPressGestureRecognizer) {
     guard g.state == .began else { return }
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()   // 震动反馈
     VoiceInputView.wantsAutoRecord = true
     SmarterTermInput.voiceInputAutoShow = true
     _focusOnShell()
@@ -484,6 +497,7 @@ class SpaceController: UIViewController {
     _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
+    NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
