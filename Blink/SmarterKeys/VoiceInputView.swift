@@ -1323,9 +1323,10 @@ extension VoiceInputView: PHPickerViewControllerDelegate {
 
 enum ImageHostUploader {
   static func upload(jpegData: Data, completion: @escaping (String?) -> Void) {
-    uploadTmpfiles(jpegData: jpegData) { url in
+    // 默认走 uguu.se；失败再退回 tmpfiles.org 兜底。
+    uploadUguu(jpegData: jpegData) { url in
       if let url { completion(url); return }
-      uploadUguu(jpegData: jpegData, completion: completion)
+      uploadTmpfiles(jpegData: jpegData, completion: completion)
     }
   }
 
