@@ -277,9 +277,20 @@ class SpaceController: UIViewController {
     view.bringSubviewToFront(_floatingDock)
   }
 
+  // 浮动条语音钮：单点只弹面板，不开录
   @objc private func _unhideVoiceInput() {
     SmarterTermInput.voiceInputAutoShow = true
     _focusOnShell()
+  }
+
+  // 浮动条语音钮：长按才弹面板 + 直接开录
+  @objc private func _voiceMicLongPressed(_ g: UILongPressGestureRecognizer) {
+    guard g.state == .began else { return }
+    VoiceInputView.wantsAutoRecord = true
+    SmarterTermInput.voiceInputAutoShow = true
+    _focusOnShell()
+    // 面板本来就开着的情况（didMoveToWindow 不会再触发）：发通知让当前实例立刻录
+    NotificationCenter.default.post(name: VoiceInputView.startRecordingNotification, object: nil)
   }
 
   @objc func _openPinnedBrowser() {
@@ -468,9 +479,11 @@ class SpaceController: UIViewController {
 
     // 玻璃 dock（方案 A）：语音 + 浏览器合并成靠右竖胶囊，可拖动
     _floatingDock.micButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
+    _floatingDock.micButton.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(_voiceMicLongPressed(_:))))
     _floatingDock.browserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
     _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
+    _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)

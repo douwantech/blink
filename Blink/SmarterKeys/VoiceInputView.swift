@@ -104,6 +104,9 @@ final class VoiceInputView: UIInputView {
     NotificationCenter.default.addObserver(
       self, selector: #selector(activeSessionDidChange),
       name: .blinkActiveSessionDidChange, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(autoRecordRequested),
+      name: Self.startRecordingNotification, object: nil)
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -612,6 +615,12 @@ final class VoiceInputView: UIInputView {
       debounceTimer?.invalidate()
       return
     }
+    beginRecording()
+  }
+
+  /// 开录（micTapped 的非录音分支抽出来，外部（浮动条语音钮）也能直接触发）。
+  private func beginRecording() {
+    guard !isRecording else { return }
     setMicButtonRecording(true)
     requestPermissionsThen { [weak self] granted in
       guard let self else { return }
@@ -621,6 +630,18 @@ final class VoiceInputView: UIInputView {
         self.setMicButtonRecording(false)
       }
     }
+  }
+
+  /// 浮动条语音钮点一下：把面板弹出来的同时直接开始录音。
+  /// 谁想触发就置 true + 发通知；已在窗口上的实例立刻录，还没上窗口的等 didMoveToWindow 再录。
+  static var wantsAutoRecord = false
+  static let startRecordingNotification = Notification.Name("VoiceInputView.startRecording")
+
+  @objc private func autoRecordRequested() {
+    guard window != nil else { return }   // 只有正在显示的那个实例响应
+    guard Self.wantsAutoRecord else { return }
+    Self.wantsAutoRecord = false
+    beginRecording()
   }
 
   private func setMicButtonRecording(_ recording: Bool) {
@@ -968,6 +989,13 @@ final class VoiceInputView: UIInputView {
     if window != nil {
       refreshSettingsButtonTitle()
       updateTmuxModeButtonAppearance()
+      // 浮动条语音钮触发：面板刚上屏，稍等一拍直接开录
+      if Self.wantsAutoRecord {
+        Self.wantsAutoRecord = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+          self?.beginRecording()
+        }
+      }
     }
   }
 

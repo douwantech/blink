@@ -161,12 +161,13 @@ final class FloatingDockBar: UIView {
   private static let kPosX = "FloatingDockBar.posX"
   private static let kPosY = "FloatingDockBar.posY"
   static let barW: CGFloat = 58
-  static let barH: CGFloat = 222
+  static let barH: CGFloat = 272
 
   let micButton = UIButton(type: .system)
   let browserButton = UIButton(type: .system)
   let favoritesButton = UIButton(type: .system)
   let historyButton = UIButton(type: .system)
+  let refreshButton = UIButton(type: .system)
   private var dragPan: UIPanGestureRecognizer!
   private var didMove = false
 
@@ -201,7 +202,7 @@ final class FloatingDockBar: UIView {
     grip.isUserInteractionEnabled = false
     addSubview(grip)
 
-    // 从上到下：浏览器 / 收藏 / 查看历史 / 输入(mic)。输入钮放最下面最好按。
+    // 从上到下：浏览器 / 收藏 / 查看历史 / 刷新 / 输入(mic)。输入钮放最下面最好按。
     let x = (Self.barW - 44) / 2
     _configCircle(browserButton, icon: "globe", color: .systemIndigo)
     browserButton.frame = CGRect(x: x, y: 16, width: 44, height: 44)
@@ -215,8 +216,12 @@ final class FloatingDockBar: UIView {
     historyButton.frame = CGRect(x: x, y: 116, width: 44, height: 44)
     addSubview(historyButton)
 
+    _configCircle(refreshButton, icon: "arrow.clockwise", color: .systemGreen)
+    refreshButton.frame = CGRect(x: x, y: 166, width: 44, height: 44)
+    addSubview(refreshButton)
+
     _configCircle(micButton, icon: "mic.fill", color: .systemTeal)
-    micButton.frame = CGRect(x: x, y: 166, width: 44, height: 44)
+    micButton.frame = CGRect(x: x, y: 216, width: 44, height: 44)
     addSubview(micButton)
   }
 
