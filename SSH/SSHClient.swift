@@ -245,11 +245,16 @@ public class SSHClient {
     guard isConnected else {
       return
     }
-    
+
     let rc = ssh_client_send_keepalive(session)
     if rc != SSH_OK {
+      // keepalive 发不出去 = 连接已死。主动抛会话异常，让 ssh 命令立刻退出、上层重连，
+      // 而不是只停掉定时器留个假死连接。
       keepAliveTimer?.invalidate()
-      print("ERROR Keep alive")
+      keepAliveTimer = nil
+      let error = SSHError(title: "Keep-alive failed, connection lost", forSession: session)
+      log.message("\(error)", SSH_LOG_WARN)
+      handleSessionException?(error)
     }
   }
   
@@ -343,9 +348,9 @@ public class SSHClient {
         // If we logged in to the remote, agent requests may be remote and cannot be trusted
         client.trustAgentConnection = false
 
-        if client.options.keepAliveInterval != nil {
-          client.startKeepAliveTimer()
-        }
+        // 无条件启动 keepalive：定期戳连接，App 从后台/切网回来后半开死连接会被探测到，
+        // 触发 session_exception → ssh 命令退出 → 上层 MCPSession 自动重连。不启动就会“假死”。
+        client.startKeepAliveTimer()
         return .just(client)
       }
       // If cancelled, the connection will be closed without being passed to the user or

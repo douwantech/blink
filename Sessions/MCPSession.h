@@ -47,6 +47,8 @@
 
 - (void)registerSSHClient:(id __weak)sshClient;
 - (void)unregisterSSHClient:(id __weak)sshClient;
+/// ssh 命令连接成功后回调，喂给「连接看门狗」判定连上了没
+- (void)sshClientDidConnect;
 
 - (void)enqueueCommand:(NSString *)cmd;
 - (void)enqueueCommand:(NSString *)cmd skipHistoryRecord: (BOOL) skipHistoryRecord;

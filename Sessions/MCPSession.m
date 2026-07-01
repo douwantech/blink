@@ -59,6 +59,16 @@
   dispatch_queue_t _sshQueue;
   TermStream *_cmdStream;
   NSString *_currentCmdLine;
+  NSString *_autoConnectCommand;   // 自动发起的 ssh 命令，断开后据此重连
+  int _reconnectAttempts;          // 连续快速重连计数（连上够久会清零）
+  BOOL _autoConnectMachineBased;   // YES=按机器重连（每次重新解析 host）；NO=固定命令
+  BOOL _sawConnect;                // 本次连接尝试是否已连上（喂给看门狗）
+}
+
+// 断线自动重连开关，默认开（key 没设过当作开）
+static BOOL BlinkAutoReconnectEnabled(void) {
+  id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"BlinkAutoReconnect"];
+  return v == nil ? YES : [v boolValue];
 }
 
 @dynamic sessionParams;
@@ -114,6 +124,12 @@
     }
     NSString *initialCommand = self.sessionParams.initialCommand;
     if (initialCommand.length > 0) {
+      // 拉记录等一次性命令不参与自动重连；只有 ssh/mosh 这类连接命令才记为自动重连目标
+      NSString *trimmedInit = [initialCommand stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if ([trimmedInit hasPrefix:@"ssh "] || [trimmedInit hasPrefix:@"mosh "]) {
+        _autoConnectCommand = initialCommand;
+        _autoConnectMachineBased = NO;   // 固定命令，重连原样重跑
+      }
       [self enqueueCommand:initialCommand];
       return;
     }
@@ -140,6 +156,8 @@
           if (hostInfo) {
             [_device writeOutLn:hostInfo];
           }
+          _autoConnectCommand = cmd;   // 记为自动重连目标
+          _autoConnectMachineBased = YES;   // 重连时按机器重新解析 host（LAN 坏了自动降级外网）
           [self enqueueCommand:cmd];
         } else {
           [_device prompt:@"blink> " secure:NO shell:YES];
@@ -173,9 +191,17 @@
 }
 
 - (BOOL)_runCommand:(NSString *)cmdline skipHistoryRecord: (BOOL) skipHistoryRecord {
-  
+
   cmdline = [cmdline stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-  
+  NSDate *cmdStart = [NSDate date];
+
+  // 自动连接命令：重置「已连上」标志并起看门狗，卡在建连阶段就杀掉重连
+  BOOL isAutoConnect = (_autoConnectCommand.length > 0 && [cmdline isEqualToString:_autoConnectCommand]);
+  if (isAutoConnect) {
+    _sawConnect = NO;
+    [self _armConnectWatchdogFor:cmdline];
+  }
+
   if (!skipHistoryRecord) {
     [HistoryObj appendIfNeededWithCommand:cmdline];
   }
@@ -258,14 +284,94 @@
     setlocale(LC_CTYPE, "UTF-8");
   }
   
+  // 断线自动重连：刚退出的是自动 ssh 连接命令 && 开关打开 → 延迟后重跑（tmux 会 attach 回原会话）
+  BOOL willReconnect = (_device
+                        && _autoConnectCommand.length > 0
+                        && [cmdline isEqualToString:_autoConnectCommand]
+                        && BlinkAutoReconnectEnabled());
+  if (willReconnect) {
+    // 连上够久(>=15s)才退，说明是中途掉线，重连计数清零；否则是连不上，累加用于退避
+    if (-[cmdStart timeIntervalSinceNow] >= 15.0) {
+      _reconnectAttempts = 0;
+    }
+    [self _scheduleReconnect];
+    return YES;
+  }
+
   if (_device) {
     // TODO At the moment this is just a prompt instead of a readline. This needs to be fixed.
     // And bc of that, we need to check that there is a device. The MCP may be killed, but the loop here may still
     // try to write to the device.
     [_device prompt:@"blink> " secure:NO shell:YES];
   }
-  
+
   return YES;
+}
+
+// 连接成功回调（ssh.swift 在连上后调）：喂给看门狗，标记本次尝试已连上
+- (void)sshClientDidConnect {
+  _sawConnect = YES;
+}
+
+// 按机器重新生成 ssh 命令（重新解析 host：LAN 坏了自动降级外网/tailscale）；非机器型返回原命令
+- (NSString *)_freshAutoConnectCommand {
+  if (!_autoConnectMachineBased) {
+    return _autoConnectCommand;
+  }
+  NSString *machineId = self.sessionParams.machineId;
+  if (![BlinkMachineStore.shared machineExistsForId:machineId]) {
+    machineId = BlinkMachineStore.shared.currentMachineId;
+  }
+  NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId
+                                                         workDirId:self.sessionParams.workDirId
+                                                       tmuxSession:self.sessionParams.tmuxSession
+                                                           useTmux:self.sessionParams.useTmux];
+  return cmd.length > 0 ? cmd : _autoConnectCommand;
+}
+
+// 连接看门狗：起 ssh 后 12s 内若还没连上、且 ssh 仍在跑（卡在建连/认证阶段）→ 杀掉，触发重连。
+// Blink 的 ssh 建连超时是坏的（阻塞 runloop，定时器不触发），会无限假死，靠这个兜住。
+- (void)_armConnectWatchdogFor:(NSString *)cmdline {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (!self->_device) { return; }
+    // 已连上 → 放行；ssh 已退出(_sshClients 空) → 交给正常退出流程；否则卡住 → 杀
+    if (self->_sawConnect) { return; }
+    __block NSUInteger clientCount = 0;
+    dispatch_sync(self->_sshQueue, ^{ clientCount = self->_sshClients.count; });
+    if (clientCount == 0) { return; }
+    if (![cmdline isEqualToString:self->_autoConnectCommand]) { return; }  // 已经换了命令
+    [self->_device writeOutLn:@"\r\n\033[33m⚠️ 连接卡住（12s 没连上），重连中…\033[0m"];
+    dispatch_sync(self->_sshQueue, ^{
+      for (id client in self->_sshClients) { [client kill]; }
+    });
+    // kill 后 ssh 命令会退出，走 _runCommand 尾部 → 自动重连（会重新解析 host）
+  });
+}
+
+// 延迟重跑自动 ssh 命令；每次重新解析 host + 清可达性缓存；失败越快退避越久(3→6→9…最多 15s)
+- (void)_scheduleReconnect {
+  int attempt = ++_reconnectAttempts;
+  double delay = MIN(3.0 * attempt, 15.0);
+  if (_device) {
+    [_device writeOutLn:[NSString stringWithFormat:
+      @"\r\n\033[33m⚠️ 连接断开，%.0f 秒后自动重连（第 %d 次）… 关闭：设置→断线自动重连\033[0m", delay, attempt]];
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), _cmdQueue, ^{
+    // 重连前再判一次：设备还在、开关仍开
+    if (!self->_device) {
+      return;
+    }
+    if (!BlinkAutoReconnectEnabled() || self->_autoConnectCommand.length == 0) {
+      [self->_device prompt:@"blink> " secure:NO shell:YES];
+      return;
+    }
+    // 清可达性缓存并重新解析 host（不再用 30s 陈旧缓存里的坏 LAN）
+    [BlinkMachineStore.shared invalidateHostReachabilityCache];
+    self->_autoConnectCommand = [self _freshAutoConnectCommand];
+    self->_currentCmdLine = self->_autoConnectCommand;
+    [self _runCommand:self->_autoConnectCommand skipHistoryRecord:YES];
+    self->_currentCmdLine = nil;
+  });
 }
 
 - (int)main:(int)argc argv:(char **)argv

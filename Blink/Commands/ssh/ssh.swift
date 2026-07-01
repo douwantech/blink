@@ -180,6 +180,8 @@ public func blink_ssh_main(argc: Int32, argv: Argv) -> Int32 {
 
     connectionCancellable = connect.flatMap { conn -> SSHConnection in
       self.connection = conn
+      // 通知 MCPSession「已连上」，喂给连接看门狗（避免它把已连上的会话误杀）
+      self._mcp.sshClientDidConnect()
 
       if let banner = conn.issueBanner,
          !banner.isEmpty {

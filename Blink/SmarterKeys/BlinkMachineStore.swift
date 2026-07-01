@@ -333,6 +333,11 @@ enum HostReachability {
 
   static func bestHost(for m: BlinkMachine) -> String { resolveHost(for: m).host }
 
+  /// 清主机可达性缓存（重连前调，强制重新探测，避免用 30s 陈旧缓存里的坏 LAN）
+  @objc func invalidateHostReachabilityCache() {
+    HostReachability.invalidate()
+  }
+
   @objc func chosenHostInfo(forMachineId machineId: String?) -> String? {
     let arr = machines
     let m: BlinkMachine?
