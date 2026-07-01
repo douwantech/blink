@@ -1297,12 +1297,11 @@ extension VoiceInputView: PHPickerViewControllerDelegate {
         self.showToast("全部上传失败", isError: true)
         return
       }
-      UIPasteboard.general.string = good.joined(separator: "\n")
-      if good.count == total {
-        let msg = total == 1 ? "URL 已复制：\(good[0])" : "\(good.count) 个 URL 已复制"
-        self.showToast(msg)
-      } else {
-        self.showToast("\(good.count)/\(total) 已复制，失败 \(total - good.count) 张", isError: true)
+      let joined = good.joined(separator: "\n")
+      UIPasteboard.general.string = joined                        // 仍复制一份到剪贴板兜底
+      self.delegate?.voiceInput(self, didRequestPasteText: joined)  // 直接插进终端输入框（内部会弹「已粘贴」提示）
+      if good.count != total {
+        self.showToast("\(good.count)/\(total) 已插入，失败 \(total - good.count) 张", isError: true)
       }
       // 上传成功的截图从相册删掉（iOS 会自带一个系统删除确认，用户点确认才真删）
       let idsToDelete = (0..<total).compactMap { urls[$0] != nil ? assetIds[$0] : nil }
