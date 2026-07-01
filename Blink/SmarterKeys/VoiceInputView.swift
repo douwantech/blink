@@ -1377,12 +1377,21 @@ final class AITextPolisher {
   private let maxTermsInPrompt = 40
 
   private init() {
-    UserDefaults.standard.register(defaults: [
+    let d = UserDefaults.standard
+    // 一次性提速迁移：glm-4.5 是「思考型」模型，为简单整理白白空想一大轮（~4s），
+    // 换成 glm-4-flashx（~0.7s，快 6 倍）。老配置里显式存过 glm-4.5 / 3.5s 防抖的翻过来；
+    // 没存过的直接吃下面新的注册默认值。用户之后在设置里改的值不受影响（只迁移一次）。
+    if d.object(forKey: "VoiceInputView.speedMigration.v1") == nil {
+      if (d.object(forKey: kModel) as? String) == "glm-4.5" { d.set("glm-4-flashx", forKey: kModel) }
+      if let db = d.object(forKey: kDebounce) as? Double, db >= 3.0 { d.set(1.5, forKey: kDebounce) }
+      d.set(true, forKey: "VoiceInputView.speedMigration.v1")
+    }
+    d.register(defaults: [
       kAPIKey: "",
-      kModel: "glm-4.5",
+      kModel: "glm-4-flashx",
       kBaseURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
       kEnabled: true,
-      kDebounce: 3.5,
+      kDebounce: 1.5,
     ])
   }
 
@@ -1391,7 +1400,7 @@ final class AITextPolisher {
     set { UserDefaults.standard.set(newValue, forKey: kAPIKey) }
   }
   var model: String {
-    get { UserDefaults.standard.string(forKey: kModel) ?? "glm-4.5" }
+    get { UserDefaults.standard.string(forKey: kModel) ?? "glm-4-flashx" }
     set { UserDefaults.standard.set(newValue, forKey: kModel) }
   }
   var baseURL: String {
@@ -1405,7 +1414,7 @@ final class AITextPolisher {
   var debounceSeconds: Double {
     get {
       let v = UserDefaults.standard.double(forKey: kDebounce)
-      return v <= 0 ? 3.5 : v
+      return v <= 0 ? 1.5 : v
     }
     set { UserDefaults.standard.set(newValue, forKey: kDebounce) }
   }
@@ -1869,7 +1878,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [1, 2, 1, 3, 2][section]
+    [2, 2, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1881,6 +1890,14 @@ final class VoiceSettingsViewController: UITableViewController {
       let m = BlinkMachineStore.shared.currentMachine
       cell.detailTextLabel?.text = m.map { "\($0.user)@\($0.host)" } ?? "未配置"
       cell.accessoryType = .disclosureIndicator
+    case (0, 1):
+      cell.textLabel?.text = "断线自动重连"
+      let sw = UISwitch()
+      let v = UserDefaults.standard.object(forKey: "BlinkAutoReconnect")
+      sw.isOn = (v == nil) ? true : (v as? Bool ?? true)
+      sw.addTarget(self, action: #selector(toggleAutoReconnect(_:)), for: .valueChanged)
+      cell.accessoryView = sw
+      cell.selectionStyle = .none
     case (1, 0):
       cell.textLabel?.text = "工作目录"
       cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
@@ -1954,6 +1971,11 @@ final class VoiceSettingsViewController: UITableViewController {
   @objc private func toggleAI(_ sw: UISwitch) {
     AITextPolisher.shared.enabled = sw.isOn
     voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
+  }
+
+  @objc private func toggleAutoReconnect(_ sw: UISwitch) {
+    UserDefaults.standard.set(sw.isOn, forKey: "BlinkAutoReconnect")
+    voiceView?.setHintForSettingsChange(sw.isOn ? "断线自动重连已开启" : "断线自动重连已关闭")
   }
 
   private func presentAISettings() {
