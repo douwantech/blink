@@ -53,6 +53,8 @@ final class CloudConfigSync: NSObject {
     "RecentBrowserTabsStore.tabs",
     "FloatingBrowserButton.posX",
     "FloatingBrowserButton.posY",
+    "FloatingDockBar.posX",
+    "FloatingDockBar.posY",
   ]
 
   /// 单值体积上限：iCloud KV 总配额 1MB，给单值留余量。

@@ -129,24 +129,9 @@ class SpaceController: UIViewController {
   private var _snippetsVC: SnippetsViewController? = nil
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
-  private var _floatingBrowserButton = FloatingBrowserButton(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
-  private var _floatingBrowserButtonPlaced = false
+  private var _floatingDock = FloatingDockBar()
+  private var _floatingDockPlaced = false
   private var _pinnedBrowserVC: PinnedBrowserViewController?
-  private lazy var _floatingMicButton: UIButton = {
-    let b = UIButton(type: .system)
-    let cfg = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
-    b.setImage(UIImage(systemName: "mic.fill", withConfiguration: cfg), for: .normal)
-    b.tintColor = .white
-    b.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.95)
-    b.layer.cornerRadius = 28
-    b.layer.shadowColor = UIColor.black.cgColor
-    b.layer.shadowOpacity = 0.3
-    b.layer.shadowRadius = 6
-    b.layer.shadowOffset = CGSize(width: 0, height: 2)
-    b.frame = CGRect(x: 0, y: 0, width: 56, height: 56)
-    b.isHidden = true
-    return b
-  }()
 
   // Snips Input Mode tracking
   private var _isSnipsInputModeActive: Bool = false {
@@ -257,21 +242,11 @@ class SpaceController: UIViewController {
       )
     }
     view.bringSubviewToFront(_tabBar)
-    if !_floatingBrowserButtonPlaced {
-      _floatingBrowserButton.restorePosition(in: view)
-      _floatingBrowserButtonPlaced = true
+    if !_floatingDockPlaced {
+      _floatingDock.restorePosition(in: view)
+      _floatingDockPlaced = true
     }
-    view.bringSubviewToFront(_floatingBrowserButton)
-    _layoutFloatingMicButton()
-    view.bringSubviewToFront(_floatingMicButton)
-  }
-
-  private func _layoutFloatingMicButton() {
-    let insets = view.safeAreaInsets
-    let size: CGFloat = 56
-    let x = view.bounds.width - size - 16 - insets.right
-    let y = view.bounds.height - size - 16 - insets.bottom
-    _floatingMicButton.frame = CGRect(x: x, y: y, width: size, height: size)
+    view.bringSubviewToFront(_floatingDock)
   }
 
   @objc private func _voiceInputAutoShowChanged() {
@@ -297,10 +272,9 @@ class SpaceController: UIViewController {
   }
 
   private func _updateFloatingMicVisibility() {
-    _floatingMicButton.isHidden = SmarterTermInput.voiceInputAutoShow
-    if !_floatingMicButton.isHidden {
-      view.bringSubviewToFront(_floatingMicButton)
-    }
+    // 玻璃 dock 常驻显示（语音 + 浏览器都在里面），只保证在最前
+    _floatingDock.isHidden = false
+    view.bringSubviewToFront(_floatingDock)
   }
 
   @objc private func _unhideVoiceInput() {
@@ -310,6 +284,27 @@ class SpaceController: UIViewController {
 
   @objc func _openPinnedBrowser() {
     _presentSharedBrowser()
+  }
+
+  // dock 收藏钮：弹收藏短语选择器，选中的直接发到当前终端
+  @objc func _openFavoritesPicker() {
+    let picker = VoiceHistoryPickerViewController(mode: .favorites)
+    picker.onPick = { [weak self] text in
+      guard let self else { return }
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return }
+      AITextPolisher.shared.recordHistory(trimmed)
+      AITextPolisher.shared.incrementFavoriteUseCount(trimmed)
+      self.currentDevice?.write(trimmed)
+      self.currentDevice?.write("\r")
+    }
+    let nav = UINavigationController(rootViewController: picker)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
   }
 
   @discardableResult
@@ -471,12 +466,12 @@ class SpaceController: UIViewController {
         
     self.view.addSubview(_bottomTapAreaView)
 
-    _floatingBrowserButton.frame = CGRect(x: 0, y: 0, width: 56, height: 56)
-    _floatingBrowserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
-    view.addSubview(_floatingBrowserButton)
-
-    _floatingMicButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
-    view.addSubview(_floatingMicButton)
+    // 玻璃 dock（方案 A）：语音 + 浏览器合并成靠右竖胶囊，可拖动
+    _floatingDock.micButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
+    _floatingDock.browserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
+    _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
+    _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
+    view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidHideForMic), name: UIResponder.keyboardDidHideNotification, object: nil)

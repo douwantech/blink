@@ -156,6 +156,118 @@ final class FloatingBrowserButton: UIButton {
   }
 }
 
+/// 方案 A：靠右的磨砂玻璃竖胶囊，合并「语音 + 浏览器」两个浮动钮，可拖动 + 记忆位置
+final class FloatingDockBar: UIView {
+  private static let kPosX = "FloatingDockBar.posX"
+  private static let kPosY = "FloatingDockBar.posY"
+  static let barW: CGFloat = 58
+  static let barH: CGFloat = 222
+
+  let micButton = UIButton(type: .system)
+  let browserButton = UIButton(type: .system)
+  let favoritesButton = UIButton(type: .system)
+  let historyButton = UIButton(type: .system)
+  private var dragPan: UIPanGestureRecognizer!
+  private var didMove = false
+
+  init() {
+    super.init(frame: CGRect(x: 0, y: 0, width: Self.barW, height: Self.barH))
+    setupUI()
+    dragPan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+    addGestureRecognizer(dragPan)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  private func setupUI() {
+    let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    blur.frame = bounds
+    blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    blur.isUserInteractionEnabled = false
+    blur.layer.cornerRadius = 26
+    blur.layer.cornerCurve = .continuous
+    blur.clipsToBounds = true
+    blur.layer.borderWidth = 1
+    blur.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+    addSubview(blur)
+
+    layer.shadowColor = UIColor.black.cgColor
+    layer.shadowOpacity = 0.4
+    layer.shadowRadius = 12
+    layer.shadowOffset = CGSize(width: 0, height: 6)
+
+    let grip = UIView(frame: CGRect(x: (Self.barW - 26) / 2, y: 8, width: 26, height: 4))
+    grip.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+    grip.layer.cornerRadius = 2
+    grip.isUserInteractionEnabled = false
+    addSubview(grip)
+
+    // 从上到下：浏览器 / 收藏 / 查看历史 / 输入(mic)。输入钮放最下面最好按。
+    let x = (Self.barW - 44) / 2
+    _configCircle(browserButton, icon: "globe", color: .systemIndigo)
+    browserButton.frame = CGRect(x: x, y: 16, width: 44, height: 44)
+    addSubview(browserButton)
+
+    _configCircle(favoritesButton, icon: "star.fill", color: .systemYellow)
+    favoritesButton.frame = CGRect(x: x, y: 66, width: 44, height: 44)
+    addSubview(favoritesButton)
+
+    _configCircle(historyButton, icon: "clock.arrow.circlepath", color: .systemBlue)
+    historyButton.frame = CGRect(x: x, y: 116, width: 44, height: 44)
+    addSubview(historyButton)
+
+    _configCircle(micButton, icon: "mic.fill", color: .systemTeal)
+    micButton.frame = CGRect(x: x, y: 166, width: 44, height: 44)
+    addSubview(micButton)
+  }
+
+  private func _configCircle(_ b: UIButton, icon: String, color: UIColor) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+    b.setImage(UIImage(systemName: icon, withConfiguration: cfg), for: .normal)
+    b.tintColor = .white
+    b.backgroundColor = color
+    b.layer.cornerRadius = 22
+  }
+
+  func restorePosition(in container: UIView) {
+    let d = UserDefaults.standard
+    let safe = container.safeAreaInsets
+    let defaultX = container.bounds.width - Self.barW - 10 - safe.right
+    let defaultY = (container.bounds.height - Self.barH) / 2
+    let x = d.object(forKey: Self.kPosX) as? CGFloat ?? defaultX
+    let y = d.object(forKey: Self.kPosY) as? CGFloat ?? defaultY
+    frame.origin = clampOrigin(CGPoint(x: x, y: y), in: container)
+  }
+
+  private func clampOrigin(_ p: CGPoint, in container: UIView) -> CGPoint {
+    let insets = container.safeAreaInsets
+    let minX = insets.left + 4
+    let maxX = container.bounds.width - bounds.width - insets.right - 4
+    let minY = insets.top + 4
+    let maxY = container.bounds.height - bounds.height - insets.bottom - 4
+    return CGPoint(x: min(max(p.x, minX), maxX), y: min(max(p.y, minY), maxY))
+  }
+
+  @objc private func panned(_ g: UIPanGestureRecognizer) {
+    guard let container = superview else { return }
+    let t = g.translation(in: container)
+    switch g.state {
+    case .began:
+      didMove = false
+    case .changed:
+      let newOrigin = CGPoint(x: frame.origin.x + t.x, y: frame.origin.y + t.y)
+      frame.origin = clampOrigin(newOrigin, in: container)
+      g.setTranslation(.zero, in: container)
+      if abs(t.x) > 1 || abs(t.y) > 1 { didMove = true }
+    case .ended, .cancelled:
+      if didMove {
+        UserDefaults.standard.set(frame.origin.x, forKey: Self.kPosX)
+        UserDefaults.standard.set(frame.origin.y, forKey: Self.kPosY)
+      }
+    default: break
+    }
+  }
+}
+
 final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate, UITextFieldDelegate {
   private let tabBarScroll = UIScrollView()
   private let tabStack = UIStackView()
