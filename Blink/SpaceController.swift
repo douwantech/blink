@@ -2290,6 +2290,18 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     function escapeHTML(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+    // 把已转义文本里的裸 http(s) URL 包成可点链接（用于代码块——里面的链接原本点不动）。
+    // 输入已 escapeHTML 过，URL 里的 & 已是 &amp;，href 要还原回 &。
+    function linkifyEscaped(s) {
+      return s.replace(/(https?:\/\/[^\s<>"'`]+)/g, function(m) {
+        var trail = '';
+        var clean = m;
+        var t = clean.match(/(?:[.,;:!?)\]]|&gt;|&lt;)+$/);
+        if (t) { trail = t[0]; clean = clean.slice(0, -trail.length); }
+        var href = clean.replace(/&amp;/g, '&');
+        return '<a href="' + href + '">' + clean + '</a>' + trail;
+      });
+    }
     function decodeB64(b64) {
       const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
       return new TextDecoder('utf-8').decode(bytes);
@@ -2387,7 +2399,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           i++;
           while (i < lines.length && !/^```/.test(lines[i])) { body.push(lines[i]); i++; }
           i++;
-          html += '<pre><code>' + escapeHTML(body.join('\n')) + '</code></pre>';
+          html += '<pre><code>' + linkifyEscaped(escapeHTML(body.join('\n'))) + '</code></pre>';
           continue;
         }
         // meta line
