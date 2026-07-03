@@ -28,6 +28,7 @@ final class CloudConfigSync: NSObject {
   private let keys: [String] = [
     // 机器 / 会话
     "BlinkMachineStore.machines",
+    "BlinkMachineStore.avatars",
     "BlinkUseTmuxMode",
     "BlinkWorkDirStore.workDirs",
     "BlinkSessionPresetStore.presets",

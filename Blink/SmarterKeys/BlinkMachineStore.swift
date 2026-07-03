@@ -413,6 +413,28 @@ enum HostReachability {
 
   func delete(id: String) {
     machines.removeAll { $0.id == id }
+    var m = avatarMap; m.removeValue(forKey: id); avatarMap = m
+  }
+
+  // MARK: 机器头像（[machineId: PNG]）
+  private let kAvatars = "BlinkMachineStore.avatars"
+  private var avatarMap: [String: Data] {
+    get {
+      guard let dict = UserDefaults.standard.dictionary(forKey: kAvatars) as? [String: String] else { return [:] }
+      var out: [String: Data] = [:]
+      for (k, v) in dict { if let d = Data(base64Encoded: v) { out[k] = d } }
+      return out
+    }
+    set { UserDefaults.standard.set(newValue.mapValues { $0.base64EncodedString() }, forKey: kAvatars) }
+  }
+
+  func avatarImage(forId id: String) -> UIImage? {
+    guard let d = avatarMap[id], let img = UIImage(data: d) else { return nil }
+    return img
+  }
+
+  func setAvatar(_ data: Data, forId id: String) {
+    var m = avatarMap; m[id] = data; avatarMap = m
   }
 
   @objc static func presentAddMachineIfNeeded() {

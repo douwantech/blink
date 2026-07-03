@@ -131,6 +131,9 @@ class SpaceController: UIViewController {
   private var _bottomTapAreaView = UIView()
   private var _floatingDock = FloatingDockBar()
   private var _floatingDockPlaced = false
+  private var _floatingMachineBar = FloatingMachineBar()
+  private var _floatingMachineBarPlaced = false
+  private var _lastKeyPerMachine: [String: UUID] = [:]   // 每台机器上次选中的 tab
   private var _voiceIsRecording = false
   private let _voiceHaptic = UIImpactFeedbackGenerator(style: .heavy)
   private var _pinnedBrowserVC: PinnedBrowserViewController?
@@ -249,6 +252,12 @@ class SpaceController: UIViewController {
       _floatingDockPlaced = true
     }
     view.bringSubviewToFront(_floatingDock)
+    if !_floatingMachineBarPlaced {
+      _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+      _floatingMachineBar.restorePosition(in: view)
+      _floatingMachineBarPlaced = true
+    }
+    view.bringSubviewToFront(_floatingMachineBar)
   }
 
   @objc private func _voiceInputAutoShowChanged() {
@@ -505,6 +514,12 @@ class SpaceController: UIViewController {
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
+
+    // 独立的「切换机器」浮动条：点头像直接切机器，长按换头像，可拖
+    _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+    _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
+    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+    view.addSubview(_floatingMachineBar)
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
@@ -2040,16 +2055,7 @@ extension SpaceController: BlinkTabBarDelegate {
     for m in allMachines {
       let mark = (_tabFilterMachineId == m.id) ? " ✓" : ""
       alert.addAction(UIAlertAction(title: m.displayName + mark, style: .default) { [weak self] _ in
-        guard let self else { return }
-        self._tabFilterMachineId = m.id
-        let filtered = self._filteredViewportsKeys()
-        if let cur = self._currentKey, filtered.contains(cur) {
-          self._reloadTabBar()
-        } else if let first = filtered.first, let idx = self._viewportsKeys.firstIndex(of: first) {
-          self._moveToShell(idx: idx, animated: false)
-        } else {
-          self._reloadTabBar()
-        }
+        self?._applyMachineFilter(m.id)
       })
     }
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -2058,6 +2064,46 @@ extension SpaceController: BlinkTabBarDelegate {
       pop.sourceRect = _tabBar.bounds
     }
     present(alert, animated: true)
+  }
+
+  // 切换 tab 过滤到某台机器（nil = 全部）；优先回到该机器上次选中的 tab
+  func _applyMachineFilter(_ machineId: String?) {
+    // 先记住「离开的这台机器」当前停在哪个 tab
+    if let curKey = _currentKey,
+       let curMid = (SessionRegistry.shared[curKey] as TermController).mcpParams?.machineId {
+      _lastKeyPerMachine[curMid] = curKey
+    }
+    _tabFilterMachineId = machineId
+    let filtered = _filteredViewportsKeys()
+    if let mid = machineId,
+       let remembered = _lastKeyPerMachine[mid],
+       filtered.contains(remembered),
+       let idx = _viewportsKeys.firstIndex(of: remembered) {
+      _moveToShell(idx: idx, animated: false)          // 回到上次那个 tab
+    } else if let cur = _currentKey, filtered.contains(cur) {
+      _reloadTabBar()
+    } else if let first = filtered.first, let idx = _viewportsKeys.firstIndex(of: first) {
+      _moveToShell(idx: idx, animated: false)
+    } else {
+      _reloadTabBar()
+    }
+    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+  }
+
+  // 机器条长按：给机器换头像（同「选择头像」的 Alohe Memoji 选择器）
+  func _editMachineAvatar(_ machineId: String) {
+    let picker = AvatarPickerViewController()
+    picker.onPick = { [weak self] data in
+      BlinkMachineStore.shared.setAvatar(data, forId: machineId)
+      self?._floatingMachineBar.reload(currentId: self?._tabFilterMachineId)
+    }
+    let nav = UINavigationController(rootViewController: picker)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
   }
 }
 

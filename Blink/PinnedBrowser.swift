@@ -283,6 +283,165 @@ final class FloatingDockBar: UIView {
   }
 }
 
+/// 独立的「切换机器」浮动条：靠左的磨砂玻璃竖胶囊，每台机器一个头像钮，
+/// 点一下直接切到那台机器；长按换头像。可拖动 + 记忆位置，随机器增减自适应高度。
+final class FloatingMachineBar: UIView {
+  private static let kPosX = "FloatingMachineBar.posX"
+  private static let kPosY = "FloatingMachineBar.posY"
+  static let barW: CGFloat = 58
+
+  /// 点机器钮 → 切到该机器
+  var onSelectMachine: ((String) -> Void)?
+  /// 长按机器钮 → 给该机器换头像
+  var onEditAvatar: ((String) -> Void)?
+
+  private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+  private var machineButtons: [UIButton] = []
+  private var machineIds: [String] = []
+  private var dragPan: UIPanGestureRecognizer!
+  private var didMove = false
+  private let palette: [UIColor] = [.systemOrange, .systemPink, .systemPurple, .systemTeal,
+                                    .systemBlue, .systemGreen, .systemRed, .systemIndigo]
+
+  init() {
+    super.init(frame: CGRect(x: 0, y: 0, width: Self.barW, height: 72))
+    blur.frame = bounds
+    blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    blur.isUserInteractionEnabled = false
+    blur.layer.cornerRadius = 26
+    blur.layer.cornerCurve = .continuous
+    blur.clipsToBounds = true
+    blur.layer.borderWidth = 1
+    blur.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+    addSubview(blur)
+
+    layer.shadowColor = UIColor.black.cgColor
+    layer.shadowOpacity = 0.4
+    layer.shadowRadius = 12
+    layer.shadowOffset = CGSize(width: 0, height: 6)
+
+    dragPan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+    addGestureRecognizer(dragPan)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  /// 按当前机器列表重建头像钮；currentId 高亮
+  func reload(currentId: String?) {
+    machineButtons.forEach { $0.removeFromSuperview() }
+    machineButtons.removeAll()
+    machineIds.removeAll()
+
+    let machines = BlinkMachineStore.shared.machines
+    if machines.isEmpty { isHidden = true; return }
+    isHidden = false
+
+    let grip = UIView(frame: CGRect(x: (Self.barW - 26) / 2, y: 8, width: 26, height: 4))
+    grip.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+    grip.layer.cornerRadius = 2
+    grip.isUserInteractionEnabled = false
+    grip.tag = 9911
+
+    let x = (Self.barW - 44) / 2
+    var y: CGFloat = 18
+    for (i, m) in machines.enumerated() {
+      let b = UIButton(type: .custom)
+      b.frame = CGRect(x: x, y: y, width: 44, height: 44)
+      b.tag = i
+      b.layer.cornerRadius = 22
+      b.clipsToBounds = true
+      b.imageView?.contentMode = .scaleAspectFill
+      if let av = BlinkMachineStore.shared.avatarImage(forId: m.id) {
+        b.setImage(_round(av), for: .normal)
+        b.backgroundColor = .clear
+      } else {
+        b.backgroundColor = palette[i % palette.count]
+        let initial = String(m.displayName.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
+        b.setTitle(initial.isEmpty ? "?" : initial, for: .normal)
+        b.setTitleColor(.white, for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 20, weight: .bold)
+      }
+      let isCur = m.id == currentId
+      b.layer.borderWidth = isCur ? 2.5 : 0
+      b.layer.borderColor = UIColor.white.cgColor
+      b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+      b.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(longPressed(_:))))
+      addSubview(b)
+      machineButtons.append(b)
+      machineIds.append(m.id)
+      y += 50
+    }
+    // 高度自适应
+    let h = 50 * CGFloat(machines.count) + 22
+    let oldOrigin = frame.origin
+    bounds.size = CGSize(width: Self.barW, height: h)
+    frame.origin = oldOrigin
+    // grip 加回来（bounds 变了也没事，它锚在顶部）
+    addSubview(grip)
+    if let c = superview { frame.origin = clampOrigin(frame.origin, in: c) }
+  }
+
+  private func _round(_ img: UIImage) -> UIImage {
+    let side: CGFloat = 44
+    let r = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+    return r.image { _ in
+      let rect = CGRect(x: 0, y: 0, width: side, height: side)
+      UIBezierPath(ovalIn: rect).addClip()
+      img.draw(in: rect)
+    }.withRenderingMode(.alwaysOriginal)
+  }
+
+  @objc private func tapped(_ sender: UIButton) {
+    guard machineIds.indices.contains(sender.tag) else { return }
+    onSelectMachine?(machineIds[sender.tag])
+  }
+
+  @objc private func longPressed(_ g: UILongPressGestureRecognizer) {
+    guard g.state == .began, let b = g.view as? UIButton,
+          machineIds.indices.contains(b.tag) else { return }
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    onEditAvatar?(machineIds[b.tag])
+  }
+
+  func restorePosition(in container: UIView) {
+    let d = UserDefaults.standard
+    let safe = container.safeAreaInsets
+    let defaultX = safe.left + 10
+    let defaultY = (container.bounds.height - bounds.height) / 2
+    let x = d.object(forKey: Self.kPosX) as? CGFloat ?? defaultX
+    let y = d.object(forKey: Self.kPosY) as? CGFloat ?? defaultY
+    frame.origin = clampOrigin(CGPoint(x: x, y: y), in: container)
+  }
+
+  private func clampOrigin(_ p: CGPoint, in container: UIView) -> CGPoint {
+    let insets = container.safeAreaInsets
+    let minX = insets.left + 4
+    let maxX = container.bounds.width - bounds.width - insets.right - 4
+    let minY = insets.top + 4
+    let maxY = container.bounds.height - bounds.height - insets.bottom - 4
+    return CGPoint(x: min(max(p.x, minX), maxX), y: min(max(p.y, minY), maxY))
+  }
+
+  @objc private func panned(_ g: UIPanGestureRecognizer) {
+    guard let container = superview else { return }
+    let t = g.translation(in: container)
+    switch g.state {
+    case .began:
+      didMove = false
+    case .changed:
+      let newOrigin = CGPoint(x: frame.origin.x + t.x, y: frame.origin.y + t.y)
+      frame.origin = clampOrigin(newOrigin, in: container)
+      g.setTranslation(.zero, in: container)
+      if abs(t.x) > 1 || abs(t.y) > 1 { didMove = true }
+    case .ended, .cancelled:
+      if didMove {
+        UserDefaults.standard.set(frame.origin.x, forKey: Self.kPosX)
+        UserDefaults.standard.set(frame.origin.y, forKey: Self.kPosY)
+      }
+    default: break
+    }
+  }
+}
+
 final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate, UITextFieldDelegate {
   private let tabBarScroll = UIScrollView()
   private let tabStack = UIStackView()
