@@ -50,12 +50,26 @@ blinkd 100.96.88.80 7777 <token>      # token 见 ~/.config/blinkd-token.txt
 
 ---
 
-## 剩余:步骤 2(体验优化,可选)
-1. **存配置 + 短命令**:host/port/token 存一次起别名,`blinkd mac` 一敲就连
-2. **接自动重连**:让 Blink 断线自动重连认 blinkd(daemon 回放已就绪,只差 iOS 端接
-   `MCPSession` 的 `_autoConnectCommand` 机制)
-3. (可选)**多 session**:当前 daemon 所有连接共享一个 shell,可改成一连接一 shell
-- 做法两档:轻量(存 Blink snippet,不改码) / 正式(加 blinkd host 配置 + 短命令解析)
+## 步骤 2(体验优化)✅ 已完成(commit ea6c8f04)
+1. **存配置 + 短命令** ✅:`blinkd save <alias> <host> <port> <token>` 存别名,
+   `blinkd <alias>` 一敲就连;`blinkd ls`(token 脱敏)/`blinkd rm <alias>` 管理。
+   配置存 blink 隐藏目录 `blinkd_hosts.json`(Files app 不可见)。原
+   `blinkd host port token` 直连保留。
+2. **接自动重连** ✅:`_runBlinkdWithArgs` 给真建连的调用登记 `_autoConnectCommand`,
+   复用 ssh 那套退避+看门狗重连,受 设置→断线自动重连 开关控制;管理子命令
+   (save/ls/rm/help)不登记,避免断线后反复重跑。
+3. (可选/未做)**多 session**:当前 daemon 所有连接共享一个 shell,可改成一连接一 shell。
+
+**验证**:别名 save→ls脱敏→解析→用解析凭据真连活 daemon 跑命令读回显→rm,6/6 通过;
+编译 exit 0;nm blink_ssh_main=2 未碰坏 ssh;已烧 iPhone 16。
+⚠️ iOS GUI 键盘打字的自动化 E2E 本会话没跑成(idb HID / osascript / URL scheme
+通道都不可用,环境限制),连接的 GUI 路径在上一轮已用同一 daemon 验证过。
+
+**手机上怎么用**(装好新包后):
+```
+blinkd save mac 100.96.88.80 7777 <token>   # 存一次(token 见 ~/.config/blinkd-token.txt)
+blinkd mac                                   # 以后一敲就连,掉线自动重连
+```
 
 ---
 
