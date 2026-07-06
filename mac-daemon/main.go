@@ -89,19 +89,25 @@ func (s *session) readLoop(ptmx *os.File) {
 			break
 		}
 	}
-	// shell 退出(exit / crash)→ 提示并重启一个新的
+	// shell 退出(用户 exit / 崩溃):断开所有客户端,让它们回到 Blink 命令行,
+	// 再起一个新 shell 备着下次连接。
+	// 关键:PTY 保活靠的是「客户端断开时不杀 shell」(broadcast 只删连接、
+	// 不动 ptmx),不是靠这里重启 —— 所以用户 exit 能真正结束会话,而不是被
+	// 粘在一个重启循环里退不出来。
 	s.mu.Lock()
-	restarting := s.ptmx == ptmx // 防重复重启
-	s.mu.Unlock()
-	if restarting {
-		s.broadcast([]byte("\r\n[blinkd] shell exited, starting a new one…\r\n"))
-		s.mu.Lock()
-		err := s.startShell()
+	if s.ptmx != ptmx {
 		s.mu.Unlock()
-		if err != nil {
-			log.Printf("shell restart failed: %v", err)
-		}
+		return
 	}
+	for c := range s.clients {
+		c.Close()
+		delete(s.clients, c)
+	}
+	s.ring = nil // 新 shell 不带旧 shell 的历史
+	if err := s.startShell(); err != nil {
+		log.Printf("shell restart failed: %v", err)
+	}
+	s.mu.Unlock()
 }
 
 func (s *session) broadcast(p []byte) {
