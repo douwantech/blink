@@ -40,6 +40,7 @@
 #import "BKPubKey.h"
 #import "SSHCopyIDSession.h"
 #import "SSHSession.h"
+#import "BlinkdSession.h"
 
 #import "BKUserConfigurationManager.h"
 #import "BlinkPaths.h"
@@ -244,6 +245,8 @@ static BOOL BlinkAutoReconnectEnabled(void) {
     }
   } else if ([cmd isEqualToString:@"ssh2"]) {
     [self _runSSHWithArgs:cmdline];
+  } else if ([cmd isEqualToString:@"blinkd"]) {
+    [self _runBlinkdWithArgs:cmdline];
   } else if ([cmd isEqualToString:@"ssh-copy-id"]) {
     [self _runSSHCopyIDWithArgs:cmdline];
   } else if (![cmd isEqualToString:@""]) {
@@ -483,6 +486,16 @@ static BOOL BlinkAutoReconnectEnabled(void) {
   self.sessionParams.childSessionParams = nil;
   _childSession = [[SSHSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
   self.sessionParams.childSessionType = @"ssh";
+  [_childSession executeAttachedWithArgs:args];
+  _childSession = nil;
+}
+
+// blinkd <host> <port> <token> — 原始 TCP 连 Mac 端 blinkd daemon(不走 SSH)
+- (void)_runBlinkdWithArgs:(NSString *)args
+{
+  self.sessionParams.childSessionParams = nil;
+  _childSession = [[BlinkdSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  self.sessionParams.childSessionType = @"blinkd";
   [_childSession executeAttachedWithArgs:args];
   _childSession = nil;
 }
