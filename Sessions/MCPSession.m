@@ -493,6 +493,20 @@ static BOOL BlinkAutoReconnectEnabled(void) {
 // blinkd <host> <port> <token> — 原始 TCP 连 Mac 端 blinkd daemon(不走 SSH)
 - (void)_runBlinkdWithArgs:(NSString *)args
 {
+  // 只有「真建连」的 blinkd 调用才登记自动重连;管理子命令(save/ls/rm/help)不登记,
+  // 否则断线重连会把 `blinkd ls` 之类反复重跑。掉线重连复用 ssh 那套退避+看门狗,
+  // 受 设置→断线自动重连 开关(BlinkAutoReconnectEnabled)控制;daemon 已就绪回放,
+  // 重连即恢复画面。别名会在每次重跑时重新解析(host/token 换了也跟得上)。
+  NSArray *parts = [args componentsSeparatedByString:@" "];
+  NSString *sub = parts.count > 1 ? parts[1] : @"";
+  BOOL isMgmt = (sub.length == 0
+                 || [sub isEqualToString:@"save"] || [sub isEqualToString:@"ls"]
+                 || [sub isEqualToString:@"rm"]   || [sub isEqualToString:@"help"]
+                 || [sub isEqualToString:@"-h"]   || [sub isEqualToString:@"--help"]);
+  if (!isMgmt) {
+    _autoConnectCommand = args;
+    _autoConnectMachineBased = NO;
+  }
   self.sessionParams.childSessionParams = nil;
   _childSession = [[BlinkdSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
   self.sessionParams.childSessionType = @"blinkd";

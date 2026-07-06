@@ -5,9 +5,19 @@
 //   sock 可读 → fwrite(_stream.out) 渲染;_stream.in 可读 → 0x02 帧发 daemon;
 //   sigwinch → 0x03 resize 帧;kill → fclose(_stream.in) 唤醒 poll 退出。
 //
+// 命令语法(步骤2:别名短命令,不用每次敲 IP+token):
+//   blinkd <alias>                              用别名连
+//   blinkd <host> <port> <token>                直接连(原始形式,保留)
+//   blinkd save <alias> <host> <port> <token>   存别名
+//   blinkd ls                                   列已存别名(token 脱敏)
+//   blinkd rm <alias>                           删别名
+// 别名存 ~/Library/.../blink/blinkd_hosts.json(隐藏,Files app 不可见,
+// 与 SSH host 配置同级),格式 { "mac": {"host":..,"port":..,"token":..} }。
+//
 ////////////////////////////////////////////////////////////////////////////////
 
 #import "BlinkdSession.h"
+#import "BlinkPaths.h"
 
 #include <netdb.h>
 #include <poll.h>
@@ -21,34 +31,176 @@
 #define BLINKD_FRAME_DATA   0x02
 #define BLINKD_FRAME_RESIZE 0x03
 
-static const char *usage_format = "Usage: blinkd host port token";
+static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
 
 @implementation BlinkdSession {
   int _sock;
 }
 
+// ---- 别名配置存储 ----
+
+// 配置文件路径:blink 隐藏目录下,Files app 看不到,和 SSH host 同级
+- (NSString *)configPath
+{
+  return [[BlinkPaths blink] stringByAppendingPathComponent:kBlinkdHostsFile];
+}
+
+- (NSMutableDictionary *)loadConfigs
+{
+  NSData *data = [NSData dataWithContentsOfFile:[self configPath]];
+  if (!data) {
+    return [NSMutableDictionary dictionary];
+  }
+  id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![obj isKindOfClass:[NSDictionary class]]) {
+    return [NSMutableDictionary dictionary];
+  }
+  return [obj mutableCopy];
+}
+
+- (BOOL)saveConfigs:(NSDictionary *)configs
+{
+  NSData *data = [NSJSONSerialization dataWithJSONObject:configs
+                                                options:NSJSONWritingPrettyPrinted
+                                                  error:nil];
+  return data && [data writeToFile:[self configPath] atomically:YES];
+}
+
+// token 脱敏(防截图/肩窥泄露):头 6 位 + …
+- (NSString *)maskToken:(NSString *)t
+{
+  if (t.length <= 6) {
+    return @"******";
+  }
+  return [NSString stringWithFormat:@"%@…", [t substringToIndex:6]];
+}
+
+- (void)printList
+{
+  NSDictionary *cfgs = [self loadConfigs];
+  if (cfgs.count == 0) {
+    fprintf(_stream.out, "  (还没有已存别名,用 blinkd save <alias> <host> <port> <token> 存一个)\r\n");
+    return;
+  }
+  fprintf(_stream.out, "已存别名:\r\n");
+  for (NSString *alias in cfgs) {
+    NSDictionary *c = cfgs[alias];
+    if (![c isKindOfClass:[NSDictionary class]]) { continue; }
+    fprintf(_stream.out, "  %-12s %s:%d  token=%s\r\n",
+            alias.UTF8String,
+            [c[@"host"] UTF8String],
+            [c[@"port"] intValue],
+            [self maskToken:c[@"token"]].UTF8String);
+  }
+}
+
+- (void)printUsage
+{
+  fprintf(_stream.out,
+    "blinkd — 连 Mac 本地 daemon(不走 SSH)\r\n"
+    "\r\n"
+    "  blinkd <alias>                              用别名连\r\n"
+    "  blinkd <host> <port> <token>                直接连\r\n"
+    "  blinkd save <alias> <host> <port> <token>   存别名\r\n"
+    "  blinkd ls                                   列已存别名\r\n"
+    "  blinkd rm <alias>                           删别名\r\n"
+    "\r\n");
+  [self printList];
+}
+
+// ---- 入口 ----
+
 - (int)main:(int)argc argv:(char **)argv
 {
-  if (argc != 4) {
-    fprintf(_stream.out, "%s\r\n", usage_format);
+  NSString *sub = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
+
+  // 管理子命令(不建连,打印完直接返回)
+  if (argc == 1 || [sub isEqualToString:@"help"] ||
+      [sub isEqualToString:@"-h"] || [sub isEqualToString:@"--help"]) {
+    [self printUsage];
+    return 0;
+  }
+  if ([sub isEqualToString:@"ls"]) {
+    [self printList];
+    return 0;
+  }
+  if ([sub isEqualToString:@"save"]) {
+    if (argc != 6) {
+      fprintf(_stream.out, "Usage: blinkd save <alias> <host> <port> <token>\r\n");
+      return -1;
+    }
+    NSString *alias = [NSString stringWithUTF8String:argv[2]];
+    NSString *host  = [NSString stringWithUTF8String:argv[3]];
+    int port        = atoi(argv[4]);
+    NSString *token = [NSString stringWithUTF8String:argv[5]];
+    if (port <= 0 || port > 65535) {
+      fprintf(_stream.out, "blinkd: bad port %s\r\n", argv[4]);
+      return -1;
+    }
+    NSMutableDictionary *cfgs = [self loadConfigs];
+    cfgs[alias] = @{ @"host": host, @"port": @(port), @"token": token };
+    if ([self saveConfigs:cfgs]) {
+      fprintf(_stream.out, "blinkd: saved '%s' → %s:%d(以后 blinkd %s 直连)\r\n",
+              alias.UTF8String, host.UTF8String, port, alias.UTF8String);
+      return 0;
+    }
+    fprintf(_stream.out, "blinkd: 保存失败\r\n");
     return -1;
   }
-  const char *host = argv[1];
-  int port = atoi(argv[2]);
-  const char *token = argv[3];
+  if ([sub isEqualToString:@"rm"]) {
+    if (argc != 3) {
+      fprintf(_stream.out, "Usage: blinkd rm <alias>\r\n");
+      return -1;
+    }
+    NSString *alias = [NSString stringWithUTF8String:argv[2]];
+    NSMutableDictionary *cfgs = [self loadConfigs];
+    if (!cfgs[alias]) {
+      fprintf(_stream.out, "blinkd: 没有别名 '%s'\r\n", alias.UTF8String);
+      return -1;
+    }
+    [cfgs removeObjectForKey:alias];
+    [self saveConfigs:cfgs];
+    fprintf(_stream.out, "blinkd: removed '%s'\r\n", alias.UTF8String);
+    return 0;
+  }
+
+  // 建连:别名(argc==2)或原始 host/port/token(argc==4)
+  NSString *host = nil;
+  int port = 0;
+  NSString *token = nil;
+  if (argc == 2) {
+    NSDictionary *cfgs = [self loadConfigs];
+    NSDictionary *c = cfgs[sub];
+    if (![c isKindOfClass:[NSDictionary class]]) {
+      fprintf(_stream.out, "blinkd: 没有别名 '%s'(blinkd ls 看已存,blinkd save 存新)\r\n", sub.UTF8String);
+      return -1;
+    }
+    host  = c[@"host"];
+    port  = [c[@"port"] intValue];
+    token = c[@"token"];
+    fprintf(_stream.out, "blinkd: %s → %s:%d\r\n", sub.UTF8String, host.UTF8String, port);
+  } else if (argc == 4) {
+    host  = [NSString stringWithUTF8String:argv[1]];
+    port  = atoi(argv[2]);
+    token = [NSString stringWithUTF8String:argv[3]];
+  } else {
+    [self printUsage];
+    return -1;
+  }
   if (port <= 0 || port > 65535) {
-    fprintf(_stream.out, "blinkd: bad port %s\r\n", argv[2]);
+    fprintf(_stream.out, "blinkd: bad port %d\r\n", port);
     return -1;
   }
 
   // 解析 + 非阻塞 connect(8s 超时,tailscale IP 不通时不至于挂死)
-  _sock = [self connectTo:host port:port];
+  _sock = [self connectTo:host.UTF8String port:port];
   if (_sock < 0) {
     return -1;
   }
 
   // 握手:token,再上报当前窗口尺寸
-  [self sendFrame:BLINKD_FRAME_AUTH payload:token length:strlen(token)];
+  const char *tok = token.UTF8String;
+  [self sendFrame:BLINKD_FRAME_AUTH payload:tok length:strlen(tok)];
   [self sendResize];
 
   BOOL rawWas = [_device rawMode];
