@@ -374,6 +374,11 @@ enum HostReachability {
     echo READY
     """
     let encoded = Data(remoteScript.utf8).base64EncodedString()
+    // 走 blinkd 的机器：跟 tab 一样用 socket 传输拉历史，不走 ssh
+    // （--exec 的 b64 被 BlinkdSession 解码成脚本，daemon 侧 bash -c 跑，等价 ssh 版 echo|base64 -d|bash）
+    if let cfg = m.blinkdConfig {
+      return "blinkd \(cfg.host) \(cfg.port) \(cfg.token) --exec \(encoded)"
+    }
     return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d | bash\""
   }
 
