@@ -4,6 +4,12 @@
 <dict>
 	<key>BLINK_APP_FONT</key>
 	<string>$(BLINK_APP_FONT)</string>
+	<key>BLINKD_AUTO_HOST</key>
+	<string>$(BLINKD_AUTO_HOST)</string>
+	<key>BLINKD_AUTO_PORT</key>
+	<string>$(BLINKD_AUTO_PORT)</string>
+	<key>BLINKD_AUTO_TOKEN</key>
+	<string>$(BLINKD_AUTO_TOKEN)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>

@@ -201,15 +201,37 @@ enum HostReachability {
   // 复用 sshCommand 生成的远端脚本(tmux + claude resume),只把 `ssh -t user@host --`
   // 换成 `blinkd <host> <port> <token> --exec <script-base64>`。daemon 收到 exec 帧后
   // fork 一个独立 PTY 跑同一段脚本 —— 体验和 SSH 完全一致,只是绕过 sshd / MDM 防火墙。
+  // 连接信息优先取设备上 UserDefaults(用户敲过 `blinkd auto` 就覆盖),
+  // 否则回退 Info.plist 内置默认(来自 gitignored developer_setup.xcconfig,token 不进 git)——
+  // 所以 app 装上即默认走 blinkd 连这台 mac,不用手动配。
   @objc static var useBlinkd: Bool {
-    get { UserDefaults.standard.bool(forKey: "BlinkUseBlinkd") }
+    get {
+      if UserDefaults.standard.object(forKey: "BlinkUseBlinkd") != nil {
+        return UserDefaults.standard.bool(forKey: "BlinkUseBlinkd")
+      }
+      return blinkdInfoPlist("BLINKD_AUTO_HOST") != nil   // 内置有主机就默认开
+    }
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseBlinkd") }
   }
-  static var blinkdHost: String? { UserDefaults.standard.string(forKey: "BlinkdAutoHost") }
-  static var blinkdToken: String? { UserDefaults.standard.string(forKey: "BlinkdAutoToken") }
+  static var blinkdHost: String? {
+    if let v = UserDefaults.standard.string(forKey: "BlinkdAutoHost"), !v.isEmpty { return v }
+    return blinkdInfoPlist("BLINKD_AUTO_HOST")
+  }
+  static var blinkdToken: String? {
+    if let v = UserDefaults.standard.string(forKey: "BlinkdAutoToken"), !v.isEmpty { return v }
+    return blinkdInfoPlist("BLINKD_AUTO_TOKEN")
+  }
   static var blinkdPort: Int {
     let p = UserDefaults.standard.integer(forKey: "BlinkdAutoPort")
-    return p > 0 ? p : 7777
+    if p > 0 { return p }
+    if let s = blinkdInfoPlist("BLINKD_AUTO_PORT"), let ip = Int(s), ip > 0 { return ip }
+    return 7777
+  }
+  // xcconfig 没配 blinkd 时 Info.plist 里是 "$(BLINKD_AUTO_HOST)" 字面,当作没配(nil)
+  private static func blinkdInfoPlist(_ key: String) -> String? {
+    guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+          !v.isEmpty, !v.hasPrefix("$(") else { return nil }
+    return v
   }
 
   // 生成走 blinkd 的自动连接命令(useBlinkd 关 / 没配 blinkd 主机时返回 nil,调用方回退 ssh)。
