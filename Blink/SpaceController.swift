@@ -107,7 +107,7 @@ class SpaceController: UIViewController {
         p.machineId = entry.machineId
         p.workDirId = entry.workDirId
         p.tmuxSession = entry.tmuxSession
-        p.useTmux = entry.useTmux ?? false
+        p.useTmux = entry.useTmux ?? BlinkMachineStore.useTmuxMode   // 没记录过默认走 tmux
         term.bindRestoredMcpParams(p)
       }
     }
@@ -1044,6 +1044,7 @@ extension SpaceController {
   
   private func _newShellAction(command: String = "", animated: Bool = true) {
     let params = MCPParams()
+    params.useTmux = BlinkMachineStore.useTmuxMode   // 新标签默认走 tmux
     if !command.isEmpty {
       params.initialCommand = command
     }
@@ -1056,6 +1057,7 @@ extension SpaceController {
     params.machineId = machineId
     params.workDirId = workDirId
     params.tmuxSession = tmuxSession
+    params.useTmux = BlinkMachineStore.useTmuxMode   // 新标签默认走 tmux
     let payload = MCPSessionPayload(params: params)
     _createTerminal(userActivity: nil, animated: true, sessionPayload: payload)
   }
@@ -2021,6 +2023,7 @@ extension SpaceController: BlinkTabBarDelegate {
     params.machineId = machineId
     params.workDirId = workDirId
     params.tmuxSession = session
+    params.useTmux = BlinkMachineStore.useTmuxMode   // 新标签默认走 tmux
     let payload = MCPSessionPayload(params: params)
     let term = TermController(sceneRole: sceneRole, sessionPayload: payload)
     term.delegate = self
@@ -2075,19 +2078,30 @@ extension SpaceController: BlinkTabBarDelegate {
     }
     _tabFilterMachineId = machineId
     let filtered = _filteredViewportsKeys()
-    if let mid = machineId,
-       let remembered = _lastKeyPerMachine[mid],
-       filtered.contains(remembered),
-       let idx = _viewportsKeys.firstIndex(of: remembered) {
-      _moveToShell(idx: idx, animated: false)          // 回到上次那个 tab
+
+    // 选定目标 tab：上次选中的 > 当前若已在过滤集内 > 第一个
+    var target: UUID? = nil
+    if let mid = machineId, let remembered = _lastKeyPerMachine[mid], filtered.contains(remembered) {
+      target = remembered
     } else if let cur = _currentKey, filtered.contains(cur) {
-      _reloadTabBar()
-    } else if let first = filtered.first, let idx = _viewportsKeys.firstIndex(of: first) {
+      target = cur
+    } else {
+      target = filtered.first
+    }
+
+    if let t = target, t != _currentKey, let idx = _viewportsKeys.firstIndex(of: t) {
       _moveToShell(idx: idx, animated: false)
     } else {
       _reloadTabBar()
     }
     _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+
+    // 切过去后，如果那个 tab 已经掉线（停在 blink> / 后台没连上）就重连
+    if let t = target {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        (SessionRegistry.shared[t] as TermController).reconnectIfDisconnected()
+      }
+    }
   }
 
   // 机器条长按：给机器换头像（同「选择头像」的 Alohe Memoji 选择器）

@@ -396,6 +396,11 @@ extension TermController: TermDeviceDelegate {
     }
   }
 
+  /// 切到这个 tab 时调：底层是 MCP 会话就让它没连就重连
+  func reconnectIfDisconnected() {
+    (_session as? MCPSession)?.reconnectIfDisconnected()
+  }
+
   func apiCall(_ api: String!, andRequest request: String!) {
     guard
       let session = _session as? MCPSession,

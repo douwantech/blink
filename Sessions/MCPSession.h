@@ -49,6 +49,8 @@
 - (void)unregisterSSHClient:(id __weak)sshClient;
 /// ssh 命令连接成功后回调，喂给「连接看门狗」判定连上了没
 - (void)sshClientDidConnect;
+/// 切到这个 tab 时调：没有活 ssh 就立刻重连（有则不打断）
+- (void)reconnectIfDisconnected;
 
 - (void)enqueueCommand:(NSString *)cmd;
 - (void)enqueueCommand:(NSString *)cmd skipHistoryRecord: (BOOL) skipHistoryRecord;

@@ -64,6 +64,7 @@
   int _reconnectAttempts;          // 连续快速重连计数（连上够久会清零）
   BOOL _autoConnectMachineBased;   // YES=按机器重连（每次重新解析 host）；NO=固定命令
   BOOL _sawConnect;                // 本次连接尝试是否已连上（喂给看门狗）
+  BOOL _reconnectPending;          // 已排了一次重连（退避 delay 窗口内），避免重复重连
 }
 
 // 断线自动重连开关，默认开（key 没设过当作开）
@@ -363,6 +364,7 @@ static BOOL BlinkAutoReconnectEnabled(void) {
 
 // 延迟重跑自动 ssh 命令；每次重新解析 host + 清可达性缓存；失败越快退避越久(3→6→9…最多 15s)
 - (void)_scheduleReconnect {
+  _reconnectPending = YES;
   int attempt = ++_reconnectAttempts;
   double delay = MIN(3.0 * attempt, 15.0);
   if (_device) {
@@ -370,6 +372,7 @@ static BOOL BlinkAutoReconnectEnabled(void) {
       @"\r\n\033[33m⚠️ 连接断开，%.0f 秒后自动重连（第 %d 次）… 关闭：设置→断线自动重连\033[0m", delay, attempt]];
   }
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), _cmdQueue, ^{
+    self->_reconnectPending = NO;
     // 重连前再判一次：设备还在、开关仍开
     if (!self->_device) {
       return;
@@ -379,6 +382,31 @@ static BOOL BlinkAutoReconnectEnabled(void) {
       return;
     }
     // 清可达性缓存并重新解析 host（不再用 30s 陈旧缓存里的坏 LAN）
+    [BlinkMachineStore.shared invalidateHostReachabilityCache];
+    self->_autoConnectCommand = [self _freshAutoConnectCommand];
+    self->_currentCmdLine = self->_autoConnectCommand;
+    [self _runCommand:self->_autoConnectCommand skipHistoryRecord:YES];
+    self->_currentCmdLine = nil;
+  });
+}
+
+// 切到这台机器/这个 tab 时调：若当前没有活的 ssh（掉线后停在 blink> 或后台没重连上）
+// 且没有已排队的重连 → 立刻重连。有 ssh 在跑（含正在建连）则什么都不做。
+- (void)reconnectIfDisconnected {
+  if (!_device) { return; }
+  if (!BlinkAutoReconnectEnabled() || _autoConnectCommand.length == 0) { return; }
+  if (_reconnectPending) { return; }
+  __block NSUInteger clientCount = 0;
+  dispatch_sync(_sshQueue, ^{ clientCount = self->_sshClients.count; });
+  if (clientCount > 0) { return; }   // 已有 ssh 在跑/在连，别打断
+  _reconnectPending = YES;
+  [_device writeOutLn:@"\r\n\033[36m↻ 重新连接…\033[0m"];
+  dispatch_async(_cmdQueue, ^{
+    self->_reconnectPending = NO;
+    if (!self->_device) { return; }
+    __block NSUInteger n = 0;
+    dispatch_sync(self->_sshQueue, ^{ n = self->_sshClients.count; });
+    if (n > 0) { return; }   // 排队期间已经连上了
     [BlinkMachineStore.shared invalidateHostReachabilityCache];
     self->_autoConnectCommand = [self _freshAutoConnectCommand];
     self->_currentCmdLine = self->_autoConnectCommand;

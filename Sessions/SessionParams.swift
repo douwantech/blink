@@ -140,8 +140,8 @@ public extension EncodedStateBacked {
   @objc var tmuxSession: String? = nil
 
   /// Per-tab toggle: when true, ssh wraps the remote command in `tmux new-session -A`.
-  /// Default false (direct ssh + cc --resume).
-  @objc var useTmux: Bool = false
+  /// 默认 true：新标签默认走 tmux 模式（掉线重连能 attach 回原会话）。
+  @objc var useTmux: Bool = true
 
   private enum Key: CodingKey { case childSessionType, childSessionParams, machineId, workDirId, tmuxSession, useTmux }
 
