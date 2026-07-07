@@ -197,6 +197,38 @@ enum HostReachability {
     return "ssh -t \(m.user)@\(host) -- \"echo \(encoded) | base64 -d > /tmp/.blink-cc-$$.sh && exec bash /tmp/.blink-cc-$$.sh\""
   }
 
+  // ---- blinkd 传输层(替代 SSH):不走 sshd,走 blinkd socket 连 mac daemon ----
+  // 复用 sshCommand 生成的远端脚本(tmux + claude resume),只把 `ssh -t user@host --`
+  // 换成 `blinkd <host> <port> <token> --exec <script-base64>`。daemon 收到 exec 帧后
+  // fork 一个独立 PTY 跑同一段脚本 —— 体验和 SSH 完全一致,只是绕过 sshd / MDM 防火墙。
+  @objc static var useBlinkd: Bool {
+    get { UserDefaults.standard.bool(forKey: "BlinkUseBlinkd") }
+    set { UserDefaults.standard.set(newValue, forKey: "BlinkUseBlinkd") }
+  }
+  static var blinkdHost: String? { UserDefaults.standard.string(forKey: "BlinkdAutoHost") }
+  static var blinkdToken: String? { UserDefaults.standard.string(forKey: "BlinkdAutoToken") }
+  static var blinkdPort: Int {
+    let p = UserDefaults.standard.integer(forKey: "BlinkdAutoPort")
+    return p > 0 ? p : 7777
+  }
+
+  // 生成走 blinkd 的自动连接命令(useBlinkd 关 / 没配 blinkd 主机时返回 nil,调用方回退 ssh)。
+  @objc func blinkdCommand(forMachineId machineId: String?, workDirId: String?, tmuxSession: String?, useTmux: Bool) -> String? {
+    guard Self.useBlinkd,
+          let bh = Self.blinkdHost, !bh.isEmpty,
+          let bt = Self.blinkdToken, !bt.isEmpty else { return nil }
+    let bp = Self.blinkdPort
+    // 从 sshCommand 里抠出远端脚本的 base64(`echo <B64> | base64 -d`),复用同一段 tmux+claude。
+    // 依赖 sshCommand 的输出格式,两者要一起维护。
+    guard let ssh = sshCommand(forMachineId: machineId, workDirId: workDirId, tmuxSession: tmuxSession, useTmux: useTmux) else { return nil }
+    if let r1 = ssh.range(of: "echo "), let r2 = ssh.range(of: " | base64 -d") {
+      let b64 = String(ssh[r1.upperBound..<r2.lowerBound])
+      return "blinkd \(bh) \(bp) \(bt) --exec \(b64)"
+    }
+    // sshCommand 是纯 `ssh -t user@host`(无远端脚本) → blinkd 跑默认 shell
+    return "blinkd \(bh) \(bp) \(bt)"
+  }
+
   @objc static var useTmuxMode: Bool {
     // 没设过 key 时默认 true：重新打开标签默认走 tmux 模式（外层 cc-<TITLE> session，可被助手 send-keys 注入）
     get {

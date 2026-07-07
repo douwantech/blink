@@ -30,6 +30,7 @@
 #define BLINKD_FRAME_AUTH   0x01
 #define BLINKD_FRAME_DATA   0x02
 #define BLINKD_FRAME_RESIZE 0x03
+#define BLINKD_FRAME_EXEC   0x04
 
 static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
 
@@ -112,6 +113,24 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
 
 - (int)main:(int)argc argv:(char **)argv
 {
+  // 先抽出 --exec <base64>(远端脚本):auth 后发 exec 帧,让 daemon fork 独立 PTY 跑它
+  // (tmux new -A -s cc-<tab> + claude resume)。就地压缩 argv 去掉这两项,
+  // 剩下的按 host/port/token 或别名原样解析。
+  NSString *execScript = nil;
+  int w = 0;
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--exec") == 0 && i + 1 < argc) {
+      NSData *dec = [[NSData alloc] initWithBase64EncodedString:[NSString stringWithUTF8String:argv[i + 1]] options:0];
+      if (dec) {
+        execScript = [[NSString alloc] initWithData:dec encoding:NSUTF8StringEncoding];
+      }
+      i++;  // 跳过 base64 参数
+      continue;
+    }
+    argv[w++] = argv[i];
+  }
+  argc = w;
+
   NSString *sub = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
 
   // 管理子命令(不建连,打印完直接返回)
@@ -122,6 +141,34 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
   }
   if ([sub isEqualToString:@"ls"]) {
     [self printList];
+    return 0;
+  }
+  // 全局开关:让所有 tab 的自动连接走 blinkd(不走 SSH)。真机上一敲即配,无需 UI。
+  //   blinkd auto <host> <port> <token>   开启,新/重开的 tab 走 blinkd 连这个 daemon
+  //   blinkd auto off                     关闭,回到 SSH
+  if ([sub isEqualToString:@"auto"]) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (argc == 3 && strcmp(argv[2], "off") == 0) {
+      [ud setBool:NO forKey:@"BlinkUseBlinkd"];
+      fprintf(_stream.out, "blinkd: 全局 blinkd 已关闭,新 tab 回到 SSH。\r\n");
+      return 0;
+    }
+    if (argc != 5) {
+      fprintf(_stream.out, "Usage: blinkd auto <host> <port> <token>   (blinkd auto off 关闭)\r\n");
+      return -1;
+    }
+    NSString *h = [NSString stringWithUTF8String:argv[2]];
+    int p       = atoi(argv[3]);
+    NSString *t = [NSString stringWithUTF8String:argv[4]];
+    if (p <= 0 || p > 65535) {
+      fprintf(_stream.out, "blinkd: bad port %s\r\n", argv[3]);
+      return -1;
+    }
+    [ud setBool:YES forKey:@"BlinkUseBlinkd"];
+    [ud setObject:h forKey:@"BlinkdAutoHost"];
+    [ud setInteger:p forKey:@"BlinkdAutoPort"];
+    [ud setObject:t forKey:@"BlinkdAutoToken"];
+    fprintf(_stream.out, "blinkd: 已开启全局 blinkd → %s:%d(不走 SSH)。重开标签页生效。\r\n", h.UTF8String, p);
     return 0;
   }
   if ([sub isEqualToString:@"save"]) {
@@ -198,9 +245,13 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
     return -1;
   }
 
-  // 握手:token,再上报当前窗口尺寸
+  // 握手:token → (可选)exec 远端脚本 → 上报窗口尺寸
   const char *tok = token.UTF8String;
   [self sendFrame:BLINKD_FRAME_AUTH payload:tok length:strlen(tok)];
+  if (execScript.length > 0) {
+    const char *es = execScript.UTF8String;
+    [self sendFrame:BLINKD_FRAME_EXEC payload:es length:strlen(es)];
+  }
   [self sendResize];
 
   BOOL rawWas = [_device rawMode];

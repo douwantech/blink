@@ -151,7 +151,11 @@ static BOOL BlinkAutoReconnectEnabled(void) {
           machineId = BlinkMachineStore.shared.currentMachineId;
           self.sessionParams.machineId = machineId;
         }
-        NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
+        // 开了「用 blinkd」就走 blinkd 传输(不走 SSH,绕 MDM);没开或没配 blinkd 主机则回退 ssh
+        NSString *cmd = [BlinkMachineStore.shared blinkdCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
+        if (cmd.length == 0) {
+          cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
+        }
         if (cmd) {
           NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
           if (hostInfo) {
@@ -325,10 +329,16 @@ static BOOL BlinkAutoReconnectEnabled(void) {
   if (![BlinkMachineStore.shared machineExistsForId:machineId]) {
     machineId = BlinkMachineStore.shared.currentMachineId;
   }
-  NSString *cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId
-                                                         workDirId:self.sessionParams.workDirId
-                                                       tmuxSession:self.sessionParams.tmuxSession
-                                                           useTmux:self.sessionParams.useTmux];
+  NSString *cmd = [BlinkMachineStore.shared blinkdCommandForMachineId:machineId
+                                                            workDirId:self.sessionParams.workDirId
+                                                          tmuxSession:self.sessionParams.tmuxSession
+                                                              useTmux:self.sessionParams.useTmux];
+  if (cmd.length == 0) {
+    cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId
+                                                 workDirId:self.sessionParams.workDirId
+                                               tmuxSession:self.sessionParams.tmuxSession
+                                                   useTmux:self.sessionParams.useTmux];
+  }
   return cmd.length > 0 ? cmd : _autoConnectCommand;
 }
 
