@@ -7,18 +7,56 @@ final class BlinkMachine: Codable {
   var host2: String?
   var lanHost: String?
   var user: String
+  // 连接方式:"ssh" / "blinkd";nil=默认(内置机器走 blinkd,其余走 ssh)。可选,向后兼容旧数据。
+  var transport: String?
+  // 走 blinkd 时的 daemon 连接信息(daemon 常是独立 tsnet 节点,和上面 host 不同)
+  var blinkdHost: String?
+  var blinkdPort: Int?
+  var blinkdToken: String?
 
-  init(id: String = UUID().uuidString, name: String = "", host: String, host2: String? = nil, lanHost: String? = nil, user: String) {
+  init(id: String = UUID().uuidString, name: String = "", host: String, host2: String? = nil, lanHost: String? = nil, user: String,
+       transport: String? = nil, blinkdHost: String? = nil, blinkdPort: Int? = nil, blinkdToken: String? = nil) {
     self.id = id
     self.name = name
     self.host = host
     self.host2 = host2
     self.lanHost = lanHost
     self.user = user
+    self.transport = transport
+    self.blinkdHost = blinkdHost
+    self.blinkdPort = blinkdPort
+    self.blinkdToken = blinkdToken
   }
 
   var displayName: String {
     name.isEmpty ? "\(user)@\(host)" : name
+  }
+
+  // ---- 连接方式判定 ----
+  // 内置默认(gitignored xcconfig → Info.plist):哪台机器默认走 blinkd + 它的 daemon 连接信息
+  static func blinkdInfoPlist(_ key: String) -> String? {
+    guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+          !v.isEmpty, !v.hasPrefix("$(") else { return nil }
+    return v
+  }
+  // 这台机器是否走 blinkd:显式 transport 优先,否则内置默认机器走 blinkd、其余 ssh
+  var usesBlinkd: Bool {
+    if transport == "blinkd" { return true }
+    if transport == "ssh" { return false }
+    return name == BlinkMachine.blinkdInfoPlist("BLINKD_AUTO_MACHINE")
+  }
+  // 走 blinkd 时的连接信息:机器自己配的优先,否则回退内置默认(仅内置机器);都没有则 nil→实际回退 ssh
+  var blinkdConfig: (host: String, port: Int, token: String)? {
+    guard usesBlinkd else { return nil }
+    if let h = blinkdHost, !h.isEmpty, let t = blinkdToken, !t.isEmpty {
+      return (h, blinkdPort ?? 7777, t)
+    }
+    if name == BlinkMachine.blinkdInfoPlist("BLINKD_AUTO_MACHINE"),
+       let h = BlinkMachine.blinkdInfoPlist("BLINKD_AUTO_HOST"),
+       let t = BlinkMachine.blinkdInfoPlist("BLINKD_AUTO_TOKEN") {
+      return (h, Int(BlinkMachine.blinkdInfoPlist("BLINKD_AUTO_PORT") ?? "") ?? 7777, t)
+    }
+    return nil
   }
 }
 
@@ -201,54 +239,21 @@ enum HostReachability {
   // 复用 sshCommand 生成的远端脚本(tmux + claude resume),只把 `ssh -t user@host --`
   // 换成 `blinkd <host> <port> <token> --exec <script-base64>`。daemon 收到 exec 帧后
   // fork 一个独立 PTY 跑同一段脚本 —— 体验和 SSH 完全一致,只是绕过 sshd / MDM 防火墙。
-  // 连接信息优先取设备上 UserDefaults(用户敲过 `blinkd auto` 就覆盖),
-  // 否则回退 Info.plist 内置默认(来自 gitignored developer_setup.xcconfig,token 不进 git)——
-  // 所以 app 装上即默认走 blinkd 连这台 mac,不用手动配。
-  @objc static var useBlinkd: Bool {
-    get {
-      if UserDefaults.standard.object(forKey: "BlinkUseBlinkd") != nil {
-        return UserDefaults.standard.bool(forKey: "BlinkUseBlinkd")
-      }
-      return blinkdInfoPlist("BLINKD_AUTO_HOST") != nil   // 内置有主机就默认开
-    }
-    set { UserDefaults.standard.set(newValue, forKey: "BlinkUseBlinkd") }
-  }
-  static var blinkdHost: String? {
-    if let v = UserDefaults.standard.string(forKey: "BlinkdAutoHost"), !v.isEmpty { return v }
-    return blinkdInfoPlist("BLINKD_AUTO_HOST")
-  }
-  static var blinkdToken: String? {
-    if let v = UserDefaults.standard.string(forKey: "BlinkdAutoToken"), !v.isEmpty { return v }
-    return blinkdInfoPlist("BLINKD_AUTO_TOKEN")
-  }
-  static var blinkdPort: Int {
-    let p = UserDefaults.standard.integer(forKey: "BlinkdAutoPort")
-    if p > 0 { return p }
-    if let s = blinkdInfoPlist("BLINKD_AUTO_PORT"), let ip = Int(s), ip > 0 { return ip }
-    return 7777
-  }
-  // xcconfig 没配 blinkd 时 Info.plist 里是 "$(BLINKD_AUTO_HOST)" 字面,当作没配(nil)
-  private static func blinkdInfoPlist(_ key: String) -> String? {
-    guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
-          !v.isEmpty, !v.hasPrefix("$(") else { return nil }
-    return v
-  }
-
-  // 生成走 blinkd 的自动连接命令(useBlinkd 关 / 没配 blinkd 主机时返回 nil,调用方回退 ssh)。
+  // 走 blinkd 的自动连接命令:改成 per-machine —— 这台机器走 SSH(machine.blinkdConfig==nil)
+  // 就返回 nil,调用方回退 sshCommand。连接方式在每台机器的编辑页里选(SSH / Socket)。
   @objc func blinkdCommand(forMachineId machineId: String?, workDirId: String?, tmuxSession: String?, useTmux: Bool) -> String? {
-    guard Self.useBlinkd,
-          let bh = Self.blinkdHost, !bh.isEmpty,
-          let bt = Self.blinkdToken, !bt.isEmpty else { return nil }
-    let bp = Self.blinkdPort
-    // 从 sshCommand 里抠出远端脚本的 base64(`echo <B64> | base64 -d`),复用同一段 tmux+claude。
+    let arr = machines
+    let m = (machineId.flatMap { id in arr.first { $0.id == id } }) ?? currentMachine
+    guard let m, let cfg = m.blinkdConfig else { return nil }
+    // 复用 sshCommand 生成的远端脚本 base64(`echo <B64> | base64 -d`),只换传输层(ssh -t → blinkd socket)。
     // 依赖 sshCommand 的输出格式,两者要一起维护。
     guard let ssh = sshCommand(forMachineId: machineId, workDirId: workDirId, tmuxSession: tmuxSession, useTmux: useTmux) else { return nil }
     if let r1 = ssh.range(of: "echo "), let r2 = ssh.range(of: " | base64 -d") {
       let b64 = String(ssh[r1.upperBound..<r2.lowerBound])
-      return "blinkd \(bh) \(bp) \(bt) --exec \(b64)"
+      return "blinkd \(cfg.host) \(cfg.port) \(cfg.token) --exec \(b64)"
     }
     // sshCommand 是纯 `ssh -t user@host`(无远端脚本) → blinkd 跑默认 shell
-    return "blinkd \(bh) \(bp) \(bt)"
+    return "blinkd \(cfg.host) \(cfg.port) \(cfg.token)"
   }
 
   @objc static var useTmuxMode: Bool {
@@ -567,6 +572,13 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   private let lanHostField = UITextField()
   private let userField = UITextField()
 
+  // 连接方式(SSH / Socket) + blinkd 的 daemon 连接信息
+  private let transportControl = UISegmentedControl(items: ["SSH", "Socket"])
+  private let blinkdHostField = UITextField()
+  private let blinkdPortField = UITextField()
+  private let blinkdTokenField = UITextField()
+  private var useBlinkdSelected = false
+
   init(editing machine: BlinkMachine?) {
     if let m = machine {
       self.machine = m
@@ -591,6 +603,18 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     configureField(host2Field, placeholder: "可选，备用外网 IP/域名", value: machine.host2 ?? "", returnKey: .next, keyboard: .URL)
     configureField(lanHostField, placeholder: "可选，局域网 IP，如 192.168.1.10", value: machine.lanHost ?? "", returnKey: .next, keyboard: .URL)
     configureField(userField, placeholder: "apple", value: machine.user, returnKey: .done, keyboard: .default)
+
+    useBlinkdSelected = machine.usesBlinkd
+    transportControl.selectedSegmentIndex = useBlinkdSelected ? 1 : 0
+    transportControl.addTarget(self, action: #selector(transportChanged), for: .valueChanged)
+    configureField(blinkdHostField, placeholder: "daemon 地址,如 100.96.88.80", value: machine.blinkdHost ?? "", returnKey: .next, keyboard: .URL)
+    configureField(blinkdPortField, placeholder: "7777", value: machine.blinkdPort.map(String.init) ?? "", returnKey: .next, keyboard: .numberPad)
+    configureField(blinkdTokenField, placeholder: "daemon token", value: machine.blinkdToken ?? "", returnKey: .done, keyboard: .default)
+  }
+
+  @objc private func transportChanged() {
+    useBlinkdSelected = transportControl.selectedSegmentIndex == 1
+    tableView.reloadSections(IndexSet(integer: 1), with: .automatic)
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -612,25 +636,65 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     tf.clearButtonMode = .whileEditing
   }
 
-  override func numberOfSections(in tv: UITableView) -> Int { isNew ? 1 : 2 }
+  // section 0=SSH 基础字段, 1=连接方式(SSH/Socket + blinkd 配置), 2=删除(非新建)
+  override func numberOfSections(in tv: UITableView) -> Int { isNew ? 2 : 3 }
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    section == 0 ? 5 : 1
+    switch section {
+    case 0: return 5
+    case 1: return 1 + (useBlinkdSelected ? 3 : 0)   // 连接方式 + (选 Socket 才显 地址/端口/token)
+    default: return 1                                 // 删除
+    }
+  }
+  override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
+    section == 1 ? "连接方式" : nil
   }
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    guard section == 0 else { return nil }
-    return "连接顺序：内网（300ms 探测）→ 外网1 → 外网2，第一个可达的拿来用。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
+    switch section {
+    case 0:
+      return "连接顺序：内网（300ms 探测）→ 外网1 → 外网2，第一个可达的拿来用。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
+    case 1:
+      return useBlinkdSelected
+        ? "Socket：手机直连这台机器的 blinkd daemon，不走 SSH（绕过 MDM）。填 daemon 的地址/端口/token。"
+        : "SSH：走系统 sshd（默认）。选 Socket 需要这台机器上跑着 blinkd daemon。"
+    default:
+      return nil
+    }
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-    if indexPath.section == 1 {
+    // 删除 section(非新建时的最后一个 section = 2)
+    if indexPath.section == 2 {
       let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
       cell.textLabel?.text = "删除机器"
       cell.textLabel?.textColor = .systemRed
       cell.textLabel?.textAlignment = .center
       return cell
     }
-    let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-    cell.selectionStyle = .none
+    // 连接方式 section
+    if indexPath.section == 1 {
+      if indexPath.row == 0 {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        transportControl.translatesAutoresizingMaskIntoConstraints = false
+        cell.contentView.addSubview(transportControl)
+        NSLayoutConstraint.activate([
+          transportControl.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 16),
+          transportControl.trailingAnchor.constraint(equalTo: cell.contentView.trailingAnchor, constant: -16),
+          transportControl.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 8),
+          transportControl.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -8),
+        ])
+        return cell
+      }
+      let (label, field): (String, UITextField) = {
+        switch indexPath.row {
+        case 1: return ("地址", blinkdHostField)
+        case 2: return ("端口", blinkdPortField)
+        default: return ("Token", blinkdTokenField)
+        }
+      }()
+      return makeFieldCell(label: label, field: field)
+    }
+    // SSH 基础字段 section 0
     let (label, field): (String, UITextField) = {
       switch indexPath.row {
       case 0: return ("名称", nameField)
@@ -641,6 +705,13 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
       default: return ("", UITextField())
       }
     }()
+    return makeFieldCell(label: label, field: field)
+  }
+
+  // 字段 cell 布局(SSH 字段 + blinkd 字段复用)
+  private func makeFieldCell(label: String, field: UITextField) -> UITableViewCell {
+    let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+    cell.selectionStyle = .none
     let titleLabel = UILabel()
     titleLabel.text = label
     titleLabel.font = .systemFont(ofSize: 16)
@@ -674,7 +745,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   override func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: true)
-    guard indexPath.section == 1 else { return }
+    guard indexPath.section == 2 else { return }
     let alert = UIAlertController(title: "删除机器？", message: machine.displayName, preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
@@ -703,6 +774,15 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     machine.host2 = host2.isEmpty ? nil : host2
     machine.lanHost = lan.isEmpty ? nil : lan
     machine.user = user
+    // 连接方式
+    machine.transport = useBlinkdSelected ? "blinkd" : "ssh"
+    if useBlinkdSelected {
+      let bh = (blinkdHostField.text ?? "").trimmingCharacters(in: .whitespaces)
+      let bt = (blinkdTokenField.text ?? "").trimmingCharacters(in: .whitespaces)
+      machine.blinkdHost = bh.isEmpty ? nil : bh
+      machine.blinkdToken = bt.isEmpty ? nil : bt
+      machine.blinkdPort = Int((blinkdPortField.text ?? "").trimmingCharacters(in: .whitespaces))
+    }
     BlinkMachineStore.shared.addOrUpdate(machine)
     HostReachability.invalidate()
     navigationController?.popViewController(animated: true)

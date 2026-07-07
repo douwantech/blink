@@ -143,34 +143,7 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
     [self printList];
     return 0;
   }
-  // 全局开关:让所有 tab 的自动连接走 blinkd(不走 SSH)。真机上一敲即配,无需 UI。
-  //   blinkd auto <host> <port> <token>   开启,新/重开的 tab 走 blinkd 连这个 daemon
-  //   blinkd auto off                     关闭,回到 SSH
-  if ([sub isEqualToString:@"auto"]) {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    if (argc == 3 && strcmp(argv[2], "off") == 0) {
-      [ud setBool:NO forKey:@"BlinkUseBlinkd"];
-      fprintf(_stream.out, "blinkd: 全局 blinkd 已关闭,新 tab 回到 SSH。\r\n");
-      return 0;
-    }
-    if (argc != 5) {
-      fprintf(_stream.out, "Usage: blinkd auto <host> <port> <token>   (blinkd auto off 关闭)\r\n");
-      return -1;
-    }
-    NSString *h = [NSString stringWithUTF8String:argv[2]];
-    int p       = atoi(argv[3]);
-    NSString *t = [NSString stringWithUTF8String:argv[4]];
-    if (p <= 0 || p > 65535) {
-      fprintf(_stream.out, "blinkd: bad port %s\r\n", argv[3]);
-      return -1;
-    }
-    [ud setBool:YES forKey:@"BlinkUseBlinkd"];
-    [ud setObject:h forKey:@"BlinkdAutoHost"];
-    [ud setInteger:p forKey:@"BlinkdAutoPort"];
-    [ud setObject:t forKey:@"BlinkdAutoToken"];
-    fprintf(_stream.out, "blinkd: 已开启全局 blinkd → %s:%d(不走 SSH)。重开标签页生效。\r\n", h.UTF8String, p);
-    return 0;
-  }
+  // 连接方式(SSH / Socket)改在每台机器的编辑页里选(设置→机器→连接方式)。
   if ([sub isEqualToString:@"save"]) {
     if (argc != 6) {
       fprintf(_stream.out, "Usage: blinkd save <alias> <host> <port> <token>\r\n");

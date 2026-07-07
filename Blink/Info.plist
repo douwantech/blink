@@ -4,6 +4,8 @@
 <dict>
 	<key>BLINK_APP_FONT</key>
 	<string>$(BLINK_APP_FONT)</string>
+	<key>BLINKD_AUTO_MACHINE</key>
+	<string>$(BLINKD_AUTO_MACHINE)</string>
 	<key>BLINKD_AUTO_HOST</key>
 	<string>$(BLINKD_AUTO_HOST)</string>
 	<key>BLINKD_AUTO_PORT</key>
