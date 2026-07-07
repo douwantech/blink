@@ -1,109 +1,70 @@
 # blinkd — 交接文档
 
-> 2026-07-06 · 分支 `feature/blinkd-local-daemon` · PR: https://github.com/douwantech/blink/pull/1
+> 2026-07-07 · 分支 `feature/blinkd-all-tabs` · PR #2: https://github.com/douwantech/blink/pull/2
+> (步骤2 是 PR #1 `feature/blinkd-local-daemon`，步骤3/per-machine/修复都在 PR #2)
 
 ## 一句话
-给 Blink 加一条**不走 SSH** 的连接通道:连一个常驻 Mac 本地的 daemon(`blinkd`),
-终端和 agent 一直在本地跑、手机接管即可 —— 绕过 sshd / MDM 防火墙 / 远程登录。
-Blink 本身是真终端渲染器,所以 claude 这类 alt-screen TUI 能原生流畅渲染
-(cmux companion 那种"文本快照"方案做不到)。
+给 Blink 一条**不走 SSH** 的连接通道:手机 ←(tailscale)→ Mac 上常驻的 `blinkd` daemon ←PTY→ tmux+claude。
+现在已做到「每台机器可单独选 SSH / Socket(blinkd)」，daemon 是 SSH 的**传输层替代**(远端 tmux+claude 逻辑原样复用)。
 
 ---
 
-## ⚠️ 最紧急的待办(未完成)
-清理 cmux 调研现场时,`close-surface surface:N` 是**动态位置索引**,批量关时错位,
-**误关了你正在跑 AI-Printer 的 jack-printer claude 会话**(进程被杀)。
-- 对话没丢(claude 会话持久化在 `~/.claude/projects/`),恢复:
-  ```
-  cd ~/Codes/Jack && claude --resume   # 选回那个会话继续
-  ```
-- 在你确认恢复前,cmux 那边没再动过任何东西。
-- 教训已记入长期记忆(以后清 cmux 用 UUID、不用 surface:N 批量关)。
+## ⚠️ 当前卡在这里(最重要)
+**真机连生产 tsnet daemon `100.96.88.80:7777` 之前 `connect failed`，刚修完在等用户验证。**
+
+- **根因**(已修 commit 08a14833):daemon 的 tsnet **没等上线就 `srv.Listen()`**，`TailscaleIPs()` 拿到 invalid IP，监听建在无效状态 → 真机 connect failed。之前偶尔能连是碰巧 tsnet 就绪。改成 `srv.Up(ctx)` 等上线再 Listen，日志从 `tsnet listening: invalid IP` 变 `tsnet ready: 100.96.88.80`。
+- **为什么必须走 tsnet、不能改直连**:实测 **mac 防火墙拦物理接口入站数据**(daemon 常规监听时，`127.0.0.1:7777` 通，但 `192.168.0.29`/`100.90.240.27` 连上却收不到数据)。tsnet 是 userspace 网络栈、绕过内核防火墙,所以只能走 tsnet。要改直连得先 `sudo socketfilterfw` 放行(需用户密码,自动做不了)。
+- **开发机测不了**:本机连自己的 tsnet IP 是回环、连不上,不代表真机(外部 tailnet)。所以真机能否连**只能靠用户测**。已重烧 iPhone16(内置 host 100.96.88.80)。
+- **`command not found`**(次要,未根治):只在**连不上、自动重连**时冒出来(`blinkd: command not found`,像 ios_system 没识别 blinkd 命令 fall through)。连上就不出现。根因未定位——初始连接能识别 blinkd(会 connect failed)、重连时却 command not found,可疑但没查到。**优先让连接成功,连上后观察是否还有**。
 
 ---
 
-## 已完成 ✅
-- **Mac 端 daemon** `mac-daemon/`(Go):常驻 PTY 保活(替代 tmux)、256KB 回放缓冲
-  (重连恢复画面)、token 握手、resize 帧、`-tsnet` 独立 tailscale 节点(绕 MDM 防火墙)、
-  `-cmd` 指定 PTY 跑什么(zsh/claude)、shell 退出正确结束会话(不盲目重启)
-- **iOS 端** `Sessions/BlinkdSession.{h,m}`:裸 TCP 会话(照 SSHSession 的 poll 骨架,
-  去掉 libssh2);`MCPSession` 挂 `blinkd <host> <port> <token>` 命令。**未碰 ssh/mosh**
-- **模拟器全自动 E2E 六项全过**:连接 / 命令执行 / 断线 / 重连回放 / PTY 保活 /
-  **claude alt-screen TUI 原生渲染 + 键盘交互**
-- **真机**:含 blinkd 的 Blink 已烧 iPhone 16(bundle `com.aitools.talkcode.stg`)
-- **launchd 自启** `com.jack.blinkd.plist`:开机起 + KeepAlive + tsnet 复用授权自动上线
-- **PR #1** 已建(base `talkai`);演示视频已传 OSS
+## 架构(步骤3 后)
+- **daemon** `mac-daemon/main.go`:**一连接一 PTY**(每 tab 一条连接一个独立 PTY,互不干扰) + **exec 帧(0x04)**(客户端握手时指定跑什么,如 `tmux new -A -s cc-<tab>`)。保活靠**远端 tmux**(连接断→PTY SIGHUP→tmux detach,会话在,重连再 attach),不再用 daemon 侧 ring。不发 exec 则跑默认 `-cmd`(向后兼容手动 `blinkd host port token`)。
+- **iOS**:
+  - `Sessions/BlinkdSession.m`:裸 TCP 会话;解析 `--exec <base64>` 发 exec 帧;`blinkd save/ls/rm <alias>` 别名(存 `blinkd_hosts.json`);`blinkd <host> <port> <token>` 手动直连。
+  - `Blink/SmarterKeys/BlinkMachineStore.swift`:`BlinkMachine` 加 `transport`(ssh/blinkd)+`blinkdHost/Port/Token`;`blinkdCommand` 复用 `sshCommand` 的远端脚本 base64,只换传输层(`ssh -t` → `blinkd … --exec`);**机器编辑页(`MachineFormViewController`)加「连接方式」SSH/Socket 分段控件**。
+  - `Sessions/MCPSession.m`:tab 自动连接 blinkd 优先、回退 ssh(两处:初次 + 重连)。**没碰 sshCommand,SSH 完好**。
+
+## 连接方式怎么配(用户)
+**设置(齿轮)→ 机器 → 点某台机器 → 「连接方式」选 SSH / Socket**。选 Socket 才显 daemon 地址/端口/token。
+- **默认**:名为 `mac` 的机器(内置 `BLINKD_AUTO_MACHINE=mac`)默认走 Socket 且用内置 host/port/token(**留空即可**);其余机器默认 SSH。
+- **内置默认值**在 gitignored 的 `developer_setup.xcconfig`(`BLINKD_AUTO_HOST/PORT/TOKEN/MACHINE`)→ Info.plist → 代码读。token 不进 git。
+- 其他机器要走 Socket:那台得先跑 blinkd daemon,再在 UI 填它的地址/端口/token。
 
 ---
+
+## 完成情况
+- ✅ 步骤2:别名短命令 + 掉线自动重连(PR #1, commit ea6c8f04)
+- ✅ 步骤3:daemon 一连接一 PTY + exec、iOS 全面切 blinkd(PR #2, d0801f0d/0d7a9aec)
+- ✅ 内置默认值,装上即用(caea0a63)
+- ✅ per-machine 连接方式 UI(76d95a0f)——模拟器全 E2E 过(mac 默认 Socket/xiaobai 默认 SSH、动态字段、保存进机器、重启按配置走)
+- ✅ tsnet Up 修复(08a14833)
+- ⏳ **真机连 tsnet 待用户验证**(见上"当前卡在这里")
 
 ## 当前运行状态
-- **launchd daemon**:`com.jack.blinkd`,tsnet 节点 `blinkd` = **`100.96.88.80:7777`**,
-  跑 `/bin/zsh`,token 见 `~/.config/blinkd-token.txt`(也写在 plist 里)
-- tailscale 节点已授权(binku87 账号),Mac 重启后自动上线,手机直接能连
-- 可能残留:临时 claude 实例 `127.0.0.1:7801`(录视频用,可 `pkill -f 'blinkd -port 7801'` 收掉)
-
-## 怎么用(手机 Blink)
-```
-blinkd 100.96.88.80 7777 <token>      # token 见 ~/.config/blinkd-token.txt
-```
-连上即 Mac 的 zsh;想直接进 claude,改 plist 的 `-cmd` 为 claude 路径,或另起实例。
-
----
-
-## 步骤 2(体验优化)✅ 已完成(commit ea6c8f04)
-1. **存配置 + 短命令** ✅:`blinkd save <alias> <host> <port> <token>` 存别名,
-   `blinkd <alias>` 一敲就连;`blinkd ls`(token 脱敏)/`blinkd rm <alias>` 管理。
-   配置存 blink 隐藏目录 `blinkd_hosts.json`(Files app 不可见)。原
-   `blinkd host port token` 直连保留。
-2. **接自动重连** ✅:`_runBlinkdWithArgs` 给真建连的调用登记 `_autoConnectCommand`,
-   复用 ssh 那套退避+看门狗重连,受 设置→断线自动重连 开关控制;管理子命令
-   (save/ls/rm/help)不登记,避免断线后反复重跑。
-3. (可选/未做)**多 session**:当前 daemon 所有连接共享一个 shell,可改成一连接一 shell。
-
-**验证**:别名 save→ls脱敏→解析→用解析凭据真连活 daemon 跑命令读回显→rm,6/6 通过;
-编译 exit 0;nm blink_ssh_main=2 未碰坏 ssh;已烧 iPhone 16。
-⚠️ iOS GUI 键盘打字的自动化 E2E 本会话没跑成(idb HID / osascript / URL scheme
-通道都不可用,环境限制),连接的 GUI 路径在上一轮已用同一 daemon 验证过。
-
-**手机上怎么用**(装好新包后):
-```
-blinkd save mac 100.96.88.80 7777 <token>   # 存一次(token 见 ~/.config/blinkd-token.txt)
-blinkd mac                                   # 以后一敲就连,掉线自动重连
-```
+- launchd `com.jack.blinkd`,plist `~/Library/LaunchAgents/com.jack.blinkd.plist`(已同步 repo `mac-daemon/`),tsnet 节点 `blinkd`=`100.96.88.80:7777`,cmd `/bin/zsh`,token `2bfeae629f16eeac8e20769fed65675a`(也在 `~/.config/blinkd-token.txt`)。
+- 改 daemon 后重启:`launchctl unload/load ~/Library/LaunchAgents/com.jack.blinkd.plist`(srv.Up 会等 tsnet 上线,启动慢几秒是正常的)。
+- tailscale 是 binku87 账号;走 DERP relay(sfo/lax ~300-800ms),独立节点难直连,但 relay 够用(connectTo 超时 8s)。
 
 ---
 
 ## 关键命令 / 坑(务必看)
-**编译 + 烧机 Blink**(命令行必带 `ENABLE_DEBUG_DYLIB=NO`,否则 ios_system 命令符号
-进 debug.dylib 会全挂 → 连 ssh 都用不了):
+**编译+烧机**(命令行必带 `ENABLE_DEBUG_DYLIB=NO`,否则 ios_system 符号进 debug.dylib、连 ssh 都挂;设备离线用 `generic/platform=iOS` 出包):
 ```bash
-cd /Users/apple/Codes/Jack/Blink
+cd /Users/apple/Codes/Jack/blink
 DEVID=1642527E-DE34-54F2-A1A8-FE606019CC60   # iPhone 16
-xcodebuild -project Blink.xcodeproj -scheme Blink \
-  -destination "platform=iOS,id=$DEVID" -allowProvisioningUpdates \
-  DEVELOPMENT_TEAM=659T9VUN97 ENABLE_DEBUG_DYLIB=NO build
-# 烧机前必验(见长期记忆 blink-dont-break-ssh):
+xcodebuild -project Blink.xcodeproj -scheme Blink -destination "generic/platform=iOS" \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=659T9VUN97 ENABLE_DEBUG_DYLIB=NO build
 APP=$(ls -dt ~/Library/Developer/Xcode/DerivedData/Blink-*/Build/Products/Debug-iphoneos/Blink.app | head -1)
-nm -g "$APP/Blink" | grep -c blink_ssh_main   # 必须 ≥1,否则弄坏了 ssh
+nm -g "$APP/Blink" | grep -c blink_ssh_main    # 必须 ≥1,否则弄坏 ssh,禁装
 xcrun devicectl device install app --device "$DEVID" "$APP"
 ```
-
-**daemon 编译/运行**:
-```bash
-cd mac-daemon && GOPROXY=https://goproxy.cn,direct go build -o blinkd .
-./blinkd -tsnet -port 7777 -token <t> -cmd /bin/zsh      # tailscale 模式(需代理连控制面)
-./blinkd -bind 127.0.0.1 -port 7799 -token <t>           # 本地/LAN 模式
-```
+**daemon**:`cd mac-daemon && GOPROXY=https://goproxy.cn,direct go build -o blinkd .`
 
 **坑清单**:
-- Blink 工程 6 个 target 硬编码官方 team `A2H2CL32AG`,命令行必须 `DEVELOPMENT_TEAM=659T9VUN97` 覆盖
-- 构建失败后的增量残留会出半拉子包,怪异时清 `DerivedData` 全量重编
-- daemon 二进制被 `.gitignore` 忽略,`go build` 现编
-- **cmux `close-surface surface:N` 是动态索引,批量关会误伤 —— 只用 UUID 或逐个确认**
-
----
-
-## 调研残留(blinkd 站住后可清,但小心)
-- cmux 桌面 app(`/Applications/cmux.app`) —— **不能随便关**,你的 claude 在它的 surface 里跑
-- cmux-companion(手机)、cmux 官方 iOS app(`dev.junbin.cmuxios`,手机)、GhosttyKit 下载
-  (`scratchpad/cmux-src/GhosttyKit.xcframework` 537M) —— 确认不用了再删
+- 6 个 target 硬编码官方 team,命令行必须 `DEVELOPMENT_TEAM=659T9VUN97` 覆盖。
+- **mac 防火墙拦物理接口入站** → daemon 必须 tsnet(userspace 绕防火墙),别改常规监听。
+- 模拟器测的是**本地 daemon**(`blinkd -bind 127.0.0.1 -port 7798`),连不上生产 tsnet(回环);真机才连生产 tsnet。
+- daemon 二进制被 `.gitignore` 忽略,现编。
+- 模拟器测试环境:把真机 Blink 配置(机器/标签)恢复到模拟器(关机时覆盖 plist 绕 cfprefsd)得到活会话,idb 输入才生效(见长期记忆 blink-sim-restore-from-device)。
