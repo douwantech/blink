@@ -20,6 +20,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
@@ -230,12 +231,17 @@ func main() {
 		}
 		_ = os.MkdirAll(dir, 0o700)
 		srv := &tsnet.Server{Hostname: *hostname, Dir: dir}
+		// 先等 tsnet 真正上线(连上 tailnet 并分配到 IP),再 Listen ——
+		// 否则 Listen 可能在 tsnet 没就绪时建立、监听无效,客户端 connect failed(之前 "invalid IP" bug)。
+		if _, err = srv.Up(context.Background()); err != nil {
+			log.Fatal("tsnet up: ", err)
+		}
 		ln, err = srv.Listen("tcp", fmt.Sprintf(":%d", *port))
 		if err != nil {
 			log.Fatal(err)
 		}
-		ip4, ip6 := srv.TailscaleIPs()
-		log.Printf("tsnet listening: %s %s port %d", ip4, ip6, *port)
+		ip4, _ := srv.TailscaleIPs()
+		log.Printf("tsnet ready: %s port %d", ip4, *port)
 	} else {
 		ln, err = net.Listen("tcp", fmt.Sprintf("%s:%d", *bind, *port))
 		if err != nil {

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  blinkd 开机自启(LaunchAgent)。装法:
+	    cp mac-daemon/com.jack.blinkd.plist ~/Library/LaunchAgents/
+	    launchctl load -w ~/Library/LaunchAgents/com.jack.blinkd.plist
+	  改端口/token/命令后:launchctl unload 再 load。
+	  KeepAlive=true → 崩了自动拉起;RunAtLoad → 开机即起,配合 tsnet
+	  复用 ~/.config/blinkd/tsnet 的已授权 state,重启后手机直接能连。
+	-->
+	<key>Label</key>
+	<string>com.jack.blinkd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/apple/Codes/Jack/Blink/mac-daemon/blinkd</string>
+		<string>-tsnet</string>
+		<string>-port</string>
+		<string>7777</string>
+		<string>-token</string>
+		<string>2bfeae629f16eeac8e20769fed65675a</string>
+		<string>-cmd</string>
+		<string>/bin/zsh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- tsnet 控制面走本地代理(与手动启动时一致) -->
+		<key>HTTPS_PROXY</key>
+		<string>http://127.0.0.1:7890</string>
+		<key>HTTP_PROXY</key>
+		<string>http://127.0.0.1:7890</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/apple</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/blinkd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/blinkd.log</string>
+</dict>
+</plist>
