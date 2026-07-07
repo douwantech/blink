@@ -131,7 +131,11 @@ class SpaceController: UIViewController {
   private var _bottomTapAreaView = UIView()
   private var _floatingDock = FloatingDockBar()
   private var _floatingDockPlaced = false
+  private var _floatingMachineBar = FloatingMachineBar()
+  private var _floatingMachineBarPlaced = false
+  private var _lastKeyPerMachine: [String: UUID] = [:]   // 每台机器上次选中的 tab
   private var _voiceIsRecording = false
+  private let _voiceHaptic = UIImpactFeedbackGenerator(style: .heavy)
   private var _pinnedBrowserVC: PinnedBrowserViewController?
 
   // Snips Input Mode tracking
@@ -248,6 +252,12 @@ class SpaceController: UIViewController {
       _floatingDockPlaced = true
     }
     view.bringSubviewToFront(_floatingDock)
+    if !_floatingMachineBarPlaced {
+      _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+      _floatingMachineBar.restorePosition(in: view)
+      _floatingMachineBarPlaced = true
+    }
+    view.bringSubviewToFront(_floatingMachineBar)
   }
 
   @objc private func _voiceInputAutoShowChanged() {
@@ -286,6 +296,11 @@ class SpaceController: UIViewController {
   }
 
   // 浮动条语音钮：录音中单点=停止；否则=弹面板（不开录）
+  // touchDown 时预热触感生成器，降低长按震动的延迟
+  @objc private func _prepareVoiceHaptic() {
+    _voiceHaptic.prepare()
+  }
+
   @objc private func _unhideVoiceInput() {
     if _voiceIsRecording {
       NotificationCenter.default.post(name: VoiceInputView.stopRecordingNotification, object: nil)
@@ -492,12 +507,19 @@ class SpaceController: UIViewController {
 
     // 玻璃 dock（方案 A）：语音 + 浏览器合并成靠右竖胶囊，可拖动
     _floatingDock.micButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
+    _floatingDock.micButton.addTarget(self, action: #selector(_prepareVoiceHaptic), for: .touchDown)
     _floatingDock.micButton.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(_voiceMicLongPressed(_:))))
     _floatingDock.browserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
     _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
+
+    // 独立的「切换机器」浮动条：点头像直接切机器，长按换头像，可拖
+    _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+    _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
+    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+    view.addSubview(_floatingMachineBar)
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
@@ -2033,16 +2055,7 @@ extension SpaceController: BlinkTabBarDelegate {
     for m in allMachines {
       let mark = (_tabFilterMachineId == m.id) ? " ✓" : ""
       alert.addAction(UIAlertAction(title: m.displayName + mark, style: .default) { [weak self] _ in
-        guard let self else { return }
-        self._tabFilterMachineId = m.id
-        let filtered = self._filteredViewportsKeys()
-        if let cur = self._currentKey, filtered.contains(cur) {
-          self._reloadTabBar()
-        } else if let first = filtered.first, let idx = self._viewportsKeys.firstIndex(of: first) {
-          self._moveToShell(idx: idx, animated: false)
-        } else {
-          self._reloadTabBar()
-        }
+        self?._applyMachineFilter(m.id)
       })
     }
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -2051,6 +2064,46 @@ extension SpaceController: BlinkTabBarDelegate {
       pop.sourceRect = _tabBar.bounds
     }
     present(alert, animated: true)
+  }
+
+  // 切换 tab 过滤到某台机器（nil = 全部）；优先回到该机器上次选中的 tab
+  func _applyMachineFilter(_ machineId: String?) {
+    // 先记住「离开的这台机器」当前停在哪个 tab
+    if let curKey = _currentKey,
+       let curMid = (SessionRegistry.shared[curKey] as TermController).mcpParams?.machineId {
+      _lastKeyPerMachine[curMid] = curKey
+    }
+    _tabFilterMachineId = machineId
+    let filtered = _filteredViewportsKeys()
+    if let mid = machineId,
+       let remembered = _lastKeyPerMachine[mid],
+       filtered.contains(remembered),
+       let idx = _viewportsKeys.firstIndex(of: remembered) {
+      _moveToShell(idx: idx, animated: false)          // 回到上次那个 tab
+    } else if let cur = _currentKey, filtered.contains(cur) {
+      _reloadTabBar()
+    } else if let first = filtered.first, let idx = _viewportsKeys.firstIndex(of: first) {
+      _moveToShell(idx: idx, animated: false)
+    } else {
+      _reloadTabBar()
+    }
+    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+  }
+
+  // 机器条长按：给机器换头像（同「选择头像」的 Alohe Memoji 选择器）
+  func _editMachineAvatar(_ machineId: String) {
+    let picker = AvatarPickerViewController()
+    picker.onPick = { [weak self] data in
+      BlinkMachineStore.shared.setAvatar(data, forId: machineId)
+      self?._floatingMachineBar.reload(currentId: self?._tabFilterMachineId)
+    }
+    let nav = UINavigationController(rootViewController: picker)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
   }
 }
 
@@ -2168,6 +2221,12 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     code { background: #f0f0f3; padding: 2px 5px; border-radius: 4px;
            font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
     pre code { background: none; padding: 0; }
+    .code-wrap { position: relative; }
+    .code-wrap pre { cursor: pointer; padding-top: 30px; }
+    .code-copy { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #6e6e73;
+                 background: rgba(120,120,128,0.14); padding: 2px 8px; border-radius: 6px;
+                 pointer-events: none; z-index: 2; }
+    .code-wrap.copied .code-copy { color: #34c759; background: rgba(52,199,89,0.16); }
     table { border-collapse: collapse; margin: 0.8em 0; display: block; overflow-x: auto;
             font-size: 0.92em; }
     th, td { border: 1px solid #d2d2d7; padding: 6px 10px; text-align: left; }
@@ -2421,7 +2480,14 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           i++;
           while (i < lines.length && !/^```/.test(lines[i])) { body.push(lines[i]); i++; }
           i++;
-          html += '<pre><code>' + linkifyEscaped(escapeHTML(body.join('\n'))) + '</code></pre>';
+          const codeRaw = body.join('\n');
+          const codeInner = '<pre><code>' + linkifyEscaped(escapeHTML(codeRaw)) + '</code></pre>';
+          if (codeClickable) {
+            html += '<div class="code-wrap" data-code="' + utf8B64(codeRaw) + '" onclick="copyCode(event, this)">' +
+                    '<span class="code-copy">⧉ 点击复制</span>' + codeInner + '</div>';
+          } else {
+            html += codeInner;
+          }
           continue;
         }
         // meta line
@@ -2529,6 +2595,18 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       btn.textContent = '✓ 已复制';
       setTimeout(() => { btn.classList.remove('copied'); btn.textContent = orig; }, 1500);
     }
+    // 代码块点击整块复制
+    var codeClickable = true;
+    function copyCode(e, el) {
+      if (e) e.stopPropagation();
+      const enc = el.getAttribute('data-code') || '';
+      let text; try { text = decodeURIComponent(escape(atob(enc))); } catch (err) { text = atob(enc); }
+      doCopy(text);
+      const badge = el.querySelector('.code-copy');
+      el.classList.add('copied');
+      if (badge) badge.textContent = '✓ 已复制';
+      setTimeout(() => { el.classList.remove('copied'); if (badge) badge.textContent = '⧉ 点击复制'; }, 1400);
+    }
     // 把一条消息正文切成可勾选的块：代码块/表格/列表/引用/标题各算一块，连续非空行算一段
     function splitBlocks(text) {
       const lines = text.split('\n');
@@ -2576,6 +2654,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     function renderSelList() {
       const list = document.getElementById('sel-list');
       list.innerHTML = '';
+      codeClickable = false;   // 选择复制页里代码块不单独可点，避免和整卡勾选冲突
       selBlocks.forEach((raw, idx) => {
         const card = document.createElement('div');
         card.className = 'sel-card' + (selChosen[idx] ? ' on' : '');
@@ -2588,6 +2667,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
         });
         list.appendChild(card);
       });
+      codeClickable = true;
       updateSelCount();
     }
     function openSelect(btn) {
