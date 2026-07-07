@@ -1,17 +1,22 @@
 // blinkd — Blink 的 Mac 端常驻终端 daemon(替代 SSH 链路)。
 //
-// 架构:手机 Blink ←(raw TCP / tailscale tsnet)→ blinkd ←PTY→ shell/claude
-//   - PTY 常驻:手机断开、锁屏、杀 app,shell 照跑(替代 tmux 保活)
-//   - 重连回放:保留最近 256KB 输出,attach 时先回放,画面立刻恢复
+// 架构:手机 Blink ←(raw TCP / tailscale tsnet)→ blinkd ←PTY→ shell/tmux/claude
+//   - 一连接一 PTY:每个 tab 一条连接、一个独立 PTY,互不干扰(替代 ssh 一连接一会话)
+//   - 握手带命令:客户端 auth 后可发 exec 帧指定这条连接跑什么(比如
+//     `tmux new -A -s cc-<tab> …`),daemon fork PTY 跑它;不发则跑默认 -cmd
+//     (向后兼容手动 `blinkd <host> <port> <token>` 连一个 shell)
+//   - 保活:靠远端 tmux(自动 tab 跑 tmux new -A -s,连接断 → PTY SIGHUP →
+//     tmux detach,会话在 mac 上继续,重连再 attach 回去)——和 SSH+tmux 一样
 //   - token 握手:第一帧必须是 token,防 tailnet/局域网内他人乱连
 //   - tsnet 模式:daemon 自己作为独立 tailscale 节点监听,绕过 MDM
-//     防火墙对 LAN 入站的封锁(与 cmux-bridge 相同思路,已验证可行)
+//     防火墙对 LAN 入站的封锁
 //
 // 协议(client→server,BigEndian):
-//   0x01 | u16 len | token       握手,必须是第一帧
-//   0x02 | u16 len | bytes       终端输入(键盘)
-//   0x03 | u16 rows | u16 cols   窗口 resize
-// server→client:裸 PTY 字节流,无帧(attach 时先回放 ring buffer)。
+//   0x01 | u16 len | token       握手,必须第一帧
+//   0x04 | u16 len | cmdline      指定这条连接跑的命令(auth 后,PTY 起之前;可选)
+//   0x02 | u16 len | bytes        终端输入(键盘)
+//   0x03 | u16 rows | u16 cols    窗口 resize
+// server→client:裸 PTY 字节流,无帧。
 package main
 
 import (
@@ -32,184 +37,153 @@ import (
 	"tailscale.com/tsnet"
 )
 
-const ringCap = 256 * 1024
-
 const (
 	frameAuth   = 0x01
 	frameData   = 0x02
 	frameResize = 0x03
+	frameExec   = 0x04
 )
 
-// session 是一个常驻 PTY。客户端来去自由,shell 一直活着。
-type session struct {
-	mu      sync.Mutex
-	ptmx    *os.File
-	ring    []byte
-	clients map[net.Conn]struct{}
-	cmdline string
-	rows    uint16
-	cols    uint16
+// conn 是一条客户端连接 + 它专属的 PTY。PTY 懒启动:
+// 第一个 exec 帧决定跑什么命令;若在 exec 前先来 input/resize,则用默认 shell 起 PTY。
+type conn struct {
+	nc     net.Conn
+	defCmd string
+	mu     sync.Mutex
+	ptmx   *os.File
+	rows   uint16
+	cols   uint16
 }
 
-func newSession(cmdline string) (*session, error) {
-	s := &session{
-		clients: make(map[net.Conn]struct{}),
-		cmdline: cmdline,
-		rows:    24, cols: 80,
-	}
-	if err := s.startShell(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
+func handleConn(nc net.Conn, token, defCmd string) {
+	defer nc.Close()
+	co := &conn{nc: nc, defCmd: defCmd, rows: 24, cols: 80}
+	defer co.closePTY()
 
-func (s *session) startShell() error {
-	cmd := exec.Command(s.cmdline)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: s.rows, Cols: s.cols})
-	if err != nil {
-		return fmt.Errorf("pty start %s: %w", s.cmdline, err)
-	}
-	s.ptmx = ptmx
-	go s.readLoop(ptmx)
-	log.Printf("shell started: %s (pid %d)", s.cmdline, cmd.Process.Pid)
-	return nil
-}
-
-// readLoop: PTY 输出 → ring buffer + 广播给所有在线客户端。
-// shell 退出后自动重启,daemon 永不因此而死。
-func (s *session) readLoop(ptmx *os.File) {
-	buf := make([]byte, 32*1024)
+	authed := false
+	hdr := make([]byte, 1)
 	for {
-		n, err := ptmx.Read(buf)
-		if n > 0 {
-			s.broadcast(buf[:n])
+		if _, err := io.ReadFull(nc, hdr); err != nil {
+			return
 		}
-		if err != nil {
-			break
+		switch hdr[0] {
+		case frameAuth:
+			p, err := readLenPrefixed(nc)
+			if err != nil {
+				return
+			}
+			if subtle.ConstantTimeCompare(p, []byte(token)) != 1 {
+				log.Printf("auth FAIL from %s", nc.RemoteAddr())
+				return
+			}
+			authed = true
+
+		case frameExec:
+			p, err := readLenPrefixed(nc)
+			if err != nil {
+				return
+			}
+			if !authed {
+				return
+			}
+			// 指定命令起 PTY(一条连接只起一次;重复 exec 忽略)
+			co.startPTY("/bin/bash", []string{"-c", string(p)})
+
+		case frameData:
+			p, err := readLenPrefixed(nc)
+			if err != nil {
+				return
+			}
+			if !authed {
+				return
+			}
+			// 没 exec 就先来输入 → 用默认 shell 起 PTY(手动 blinkd 场景)
+			co.startPTY(co.defCmd, nil)
+			co.writePTY(p)
+
+		case frameResize:
+			var dims [4]byte
+			if _, err := io.ReadFull(nc, dims[:]); err != nil {
+				return
+			}
+			if !authed {
+				return
+			}
+			co.resize(binary.BigEndian.Uint16(dims[0:2]), binary.BigEndian.Uint16(dims[2:4]))
+
+		default:
+			log.Printf("bad frame 0x%02x from %s", hdr[0], nc.RemoteAddr())
+			return
 		}
 	}
-	// shell 退出(用户 exit / 崩溃):断开所有客户端,让它们回到 Blink 命令行,
-	// 再起一个新 shell 备着下次连接。
-	// 关键:PTY 保活靠的是「客户端断开时不杀 shell」(broadcast 只删连接、
-	// 不动 ptmx),不是靠这里重启 —— 所以用户 exit 能真正结束会话,而不是被
-	// 粘在一个重启循环里退不出来。
-	s.mu.Lock()
-	if s.ptmx != ptmx {
-		s.mu.Unlock()
+}
+
+// startPTY 懒启动这条连接的 PTY(已启动则忽略)。PTY 输出 → 写回 conn;
+// shell/命令退出 → 关连接(客户端回到 Blink 命令行)。
+func (co *conn) startPTY(name string, args []string) {
+	co.mu.Lock()
+	if co.ptmx != nil {
+		co.mu.Unlock()
 		return
 	}
-	for c := range s.clients {
-		c.Close()
-		delete(s.clients, c)
+	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: co.rows, Cols: co.cols})
+	if err != nil {
+		co.mu.Unlock()
+		log.Printf("pty start %s %v: %v", name, args, err)
+		co.nc.Close()
+		return
 	}
-	s.ring = nil // 新 shell 不带旧 shell 的历史
-	if err := s.startShell(); err != nil {
-		log.Printf("shell restart failed: %v", err)
-	}
-	s.mu.Unlock()
-}
+	co.ptmx = ptmx
+	co.mu.Unlock()
+	log.Printf("pty started for %s: %s (pid %d)", co.nc.RemoteAddr(), name, cmd.Process.Pid)
 
-func (s *session) broadcast(p []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ring = append(s.ring, p...)
-	if over := len(s.ring) - ringCap; over > 0 {
-		s.ring = s.ring[over:]
-	}
-	for c := range s.clients {
-		if _, err := c.Write(p); err != nil {
-			delete(s.clients, c)
-			c.Close()
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				if _, werr := co.nc.Write(buf[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
 		}
-	}
+		// 命令退出(用户 exit / tmux detach 后 shell 结束):关连接,客户端回 blink 命令行。
+		// 远端 tmux 会话不受影响(仍在 mac 上跑,重连再 attach)。
+		co.nc.Close()
+	}()
 }
 
-// attach: 先回放历史(画面恢复),再进入实时流。
-func (s *session) attach(c net.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.ring) > 0 {
-		_, _ = c.Write(s.ring)
-	}
-	s.clients[c] = struct{}{}
-	log.Printf("client attached: %s (%d online)", c.RemoteAddr(), len(s.clients))
-}
-
-func (s *session) detach(c net.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.clients[c]; ok {
-		delete(s.clients, c)
-		log.Printf("client detached: %s (%d online)", c.RemoteAddr(), len(s.clients))
-	}
-}
-
-func (s *session) input(p []byte) {
-	s.mu.Lock()
-	ptmx := s.ptmx
-	s.mu.Unlock()
+func (co *conn) writePTY(p []byte) {
+	co.mu.Lock()
+	ptmx := co.ptmx
+	co.mu.Unlock()
 	if ptmx != nil {
 		_, _ = ptmx.Write(p)
 	}
 }
 
-func (s *session) resize(rows, cols uint16) {
-	s.mu.Lock()
-	s.rows, s.cols = rows, cols
-	ptmx := s.ptmx
-	s.mu.Unlock()
+func (co *conn) resize(rows, cols uint16) {
+	co.mu.Lock()
+	co.rows, co.cols = rows, cols
+	ptmx := co.ptmx
+	co.mu.Unlock()
 	if ptmx != nil {
 		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
 	}
 }
 
-// ---- 连接处理 ----
-
-func handleConn(c net.Conn, token string, s *session) {
-	defer c.Close()
-	defer s.detach(c)
-
-	authed := false
-	hdr := make([]byte, 1)
-	for {
-		if _, err := io.ReadFull(c, hdr); err != nil {
-			return
-		}
-		switch hdr[0] {
-		case frameAuth:
-			p, err := readLenPrefixed(c)
-			if err != nil {
-				return
-			}
-			if subtle.ConstantTimeCompare(p, []byte(token)) != 1 {
-				log.Printf("auth FAIL from %s", c.RemoteAddr())
-				return
-			}
-			authed = true
-			s.attach(c)
-		case frameData:
-			p, err := readLenPrefixed(c)
-			if err != nil {
-				return
-			}
-			if !authed {
-				return
-			}
-			s.input(p)
-		case frameResize:
-			var dims [4]byte
-			if _, err := io.ReadFull(c, dims[:]); err != nil {
-				return
-			}
-			if !authed {
-				return
-			}
-			s.resize(binary.BigEndian.Uint16(dims[0:2]), binary.BigEndian.Uint16(dims[2:4]))
-		default:
-			log.Printf("bad frame 0x%02x from %s", hdr[0], c.RemoteAddr())
-			return
-		}
+func (co *conn) closePTY() {
+	co.mu.Lock()
+	ptmx := co.ptmx
+	co.ptmx = nil
+	co.mu.Unlock()
+	if ptmx != nil {
+		_ = ptmx.Close() // SIGHUP → 远端 tmux detach,会话保留
 	}
 }
 
@@ -234,7 +208,7 @@ func main() {
 		useTsnet = flag.Bool("tsnet", false, "listen as an independent tailscale node (bypasses MDM firewall)")
 		hostname = flag.String("hostname", "blinkd", "tsnet node hostname")
 		stateDir = flag.String("state", "", "tsnet state dir (default ~/.config/blinkd/tsnet)")
-		cmdline  = flag.String("cmd", "/bin/zsh", "command to run in the PTY")
+		cmdline  = flag.String("cmd", "/bin/zsh", "default command when a connection sends no exec frame")
 	)
 	flag.Parse()
 
@@ -246,12 +220,8 @@ func main() {
 		*token = hex.EncodeToString(b)
 	}
 
-	sess, err := newSession(*cmdline)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	var ln net.Listener
+	var err error
 	if *useTsnet {
 		dir := *stateDir
 		if dir == "" {
@@ -273,12 +243,12 @@ func main() {
 		}
 	}
 
-	log.Printf("blinkd ready on %s | token=%s | cmd=%s", ln.Addr(), *token, *cmdline)
+	log.Printf("blinkd ready on %s | token=%s | default cmd=%s", ln.Addr(), *token, *cmdline)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handleConn(c, *token, sess)
+		go handleConn(c, *token, *cmdline)
 	}
 }
