@@ -24,8 +24,6 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
   func voiceInputDidRequestPaste(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestPasteText text: String)
-  func voiceInputCurrentTabUseTmux(_ view: VoiceInputView) -> Bool
-  func voiceInputDidToggleTmuxMode(_ view: VoiceInputView)
 }
 
 final class VoiceInputView: UIInputView {
@@ -54,7 +52,6 @@ final class VoiceInputView: UIInputView {
   private let clearTextButton = UIButton(type: .system)
   private let claudeButton = UIButton(type: .system)
   private let reloadButton = UIButton(type: .system)
-  private let tmuxModeButton = UIButton(type: .system)
   private let favoritesQuickButton = UIButton(type: .system)
   private let historyQuickButton = UIButton(type: .system)
   private let closeTabButton = UIButton(type: .system)
@@ -256,11 +253,6 @@ final class VoiceInputView: UIInputView {
     reloadButton.layer.cornerRadius = 6
     reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
 
-    tmuxModeButton.layer.borderWidth = 1
-    tmuxModeButton.layer.cornerRadius = 6
-    tmuxModeButton.addTarget(self, action: #selector(tmuxModeTapped), for: .touchUpInside)
-    updateTmuxModeButtonAppearance()
-
     favoritesQuickButton.setImage(UIImage(systemName: "star.fill"), for: .normal)
     favoritesQuickButton.tintColor = .systemYellow
     favoritesQuickButton.layer.borderColor = UIColor.systemYellow.withAlphaComponent(0.6).cgColor
@@ -302,7 +294,7 @@ final class VoiceInputView: UIInputView {
     hintLabel.text = currentLocaleTitle()
     hintLabel.isHidden = true
 
-    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, tmuxModeButton, favoritesQuickButton, historyQuickButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
+    [textView, placeholderLabel, micButton, confirmButton, cancelButton, keyboardButton, settingsButton, minimizeButton, escButton, clearTextButton, claudeButton, reloadButton, favoritesQuickButton, historyQuickButton, closeTabButton, hintLabel, arrowPadContainer].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -354,13 +346,8 @@ final class VoiceInputView: UIInputView {
       reloadButton.widthAnchor.constraint(equalToConstant: 38),
       reloadButton.heightAnchor.constraint(equalToConstant: 30),
 
-      tmuxModeButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
-      tmuxModeButton.leadingAnchor.constraint(equalTo: closeTabButton.trailingAnchor, constant: 6),
-      tmuxModeButton.widthAnchor.constraint(equalToConstant: 38),
-      tmuxModeButton.heightAnchor.constraint(equalToConstant: 28),
-
       favoritesQuickButton.centerYAnchor.constraint(equalTo: settingsButton.centerYAnchor),
-      favoritesQuickButton.leadingAnchor.constraint(equalTo: tmuxModeButton.trailingAnchor, constant: 6),
+      favoritesQuickButton.leadingAnchor.constraint(equalTo: closeTabButton.trailingAnchor, constant: 6),
       favoritesQuickButton.widthAnchor.constraint(equalToConstant: 38),
       favoritesQuickButton.heightAnchor.constraint(equalToConstant: 28),
 
@@ -860,21 +847,6 @@ final class VoiceInputView: UIInputView {
     findViewController()?.present(nav, animated: true)
   }
 
-  @objc private func tmuxModeTapped() {
-    let currentlyOn = delegate?.voiceInputCurrentTabUseTmux(self) ?? false
-    let next = !currentlyOn
-    showToast(next ? "本 tab 切到 tmux + cc，重连中…" : "本 tab 切到直连 cc，重连中…")
-    delegate?.voiceInputDidToggleTmuxMode(self)
-    updateTmuxModeButtonAppearance()
-  }
-
-  func updateTmuxModeButtonAppearance() {
-    let on = delegate?.voiceInputCurrentTabUseTmux(self) ?? false
-    tmuxModeButton.setImage(UIImage(systemName: on ? "t.square.fill" : "t.square"), for: .normal)
-    tmuxModeButton.tintColor = on ? .systemOrange : .systemGray
-    tmuxModeButton.layer.borderColor = (on ? UIColor.systemOrange : UIColor.systemGray.withAlphaComponent(0.4)).cgColor
-  }
-
   @objc private func escTapped() {
     if isRecording {
       setMicButtonRecording(false)
@@ -1003,7 +975,6 @@ final class VoiceInputView: UIInputView {
     super.didMoveToWindow()
     if window != nil {
       refreshSettingsButtonTitle()
-      updateTmuxModeButtonAppearance()
       // 浮动条语音钮触发：面板刚上屏，稍等一拍直接开录
       if Self.wantsAutoRecord {
         Self.wantsAutoRecord = false

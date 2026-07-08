@@ -167,7 +167,7 @@ public extension EncodedStateBacked {
     self.machineId = coder.bk_decode(for: Key.machineId)
     self.workDirId = coder.bk_decode(for: Key.workDirId)
     self.tmuxSession = coder.bk_decode(for: Key.tmuxSession)
-    self.useTmux = coder.bk_decode(for: Key.useTmux)
+    self.useTmux = true   // 强制全 tmux（忽略旧存档值 / 已移除的 T 开关）；原为 coder.bk_decode(for: Key.useTmux)
   }
 
   // MARK: - BKSessionParamsSnapshotting (forward)
