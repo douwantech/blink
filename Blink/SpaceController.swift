@@ -489,6 +489,7 @@ class SpaceController: UIViewController {
     setupOverlayConstraints()
     
     if _viewportsKeys.isEmpty {
+      TabStateStore.shared.adoptSyncedIfNewer()   // 先采纳 iCloud 上更新的 tab 列表（跨设备）
       _restoreFromStore()
     }
     if _viewportsKeys.isEmpty {
@@ -591,10 +592,33 @@ Please go to your subscriptions and cancel one of them!
                    name: UIApplication.willResignActiveNotification, object: nil)
     nc.addObserver(self, selector: #selector(_flushTabStateStore),
                    name: UIApplication.didEnterBackgroundNotification, object: nil)
+
+    nc.addObserver(self, selector: #selector(_cloudConfigDidRestore),
+                   name: CloudConfigSync.didRestoreNotification, object: nil)
   }
 
   @objc private func _flushTabStateStore() {
     TabStateStore.shared.flushNow()
+  }
+
+  /// iCloud 送来新配置（可能含更新的 tab 列表）。本机没有「真实」tab（空 / 仅空白 shell）时，
+  /// 采纳跨设备 tab 并重建；已有真实 tab 的活跃设备不实时重建（避免打断），等下次启动再采纳。
+  @objc private func _cloudConfigDidRestore() {
+    let hasReal = _viewportsKeys.contains { k -> Bool in
+      let term: TermController = SessionRegistry.shared[k]
+      let p = term.mcpParams
+      return p?.machineId != nil || p?.workDirId != nil || p?.tmuxSession != nil
+    }
+    guard !hasReal, TabStateStore.shared.adoptSyncedIfNewer() else { return }
+    _restoreFromStore()
+    if let key = _currentKey {
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .black
+      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+    }
+    _sortTabsByMachineAndDir()
+    _ensureAssistantTabFirst()
   }
 
   @objc private func _activeSessionDidChange() {
