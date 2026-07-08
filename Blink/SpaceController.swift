@@ -107,7 +107,7 @@ class SpaceController: UIViewController {
         p.machineId = entry.machineId
         p.workDirId = entry.workDirId
         p.tmuxSession = entry.tmuxSession
-        p.useTmux = entry.useTmux ?? BlinkMachineStore.useTmuxMode   // 没记录过默认走 tmux
+        p.useTmux = true   // 强制全 tmux（忽略旧存值 / 已移除的 T 开关）
         term.bindRestoredMcpParams(p)
       }
     }
@@ -1287,7 +1287,7 @@ extension SpaceController {
     params.machineId = machineId
     params.workDirId = p.workDirId
     params.tmuxSession = p.tmuxSession
-    params.useTmux = p.useTmux
+    params.useTmux = true   // 强制全 tmux
     let payload = MCPSessionPayload(params: params)
 
     let newTerm = TermController(sceneRole: sceneRole, sessionPayload: payload)

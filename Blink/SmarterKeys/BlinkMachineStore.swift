@@ -259,8 +259,8 @@ enum HostReachability {
   @objc static var useTmuxMode: Bool {
     // 没设过 key 时默认 true：重新打开标签默认走 tmux 模式（外层 cc-<TITLE> session，可被助手 send-keys 注入）
     get {
-      if UserDefaults.standard.object(forKey: "BlinkUseTmuxMode") == nil { return true }
-      return UserDefaults.standard.bool(forKey: "BlinkUseTmuxMode")
+      // 强制全部 tab 走 tmux + cc（T 开关已移除）；旧的 BlinkUseTmuxMode 设置一律忽略
+      return true
     }
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
