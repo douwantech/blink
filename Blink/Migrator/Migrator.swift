@@ -76,36 +76,29 @@ import UserNotifications
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
       dlog("notification authorization granted=\(granted)")
     }
-    let blob = """
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACBhKWYQft5vRmWA8zd74u3KLW/99sshjHt66dv2h72c9AAAAJDL4pQ6y+KU
-OgAAAAtzc2gtZWQyNTUxOQAAACBhKWYQft5vRmWA8zd74u3KLW/99sshjHt66dv2h72c9A
-AAAECLn2rrwcjqcn0pCEduLsPAs37coc5NnEdCfMrD9EZiKmEpZhB+3m9GZYDzN3vi7cot
-b/32yyGMe3rp2/aHvZz0AAAACWJsaW5rLXNpbQECAwQ=
------END OPENSSH PRIVATE KEY-----
-
-"""
+    // 【安全】旧版本把一段写死的私钥（公钥 …aHvZz0 blink-sim）内置进 app 并 push 到 public
+    // 仓库 —— 私钥泄露。这里检测到旧的泄露 key 就删掉，改由每台设备首启本地生成一对唯一
+    // ed25519，私钥只留在本机 keychain、永不进仓库。旧公钥需从各机器 authorized_keys 移除，
+    // 换上本机新公钥（设置页「机器」footer 会实时显示）。
+    let leakedPub = "AAAAC3NzaC1lZDI1NTE5AAAAIGEpZhB+3m9GZYDzN3vi7cotb/32yyGMe3rp2/aHvZz0"
+    if let existing = BKPubKey.withID(keyID), existing.publicKey.contains(leakedPub) {
+      dlog("revoking leaked builtin AutoMac key")
+      BKPubKey.removeCard(card: existing)
+    }
 
     var justImported = false
     if BKPubKey.withID(keyID) == nil {
-      guard let data = blob.data(using: .utf8) else {
-        dlog("data nil"); return
-      }
-      dlog("blob len=\(data.count)")
       do {
-        let key = try SSHKey(fromFileBlob: data, passphrase: "")
-        dlog("SSHKey ok")
+        let key = try SSHKey(type: .ed25519, bits: 256)   // 每设备唯一，私钥不出本机
         try BKPubKey.addKeychainKey(id: keyID, key: key, comment: "auto")
-        dlog("addKeychainKey ok")
         BKPubKey.saveIDS()
-        dlog("saveIDS ok, withID now=\(BKPubKey.withID(keyID) as Any)")
+        dlog("generated per-device AutoMac key, pub=\(BKPubKey.withID(keyID)?.publicKey ?? "?")")
         justImported = true
       } catch {
-        dlog("error: \(error)")
+        dlog("generate error: \(error)")
       }
     } else {
-      dlog("AutoMac exists, skip import")
+      dlog("AutoMac exists (per-device), skip generate")
     }
 
     let desired = BKAgentSettings(prompt: .Allow, keys: [keyID])
