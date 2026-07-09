@@ -973,19 +973,22 @@ extension SpaceController {
     return input.blinkKeyCommands + _macArrowNavKeyCommands
   }
 
-  /// Mac（Designed-for-iPad）专属方向键导航：Cmd+←/→ 切标签，Cmd+↑/↓ 切机器。
-  /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的 Cmd+方向习惯。
+  /// Mac（Designed-for-iPad）专属键盘导航：
+  ///   Cmd+←/→ 或 Cmd+Shift+[ / ] 切标签；Cmd+↑/↓ 切机器。
+  /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的按键习惯。
   private var _macArrowNavKeyCommands: [UIKeyCommand] {
     guard ProcessInfo.processInfo.isiOSAppOnMac else { return [] }
-    let specs: [(String, Selector)] = [
-      (UIKeyCommand.inputLeftArrow,  #selector(_macPrevTab)),
-      (UIKeyCommand.inputRightArrow, #selector(_macNextTab)),
-      (UIKeyCommand.inputUpArrow,    #selector(_macPrevMachine)),
-      (UIKeyCommand.inputDownArrow,  #selector(_macNextMachine)),
+    let specs: [(String, UIKeyModifierFlags, Selector)] = [
+      (UIKeyCommand.inputLeftArrow,  .command,           #selector(_macPrevTab)),
+      (UIKeyCommand.inputRightArrow, .command,           #selector(_macNextTab)),
+      (UIKeyCommand.inputUpArrow,    .command,           #selector(_macPrevMachine)),
+      (UIKeyCommand.inputDownArrow,  .command,           #selector(_macNextMachine)),
+      ("[",                          [.command, .shift], #selector(_macPrevTab)),   // Cmd+Shift+[ 上一个标签
+      ("]",                          [.command, .shift], #selector(_macNextTab)),   // Cmd+Shift+] 下一个标签
     ]
-    return specs.map { (input, action) in
-      let c = UIKeyCommand(input: input, modifierFlags: .command, action: action)
-      c.wantsPriorityOverSystemBehavior = true   // 抢在系统「Cmd+←=行首」等默认行为之前
+    return specs.map { (input, mods, action) in
+      let c = UIKeyCommand(input: input, modifierFlags: mods, action: action)
+      c.wantsPriorityOverSystemBehavior = true   // 抢在系统默认行为之前
       return c
     }
   }
