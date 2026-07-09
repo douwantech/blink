@@ -259,8 +259,8 @@ enum HostReachability {
   @objc static var useTmuxMode: Bool {
     // 没设过 key 时默认 true：重新打开标签默认走 tmux 模式（外层 cc-<TITLE> session，可被助手 send-keys 注入）
     get {
-      if UserDefaults.standard.object(forKey: "BlinkUseTmuxMode") == nil { return true }
-      return UserDefaults.standard.bool(forKey: "BlinkUseTmuxMode")
+      // 强制全部 tab 走 tmux + cc（T 开关已移除）；旧的 BlinkUseTmuxMode 设置一律忽略
+      return true
     }
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
@@ -374,6 +374,11 @@ enum HostReachability {
     echo READY
     """
     let encoded = Data(remoteScript.utf8).base64EncodedString()
+    // 走 blinkd 的机器：跟 tab 一样用 socket 传输拉历史，不走 ssh
+    // （--exec 的 b64 被 BlinkdSession 解码成脚本，daemon 侧 bash -c 跑，等价 ssh 版 echo|base64 -d|bash）
+    if let cfg = m.blinkdConfig {
+      return "blinkd \(cfg.host) \(cfg.port) \(cfg.token) --exec \(encoded)"
+    }
     return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d | bash\""
   }
 

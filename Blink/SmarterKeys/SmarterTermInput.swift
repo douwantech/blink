@@ -662,18 +662,6 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.reloadCurrentShell()
   }
 
-  func voiceInputCurrentTabUseTmux(_ view: VoiceInputView) -> Bool {
-    spaceController?.currentTerm()?.mcpParams?.useTmux ?? false
-  }
-
-  func voiceInputDidToggleTmuxMode(_ view: VoiceInputView) {
-    guard let sp = spaceController,
-          let term = sp.currentTerm(),
-          let p = term.mcpParams else { return }
-    p.useTmux = !p.useTmux
-    sp.reloadCurrentShell()
-  }
-
   func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView) {
     spaceController?.dumpTranscriptForCurrentShell()
   }

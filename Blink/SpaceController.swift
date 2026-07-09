@@ -107,7 +107,7 @@ class SpaceController: UIViewController {
         p.machineId = entry.machineId
         p.workDirId = entry.workDirId
         p.tmuxSession = entry.tmuxSession
-        p.useTmux = entry.useTmux ?? BlinkMachineStore.useTmuxMode   // 没记录过默认走 tmux
+        p.useTmux = true   // 强制全 tmux（忽略旧存值 / 已移除的 T 开关）
         term.bindRestoredMcpParams(p)
       }
     }
@@ -489,6 +489,7 @@ class SpaceController: UIViewController {
     setupOverlayConstraints()
     
     if _viewportsKeys.isEmpty {
+      TabStateStore.shared.adoptSyncedIfNewer()   // 先采纳 iCloud 上更新的 tab 列表（跨设备）
       _restoreFromStore()
     }
     if _viewportsKeys.isEmpty {
@@ -591,10 +592,33 @@ Please go to your subscriptions and cancel one of them!
                    name: UIApplication.willResignActiveNotification, object: nil)
     nc.addObserver(self, selector: #selector(_flushTabStateStore),
                    name: UIApplication.didEnterBackgroundNotification, object: nil)
+
+    nc.addObserver(self, selector: #selector(_cloudConfigDidRestore),
+                   name: CloudConfigSync.didRestoreNotification, object: nil)
   }
 
   @objc private func _flushTabStateStore() {
     TabStateStore.shared.flushNow()
+  }
+
+  /// iCloud 送来新配置（可能含更新的 tab 列表）。本机没有「真实」tab（空 / 仅空白 shell）时，
+  /// 采纳跨设备 tab 并重建；已有真实 tab 的活跃设备不实时重建（避免打断），等下次启动再采纳。
+  @objc private func _cloudConfigDidRestore() {
+    let hasReal = _viewportsKeys.contains { k -> Bool in
+      let term: TermController = SessionRegistry.shared[k]
+      let p = term.mcpParams
+      return p?.machineId != nil || p?.workDirId != nil || p?.tmuxSession != nil
+    }
+    guard !hasReal, TabStateStore.shared.adoptSyncedIfNewer() else { return }
+    _restoreFromStore()
+    if let key = _currentKey {
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .black
+      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+    }
+    _sortTabsByMachineAndDir()
+    _ensureAssistantTabFirst()
   }
 
   @objc private func _activeSessionDidChange() {
@@ -946,9 +970,34 @@ extension SpaceController {
       return [UIKeyCommand(input: "", modifierFlags: keyCode.modifierFlags, action: #selector(onStuckOpCommand))]
     }
     
-    return input.blinkKeyCommands
+    return input.blinkKeyCommands + _macArrowNavKeyCommands
   }
-  
+
+  /// Mac（Designed-for-iPad）专属键盘导航：
+  ///   Cmd+←/→ 或 Cmd+Shift+[ / ] 切标签；Cmd+↑/↓ 切机器。
+  /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的按键习惯。
+  private var _macArrowNavKeyCommands: [UIKeyCommand] {
+    guard ProcessInfo.processInfo.isiOSAppOnMac else { return [] }
+    let specs: [(String, UIKeyModifierFlags, Selector)] = [
+      (UIKeyCommand.inputLeftArrow,  .command,           #selector(_macPrevTab)),
+      (UIKeyCommand.inputRightArrow, .command,           #selector(_macNextTab)),
+      (UIKeyCommand.inputUpArrow,    .command,           #selector(_macPrevMachine)),
+      (UIKeyCommand.inputDownArrow,  .command,           #selector(_macNextMachine)),
+      ("[",                          [.command, .shift], #selector(_macPrevTab)),   // Cmd+Shift+[ 上一个标签
+      ("]",                          [.command, .shift], #selector(_macNextTab)),   // Cmd+Shift+] 下一个标签
+    ]
+    return specs.map { (input, mods, action) in
+      let c = UIKeyCommand(input: input, modifierFlags: mods, action: action)
+      c.wantsPriorityOverSystemBehavior = true   // 抢在系统默认行为之前
+      return c
+    }
+  }
+
+  @objc private func _macPrevTab()     { _advanceShellCycling(by: -1) }
+  @objc private func _macNextTab()     { _advanceShellCycling(by: 1) }
+  @objc private func _macPrevMachine() { _advanceMachine(by: -1) }
+  @objc private func _macNextMachine() { _advanceMachine(by: 1) }
+
   @objc func onStuckOpCommand() {
     stuckKeyCode = nil
     presentedViewController?.dismiss(animated: true)
@@ -1287,7 +1336,7 @@ extension SpaceController {
     params.machineId = machineId
     params.workDirId = p.workDirId
     params.tmuxSession = p.tmuxSession
-    params.useTmux = p.useTmux
+    params.useTmux = true   // 强制全 tmux
     let payload = MCPSessionPayload(params: params)
 
     let newTerm = TermController(sceneRole: sceneRole, sessionPayload: payload)
@@ -1868,7 +1917,20 @@ extension SpaceController {
     guard let idx = _viewportsKeys.firstIndex(of: target) else { return }
     _moveToShell(idx: idx, animated: animated)
   }
-  
+
+  /// 切到上/下一台「有 tab 的机器」并过滤显示它（复用 _applyMachineFilter，含掉线自动重连）。
+  /// 无机器 filter 时以当前 tab 所属机器为起点；少于 2 台有 tab 的机器时无操作。
+  private func _advanceMachine(by: Int) {
+    let machineIds = _machineIdsWithTabs()
+    guard machineIds.count > 1 else { return }
+    let curMid: String? = _tabFilterMachineId ?? _currentKey.flatMap {
+      (SessionRegistry.shared[$0] as TermController).mcpParams?.machineId
+    }
+    let curPos = curMid.flatMap { machineIds.firstIndex(of: $0) } ?? 0
+    let nextPos = (curPos + by + machineIds.count) % machineIds.count
+    _applyMachineFilter(machineIds[nextPos])
+  }
+
 }
 
 // MARK: CommandsHUDDelegate

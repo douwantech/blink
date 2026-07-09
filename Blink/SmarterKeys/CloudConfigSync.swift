@@ -32,6 +32,7 @@ final class CloudConfigSync: NSObject {
     "BlinkUseTmuxMode",
     "BlinkWorkDirStore.workDirs",
     "BlinkSessionPresetStore.presets",
+    "TabStateStore.syncState",   // 终端 tab 列表跨设备同步
     // 人员
     "BlinkPeopleStore.avatars",
     "BlinkPeopleStore.styles",
@@ -112,8 +113,12 @@ final class CloudConfigSync: NSObject {
   /// 删除是通过「整份数组/字典被重写成更短的值」传播的（machines、tabs 等都是单 key 存整份），
   /// 不靠 removeObject，从而避免重装窗口期把云端备份误删。
   private func pushToCloud() {
+    // 只同步「真正写进持久域」的值：register(defaults:) 的 seed 默认会让 object(forKey:) 返回非 nil，
+    // 但不代表本机真设过——全新安装若把 seed 默认推上 iCloud，会覆盖其它设备已有的真实数据（本次 workDir 丢失根因）。
+    let persisted = persistedKeys()
     var dirty = false
     for key in keys {
+      guard persisted.contains(key) else { continue }
       guard let value = defaults.object(forKey: key) else { continue }
       if let size = plistSize(value), size > perValueLimit {
         NSLog("[CloudConfigSync] 跳过过大 key=%@ (%d bytes)，超 iCloud KV 单值上限", key, size)
@@ -160,13 +165,22 @@ final class CloudConfigSync: NSObject {
 
   /// 启动时：本地缺失而云端已有 → 直接拉回。
   private func restoreMissingFromCloud() {
+    let persisted = persistedKeys()
     applyingRemote = true
-    for key in keys where defaults.object(forKey: key) == nil {
+    // 本机没真正设过（含只有 register seed 默认）的 key，云端若有就拉回——修复「seed 默认挡住拉回」。
+    for key in keys where !persisted.contains(key) {
       if let value = kv.object(forKey: key) {
         defaults.set(value, forKey: key)
       }
     }
     applyingRemote = false
+  }
+
+  /// 真正写进持久域（本机 plist）的 key——排除 register(defaults:) 的 seed 默认值与参数域。
+  private func persistedKeys() -> Set<String> {
+    guard let bid = Bundle.main.bundleIdentifier,
+          let dom = defaults.persistentDomain(forName: bid) else { return [] }
+    return Set(dom.keys)
   }
 
   // MARK: util
