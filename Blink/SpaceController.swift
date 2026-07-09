@@ -970,9 +970,31 @@ extension SpaceController {
       return [UIKeyCommand(input: "", modifierFlags: keyCode.modifierFlags, action: #selector(onStuckOpCommand))]
     }
     
-    return input.blinkKeyCommands
+    return input.blinkKeyCommands + _macArrowNavKeyCommands
   }
-  
+
+  /// Mac（Designed-for-iPad）专属方向键导航：Cmd+←/→ 切标签，Cmd+↑/↓ 切机器。
+  /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的 Cmd+方向习惯。
+  private var _macArrowNavKeyCommands: [UIKeyCommand] {
+    guard ProcessInfo.processInfo.isiOSAppOnMac else { return [] }
+    let specs: [(String, Selector)] = [
+      (UIKeyCommand.inputLeftArrow,  #selector(_macPrevTab)),
+      (UIKeyCommand.inputRightArrow, #selector(_macNextTab)),
+      (UIKeyCommand.inputUpArrow,    #selector(_macPrevMachine)),
+      (UIKeyCommand.inputDownArrow,  #selector(_macNextMachine)),
+    ]
+    return specs.map { (input, action) in
+      let c = UIKeyCommand(input: input, modifierFlags: .command, action: action)
+      c.wantsPriorityOverSystemBehavior = true   // 抢在系统「Cmd+←=行首」等默认行为之前
+      return c
+    }
+  }
+
+  @objc private func _macPrevTab()     { _advanceShellCycling(by: -1) }
+  @objc private func _macNextTab()     { _advanceShellCycling(by: 1) }
+  @objc private func _macPrevMachine() { _advanceMachine(by: -1) }
+  @objc private func _macNextMachine() { _advanceMachine(by: 1) }
+
   @objc func onStuckOpCommand() {
     stuckKeyCode = nil
     presentedViewController?.dismiss(animated: true)
@@ -1892,7 +1914,20 @@ extension SpaceController {
     guard let idx = _viewportsKeys.firstIndex(of: target) else { return }
     _moveToShell(idx: idx, animated: animated)
   }
-  
+
+  /// 切到上/下一台「有 tab 的机器」并过滤显示它（复用 _applyMachineFilter，含掉线自动重连）。
+  /// 无机器 filter 时以当前 tab 所属机器为起点；少于 2 台有 tab 的机器时无操作。
+  private func _advanceMachine(by: Int) {
+    let machineIds = _machineIdsWithTabs()
+    guard machineIds.count > 1 else { return }
+    let curMid: String? = _tabFilterMachineId ?? _currentKey.flatMap {
+      (SessionRegistry.shared[$0] as TermController).mcpParams?.machineId
+    }
+    let curPos = curMid.flatMap { machineIds.firstIndex(of: $0) } ?? 0
+    let nextPos = (curPos + by + machineIds.count) % machineIds.count
+    _applyMachineFilter(machineIds[nextPos])
+  }
+
 }
 
 // MARK: CommandsHUDDelegate
