@@ -39,3 +39,7 @@ CONVERSION_OPPORTUNITY_URL = http:/$()/localhost/conversionOpportunity
 WHATS_NEW_GITHUB_URL = http:/$()/localhost/conversionOpportunity
 
 BLINK_APP_FONT = JetBrains Mono
+
+// ssh/ios_system 靠 dlsym(RTLD_MAIN_ONLY) 找 blink_ssh_main 等符号,
+// Debug Dylib 开启时符号搬进 Blink.debug.dylib → ssh: command not found。全局关掉。
+ENABLE_DEBUG_DYLIB = NO
