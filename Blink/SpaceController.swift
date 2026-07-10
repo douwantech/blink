@@ -1099,7 +1099,7 @@ extension SpaceController {
   /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的按键习惯。
   private var _macArrowNavKeyCommands: [UIKeyCommand] {
     guard ProcessInfo.processInfo.isiOSAppOnMac else { return [] }
-    let specs: [(String, UIKeyModifierFlags, Selector)] = [
+    var specs: [(String, UIKeyModifierFlags, Selector)] = [
       (UIKeyCommand.inputLeftArrow,  .command,           #selector(_macPrevTab)),
       (UIKeyCommand.inputRightArrow, .command,           #selector(_macNextTab)),
       (UIKeyCommand.inputUpArrow,    .command,           #selector(_macPrevMachine)),
@@ -1108,6 +1108,11 @@ extension SpaceController {
       ("]",                          [.command, .shift], #selector(_macNextTab)),   // Cmd+Shift+] 下一个标签
       ("r",                          .command,           #selector(reloadCurrentShell)),  // ⌘R 重连当前终端（重 attach tmux）
     ]
+    // Cmd+1…9 直接切到机器栏里第 N 台机器（等同点 rail 第 N 个头像）。
+    // Blink 默认键位表未绑 Cmd+数字，无冲突；仅 Mac 注入。
+    for n in 1...9 {
+      specs.append((String(n), .command, #selector(_macSelectMachineByNumber(_:))))
+    }
     return specs.map { (input, mods, action) in
       let c = UIKeyCommand(input: input, modifierFlags: mods, action: action)
       c.wantsPriorityOverSystemBehavior = true   // 抢在系统默认行为之前
@@ -1119,6 +1124,15 @@ extension SpaceController {
   @objc private func _macNextTab()     { _advanceShellCycling(by: 1) }
   @objc private func _macPrevMachine() { _advanceMachine(by: -1) }
   @objc private func _macNextMachine() { _advanceMachine(by: 1) }
+
+  /// Cmd+N：切到机器栏（BlinkMachineStore.machines 顺序）里第 N 台机器，
+  /// 等同点 rail 第 N 个头像。sender.input 是按下的数字；机器数不足则静默忽略。
+  @objc private func _macSelectMachineByNumber(_ cmd: UIKeyCommand) {
+    guard let input = cmd.input, let n = Int(input), n >= 1 else { return }
+    let machines = BlinkMachineStore.shared.machines
+    guard n <= machines.count else { return }
+    _applyMachineFilter(machines[n - 1].id)
+  }
 
   @objc func onStuckOpCommand() {
     stuckKeyCode = nil
