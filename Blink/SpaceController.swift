@@ -2227,6 +2227,8 @@ extension SpaceController: BlinkTabBarDelegate {
       _moveToShell(idx: idx, animated: false)
     } else {
       _reloadTabBar()
+      // Mac：点 rail 上已选中的机器（无切页）也要把键盘焦点还给终端
+      if _macLayoutEnabled { _attachInputToCurrentTerm() }
     }
     _floatingMachineBar.reload(currentId: _tabFilterMachineId)
 
@@ -2305,7 +2307,9 @@ extension SpaceController {
     _macRail = rail
 
     let sidebar = MacSessionSidebarView()
-    sidebar.onSelect = { [weak self] tag in self?.tabBarDidSelect(index: tag) }
+    // 不走 tabBarDidSelect：它切页后不重挂输入（手机靠手指点终端恢复焦点，Mac 没这一步，
+    // 键盘会直接失灵）。_moveToShell 完成后自带 _attachInputToCurrentTerm。
+    sidebar.onSelect = { [weak self] tag in self?._moveToShell(idx: tag) }
     sidebar.onClose = { [weak self] tag in self?.tabBarDidRequestClose(index: tag) }
     sidebar.onNewSession = { [weak self] in self?.tabBarDidRequestNew() }
     view.addSubview(sidebar)
