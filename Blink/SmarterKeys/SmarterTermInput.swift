@@ -46,7 +46,15 @@ import Combine
   private var _inputAccessoryView: UIView? = nil
 
   private var _voiceInputView: VoiceInputView?
-  private(set) var useVoiceInput: Bool = true
+
+  /// Mac（Designed-for-iPad，或 BlinkForceMacLayout 调试强开）＝硬件键盘直输：
+  /// 默认不弹语音面板、终端永远可收键盘输入。语音面板仍可由 dock 的 mic 钮 / ⌘⇧M 显式唤起。
+  static var directHKBInput: Bool {
+    ProcessInfo.processInfo.isiOSAppOnMac
+      || UserDefaults.standard.bool(forKey: "BlinkForceMacLayout")
+  }
+
+  private(set) lazy var useVoiceInput: Bool = !Self.directHKBInput
 
   static var voiceInputAutoShow: Bool = true {
     didSet {
@@ -150,9 +158,10 @@ import Combine
     if device?.shouldBlockFirstResponder == true {
       return false
     }
-    if !Self.voiceInputAutoShow {
+    if !Self.voiceInputAutoShow && !Self.directHKBInput {
       // 用户主动隐藏了语音输入，任何屏幕点击都不要再弹起来
       // 由 SpaceController 的浮动 mic 按钮重新触发 focus
+      // （Mac 直输模式不适用：硬件键盘输入永远放行，不跟面板状态绑定）
       return false
     }
 
@@ -638,10 +647,19 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   }
 
   func voiceInputDidRequestDismiss(_ view: VoiceInputView) {
+    if Self.directHKBInput {
+      // Mac 直输：关面板＝回到硬件键盘直输，保持焦点不丢
+      setUseVoiceInput(false)
+      return
+    }
     _ = resignFirstResponder()
   }
 
   func voiceInputDidRequestMinimize(_ view: VoiceInputView) {
+    if Self.directHKBInput {
+      setUseVoiceInput(false)
+      return
+    }
     Self.voiceInputAutoShow = false
     _ = resignFirstResponder()
   }
