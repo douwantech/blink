@@ -849,11 +849,15 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       mk("+", #selector(browserZoomIn)),
       mk("-", #selector(browserZoomOut)),
       mk("0", #selector(browserZoomReset)),
+      mk("r", #selector(browserReload)),   // ⌘R 刷新当前页
     ]
   }
 
   // MARK: - Mac 浏览器窗口最大化（浮层 ↔ 全屏）
   @objc private func maximizeTapped() { onToggleMaximize?() }
+
+  /// ⌘R 刷新：总是重新加载当前页（区别于顶栏按钮 reloadTapped 的 reload/stop 切换）。
+  @objc private func browserReload() { webView.reload() }
 
   /// 由 SpaceController 在切换呈现方式后调，更新按钮图标（最大化 ⇄ 还原）。
   func setMaximized(_ maxed: Bool) {
