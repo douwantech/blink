@@ -322,6 +322,10 @@ class SpaceController: UIViewController {
       return
     }
     SmarterTermInput.voiceInputAutoShow = true
+    if SmarterTermInput.directHKBInput {
+      // Mac 直输默认无面板，mic 钮是显式唤起语音面板的入口
+      KBTracker.shared.input?.setUseVoiceInput(true)
+    }
     _focusOnShell()
   }
 
@@ -331,6 +335,9 @@ class SpaceController: UIViewController {
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()   // 震动反馈
     VoiceInputView.wantsAutoRecord = true
     SmarterTermInput.voiceInputAutoShow = true
+    if SmarterTermInput.directHKBInput {
+      KBTracker.shared.input?.setUseVoiceInput(true)
+    }
     _focusOnShell()
     // 面板本来就开着的情况（didMoveToWindow 不会再触发）：发通知让当前实例立刻录
     NotificationCenter.default.post(name: VoiceInputView.startRecordingNotification, object: nil)
@@ -2320,6 +2327,14 @@ extension SpaceController {
     _macStatusBar = status
 
     _reloadTabBar()
+
+    // 直输模式启动兜底：首次 _focusOnShell 常跑在终端 webView ready 之前而落空
+    //（旧版靠语音面板弹出掩盖了这点）。ready 后补挂，保证开屏即可打字。
+    for delay in [2.0, 5.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?._focusOnShell()
+      }
+    }
   }
 
   fileprivate func _layoutMacThreeColumn(safeTop: CGFloat) {
