@@ -633,24 +633,72 @@ Please go to your subscriptions and cancel one of them!
     TabStateStore.shared.flushNow()
   }
 
-  /// iCloud 送来新配置（可能含更新的 tab 列表）。本机没有「真实」tab（空 / 仅空白 shell）时，
-  /// 采纳跨设备 tab 并重建；已有真实 tab 的活跃设备不实时重建（避免打断），等下次启动再采纳。
+  /// iCloud 送来新配置（可能含更新的 tab 列表）。
+  /// - 本机没有「真实」tab（空 / 仅空白 shell）→ 整份采纳云端列表并重建（新设备拿到别人的 tab）。
+  /// - 本机已有真实 tab（活跃设备）→ 增量追加：把别处新开、本机还没有的 tab 加进列表，
+  ///   但不切走当前 tab、不动键盘焦点（跨设备实时可见又不打断正在用的会话）。
   @objc private func _cloudConfigDidRestore() {
     let hasReal = _viewportsKeys.contains { k -> Bool in
       let term: TermController = SessionRegistry.shared[k]
       let p = term.mcpParams
       return p?.machineId != nil || p?.workDirId != nil || p?.tmuxSession != nil
     }
-    guard !hasReal, TabStateStore.shared.adoptSyncedIfNewer() else { return }
-    _restoreFromStore()
-    if let key = _currentKey {
-      let term: TermController = SessionRegistry.shared[key]
+    if !hasReal {
+      guard TabStateStore.shared.adoptSyncedIfNewer() else { return }
+      _restoreFromStore()
+      if let key = _currentKey {
+        let term: TermController = SessionRegistry.shared[key]
+        term.delegate = self
+        term.bgColor = view.backgroundColor ?? .black
+        _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      }
+      _sortTabsByMachineAndDir()
+      _ensureAssistantTabFirst()
+      return
+    }
+    _appendNewSyncedTabs()
+  }
+
+  /// 活跃设备增量合并：iCloud 送来的列表里，本机（按 机器+目录+会话 签名）还没有的
+  /// 「真实」tab 追加到末尾并 re-sort，当前 tab / 键盘焦点保持不变。
+  /// 只增不减 —— 别处（手机）关掉的 tab 不在这里删：删除同步风险高、会误伤本机正用的会话。
+  private func _appendNewSyncedTabs() {
+    let synced = TabStateStore.shared.syncedTabs()
+    guard !synced.isEmpty else { return }
+
+    func sig(_ mid: String?, _ wid: String?, _ tmux: String?) -> String {
+      "\(mid ?? "")|\(wid ?? "")|\(tmux ?? "")"
+    }
+    var seen = Set(_viewportsKeys.map { key -> String in
+      let p = (SessionRegistry.shared[key] as TermController).mcpParams
+      return sig(p?.machineId, p?.workDirId, p?.tmuxSession)
+    })
+
+    var appended: [UUID] = []
+    for entry in synced {
+      // 空白 shell（无机器/目录/会话）不追加
+      guard entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil else { continue }
+      let s = sig(entry.machineId, entry.workDirId, entry.tmuxSession)
+      if seen.contains(s) { continue }
+      seen.insert(s)
+
+      let term: TermController = SessionRegistry.shared[entry.id]
+      if term.mcpParams == nil {
+        let p = MCPParams()
+        p.machineId = entry.machineId
+        p.workDirId = entry.workDirId
+        p.tmuxSession = entry.tmuxSession
+        p.useTmux = true
+        term.bindRestoredMcpParams(p)
+      }
       term.delegate = self
       term.bgColor = view.backgroundColor ?? .black
-      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      appended.append(term.meta.key)
     }
+
+    guard !appended.isEmpty else { return }
+    _viewportsKeys.append(contentsOf: appended)   // didSet → 持久化 + 刷新 tab 栏/三栏
     _sortTabsByMachineAndDir()
-    _ensureAssistantTabFirst()
   }
 
   @objc private func _activeSessionDidChange() {
