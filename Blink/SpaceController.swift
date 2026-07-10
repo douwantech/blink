@@ -638,6 +638,14 @@ Please go to your subscriptions and cancel one of them!
   /// - 本机已有真实 tab（活跃设备）→ 增量追加：把别处新开、本机还没有的 tab 加进列表，
   ///   但不切走当前 tab、不动键盘焦点（跨设备实时可见又不打断正在用的会话）。
   @objc private func _cloudConfigDidRestore() {
+    // iCloud KV 变更通知（didChangeExternally）在后台线程投递。下面要建 TermController /
+    // 碰 UIKit / 改 _viewportsKeys，必须切主线程，否则在后台线程创建 TermView 直接崩
+    //（"Unsupported layout off the main thread"）。原来活跃设备一律 return、空白设备极少走到，
+    // 都没建视图所以没暴露；增量追加真的建了视图，才把这个后台线程 bug 触发出来。
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in self?._cloudConfigDidRestore() }
+      return
+    }
     let hasReal = _viewportsKeys.contains { k -> Bool in
       let term: TermController = SessionRegistry.shared[k]
       let p = term.mcpParams
