@@ -455,6 +455,14 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   private let backButton = UIButton(type: .system)
   private let forwardButton = UIButton(type: .system)
   private let closeButton = UIButton(type: .system)
+  // Mac 浏览器缩放控件（底部栏右侧「− 100% +」）
+  private let zoomOutButton = UIButton(type: .system)
+  private let zoomInButton = UIButton(type: .system)
+  private let zoomLabel = UILabel()
+  /// Mac 大屏判据（真机 isiOSAppOnMac；模拟器可 BlinkForceMacLayout 强开测试），与三栏一致
+  private var isMacBrowser: Bool {
+    ProcessInfo.processInfo.isiOSAppOnMac || UserDefaults.standard.bool(forKey: "BlinkForceMacLayout")
+  }
   private let bottomBar = UIView()
   private let progressBar = UIProgressView(progressViewStyle: .bar)
   private var webView: WKWebView!
@@ -742,6 +750,11 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       forwardButton.heightAnchor.constraint(equalToConstant: 44),
     ])
 
+    // Mac 大屏：底部栏右侧放缩放控件（网页放大/缩小）。iPhone/iPad 触屏用系统 pinch，不占位置。
+    if isMacBrowser {
+      _setupBrowserZoomControls()
+    }
+
     let pinned = PinnedTabsStore.shared.tabs.map {
       BrowserTabItem(title: $0.title, url: $0.url, authUser: $0.authUser, authPassword: $0.authPassword, isTransient: false)
     }
@@ -755,6 +768,67 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     } else {
       showEmptyHint()
     }
+  }
+
+  // MARK: - Mac 浏览器缩放（webView.pageZoom + Cmd ± 0）
+  private func _setupBrowserZoomControls() {
+    let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+    zoomOutButton.setImage(UIImage(systemName: "minus.magnifyingglass", withConfiguration: cfg), for: .normal)
+    zoomOutButton.addTarget(self, action: #selector(browserZoomOut), for: .touchUpInside)
+    zoomInButton.setImage(UIImage(systemName: "plus.magnifyingglass", withConfiguration: cfg), for: .normal)
+    zoomInButton.addTarget(self, action: #selector(browserZoomIn), for: .touchUpInside)
+    zoomLabel.text = "100%"
+    zoomLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+    zoomLabel.textColor = .secondaryLabel
+    zoomLabel.textAlignment = .center
+    zoomLabel.isUserInteractionEnabled = true
+    zoomLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(browserZoomReset)))  // 点百分比＝重置 100%
+    for v in [zoomOutButton, zoomInButton] { v.tintColor = .label }
+    for v in [zoomOutButton, zoomInButton, zoomLabel] as [UIView] {
+      v.translatesAutoresizingMaskIntoConstraints = false
+      bottomBar.addSubview(v)
+    }
+    NSLayoutConstraint.activate([
+      zoomInButton.centerYAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 22),
+      zoomInButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -36),
+      zoomInButton.widthAnchor.constraint(equalToConstant: 44),
+      zoomInButton.heightAnchor.constraint(equalToConstant: 44),
+      zoomLabel.centerYAnchor.constraint(equalTo: zoomInButton.centerYAnchor),
+      zoomLabel.trailingAnchor.constraint(equalTo: zoomInButton.leadingAnchor, constant: -2),
+      zoomLabel.widthAnchor.constraint(equalToConstant: 46),
+      zoomOutButton.centerYAnchor.constraint(equalTo: zoomInButton.centerYAnchor),
+      zoomOutButton.trailingAnchor.constraint(equalTo: zoomLabel.leadingAnchor, constant: -2),
+      zoomOutButton.widthAnchor.constraint(equalToConstant: 44),
+      zoomOutButton.heightAnchor.constraint(equalToConstant: 44),
+    ])
+  }
+
+  /// pageZoom 是 WKWebView 级别的强制缩放（不受网页 viewport user-scalable 限制），
+  /// 且跨导航/切 tab 保持。范围 50%~300%。
+  private func _applyBrowserZoom(_ z: CGFloat) {
+    guard webView != nil else { return }
+    let clamped = max(0.5, min(3.0, (z * 10).rounded() / 10))
+    webView.pageZoom = clamped
+    zoomLabel.text = "\(Int((clamped * 100).rounded()))%"
+  }
+  @objc private func browserZoomIn() { _applyBrowserZoom(webView.pageZoom + 0.1) }
+  @objc private func browserZoomOut() { _applyBrowserZoom(webView.pageZoom - 0.1) }
+  @objc private func browserZoomReset() { _applyBrowserZoom(1.0) }
+
+  /// Mac 浏览器标准缩放快捷键：⌘+ / ⌘= 放大、⌘- 缩小、⌘0 重置。
+  override var keyCommands: [UIKeyCommand]? {
+    guard isMacBrowser else { return nil }
+    let mk: (String, Selector) -> UIKeyCommand = { input, sel in
+      let c = UIKeyCommand(input: input, modifierFlags: .command, action: sel)
+      c.wantsPriorityOverSystemBehavior = true
+      return c
+    }
+    return [
+      mk("=", #selector(browserZoomIn)),
+      mk("+", #selector(browserZoomIn)),
+      mk("-", #selector(browserZoomOut)),
+      mk("0", #selector(browserZoomReset)),
+    ]
   }
 
   private func updateLoadingChrome(loading: Bool) {
