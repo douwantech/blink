@@ -1106,6 +1106,7 @@ extension SpaceController {
       (UIKeyCommand.inputDownArrow,  .command,           #selector(_macNextMachine)),
       ("[",                          [.command, .shift], #selector(_macPrevTab)),   // Cmd+Shift+[ 上一个标签
       ("]",                          [.command, .shift], #selector(_macNextTab)),   // Cmd+Shift+] 下一个标签
+      ("r",                          .command,           #selector(reloadCurrentShell)),  // ⌘R 重连当前终端（重 attach tmux）
     ]
     return specs.map { (input, mods, action) in
       let c = UIKeyCommand(input: input, modifierFlags: mods, action: action)
