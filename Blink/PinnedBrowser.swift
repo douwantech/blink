@@ -459,6 +459,10 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   private let zoomOutButton = UIButton(type: .system)
   private let zoomInButton = UIButton(type: .system)
   private let zoomLabel = UILabel()
+  // Mac 浏览器窗口最大化按钮（浮层 ↔ 全屏）
+  private let maximizeButton = UIButton(type: .system)
+  var onToggleMaximize: (() -> Void)?
+  private(set) var isMaximized = false
   /// Mac 大屏判据（真机 isiOSAppOnMac；模拟器可 BlinkForceMacLayout 强开测试），与三栏一致
   private var isMacBrowser: Bool {
     ProcessInfo.processInfo.isiOSAppOnMac || UserDefaults.standard.bool(forKey: "BlinkForceMacLayout")
@@ -550,6 +554,23 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     manageTabsButton.addTarget(self, action: #selector(manageTabsTapped), for: .touchUpInside)
     manageTabsButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(manageTabsButton)
+
+    // Mac：顶栏加窗口最大化按钮（浮层 ↔ 占满整个 Blink 窗口），放在 list 按钮左边
+    if isMacBrowser {
+      maximizeButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right"), for: .normal)
+      maximizeButton.tintColor = .secondaryLabel
+      maximizeButton.backgroundColor = .secondarySystemFill
+      maximizeButton.layer.cornerRadius = 15
+      maximizeButton.addTarget(self, action: #selector(maximizeTapped), for: .touchUpInside)
+      maximizeButton.translatesAutoresizingMaskIntoConstraints = false
+      topBar.addSubview(maximizeButton)
+      NSLayoutConstraint.activate([
+        maximizeButton.topAnchor.constraint(equalTo: topBar.topAnchor),
+        maximizeButton.trailingAnchor.constraint(equalTo: manageTabsButton.leadingAnchor, constant: -8),
+        maximizeButton.widthAnchor.constraint(equalToConstant: 30),
+        maximizeButton.heightAnchor.constraint(equalToConstant: 30),
+      ])
+    }
 
     urlBar.translatesAutoresizingMaskIntoConstraints = false
     urlBar.backgroundColor = .secondarySystemFill
@@ -829,6 +850,16 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       mk("-", #selector(browserZoomOut)),
       mk("0", #selector(browserZoomReset)),
     ]
+  }
+
+  // MARK: - Mac 浏览器窗口最大化（浮层 ↔ 全屏）
+  @objc private func maximizeTapped() { onToggleMaximize?() }
+
+  /// 由 SpaceController 在切换呈现方式后调，更新按钮图标（最大化 ⇄ 还原）。
+  func setMaximized(_ maxed: Bool) {
+    isMaximized = maxed
+    let name = maxed ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.left.and.arrow.down.right"
+    maximizeButton.setImage(UIImage(systemName: name), for: .normal)
   }
 
   private func updateLoadingChrome(loading: Bool) {

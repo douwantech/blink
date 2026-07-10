@@ -372,21 +372,47 @@ class SpaceController: UIViewController {
   private func _presentSharedBrowser() -> PinnedBrowserViewController {
     let vc = _pinnedBrowserVC ?? PinnedBrowserViewController()
     _pinnedBrowserVC = vc
+    vc.onToggleMaximize = { [weak self] in self?._toggleBrowserMaximize() }
     if vc.presentingViewController != nil {
       return vc
     }
-    if let sheet = vc.sheetPresentationController {
-      sheet.detents = [.large()]
-      sheet.selectedDetentIdentifier = .large
-      sheet.prefersGrabberVisible = false
-      sheet.preferredCornerRadius = 16
-      sheet.prefersScrollingExpandsWhenScrolledToEdge = false
-    }
-    vc.modalPresentationStyle = .pageSheet
+    _applyBrowserPresentation(vc, maximized: _browserMaximized)
     var top: UIViewController = self
     while let presented = top.presentedViewController { top = presented }
     top.present(vc, animated: true)
     return vc
+  }
+
+  private var _browserMaximized = false
+
+  /// Mac 浏览器窗口最大化：pageSheet(.large 浮层) ↔ fullScreen(占满整个 Blink 窗口)。
+  private func _applyBrowserPresentation(_ vc: PinnedBrowserViewController, maximized: Bool) {
+    if maximized {
+      vc.modalPresentationStyle = .fullScreen
+    } else {
+      vc.modalPresentationStyle = .pageSheet
+      if let sheet = vc.sheetPresentationController {
+        sheet.detents = [.large()]
+        sheet.selectedDetentIdentifier = .large
+        sheet.prefersGrabberVisible = false
+        sheet.preferredCornerRadius = 16
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = false
+      }
+    }
+    vc.setMaximized(maximized)
+  }
+
+  /// modal 呈现方式不能就地改，切换靠 dismiss + 无动画 re-present；_pinnedBrowserVC 实例
+  /// 强引用复用，tabs / 当前页 / 缩放全部保留。
+  private func _toggleBrowserMaximize() {
+    guard let vc = _pinnedBrowserVC, vc.presentingViewController != nil else { return }
+    _browserMaximized.toggle()
+    let presenting = vc.presentingViewController ?? self
+    vc.dismiss(animated: false) { [weak self] in
+      guard let self else { return }
+      self._applyBrowserPresentation(vc, maximized: self._browserMaximized)
+      presenting.present(vc, animated: false)
+    }
   }
 
   private func forEachActive(block:(TermController) -> ()) {
