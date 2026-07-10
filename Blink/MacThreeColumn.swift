@@ -205,17 +205,17 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     super.init(frame: .zero)
     backgroundColor = UIColor(white: 0.12, alpha: 1.0)
 
-    machineNameLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+    machineNameLabel.font = .systemFont(ofSize: 17, weight: .bold)
     machineNameLabel.textColor = UIColor(white: 0.94, alpha: 1)
 
-    transportBadge.font = .systemFont(ofSize: 10, weight: .semibold)
+    transportBadge.font = .systemFont(ofSize: 11, weight: .bold)
     transportBadge.textColor = .systemTeal
     transportBadge.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.5).cgColor
     transportBadge.layer.borderWidth = 1
     transportBadge.layer.cornerRadius = 4
     transportBadge.textAlignment = .center
 
-    hostLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+    hostLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     hostLabel.textColor = .secondaryLabel
     hostLabel.lineBreakMode = .byTruncatingMiddle
 
@@ -231,7 +231,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     cfg.baseForegroundColor = .systemTeal
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
     newButton.configuration = cfg
-    newButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+    newButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
     newButton.layer.cornerRadius = 8
     newButton.layer.borderWidth = 1
     newButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.4).cgColor
@@ -348,16 +348,16 @@ final class MacSessionCell: UITableViewCell {
     avatar.layer.cornerRadius = 16
     avatar.clipsToBounds = true
 
-    initialLabel.font = .systemFont(ofSize: 15, weight: .bold)
+    initialLabel.font = .systemFont(ofSize: 16, weight: .bold)
     initialLabel.textColor = .white
     initialLabel.textAlignment = .center
     initialLabel.layer.cornerRadius = 16
     initialLabel.clipsToBounds = true
 
-    titleLbl.font = .systemFont(ofSize: 13, weight: .medium)
+    titleLbl.font = .systemFont(ofSize: 15, weight: .medium)
     titleLbl.textColor = UIColor(white: 0.94, alpha: 1)
 
-    subtitleLbl.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+    subtitleLbl.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     subtitleLbl.textColor = .secondaryLabel
     subtitleLbl.lineBreakMode = .byTruncatingMiddle
 
@@ -385,8 +385,8 @@ final class MacSessionCell: UITableViewCell {
     closeButton.frame = CGRect(x: w - 36, y: (contentView.bounds.height - 28) / 2, width: 28, height: 28)
     let textX: CGFloat = 54
     let textW = closeButton.frame.minX - textX - 14
-    titleLbl.frame = CGRect(x: textX, y: 10, width: textW, height: 18)
-    subtitleLbl.frame = CGRect(x: textX, y: 30, width: textW, height: 14)
+    titleLbl.frame = CGRect(x: textX, y: 9, width: textW, height: 20)
+    subtitleLbl.frame = CGRect(x: textX, y: 31, width: textW, height: 16)
     unreadDot.frame = CGRect(x: textX + min(titleLbl.intrinsicContentSize.width, textW) + 6, y: 15, width: 8, height: 8)
   }
 
@@ -396,7 +396,7 @@ final class MacSessionCell: UITableViewCell {
     unreadDot.isHidden = !item.unread
     currentBar.isHidden = !item.isCurrent
     contentView.backgroundColor = item.isCurrent ? UIColor.systemTeal.withAlphaComponent(0.12) : .clear
-    titleLbl.font = .systemFont(ofSize: 13, weight: item.isCurrent ? .semibold : .medium)
+    titleLbl.font = .systemFont(ofSize: 15, weight: item.isCurrent ? .semibold : .medium)
     if let icon = item.icon {
       avatar.image = icon
       avatar.isHidden = false
@@ -440,10 +440,10 @@ final class MacStatusBarView: UIView {
     hairline.translatesAutoresizingMaskIntoConstraints = false
     addSubview(hairline)
 
-    leftLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+    leftLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     leftLabel.textColor = .secondaryLabel
     leftLabel.lineBreakMode = .byTruncatingTail
-    rightLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+    rightLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     rightLabel.textColor = UIColor(white: 0.40, alpha: 1)
     rightLabel.textAlignment = .right
     rightLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
