@@ -2402,6 +2402,13 @@ extension SpaceController {
     _tabBar.isHidden = true
     _statusBarBg.isHidden = true
 
+    // 幂等：viewDidLoad 若二次执行（Mac 场景重连 / 视图重建等）会重复 new 三份视图并
+    // addSubview，而 _macRail/_macSidebar/_macStatusBar 只指向最新的，旧的三份留在 view
+    // 上没人排版 → 两套侧栏重叠、出现两个「＋ 新会话」。建新之前先移除旧的，保证只有一套。
+    _macRail?.removeFromSuperview()
+    _macSidebar?.removeFromSuperview()
+    _macStatusBar?.removeFromSuperview()
+
     let rail = MacMachineRailView()
     rail.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
     rail.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
