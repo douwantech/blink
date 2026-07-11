@@ -556,7 +556,8 @@ final class MachineListViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\nAutoMac 公钥：\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEpZhB+3m9GZYDzN3vi7cotb/32yyGMe3rp2/aHvZz0 blink-sim"
+    let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
+    return "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -637,7 +638,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     useBlinkdSelected = machine.usesBlinkd
     transportControl.selectedSegmentIndex = useBlinkdSelected ? 1 : 0
     transportControl.addTarget(self, action: #selector(transportChanged), for: .valueChanged)
-    configureField(blinkdHostField, placeholder: "daemon 地址,如 100.96.88.80", value: machine.blinkdHost ?? "", returnKey: .next, keyboard: .URL)
+    configureField(blinkdHostField, placeholder: "daemon 地址,如 100.64.0.1", value: machine.blinkdHost ?? "", returnKey: .next, keyboard: .URL)
     configureField(blinkdPortField, placeholder: "7777", value: machine.blinkdPort.map(String.init) ?? "", returnKey: .next, keyboard: .numberPad)
     configureField(blinkdTokenField, placeholder: "daemon token", value: machine.blinkdToken ?? "", returnKey: .done, keyboard: .default)
   }
@@ -681,7 +682,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
     switch section {
     case 0:
-      return "连接顺序：内网（300ms 探测）→ 外网1 → 外网2，第一个可达的拿来用。\n登录使用 AutoMac 内置 SSH key。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
+      return "连接顺序：内网（300ms 探测）→ 外网1 → 外网2，第一个可达的拿来用。\n登录使用本机 AutoMac SSH key（每台设备独立生成）。如需免密，把 AutoMac 公钥加到目标机器的 ~/.ssh/authorized_keys。"
     case 1:
       return useBlinkdSelected
         ? "Socket：手机直连这台机器的 blinkd daemon，不走 SSH（绕过 MDM）。填 daemon 的地址/端口/token。"

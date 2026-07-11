@@ -72,6 +72,7 @@
 		07FABC4825C9B08100E1CC2C /* BlinkFiles.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 07FABBAF25C9AECF00E1CC2C /* BlinkFiles.framework */; };
 		07FDDC5625C9B28200A40529 /* LibSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC425C1C04700385378 /* LibSSH.xcframework */; };
 		22FB5B4A34EF80EA1196F474 /* TabStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B056E91E4AE1256EB7F80A9 /* TabStateStore.swift */; };
+		A11CE0000000000000000001 /* MacThreeColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE0000000000000000002 /* MacThreeColumn.swift */; };
 		803B99D72582869200DC99C8 /* BKNotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99D62582869200DC99C8 /* BKNotificationsView.swift */; };
 		803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99E2258381B200DC99C8 /* SettingsHostingController.swift */; };
 		85A34307200A837A009324F1 /* webfontloader.js in Resources */ = {isa = PBXBuildFile; fileRef = 85A34303200A837A009324F1 /* webfontloader.js */; };
@@ -842,6 +843,7 @@
 		07FABC1425C9AF8F00E1CC2C /* CopyFilesTests.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CopyFilesTests.swift; sourceTree = "<group>"; };
 		07FABC2125C9AFC400E1CC2C /* String+Extension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "String+Extension.swift"; sourceTree = "<group>"; };
 		7B056E91E4AE1256EB7F80A9 /* TabStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabStateStore.swift; sourceTree = "<group>"; };
+		A11CE0000000000000000002 /* MacThreeColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThreeColumn.swift; sourceTree = "<group>"; };
 		803B99D62582869200DC99C8 /* BKNotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BKNotificationsView.swift; sourceTree = "<group>"; };
 		803B99E2258381B200DC99C8 /* SettingsHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHostingController.swift; sourceTree = "<group>"; };
 		85A34303200A837A009324F1 /* webfontloader.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = webfontloader.js; sourceTree = "<group>"; };
@@ -1511,6 +1513,7 @@
 				D2AD9ADD22DB80DE00861F66 /* SessionRegistry.swift */,
 				D2887A5522DC676F00701BD5 /* SpaceController.swift */,
 				7B056E91E4AE1256EB7F80A9 /* TabStateStore.swift */,
+				A11CE0000000000000000002 /* MacThreeColumn.swift */,
 				D2887A5D22DCA6D500701BD5 /* SceneDelegate.swift */,
 				D248E67522DDDF130057FE67 /* UIStateRestorable.swift */,
 				D2BC514C2355C3AE0034FDD4 /* History.swift */,
@@ -3667,6 +3670,7 @@
 				D2C24416238E44AB0082C69C /* KBConfig.swift in Sources */,
 				D2887A5622DC676F00701BD5 /* SpaceController.swift in Sources */,
 				22FB5B4A34EF80EA1196F474 /* TabStateStore.swift in Sources */,
+				A11CE0000000000000000001 /* MacThreeColumn.swift in Sources */,
 				D2AC6749220303D900177BC5 /* openurl.m in Sources */,
 				D27DD70A2A3B203F009E97BC /* NewSnippetViewController.swift in Sources */,
 				D25DE9C02939EB36008246EB /* NonStdIO.swift in Sources */,

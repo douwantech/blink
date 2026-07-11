@@ -138,6 +138,17 @@ class SpaceController: UIViewController {
   private let _voiceHaptic = UIImpactFeedbackGenerator(style: .heavy)
   private var _pinnedBrowserVC: PinnedBrowserViewController?
 
+  // Mac 大屏三栏（issue #5）：最左机器 rail + 中间会话列表 + 右侧终端。
+  // 仅 Designed-for-iPad 主窗口启用；外接屏(Shadow)/iPhone/iPad 保持原浮动栏布局。
+  // 模拟器调试可 `defaults write <bundleId> BlinkForceMacLayout -bool YES` 强开。
+  private lazy var _macLayoutEnabled: Bool =
+    (ProcessInfo.processInfo.isiOSAppOnMac
+     || UserDefaults.standard.bool(forKey: "BlinkForceMacLayout"))
+    && sceneRole == .windowApplication
+  private var _macRail: MacMachineRailView? = nil
+  private var _macSidebar: MacSessionSidebarView? = nil
+  private var _macStatusBar: MacStatusBarView? = nil
+
   // Snips Input Mode tracking
   private var _isSnipsInputModeActive: Bool = false {
     didSet {
@@ -234,30 +245,34 @@ class SpaceController: UIViewController {
     self.view.bringSubviewToFront(_bottomTapAreaView);
 
     let safeTop = view.safeAreaInsets.top
-    let tabH: CGFloat = 64
-    _statusBarBg.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: safeTop)
-    _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
-    view.bringSubviewToFront(_statusBarBg)
-    if let v = _viewportsController.view {
-      v.frame = CGRect(
-        x: 0,
-        y: safeTop + tabH,
-        width: view.bounds.width,
-        height: max(0, view.bounds.height - safeTop - tabH)
-      )
+    if _macLayoutEnabled {
+      _layoutMacThreeColumn(safeTop: safeTop)
+    } else {
+      let tabH: CGFloat = 64
+      _statusBarBg.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: safeTop)
+      _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
+      view.bringSubviewToFront(_statusBarBg)
+      if let v = _viewportsController.view {
+        v.frame = CGRect(
+          x: 0,
+          y: safeTop + tabH,
+          width: view.bounds.width,
+          height: max(0, view.bounds.height - safeTop - tabH)
+        )
+      }
+      view.bringSubviewToFront(_tabBar)
+      if !_floatingMachineBarPlaced {
+        _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+        _floatingMachineBar.restorePosition(in: view)
+        _floatingMachineBarPlaced = true
+      }
+      view.bringSubviewToFront(_floatingMachineBar)
     }
-    view.bringSubviewToFront(_tabBar)
     if !_floatingDockPlaced {
       _floatingDock.restorePosition(in: view)
       _floatingDockPlaced = true
     }
     view.bringSubviewToFront(_floatingDock)
-    if !_floatingMachineBarPlaced {
-      _floatingMachineBar.reload(currentId: _tabFilterMachineId)
-      _floatingMachineBar.restorePosition(in: view)
-      _floatingMachineBarPlaced = true
-    }
-    view.bringSubviewToFront(_floatingMachineBar)
   }
 
   @objc private func _voiceInputAutoShowChanged() {
@@ -307,6 +322,10 @@ class SpaceController: UIViewController {
       return
     }
     SmarterTermInput.voiceInputAutoShow = true
+    if SmarterTermInput.directHKBInput {
+      // Mac 直输默认无面板，mic 钮是显式唤起语音面板的入口
+      KBTracker.shared.input?.setUseVoiceInput(true)
+    }
     _focusOnShell()
   }
 
@@ -316,6 +335,9 @@ class SpaceController: UIViewController {
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()   // 震动反馈
     VoiceInputView.wantsAutoRecord = true
     SmarterTermInput.voiceInputAutoShow = true
+    if SmarterTermInput.directHKBInput {
+      KBTracker.shared.input?.setUseVoiceInput(true)
+    }
     _focusOnShell()
     // 面板本来就开着的情况（didMoveToWindow 不会再触发）：发通知让当前实例立刻录
     NotificationCenter.default.post(name: VoiceInputView.startRecordingNotification, object: nil)
@@ -350,21 +372,47 @@ class SpaceController: UIViewController {
   private func _presentSharedBrowser() -> PinnedBrowserViewController {
     let vc = _pinnedBrowserVC ?? PinnedBrowserViewController()
     _pinnedBrowserVC = vc
+    vc.onToggleMaximize = { [weak self] in self?._toggleBrowserMaximize() }
     if vc.presentingViewController != nil {
       return vc
     }
-    if let sheet = vc.sheetPresentationController {
-      sheet.detents = [.large()]
-      sheet.selectedDetentIdentifier = .large
-      sheet.prefersGrabberVisible = false
-      sheet.preferredCornerRadius = 16
-      sheet.prefersScrollingExpandsWhenScrolledToEdge = false
-    }
-    vc.modalPresentationStyle = .pageSheet
+    _applyBrowserPresentation(vc, maximized: _browserMaximized)
     var top: UIViewController = self
     while let presented = top.presentedViewController { top = presented }
     top.present(vc, animated: true)
     return vc
+  }
+
+  private var _browserMaximized = false
+
+  /// Mac 浏览器窗口最大化：pageSheet(.large 浮层) ↔ fullScreen(占满整个 Blink 窗口)。
+  private func _applyBrowserPresentation(_ vc: PinnedBrowserViewController, maximized: Bool) {
+    if maximized {
+      vc.modalPresentationStyle = .fullScreen
+    } else {
+      vc.modalPresentationStyle = .pageSheet
+      if let sheet = vc.sheetPresentationController {
+        sheet.detents = [.large()]
+        sheet.selectedDetentIdentifier = .large
+        sheet.prefersGrabberVisible = false
+        sheet.preferredCornerRadius = 16
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = false
+      }
+    }
+    vc.setMaximized(maximized)
+  }
+
+  /// modal 呈现方式不能就地改，切换靠 dismiss + 无动画 re-present；_pinnedBrowserVC 实例
+  /// 强引用复用，tabs / 当前页 / 缩放全部保留。
+  private func _toggleBrowserMaximize() {
+    guard let vc = _pinnedBrowserVC, vc.presentingViewController != nil else { return }
+    _browserMaximized.toggle()
+    let presenting = vc.presentingViewController ?? self
+    vc.dismiss(animated: false) { [weak self] in
+      guard let self else { return }
+      self._applyBrowserPresentation(vc, maximized: self._browserMaximized)
+      presenting.present(vc, animated: false)
+    }
   }
 
   private func forEachActive(block:(TermController) -> ()) {
@@ -516,11 +564,21 @@ class SpaceController: UIViewController {
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
 
-    // 独立的「切换机器」浮动条：点头像直接切机器，长按换头像，可拖
-    _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
-    _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
-    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
-    view.addSubview(_floatingMachineBar)
+    // E2E 自截屏后门：仅测试设备手动开 BlinkE2ESnapshotHook 才注册（生产 inert）。
+    // 注意本工程没配 SWIFT_ACTIVE_COMPILATION_CONDITIONS，#if DEBUG 永远是 false，别用。
+    if UserDefaults.standard.bool(forKey: "BlinkE2ESnapshotHook") {
+      _ = Self._installDebugSnapshotHook
+    }
+    if _macLayoutEnabled {
+      // Mac 三栏：悬浮机器条不上屏（rail 取代），tab 栏隐藏（会话列表取代）
+      _setupMacThreeColumn()
+    } else {
+      // 独立的「切换机器」浮动条：点头像直接切机器，长按换头像，可拖
+      _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+      _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
+      _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+      view.addSubview(_floatingMachineBar)
+    }
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
@@ -601,24 +659,80 @@ Please go to your subscriptions and cancel one of them!
     TabStateStore.shared.flushNow()
   }
 
-  /// iCloud 送来新配置（可能含更新的 tab 列表）。本机没有「真实」tab（空 / 仅空白 shell）时，
-  /// 采纳跨设备 tab 并重建；已有真实 tab 的活跃设备不实时重建（避免打断），等下次启动再采纳。
+  /// iCloud 送来新配置（可能含更新的 tab 列表）。
+  /// - 本机没有「真实」tab（空 / 仅空白 shell）→ 整份采纳云端列表并重建（新设备拿到别人的 tab）。
+  /// - 本机已有真实 tab（活跃设备）→ 增量追加：把别处新开、本机还没有的 tab 加进列表，
+  ///   但不切走当前 tab、不动键盘焦点（跨设备实时可见又不打断正在用的会话）。
   @objc private func _cloudConfigDidRestore() {
+    // iCloud KV 变更通知（didChangeExternally）在后台线程投递。下面要建 TermController /
+    // 碰 UIKit / 改 _viewportsKeys，必须切主线程，否则在后台线程创建 TermView 直接崩
+    //（"Unsupported layout off the main thread"）。原来活跃设备一律 return、空白设备极少走到，
+    // 都没建视图所以没暴露；增量追加真的建了视图，才把这个后台线程 bug 触发出来。
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in self?._cloudConfigDidRestore() }
+      return
+    }
     let hasReal = _viewportsKeys.contains { k -> Bool in
       let term: TermController = SessionRegistry.shared[k]
       let p = term.mcpParams
       return p?.machineId != nil || p?.workDirId != nil || p?.tmuxSession != nil
     }
-    guard !hasReal, TabStateStore.shared.adoptSyncedIfNewer() else { return }
-    _restoreFromStore()
-    if let key = _currentKey {
-      let term: TermController = SessionRegistry.shared[key]
+    if !hasReal {
+      guard TabStateStore.shared.adoptSyncedIfNewer() else { return }
+      _restoreFromStore()
+      if let key = _currentKey {
+        let term: TermController = SessionRegistry.shared[key]
+        term.delegate = self
+        term.bgColor = view.backgroundColor ?? .black
+        _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      }
+      _sortTabsByMachineAndDir()
+      _ensureAssistantTabFirst()
+      return
+    }
+    _appendNewSyncedTabs()
+  }
+
+  /// 活跃设备增量合并：iCloud 送来的列表里，本机（按 机器+目录+会话 签名）还没有的
+  /// 「真实」tab 追加到末尾并 re-sort，当前 tab / 键盘焦点保持不变。
+  /// 只增不减 —— 别处（手机）关掉的 tab 不在这里删：删除同步风险高、会误伤本机正用的会话。
+  private func _appendNewSyncedTabs() {
+    let synced = TabStateStore.shared.syncedTabs()
+    guard !synced.isEmpty else { return }
+
+    func sig(_ mid: String?, _ wid: String?, _ tmux: String?) -> String {
+      "\(mid ?? "")|\(wid ?? "")|\(tmux ?? "")"
+    }
+    var seen = Set(_viewportsKeys.map { key -> String in
+      let p = (SessionRegistry.shared[key] as TermController).mcpParams
+      return sig(p?.machineId, p?.workDirId, p?.tmuxSession)
+    })
+
+    var appended: [UUID] = []
+    for entry in synced {
+      // 空白 shell（无机器/目录/会话）不追加
+      guard entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil else { continue }
+      let s = sig(entry.machineId, entry.workDirId, entry.tmuxSession)
+      if seen.contains(s) { continue }
+      seen.insert(s)
+
+      let term: TermController = SessionRegistry.shared[entry.id]
+      if term.mcpParams == nil {
+        let p = MCPParams()
+        p.machineId = entry.machineId
+        p.workDirId = entry.workDirId
+        p.tmuxSession = entry.tmuxSession
+        p.useTmux = true
+        term.bindRestoredMcpParams(p)
+      }
       term.delegate = self
       term.bgColor = view.backgroundColor ?? .black
-      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      appended.append(term.meta.key)
     }
+
+    guard !appended.isEmpty else { return }
+    _viewportsKeys.append(contentsOf: appended)   // didSet → 持久化 + 刷新 tab 栏/三栏
     _sortTabsByMachineAndDir()
-    _ensureAssistantTabFirst()
   }
 
   @objc private func _activeSessionDidChange() {
@@ -825,7 +939,14 @@ Please go to your subscriptions and cancel one of them!
     if !(term.termView.rows == 0 && term.termView.cols == 0) {
       sceneTitle += " | \(term.termView.cols)×\(term.termView.rows)"
     }
+    if _macLayoutEnabled,
+       let mid = term.mcpParams?.machineId,
+       let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) {
+      // Mac 窗口标题带上机器名（窗口标题栏就是"顶栏"，不再另画）
+      sceneTitle = "\(m.displayName) — " + sceneTitle
+    }
     view.window?.windowScene?.title = sceneTitle
+    if _macLayoutEnabled { _updateMacStatusBar() }
     self.view.setNeedsLayout()
   }
   
@@ -978,14 +1099,20 @@ extension SpaceController {
   /// 仅在 Mac 上注入，避免干扰 iPhone/iPad 外接键盘上用户已有的按键习惯。
   private var _macArrowNavKeyCommands: [UIKeyCommand] {
     guard ProcessInfo.processInfo.isiOSAppOnMac else { return [] }
-    let specs: [(String, UIKeyModifierFlags, Selector)] = [
+    var specs: [(String, UIKeyModifierFlags, Selector)] = [
       (UIKeyCommand.inputLeftArrow,  .command,           #selector(_macPrevTab)),
       (UIKeyCommand.inputRightArrow, .command,           #selector(_macNextTab)),
       (UIKeyCommand.inputUpArrow,    .command,           #selector(_macPrevMachine)),
       (UIKeyCommand.inputDownArrow,  .command,           #selector(_macNextMachine)),
       ("[",                          [.command, .shift], #selector(_macPrevTab)),   // Cmd+Shift+[ 上一个标签
       ("]",                          [.command, .shift], #selector(_macNextTab)),   // Cmd+Shift+] 下一个标签
+      ("r",                          .command,           #selector(reloadCurrentShell)),  // ⌘R 重连当前终端（重 attach tmux）
     ]
+    // Cmd+1…9 直接切到机器栏里第 N 台机器（等同点 rail 第 N 个头像）。
+    // Blink 默认键位表未绑 Cmd+数字，无冲突；仅 Mac 注入。
+    for n in 1...9 {
+      specs.append((String(n), .command, #selector(_macSelectMachineByNumber(_:))))
+    }
     return specs.map { (input, mods, action) in
       let c = UIKeyCommand(input: input, modifierFlags: mods, action: action)
       c.wantsPriorityOverSystemBehavior = true   // 抢在系统默认行为之前
@@ -997,6 +1124,15 @@ extension SpaceController {
   @objc private func _macNextTab()     { _advanceShellCycling(by: 1) }
   @objc private func _macPrevMachine() { _advanceMachine(by: -1) }
   @objc private func _macNextMachine() { _advanceMachine(by: 1) }
+
+  /// Cmd+N：切到机器栏（BlinkMachineStore.machines 顺序）里第 N 台机器，
+  /// 等同点 rail 第 N 个头像。sender.input 是按下的数字；机器数不足则静默忽略。
+  @objc private func _macSelectMachineByNumber(_ cmd: UIKeyCommand) {
+    guard let input = cmd.input, let n = Int(input), n >= 1 else { return }
+    let machines = BlinkMachineStore.shared.machines
+    guard n <= machines.count else { return }
+    _applyMachineFilter(machines[n - 1].id)
+  }
 
   @objc func onStuckOpCommand() {
     stuckKeyCode = nil
@@ -1367,6 +1503,8 @@ extension SpaceController {
     var icons: [UIImage?] = []
     var unread: [Bool] = []
     var tags: [Int] = []
+    var sidebarSubs: [String] = []       // Mac 三栏：每行副标题（工作目录路径）
+    var sidebarIcons: [UIImage?] = []    // Mac 三栏：32pt 头像（tab 的 22pt 太小）
 
     let allMachineIds = BlinkMachineStore.shared.machines.map { $0.id }
     let usedIds: [String] = _viewportsKeys.compactMap {
@@ -1401,6 +1539,13 @@ extension SpaceController {
           icons.append(icon)
           unread.append(term.meta.hasUnread)
           tags.append(idx)
+          if _macLayoutEnabled {
+            let wd = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)
+            sidebarSubs.append(wd?.path ?? "")
+            sidebarIcons.append(wd?.iconImage.map {
+              AvatarRenderer.roundedThumbnail(from: $0, size: CGSize(width: 32, height: 32))
+            } ?? nil)
+          }
           continue
         }
         let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
@@ -1440,6 +1585,14 @@ extension SpaceController {
       icons.append(icon)
       unread.append(term.meta.hasUnread)
       tags.append(idx)
+      if _macLayoutEnabled {
+        let wd = BlinkWorkDirStore.shared.workDir(forId: term.mcpParams?.workDirId)
+        sidebarSubs.append(wd?.path ?? BlinkMachineStore.effectiveTmuxSessionName(
+          workDirId: term.mcpParams?.workDirId, tmuxSession: term.mcpParams?.tmuxSession))
+        sidebarIcons.append(wd?.iconImage.map {
+          AvatarRenderer.roundedThumbnail(from: $0, size: CGSize(width: 32, height: 32))
+        } ?? nil)
+      }
     }
     let chipTitle: String
     if let fid = filterId, let m = BlinkMachineStore.shared.machines.first(where: { $0.id == fid }) {
@@ -1448,6 +1601,29 @@ extension SpaceController {
       chipTitle = "全部"
     }
     _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
+
+    if _macLayoutEnabled {
+      // 三栏与 tab 栏同源刷新：rail 高亮当前机器，sidebar 铺当前机器的会话
+      _macRail?.reload(currentId: filterId)
+      let machine = filterId.flatMap { fid in
+        BlinkMachineStore.shared.machines.first { $0.id == fid }
+      }
+      var items: [MacSessionSidebarView.Item] = []
+      for (i, t) in titles.enumerated() {
+        items.append(MacSessionSidebarView.Item(
+          tag: tags[i],
+          title: t,
+          subtitle: i < sidebarSubs.count ? sidebarSubs[i] : "",
+          icon: i < sidebarIcons.count ? sidebarIcons[i] : nil,
+          unread: unread[i],
+          isCurrent: tags[i] == curIndex))
+      }
+      _macSidebar?.reload(machineName: machine?.displayName ?? chipTitle,
+                          transport: machine.map { $0.usesBlinkd ? "Socket" : "SSH" },
+                          items: items)
+      _updateMacHostLine(machine: machine)
+      _updateMacStatusBar()
+    }
   }
 
   private func _focusOtherWindowAction() {
@@ -2155,6 +2331,8 @@ extension SpaceController: BlinkTabBarDelegate {
       _moveToShell(idx: idx, animated: false)
     } else {
       _reloadTabBar()
+      // Mac：点 rail 上已选中的机器（无切页）也要把键盘焦点还给终端
+      if _macLayoutEnabled { _attachInputToCurrentTerm() }
     }
     _floatingMachineBar.reload(currentId: _tabFilterMachineId)
 
@@ -2172,6 +2350,7 @@ extension SpaceController: BlinkTabBarDelegate {
     picker.onPick = { [weak self] data in
       BlinkMachineStore.shared.setAvatar(data, forId: machineId)
       self?._floatingMachineBar.reload(currentId: self?._tabFilterMachineId)
+      self?._macRail?.reload(currentId: self?._tabFilterMachineId)
     }
     let nav = UINavigationController(rootViewController: picker)
     nav.modalPresentationStyle = .pageSheet
@@ -2180,6 +2359,140 @@ extension SpaceController: BlinkTabBarDelegate {
       sheet.prefersGrabberVisible = true
     }
     present(nav, animated: true)
+  }
+}
+
+// MARK: Mac 大屏三栏布局（issue #5）
+//
+// 结构：机器 rail(68pt) | 会话列表(288pt) | 终端 + 底部状态栏(24pt)。
+// 数据流全部复用现有机制 —— rail 点击 = _applyMachineFilter（含记忆各机器上次
+// tab + 断线重连），行点击/关闭 = tabBarDidSelect/Close，刷新挂在 _reloadTabBar。
+extension SpaceController {
+
+  /// E2E 自动化后门（BlinkE2ESnapshotHook 默认值开启才注册）：Mac 上拿不到系统截屏
+  /// （screencapture 要屏幕录制权限、lldb attach Designed-for-iPad 进程会卡死），让 app
+  /// 自己监听 darwin 通知，把 key window 渲染成 PNG 写到 Documents/blink-window.png
+  /// 并放进系统剪贴板（container 受 TCC 保护，剪贴板是唯一能带出去的通道）。
+  /// 触发：`notifyutil -p sh.blink.snapshot`
+  static let _installDebugSnapshotHook: Void = {
+    CFNotificationCenterAddObserver(
+      CFNotificationCenterGetDarwinNotifyCenter(), nil,
+      { _, _, _, _, _ in
+        DispatchQueue.main.async {
+          let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+          guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first,
+                let w = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
+          else { return }
+          let png = UIGraphicsImageRenderer(bounds: w.bounds).pngData { _ in
+            w.drawHierarchy(in: w.bounds, afterScreenUpdates: true)
+          }
+          let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("blink-window.png")
+          try? png.write(to: url)
+          if let img = UIImage(data: png) {
+            // Mac E2E：app container 受 TCC 保护外面读不到，走系统剪贴板把图带出去
+            UIPasteboard.general.image = img
+          }
+        }
+      },
+      "sh.blink.snapshot" as CFString, nil, .deliverImmediately)
+  }()
+
+  fileprivate func _setupMacThreeColumn() {
+    _tabBar.isHidden = true
+    _statusBarBg.isHidden = true
+
+    // 幂等：viewDidLoad 若二次执行（Mac 场景重连 / 视图重建等）会重复 new 三份视图并
+    // addSubview，而 _macRail/_macSidebar/_macStatusBar 只指向最新的，旧的三份留在 view
+    // 上没人排版 → 两套侧栏重叠、出现两个「＋ 新会话」。建新之前先移除旧的，保证只有一套。
+    _macRail?.removeFromSuperview()
+    _macSidebar?.removeFromSuperview()
+    _macStatusBar?.removeFromSuperview()
+
+    let rail = MacMachineRailView()
+    rail.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+    rail.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
+    rail.onOpenAssistantChat = { [weak self] in self?.tabBarDidRequestAssistantChat() }
+    rail.onOpenSettings = { [weak self] in self?.tabBarDidRequestSettings() }
+    view.addSubview(rail)
+    _macRail = rail
+
+    let sidebar = MacSessionSidebarView()
+    // 不走 tabBarDidSelect：它切页后不重挂输入（手机靠手指点终端恢复焦点，Mac 没这一步，
+    // 键盘会直接失灵）。_moveToShell 完成后自带 _attachInputToCurrentTerm。
+    sidebar.onSelect = { [weak self] tag in self?._moveToShell(idx: tag) }
+    sidebar.onClose = { [weak self] tag in self?.tabBarDidRequestClose(index: tag) }
+    sidebar.onNewSession = { [weak self] in self?.tabBarDidRequestNew() }
+    view.addSubview(sidebar)
+    _macSidebar = sidebar
+
+    let status = MacStatusBarView()
+    view.addSubview(status)
+    _macStatusBar = status
+
+    _reloadTabBar()
+
+    // 直输模式启动兜底：首次 _focusOnShell 常跑在终端 webView ready 之前而落空
+    //（旧版靠语音面板弹出掩盖了这点）。ready 后补挂，保证开屏即可打字。
+    for delay in [2.0, 5.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?._focusOnShell()
+      }
+    }
+  }
+
+  fileprivate func _layoutMacThreeColumn(safeTop: CGFloat) {
+    guard let rail = _macRail, let sidebar = _macSidebar, let status = _macStatusBar else { return }
+    let railW = MacMachineRailView.railW
+    let sideW = MacSessionSidebarView.sidebarW
+    let statusH = MacStatusBarView.barH
+    let w = view.bounds.width
+    let h = view.bounds.height
+    _statusBarBg.frame = CGRect(x: 0, y: 0, width: w, height: safeTop)
+    rail.frame = CGRect(x: 0, y: safeTop, width: railW, height: max(0, h - safeTop))
+    sidebar.frame = CGRect(x: railW, y: safeTop, width: sideW, height: max(0, h - safeTop))
+    status.frame = CGRect(x: railW + sideW, y: h - statusH,
+                          width: max(0, w - railW - sideW), height: statusH)
+    if let v = _viewportsController.view {
+      v.frame = CGRect(x: railW + sideW, y: safeTop,
+                       width: max(0, w - railW - sideW),
+                       height: max(0, h - safeTop - statusH))
+    }
+    view.bringSubviewToFront(rail)
+    view.bringSubviewToFront(sidebar)
+    view.bringSubviewToFront(status)
+  }
+
+  /// 选用地址是同步探测（LAN→外网1→外网2，各 0.3s 超时），放后台算完回主线程喂 header
+  fileprivate func _updateMacHostLine(machine: BlinkMachine?) {
+    guard _macLayoutEnabled else { return }
+    guard let m = machine else {
+      _macSidebar?.updateHostLine(nil)
+      return
+    }
+    let mid = m.id
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      let r = BlinkMachineStore.resolveHost(for: m)
+      DispatchQueue.main.async {
+        guard let self, self._tabFilterMachineId == mid else { return }
+        self._macSidebar?.updateHostLine("\(m.user)@\(r.host) · \(r.source)")
+      }
+    }
+  }
+
+  fileprivate func _updateMacStatusBar() {
+    guard _macLayoutEnabled, let term = currentTerm() else { return }
+    let p = term.mcpParams
+    let session = BlinkMachineStore.effectiveTmuxSessionName(
+      workDirId: p?.workDirId, tmuxSession: p?.tmuxSession)
+    var left = "tmux \(session) · UTF-8"
+    if let mid = p?.machineId,
+       let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) {
+      left = "\(m.displayName)(\(m.usesBlinkd ? "Socket" : "SSH")) · " + left
+    }
+    let hasSize = !(term.termView.rows == 0 && term.termView.cols == 0)
+    let sizePart = hasSize ? "\(term.termView.cols)×\(term.termView.rows)  " : ""
+    _macStatusBar?.update(left: left, right: sizePart + "⌘↑↓ 机器 · ⌘←→ 会话")
   }
 }
 

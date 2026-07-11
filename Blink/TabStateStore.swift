@@ -132,4 +132,12 @@ final class TabStateStore {
     NSLog("[TabStateStore] 采纳 iCloud tab 列表：%d 个 tab", synced.tabs.count)
     return true
   }
+
+  /// 只读 iCloud 同步来的 tab 列表，不改本地 state。
+  /// 活跃设备增量合并用：只把云端新增的 tab 追加到 UI，不整份替换（避免打断当前操作）。
+  func syncedTabs() -> [TabEntry] {
+    guard let data = UserDefaults.standard.data(forKey: Self.kSyncKey),
+          let synced = try? JSONDecoder().decode(TabState.self, from: data) else { return [] }
+    return synced.tabs
+  }
 }
