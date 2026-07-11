@@ -488,7 +488,7 @@ final class BlinkAssistantBackend {
     # 1) 确保 session 存在
     if ! $TMUX has-session -t "$SESS" 2>/dev/null; then
       mkdir -p \(remoteWorkDir) 2>/dev/null
-      $TMUX new-session -d -s "$SESS" "/bin/zsh -ic 'cd \(remoteWorkDir) && cc'"
+      $TMUX new-session -d -s "$SESS" "/bin/zsh -ic 'cd \(remoteWorkDir) && claude'"
       for i in $(seq 1 60); do
         [ -d "$PROJ" ] && [ -n "$(ls -t "$PROJ"/*.jsonl 2>/dev/null | head -1)" ] && break
         sleep 0.5
@@ -606,7 +606,7 @@ final class BlinkAssistantBackend {
     if ! $TMUX has-session -t "$SESS" 2>/dev/null; then
       mkdir -p \(remoteWorkDir) 2>/dev/null
       # 跟用户日常 cc tab 一样走 zsh -ic 加载 zshrc（cc alias + 任何 env / keychain hook）
-      $TMUX new-session -d -s "$SESS" "/bin/zsh -ic 'cd \(remoteWorkDir) && cc'"
+      $TMUX new-session -d -s "$SESS" "/bin/zsh -ic 'cd \(remoteWorkDir) && claude'"
       # 等 claude 起来：jsonl 出现就算 ready，最多 30s
       for i in $(seq 1 60); do
         if [ -d "$PROJ" ] && [ -n "$(ls -t "$PROJ"/*.jsonl 2>/dev/null | head -1)" ]; then break; fi

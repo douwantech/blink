@@ -202,7 +202,7 @@ enum HostReachability {
     // 用 find 替代 glob 避开 zsh nomatch；不用 exec 以兼容 cc 是 alias 的情形。
     let resumeOrNew: (String) -> String = { cdTarget in
       // inner 被外层 `$SHELL -ic '...'` 单引号包裹，里面只能用双引号；TITLE 由 Swift 端预先算好。
-      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then cc --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & cc; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"cc\""; fi; fi; }"#
+      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -213,11 +213,14 @@ enum HostReachability {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
       let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
       let inner = resumeOrNew(pathArg)
+      // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装那）也加载进来。
+      // 末尾 `; exec $SHELL -il`：万一 claude 没起来/退出，掉到登录 shell 而不是整个会话塌掉，
+      // 既停掉疯狂重连，也让报错（如 command not found: claude）留在屏上看得到。
       let remoteScript = """
       \(detectSock)
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
       \(migrate)
-      exec tmux new-session -A -s \(outerSession) $SHELL -ic '\(inner)'
+      exec tmux new-session -A -s \(outerSession) $SHELL -lic '\(inner); echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
         // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析
@@ -230,7 +233,7 @@ enum HostReachability {
     // 非 tmux 分支也要用 base64 包裹，否则 Blink 本地 shell 会把 $HOME / $(pwd) 等先在
     // iOS 沙箱里展开掉再传给远端，导致 inner 里全是空值或 iOS 路径。
     let inner = resumeOrNew(workPath)
-    let remoteScript = "exec $SHELL -ic '\(inner)'"
+    let remoteScript = "exec $SHELL -lic '\(inner); echo \"[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）\"; exec $SHELL -il'"
     let encoded = Data(remoteScript.utf8).base64EncodedString()
     return "ssh -t \(m.user)@\(host) -- \"echo \(encoded) | base64 -d > /tmp/.blink-cc-$$.sh && exec bash /tmp/.blink-cc-$$.sh\""
   }
