@@ -890,7 +890,13 @@ final class VoiceInputView: UIInputView {
   }
 
   @objc private func pasteTapped() {
-    let text = UIPasteboard.general.string ?? ""
+    // 剪贴板若是图片：走「上传图床 → 插入返回 URL」流程，与选图按钮完全一致（同一个 ImageHostUploader）。
+    let pb = UIPasteboard.general
+    if pb.hasImages, let images = pb.images, !images.isEmpty {
+      uploadClipboardImages(images)
+      return
+    }
+    let text = pb.string ?? ""
     if text.isEmpty {
       showToast("剪贴板是空的", isError: true)
       return
@@ -911,6 +917,39 @@ final class VoiceInputView: UIInputView {
       return
     }
     delegate?.voiceInputDidRequestPaste(self)
+  }
+
+  /// 剪贴板图片 → 图床（uguu.se，失败退 tmpfiles）→ 把返回的 URL（多张换行拼接）插入终端并回填剪贴板。
+  /// 与选图（imagePickTapped）走同一个 ImageHostUploader，行为一致；剪贴板图无相册原件，不涉及删原图。
+  private func uploadClipboardImages(_ images: [UIImage]) {
+    let total = images.count
+    showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
+    var urls: [String?] = Array(repeating: nil, count: total)  // 保序
+    let group = DispatchGroup()
+    for (idx, image) in images.enumerated() {
+      guard let data = image.jpegData(compressionQuality: 0.75) else { continue }
+      group.enter()
+      ImageHostUploader.upload(jpegData: data) { url in
+        DispatchQueue.main.async {
+          urls[idx] = url
+          group.leave()
+        }
+      }
+    }
+    group.notify(queue: .main) { [weak self] in
+      guard let self else { return }
+      let good = urls.compactMap { $0 }
+      if good.isEmpty {
+        self.showToast("全部上传失败", isError: true)
+        return
+      }
+      let joined = good.joined(separator: "\n")
+      UIPasteboard.general.string = joined                        // 仍复制一份到剪贴板兜底
+      self.delegate?.voiceInput(self, didRequestPasteText: joined)  // 直接插进终端输入框（内部会弹「已粘贴」提示）
+      if good.count != total {
+        self.showToast("\(good.count)/\(total) 已插入，失败 \(total - good.count) 张", isError: true)
+      }
+    }
   }
 
   @objc private func imagePickTapped() {
