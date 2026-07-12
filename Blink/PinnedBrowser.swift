@@ -161,13 +161,14 @@ final class FloatingDockBar: UIView {
   private static let kPosX = "FloatingDockBar.posX"
   private static let kPosY = "FloatingDockBar.posY"
   static let barW: CGFloat = 58
-  static let barH: CGFloat = 272
+  static let barH: CGFloat = 322
 
   let micButton = UIButton(type: .system)
   let browserButton = UIButton(type: .system)
   let favoritesButton = UIButton(type: .system)
   let historyButton = UIButton(type: .system)
   let refreshButton = UIButton(type: .system)
+  let sleepButton = UIButton(type: .system)
   private var dragPan: UIPanGestureRecognizer!
   private var didMove = false
 
@@ -202,27 +203,39 @@ final class FloatingDockBar: UIView {
     grip.isUserInteractionEnabled = false
     addSubview(grip)
 
-    // 从上到下：浏览器 / 收藏 / 查看历史 / 刷新 / 输入(mic)。输入钮放最下面最好按。
+    // 从上到下：休息(😴) / 浏览器 / 收藏 / 查看历史 / 刷新 / 输入(mic)。输入钮放最下面最好按。
     let x = (Self.barW - 44) / 2
+    _configCircle(sleepButton, icon: "moon.zzz.fill", color: .systemGray)
+    sleepButton.frame = CGRect(x: x, y: 16, width: 44, height: 44)
+    addSubview(sleepButton)
+
     _configCircle(browserButton, icon: "globe", color: .systemIndigo)
-    browserButton.frame = CGRect(x: x, y: 16, width: 44, height: 44)
+    browserButton.frame = CGRect(x: x, y: 66, width: 44, height: 44)
     addSubview(browserButton)
 
     _configCircle(favoritesButton, icon: "star.fill", color: .systemYellow)
-    favoritesButton.frame = CGRect(x: x, y: 66, width: 44, height: 44)
+    favoritesButton.frame = CGRect(x: x, y: 116, width: 44, height: 44)
     addSubview(favoritesButton)
 
     _configCircle(historyButton, icon: "clock.arrow.circlepath", color: .systemBlue)
-    historyButton.frame = CGRect(x: x, y: 116, width: 44, height: 44)
+    historyButton.frame = CGRect(x: x, y: 166, width: 44, height: 44)
     addSubview(historyButton)
 
     _configCircle(refreshButton, icon: "arrow.clockwise", color: .systemGreen)
-    refreshButton.frame = CGRect(x: x, y: 166, width: 44, height: 44)
+    refreshButton.frame = CGRect(x: x, y: 216, width: 44, height: 44)
     addSubview(refreshButton)
 
     _configCircle(micButton, icon: "mic.fill", color: .systemTeal)
-    micButton.frame = CGRect(x: x, y: 216, width: 44, height: 44)
+    micButton.frame = CGRect(x: x, y: 266, width: 44, height: 44)
     addSubview(micButton)
+  }
+
+  /// 当前 tab 是否「休息」：休息 → 😴 钮亮紫；否则暗灰。
+  func setResting(_ resting: Bool) {
+    UIView.animate(withDuration: 0.15) {
+      self.sleepButton.backgroundColor = resting ? .systemIndigo : .systemGray
+    }
+    sleepButton.alpha = resting ? 1.0 : 0.7
   }
 
   /// 录音中：mic 钮换成停止图标 + 变红；停止后还原。

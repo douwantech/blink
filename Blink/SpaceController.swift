@@ -486,6 +486,14 @@ class SpaceController: UIViewController {
     return v
   }()
   private static let kTabFilterMachineId = "BlinkTabFilterMachineId"
+
+  // 「只显示工作中」模式：开启后隐藏被手动标记「休息」(😴) 的 tab。默认关，记住上次。
+  private static let kWorkModeOn = "BlinkWorkModeOn"
+  private var _workModeOn: Bool {
+    get { UserDefaults.standard.bool(forKey: SpaceController.kWorkModeOn) }
+    set { UserDefaults.standard.set(newValue, forKey: SpaceController.kWorkModeOn) }
+  }
+
   private var _tabFilterMachineId: String? {
     get { UserDefaults.standard.string(forKey: SpaceController.kTabFilterMachineId) }
     set {
@@ -516,6 +524,7 @@ class SpaceController: UIViewController {
     view.addSubview(_statusBarBg)
 
     _tabBar.delegate = self
+    _tabBar.setWorkMode(_workModeOn)
     _tabBar.translatesAutoresizingMaskIntoConstraints = true
     _tabBar.autoresizingMask = [.flexibleWidth]
     view.addSubview(_tabBar)
@@ -562,6 +571,7 @@ class SpaceController: UIViewController {
     _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
+    _floatingDock.sleepButton.addTarget(self, action: #selector(_toggleRestForCurrentTab), for: .touchUpInside)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
 
     // E2E 自截屏后门：仅测试设备手动开 BlinkE2ESnapshotHook 才注册（生产 inert）。
@@ -1010,7 +1020,8 @@ extension SpaceController: UIPageViewControllerDataSource {
   private func _controller(controller: UIViewController, advancedBy: Int) -> UIViewController? {
     guard let ctrl = controller as? TermController else { return nil }
     let key = ctrl.meta.key
-    let filtered = _filteredViewportsKeys()
+    // 与 tab 栏一致：左右滑动也跳过被「只显示工作中」隐藏（休息）的 tab
+    let filtered = _visibleFilteredKeys(current: key)
     if let pos = filtered.firstIndex(of: key)?.advanced(by: advancedBy),
        filtered.indices.contains(pos) {
       let newCtrl: TermController = SessionRegistry.shared[filtered[pos]]
@@ -1027,7 +1038,8 @@ extension SpaceController: UIPageViewControllerDataSource {
     let nextFilterId = machineIds[nextMid]
     let nextFiltered = _viewportsKeys.filter { k in
       let t: TermController = SessionRegistry.shared[k]
-      return t.mcpParams?.machineId == nextFilterId
+      guard t.mcpParams?.machineId == nextFilterId else { return false }
+      return !(_workModeOn && TabRestStore.shared.isResting(k.uuidString))   // 跨机器也跳过休息的
     }
     guard let targetKey = (advancedBy > 0 ? nextFiltered.first : nextFiltered.last) else { return nil }
     let newCtrl: TermController = SessionRegistry.shared[targetKey]
@@ -1498,6 +1510,62 @@ extension SpaceController {
     }
   }
 
+  /// 「只显示工作中」模式下，这个 tab 是否该藏起来（被手动标记了「休息」😴）。
+  private func _hiddenByWorkMode(_ key: UUID) -> Bool {
+    guard _workModeOn else { return false }
+    if key == _currentKey { return false }          // 当前 tab 永不隐藏
+    return TabRestStore.shared.isResting(key.uuidString)
+  }
+
+  /// dock 😴 钮：把当前 tab 标记 / 取消标记「休息」。
+  /// 若「只显示工作中」开着且刚标为休息，立刻跳到下一个「工作中」tab，让这个 tab 被过滤隐藏。
+  @objc private func _toggleRestForCurrentTab() {
+    guard let key = _currentKey else { return }
+    let nowResting = TabRestStore.shared.toggle(key.uuidString)
+    _floatingDock.setResting(nowResting)
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+    let target = nowResting && _workModeOn ? _nextWorkingKey(excluding: key) : nil
+    if let target = target {
+      // 若跳到别的机器，先把 filter 切过去，免得目标 tab 又被机器过滤挡住
+      let curMachine = (SessionRegistry.shared[key] as TermController).mcpParams?.machineId
+      let tgtMachine = (SessionRegistry.shared[target] as TermController).mcpParams?.machineId
+      if tgtMachine != curMachine, let tm = tgtMachine { _tabFilterMachineId = tm }
+      // 切走后 _currentKey.didSet 会自动 _reloadTabBar，原 tab 即被隐藏
+      _moveToShell(key: target)
+    } else {
+      _reloadTabBar()
+    }
+  }
+
+  /// 标当前 tab 休息后要跳去的下一个「工作中」tab。
+  /// 直接按「当前 tab 自己所属的机器」找（不依赖可能失准的 _tabFilterMachineId）：
+  /// 优先同机器、当前之后、非休息的；同机器没有再退到其它机器的工作 tab。
+  private func _nextWorkingKey(excluding key: UUID) -> UUID? {
+    guard let pos = _viewportsKeys.firstIndex(of: key), _viewportsKeys.count > 1 else { return nil }
+    let n = _viewportsKeys.count
+    let curMachine = (SessionRegistry.shared[key] as TermController).mcpParams?.machineId
+    var sameMachine: UUID? = nil
+    var otherMachine: UUID? = nil
+    for step in 1..<n {
+      let cand = _viewportsKeys[(pos + step) % n]
+      if cand == key || TabRestStore.shared.isResting(cand.uuidString) { continue }
+      let m = (SessionRegistry.shared[cand] as TermController).mcpParams?.machineId
+      if m == curMachine {
+        sameMachine = cand
+        break                        // 同机器优先，找到最近的即停
+      } else if otherMachine == nil {
+        otherMachine = cand
+      }
+    }
+    return sameMachine ?? otherMachine
+  }
+
+  /// 让 dock 的 😴 钮反映当前 tab 的休息状态。
+  private func _syncSleepButton() {
+    _floatingDock.setResting(TabRestStore.shared.isResting(_currentKey?.uuidString))
+  }
+
   fileprivate func _reloadTabBar() {
     var titles: [String] = []
     var icons: [UIImage?] = []
@@ -1575,6 +1643,7 @@ extension SpaceController {
       }
       let mid = term.mcpParams?.machineId
       if let f = filterId, mid != f { continue }
+      if _hiddenByWorkMode(key) { continue }   // 「只显示工作中」：藏掉标了休息(😴)的 tab
       titles.append(title)
       // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
       var icon: UIImage? = nil
@@ -1601,6 +1670,7 @@ extension SpaceController {
       chipTitle = "全部"
     }
     _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
+    _syncSleepButton()
 
     if _macLayoutEnabled {
       // 三栏与 tab 栏同源刷新：rail 高亮当前机器，sidebar 铺当前机器的会话
@@ -2014,8 +2084,17 @@ extension SpaceController {
     }
   }
 
+  /// 机器过滤后再排除「只显示工作中」隐藏（休息）的 tab；`current` 永远保留（哪怕它被标了休息），
+  /// 这样左右滑动翻页遍历的集合与 tab 栏显示的一致。
+  private func _visibleFilteredKeys(current: UUID? = nil) -> [UUID] {
+    _filteredViewportsKeys().filter { k in
+      if k == (current ?? _currentKey) { return true }
+      return !(_workModeOn && TabRestStore.shared.isResting(k.uuidString))
+    }
+  }
+
   private func _advanceShell(by: Int, animated: Bool = true) {
-    let filtered = _filteredViewportsKeys()
+    let filtered = _visibleFilteredKeys()   // 键盘上/下切 tab 也跳过休息的
     guard let currentKey = _currentKey else { return }
     if let pos = filtered.firstIndex(of: currentKey)?.advanced(by: by),
        filtered.indices.contains(pos),
@@ -2031,7 +2110,7 @@ extension SpaceController {
     let nextMachinePos = (curMachinePos + (by > 0 ? 1 : -1) + machineIds.count) % machineIds.count
     let newFilterId = machineIds[nextMachinePos]
     _tabFilterMachineId = newFilterId
-    let newFiltered = _filteredViewportsKeys()
+    let newFiltered = _visibleFilteredKeys()
     guard let targetKey = (by > 0 ? newFiltered.first : newFiltered.last),
           let idx = _viewportsKeys.firstIndex(of: targetKey) else { return }
     _moveToShell(idx: idx, animated: animated)
@@ -2288,6 +2367,14 @@ extension SpaceController: BlinkTabBarDelegate {
       _currentKey = key
     }
     closeShellAction()
+  }
+
+  public func tabBarDidToggleWorkMode() {
+    _workModeOn.toggle()
+    _tabBar.setWorkMode(_workModeOn)
+    let gen = UINotificationFeedbackGenerator()
+    gen.notificationOccurred(.success)
+    _reloadTabBar()
   }
 
   public func tabBarDidRequestMachineFilter() {

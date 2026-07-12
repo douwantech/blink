@@ -57,3 +57,4 @@ Resources/Fonts/Pragmata*
 .swiftpm
 
 Blink.xcodeproj/project.xcworkspace/xcshareddata
+build-sim/

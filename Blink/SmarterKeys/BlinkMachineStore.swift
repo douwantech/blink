@@ -829,6 +829,41 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestAssistant()
   /// 顶栏 sparkles 入口 → 打开气泡 chat UI（与 kAssistantTabTag 的终端 tab 互补）
   func tabBarDidRequestAssistantChat()
+  /// 顶栏「开工」开关 → 切换只显示近 2h 发过消息的 tab
+  func tabBarDidToggleWorkMode()
+}
+
+// MARK: - 手动「休息」标记（「只显示工作中」过滤用）
+
+/// 每个终端会话是否被手动标记为「休息」。被标记的 tab 在「只显示工作中」模式下隐藏。
+/// 手动判断——由 dock 的 😴 钮切换。持久化到 UserDefaults，重启保留。
+@objc final class TabRestStore: NSObject {
+  @objc static let shared = TabRestStore()
+  private let kKey = "TabRestStore.resting"
+  private var resting: Set<String>     // 休息中的会话 UUID 字符串
+
+  private override init() {
+    resting = Set(UserDefaults.standard.stringArray(forKey: kKey) ?? [])
+    super.init()
+  }
+
+  @objc func isResting(_ key: String?) -> Bool {
+    guard let key = key, !key.isEmpty else { return false }
+    return resting.contains(key)
+  }
+
+  @objc func setResting(_ on: Bool, key: String?) {
+    guard let key = key, !key.isEmpty else { return }
+    if on { resting.insert(key) } else { resting.remove(key) }
+    UserDefaults.standard.set(Array(resting), forKey: kKey)
+  }
+
+  /// 切换并返回切换后的新状态。
+  @objc @discardableResult func toggle(_ key: String?) -> Bool {
+    let now = !isResting(key)
+    setResting(now, key: key)
+    return now
+  }
 }
 
 final class HorizontalOnlyScrollView: UIScrollView {
@@ -851,7 +886,10 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
   private let filterChipButton = UIButton(type: .system)
+  private let workModeLabel = UILabel()
+  private let workModeSwitch = UISwitch()
   private let assistantButton = UIButton(type: .system)
+  private var workModeOn = false
 
   @objc init() {
     super.init(frame: .zero)
@@ -892,9 +930,21 @@ final class HorizontalOnlyScrollView: UIScrollView {
     filterChipButton.translatesAutoresizingMaskIntoConstraints = false
     filterChipButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
 
+    workModeLabel.text = "只显示工作中"
+    workModeLabel.font = .systemFont(ofSize: 12, weight: .medium)
+    workModeLabel.textColor = .secondaryLabel
+    workModeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+    workModeSwitch.translatesAutoresizingMaskIntoConstraints = false
+    workModeSwitch.onTintColor = .systemOrange
+    workModeSwitch.transform = CGAffineTransform(scaleX: 0.78, y: 0.78)
+    workModeSwitch.addTarget(self, action: #selector(workModeChanged), for: .valueChanged)
+
     topRow.translatesAutoresizingMaskIntoConstraints = false
     topRow.addSubview(settingsButton)
     topRow.addSubview(filterChipButton)
+    topRow.addSubview(workModeLabel)
+    topRow.addSubview(workModeSwitch)
     topRow.addSubview(assistantButton)
     topRow.addSubview(addButton)
 
@@ -931,6 +981,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
       assistantButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
       assistantButton.widthAnchor.constraint(equalToConstant: 32),
       assistantButton.heightAnchor.constraint(equalToConstant: 28),
+
+      workModeSwitch.trailingAnchor.constraint(equalTo: assistantButton.leadingAnchor, constant: -6),
+      workModeSwitch.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+      workModeLabel.trailingAnchor.constraint(equalTo: workModeSwitch.leadingAnchor, constant: -4),
+      workModeLabel.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
 
       topRow.heightAnchor.constraint(equalToConstant: 28),
 
@@ -1000,6 +1055,17 @@ final class HorizontalOnlyScrollView: UIScrollView {
 
   @objc private func filterTapped() {
     delegate?.tabBarDidRequestMachineFilter()
+  }
+
+  @objc private func workModeChanged() {
+    delegate?.tabBarDidToggleWorkMode()
+  }
+
+  /// 外部（SpaceController）设置「只显示工作中」开关的显示态。
+  @objc func setWorkMode(_ on: Bool) {
+    workModeOn = on
+    workModeSwitch.setOn(on, animated: false)
+    workModeLabel.textColor = on ? .systemOrange : .secondaryLabel
   }
 
   private func makeTabButton(title: String, icon: UIImage?, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
