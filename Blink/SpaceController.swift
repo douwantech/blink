@@ -133,6 +133,7 @@ class SpaceController: UIViewController {
   private var _floatingDockPlaced = false
   private var _floatingMachineBar = FloatingMachineBar()
   private var _floatingMachineBarPlaced = false
+  private var _floatingBarsHidden = false   // 长按屏幕切换两条浮动条显隐
   private var _lastKeyPerMachine: [String: UUID] = [:]   // 每台机器上次选中的 tab
   private var _voiceIsRecording = false
   private let _voiceHaptic = UIImpactFeedbackGenerator(style: .heavy)
@@ -298,9 +299,28 @@ class SpaceController: UIViewController {
   }
 
   private func _updateFloatingMicVisibility() {
-    // 玻璃 dock 常驻显示（语音 + 浏览器都在里面），只保证在最前
-    _floatingDock.isHidden = false
+    // 玻璃 dock 常驻显示（语音 + 浏览器都在里面），只保证在最前；除非被长按隐藏了
+    _floatingDock.isHidden = _floatingBarsHidden
     view.bringSubviewToFront(_floatingDock)
+  }
+
+  // 长按终端：切换两条浮动条（动作 dock + 切机器条）的显隐（TermView 长按发通知触发）
+  @objc private func _toggleFloatingBars() {
+    _floatingBarsHidden.toggle()
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    let hidden = _floatingBarsHidden
+    let bars: [UIView] = _macLayoutEnabled ? [_floatingDock] : [_floatingDock, _floatingMachineBar]
+    for bar in bars {
+      if !hidden {
+        bar.isHidden = false
+        view.bringSubviewToFront(bar)
+      }
+      UIView.animate(withDuration: 0.2, animations: {
+        bar.alpha = hidden ? 0 : 1
+      }, completion: { _ in
+        bar.isHidden = hidden
+      })
+    }
   }
 
   // 录音状态变化：浮动条 mic 钮切 停止/mic 图标
@@ -599,6 +619,10 @@ class SpaceController: UIViewController {
     doubleTap.numberOfTapsRequired = 2
     doubleTap.numberOfTouchesRequired = 1
     _bottomTapAreaView.addGestureRecognizer(doubleTap)
+
+    // 长按终端切换两条浮动条显隐：TermView（webview 父层）长按发通知，穿透可靠
+    NotificationCenter.default.addObserver(self, selector: #selector(_toggleFloatingBars),
+                                           name: NSNotification.Name("BLToggleFloatingBars"), object: nil)
     
     NotificationCenter.default.addObserver(self, selector: #selector(_geoTrackStateChanged), name: NSNotification.Name.BLGeoTrackStateChange, object: nil)
     

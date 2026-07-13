@@ -74,6 +74,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   
   id<UIInteraction> _editMenuIteraction;
   UIPanGestureRecognizer *_dismissPan;
+  UILongPressGestureRecognizer *_barsLP;
 }
 
 
@@ -176,6 +177,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _dismissPan = dismissPan;
 
   [self addSubview:_webView];
+
+  // 长按终端：切换两条浮动条显隐。挂在真正被点到的 _webView 上，并允许与其内部手势并存。
+  UILongPressGestureRecognizer *barsLP = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(_toggleFloatingBarsOnLongPress:)];
+  barsLP.minimumPressDuration = 0.6;
+  barsLP.cancelsTouchesInView = NO;
+  barsLP.delegate = self;
+  [_webView addGestureRecognizer:barsLP];
+  _barsLP = barsLP;
 }
 
 - (void)_dismissInputOnPan:(UIPanGestureRecognizer *)rec {
@@ -191,7 +200,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
   if (gr == _dismissPan) { return YES; }
+  // 切浮动条的长按与 webview 的选择/callout 等手势并存（无论谁触发都放行）
+  if (gr == _barsLP || other == _barsLP) { return YES; }
   return NO;
+}
+
+- (void)_toggleFloatingBarsOnLongPress:(UILongPressGestureRecognizer *)rec {
+  if (rec.state == UIGestureRecognizerStateBegan) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"BLToggleFloatingBars" object:nil];
+  }
 }
 
 - (void)didMoveToSuperview {
