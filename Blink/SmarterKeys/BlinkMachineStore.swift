@@ -530,12 +530,15 @@ enum HostReachability {
 }
 
 final class MachineListViewController: UITableViewController {
+  private weak var footerLabel: UILabel?
+
   init() { super.init(style: .insetGrouped) }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
   override func viewDidLoad() {
     super.viewDidLoad()
     title = "机器"
+    tableView.estimatedSectionFooterHeight = 120
     navigationItem.leftBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done, target: self, action: #selector(closeTapped)
     )
@@ -555,9 +558,45 @@ final class MachineListViewController: UITableViewController {
     BlinkMachineStore.shared.machines.count
   }
 
-  override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
+  private func _footerText() -> String {
     let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
-    return "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    return "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+  }
+
+  override func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
+    let container = UIView()
+    let label = UILabel()
+    label.numberOfLines = 0
+    label.font = .preferredFont(forTextStyle: .footnote)
+    label.textColor = .secondaryLabel
+    label.text = _footerText()
+    label.isUserInteractionEnabled = true
+    label.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(label)
+    NSLayoutConstraint.activate([
+      label.leadingAnchor.constraint(equalTo: container.layoutMarginsGuide.leadingAnchor),
+      label.trailingAnchor.constraint(equalTo: container.layoutMarginsGuide.trailingAnchor),
+      label.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+      label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+    ])
+    let tap = UITapGestureRecognizer(target: self, action: #selector(copyAutoMacPubKey))
+    label.addGestureRecognizer(tap)
+    footerLabel = label
+    return container
+  }
+
+  override func tableView(_ tv: UITableView, heightForFooterInSection section: Int) -> CGFloat {
+    UITableView.automaticDimension
+  }
+
+  @objc private func copyAutoMacPubKey() {
+    guard let pub = BKPubKey.withID("AutoMac")?.publicKey, !pub.isEmpty else { return }
+    UIPasteboard.general.string = pub
+    UINotificationFeedbackGenerator().notificationOccurred(.success)
+    footerLabel?.text = "✓ 已复制 AutoMac 公钥到剪贴板"
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+      self?.footerLabel?.text = self?._footerText()
+    }
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -829,8 +868,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestAssistant()
   /// 顶栏 sparkles 入口 → 打开气泡 chat UI（与 kAssistantTabTag 的终端 tab 互补）
   func tabBarDidRequestAssistantChat()
-  /// 顶栏「开工」开关 → 切换只显示近 2h 发过消息的 tab
-  func tabBarDidToggleWorkMode()
+  /// 顶栏 🌙 按钮 → 弹出「员工在岗/休息」管理列表
+  func tabBarDidRequestRestPanel()
 }
 
 // MARK: - 手动「休息」标记（「只显示工作中」过滤用）
@@ -866,6 +905,96 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   }
 }
 
+// MARK: - 员工在岗/休息管理面板
+
+/// 顶栏 🌙 按钮弹出的列表：每行一个员工(tab)，开关切换在岗/休息。
+/// 开＝在岗（标签栏显示），关＝休息（标签栏隐藏）。休息中的员工也能在这里随时改回在岗。
+final class RestPanelViewController: UITableViewController {
+  struct Item {
+    let key: UUID
+    let title: String
+    let machine: String
+    var resting: Bool
+  }
+
+  private struct Group {
+    let machine: String
+    var items: [Item]
+  }
+
+  private var groups: [Group]
+  private let onToggle: (UUID, Bool) -> Void   // (员工 key, 切换后是否休息)
+
+  init(items: [Item], onToggle: @escaping (UUID, Bool) -> Void) {
+    // 按机器分 section，保持首次出现顺序
+    var order: [String] = []
+    var map: [String: [Item]] = [:]
+    for it in items {
+      let m = it.machine.isEmpty ? "其他" : it.machine
+      if map[m] == nil { order.append(m) }
+      map[m, default: []].append(it)
+    }
+    self.groups = order.map { Group(machine: $0, items: map[$0] ?? []) }
+    self.onToggle = onToggle
+    super.init(style: .insetGrouped)
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "员工在岗 / 休息"
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .done, target: self, action: #selector(closeTapped)
+    )
+  }
+
+  @objc private func closeTapped() { dismiss(animated: true) }
+
+  override func numberOfSections(in tv: UITableView) -> Int { groups.count }
+
+  override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
+    groups[section].items.count
+  }
+
+  override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
+    let g = groups[section]
+    let restingCount = g.items.filter { $0.resting }.count
+    return restingCount > 0 ? "\(g.machine)（\(restingCount) 休息）" : g.machine
+  }
+
+  override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
+    guard section == groups.count - 1 else { return nil }
+    return "开关打开＝在岗（显示在标签栏），关闭＝休息（从标签栏隐藏）。休息中的员工也能在这里随时改回在岗。"
+  }
+
+  override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+    let it = groups[indexPath.section].items[indexPath.row]
+    cell.textLabel?.text = it.title.isEmpty ? "标签" : it.title
+    cell.detailTextLabel?.text = it.resting ? "😴 休息中" : "在岗"
+    cell.detailTextLabel?.textColor = it.resting ? .systemIndigo : .secondaryLabel
+    cell.selectionStyle = .none
+    let sw = UISwitch()
+    sw.onTintColor = .systemGreen
+    sw.isOn = !it.resting
+    sw.tag = indexPath.section * 100000 + indexPath.row
+    sw.addTarget(self, action: #selector(switchChanged(_:)), for: .valueChanged)
+    cell.accessoryView = sw
+    return cell
+  }
+
+  @objc private func switchChanged(_ sw: UISwitch) {
+    let section = sw.tag / 100000
+    let row = sw.tag % 100000
+    guard groups.indices.contains(section), groups[section].items.indices.contains(row) else { return }
+    let nowResting = !sw.isOn
+    groups[section].items[row].resting = nowResting
+    onToggle(groups[section].items[row].key, nowResting)
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    tableView.reloadSections(IndexSet(integer: section), with: .none)
+  }
+}
+
 final class HorizontalOnlyScrollView: UIScrollView {
   override func gestureRecognizerShouldBegin(_ gr: UIGestureRecognizer) -> Bool {
     if gr === panGestureRecognizer, let pan = gr as? UIPanGestureRecognizer {
@@ -886,10 +1015,8 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let addButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
   private let filterChipButton = UIButton(type: .system)
-  private let workModeLabel = UILabel()
-  private let workModeSwitch = UISwitch()
+  private let restPanelButton = UIButton(type: .system)
   private let assistantButton = UIButton(type: .system)
-  private var workModeOn = false
 
   @objc init() {
     super.init(frame: .zero)
@@ -930,21 +1057,21 @@ final class HorizontalOnlyScrollView: UIScrollView {
     filterChipButton.translatesAutoresizingMaskIntoConstraints = false
     filterChipButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
 
-    workModeLabel.text = "只显示工作中"
-    workModeLabel.font = .systemFont(ofSize: 12, weight: .medium)
-    workModeLabel.textColor = .secondaryLabel
-    workModeLabel.translatesAutoresizingMaskIntoConstraints = false
-
-    workModeSwitch.translatesAutoresizingMaskIntoConstraints = false
-    workModeSwitch.onTintColor = .systemOrange
-    workModeSwitch.transform = CGAffineTransform(scaleX: 0.78, y: 0.78)
-    workModeSwitch.addTarget(self, action: #selector(workModeChanged), for: .valueChanged)
+    // 🌙 按钮：弹出「员工在岗/休息」管理列表。有人休息时在图标右边显示人数。
+    var restCfg = UIButton.Configuration.plain()
+    restCfg.image = UIImage(systemName: "moon.zzz.fill")
+    restCfg.imagePadding = 3
+    restCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+    restCfg.baseForegroundColor = .systemIndigo
+    restPanelButton.configuration = restCfg
+    restPanelButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+    restPanelButton.translatesAutoresizingMaskIntoConstraints = false
+    restPanelButton.addTarget(self, action: #selector(restPanelTapped), for: .touchUpInside)
 
     topRow.translatesAutoresizingMaskIntoConstraints = false
     topRow.addSubview(settingsButton)
     topRow.addSubview(filterChipButton)
-    topRow.addSubview(workModeLabel)
-    topRow.addSubview(workModeSwitch)
+    topRow.addSubview(restPanelButton)
     topRow.addSubview(assistantButton)
     topRow.addSubview(addButton)
 
@@ -982,10 +1109,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
       assistantButton.widthAnchor.constraint(equalToConstant: 32),
       assistantButton.heightAnchor.constraint(equalToConstant: 28),
 
-      workModeSwitch.trailingAnchor.constraint(equalTo: assistantButton.leadingAnchor, constant: -6),
-      workModeSwitch.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      workModeLabel.trailingAnchor.constraint(equalTo: workModeSwitch.leadingAnchor, constant: -4),
-      workModeLabel.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+      restPanelButton.trailingAnchor.constraint(equalTo: assistantButton.leadingAnchor, constant: -2),
+      restPanelButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+      restPanelButton.heightAnchor.constraint(equalToConstant: 28),
 
       topRow.heightAnchor.constraint(equalToConstant: 28),
 
@@ -1057,15 +1183,16 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidRequestMachineFilter()
   }
 
-  @objc private func workModeChanged() {
-    delegate?.tabBarDidToggleWorkMode()
+  @objc private func restPanelTapped() {
+    delegate?.tabBarDidRequestRestPanel()
   }
 
-  /// 外部（SpaceController）设置「只显示工作中」开关的显示态。
-  @objc func setWorkMode(_ on: Bool) {
-    workModeOn = on
-    workModeSwitch.setOn(on, animated: false)
-    workModeLabel.textColor = on ? .systemOrange : .secondaryLabel
+  /// 外部（SpaceController）刷新 🌙 按钮上的休息人数。0 人不显示数字。
+  @objc func setRestingCount(_ n: Int) {
+    var cfg = restPanelButton.configuration
+    cfg?.title = n > 0 ? " \(n)" : nil
+    restPanelButton.configuration = cfg
+    restPanelButton.tintColor = n > 0 ? .systemIndigo : .systemGray
   }
 
   private func makeTabButton(title: String, icon: UIImage?, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {

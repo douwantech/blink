@@ -507,12 +507,9 @@ class SpaceController: UIViewController {
   }()
   private static let kTabFilterMachineId = "BlinkTabFilterMachineId"
 
-  // 「只显示工作中」模式：开启后隐藏被手动标记「休息」(😴) 的 tab。默认关，记住上次。
-  private static let kWorkModeOn = "BlinkWorkModeOn"
-  private var _workModeOn: Bool {
-    get { UserDefaults.standard.bool(forKey: SpaceController.kWorkModeOn) }
-    set { UserDefaults.standard.set(newValue, forKey: SpaceController.kWorkModeOn) }
-  }
+  // 被标记「休息」(😴) 的员工始终从标签栏隐藏；改回在岗用顶栏 🌙 面板。
+  // 保留此计算属性（恒为 true）以复用原有的过滤判断。
+  private var _workModeOn: Bool { true }
 
   private var _tabFilterMachineId: String? {
     get { UserDefaults.standard.string(forKey: SpaceController.kTabFilterMachineId) }
@@ -544,7 +541,6 @@ class SpaceController: UIViewController {
     view.addSubview(_statusBarBg)
 
     _tabBar.delegate = self
-    _tabBar.setWorkMode(_workModeOn)
     _tabBar.translatesAutoresizingMaskIntoConstraints = true
     _tabBar.autoresizingMask = [.flexibleWidth]
     view.addSubview(_tabBar)
@@ -1585,9 +1581,11 @@ extension SpaceController {
     return sameMachine ?? otherMachine
   }
 
-  /// 让 dock 的 😴 钮反映当前 tab 的休息状态。
+  /// 让 dock 的 😴 钮反映当前 tab 的休息状态；顶栏 🌙 按钮刷新休息人数。
   private func _syncSleepButton() {
     _floatingDock.setResting(TabRestStore.shared.isResting(_currentKey?.uuidString))
+    let restingCount = _viewportsKeys.filter { TabRestStore.shared.isResting($0.uuidString) }.count
+    _tabBar.setRestingCount(restingCount)
   }
 
   fileprivate func _reloadTabBar() {
@@ -2393,12 +2391,31 @@ extension SpaceController: BlinkTabBarDelegate {
     closeShellAction()
   }
 
-  public func tabBarDidToggleWorkMode() {
-    _workModeOn.toggle()
-    _tabBar.setWorkMode(_workModeOn)
-    let gen = UINotificationFeedbackGenerator()
-    gen.notificationOccurred(.success)
-    _reloadTabBar()
+  public func tabBarDidRequestRestPanel() {
+    var items: [RestPanelViewController.Item] = []
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      let title = term.meta.tabTitle ?? "标签"
+      let mid = term.mcpParams?.machineId
+      let machine = mid.flatMap { id in
+        BlinkMachineStore.shared.machines.first { $0.id == id }?.displayName
+      } ?? ""
+      let resting = TabRestStore.shared.isResting(key.uuidString)
+      items.append(.init(key: key, title: title, machine: machine, resting: resting))
+    }
+
+    let panel = RestPanelViewController(items: items) { [weak self] key, nowResting in
+      guard let self = self else { return }
+      TabRestStore.shared.setResting(nowResting, key: key.uuidString)
+      self._reloadTabBar()
+    }
+    let nav = UINavigationController(rootViewController: panel)
+    nav.modalPresentationStyle = .pageSheet
+    if let sheet = nav.sheetPresentationController {
+      sheet.detents = [.medium(), .large()]
+      sheet.prefersGrabberVisible = true
+    }
+    present(nav, animated: true)
   }
 
   public func tabBarDidRequestMachineFilter() {
