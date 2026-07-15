@@ -15,6 +15,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestDismiss(_ view: VoiceInputView)
   func voiceInputDidRequestMinimize(_ view: VoiceInputView)
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView)
+  func voiceInputDidRequestSendShiftTab(_ view: VoiceInputView)
   func voiceInputDidRequestClearLine(_ view: VoiceInputView)
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
   func voiceInputDidRequestReloadTab(_ view: VoiceInputView)
@@ -65,6 +66,7 @@ final class VoiceInputView: UIInputView {
   private let copyLastButton = UIButton(type: .system)
   private let pasteButton = UIButton(type: .system)
   private let imagePickButton = UIButton(type: .system)
+  private let shiftTabButton = UIButton(type: .system)
 
   private static let kLocaleKey = "VoiceInputView.localeIdentifier"
   private static let supportedLocales: [(title: String, id: String)] = [
@@ -288,6 +290,12 @@ final class VoiceInputView: UIInputView {
     imagePickButton.tintColor = .systemOrange
     imagePickButton.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.6).cgColor
 
+    // Shift+Tab（发 ESC [ Z）：手机上没实体键盘，用它切 Claude Code 的权限模式
+    // （manual → acceptEdits → plan → auto）。放方向键 pad 第一行左侧的空位。
+    configureArrowButton(shiftTabButton, systemName: "arrow.left.to.line", action: #selector(shiftTabTapped))
+    shiftTabButton.tintColor = .systemTeal
+    shiftTabButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.6).cgColor
+
     hintLabel.font = .systemFont(ofSize: 13)
     hintLabel.textColor = .tertiaryLabel
     hintLabel.textAlignment = .center
@@ -300,7 +308,7 @@ final class VoiceInputView: UIInputView {
     }
     insertSubview(pulseRing, belowSubview: micButton)
     addSubview(thinkingOverlay)
-    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton, imagePickButton].forEach {
+    [arrowUpButton, arrowDownButton, arrowLeftButton, arrowRightButton, returnButton, copyLastButton, pasteButton, imagePickButton, shiftTabButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       arrowPadContainer.addSubview($0)
     }
@@ -370,6 +378,12 @@ final class VoiceInputView: UIInputView {
       arrowUpButton.centerXAnchor.constraint(equalTo: arrowPadContainer.centerXAnchor),
       arrowUpButton.widthAnchor.constraint(equalToConstant: 34),
       arrowUpButton.heightAnchor.constraint(equalToConstant: 30),
+
+      // 第一行左侧原本是空的，Shift+Tab 塞这里，pad 尺寸不用变
+      shiftTabButton.topAnchor.constraint(equalTo: arrowPadContainer.topAnchor),
+      shiftTabButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
+      shiftTabButton.widthAnchor.constraint(equalToConstant: 34),
+      shiftTabButton.heightAnchor.constraint(equalToConstant: 30),
 
       arrowLeftButton.topAnchor.constraint(equalTo: arrowUpButton.bottomAnchor, constant: 4),
       arrowLeftButton.leadingAnchor.constraint(equalTo: arrowPadContainer.leadingAnchor),
@@ -853,6 +867,10 @@ final class VoiceInputView: UIInputView {
       stopRecording()
     }
     delegate?.voiceInputDidRequestSendEsc(self)
+  }
+
+  @objc private func shiftTabTapped() {
+    delegate?.voiceInputDidRequestSendShiftTab(self)
   }
 
   private func configureArrowButton(_ button: UIButton, systemName: String, action: Selector) {

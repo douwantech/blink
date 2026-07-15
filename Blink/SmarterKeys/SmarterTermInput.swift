@@ -668,6 +668,11 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     device?.write("\u{1B}")
   }
 
+  /// Shift+Tab = 终端的 back-tab（CSI Z）。Claude Code 用它循环权限模式。
+  func voiceInputDidRequestSendShiftTab(_ view: VoiceInputView) {
+    device?.write("\u{1B}[Z")
+  }
+
   func voiceInputDidRequestClearLine(_ view: VoiceInputView) {
     device?.write("\u{15}")
   }
