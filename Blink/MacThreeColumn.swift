@@ -193,12 +193,14 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   var onSelect: ((Int) -> Void)?
   var onClose: ((Int) -> Void)?
   var onNewSession: (() -> Void)?
+  var onRestPanel: (() -> Void)?
 
   private let machineNameLabel = UILabel()
   private let transportBadge = UILabel()
   private let hostLabel = UILabel()
   private let table = UITableView(frame: .zero, style: .plain)
   private let newButton = UIButton(type: .system)
+  private let restPanelButton = UIButton(type: .system)
   private var items: [Item] = []
 
   init() {
@@ -237,10 +239,22 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     newButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.4).cgColor
     newButton.addTarget(self, action: #selector(newTapped), for: .touchUpInside)
 
+    // 🌙 按钮：弹出「员工在岗/休息」管理列表。Mac 三栏隐藏了顶栏（🌙 原本长在那），
+    // 没这个入口的话，dock 😴 标休息的 tab 会从侧栏消失且再也改不回在岗。样式对齐顶栏那颗。
+    var restCfg = UIButton.Configuration.plain()
+    restCfg.image = UIImage(systemName: "moon.zzz.fill")
+    restCfg.imagePadding = 3
+    restCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+    restCfg.baseForegroundColor = .systemIndigo
+    restPanelButton.configuration = restCfg
+    restPanelButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+    restPanelButton.tintColor = .systemGray
+    restPanelButton.addTarget(self, action: #selector(restPanelTapped), for: .touchUpInside)
+
     let sep = UIView()
     sep.backgroundColor = UIColor.white.withAlphaComponent(0.08)
 
-    [machineNameLabel, transportBadge, hostLabel, sep, table, newButton].forEach {
+    [machineNameLabel, transportBadge, hostLabel, sep, table, newButton, restPanelButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -256,9 +270,12 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
 
       transportBadge.centerYAnchor.constraint(equalTo: machineNameLabel.centerYAnchor),
       transportBadge.leadingAnchor.constraint(equalTo: machineNameLabel.trailingAnchor, constant: 8),
-      transportBadge.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+      transportBadge.trailingAnchor.constraint(lessThanOrEqualTo: restPanelButton.leadingAnchor, constant: -6),
       transportBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 42),
       transportBadge.heightAnchor.constraint(equalToConstant: 17),
+
+      restPanelButton.centerYAnchor.constraint(equalTo: machineNameLabel.centerYAnchor),
+      restPanelButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
 
       hostLabel.topAnchor.constraint(equalTo: machineNameLabel.bottomAnchor, constant: 4),
       hostLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
@@ -304,7 +321,17 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     hostLabel.text = s
   }
 
+  /// 🌙 上显示休息人数；没人休息就只剩图标且转灰（与顶栏那颗一致）。
+  func setRestingCount(_ n: Int) {
+    var cfg = restPanelButton.configuration
+    cfg?.title = n > 0 ? " \(n)" : nil
+    restPanelButton.configuration = cfg
+    restPanelButton.tintColor = n > 0 ? .systemIndigo : .systemGray
+  }
+
   @objc private func newTapped() { onNewSession?() }
+
+  @objc private func restPanelTapped() { onRestPanel?() }
 
   // MARK: table
   func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { items.count }

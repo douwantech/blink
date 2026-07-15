@@ -1598,11 +1598,12 @@ extension SpaceController {
     return sameMachine ?? otherMachine
   }
 
-  /// 让 dock 的 😴 钮反映当前 tab 的休息状态；顶栏 🌙 按钮刷新休息人数。
+  /// 让 dock 的 😴 钮反映当前 tab 的休息状态；顶栏（Mac 上是侧栏）🌙 按钮刷新休息人数。
   private func _syncSleepButton() {
     _floatingDock.setResting(TabRestStore.shared.isResting(_currentKey?.uuidString))
     let restingCount = _viewportsKeys.filter { TabRestStore.shared.isResting($0.uuidString) }.count
     _tabBar.setRestingCount(restingCount)
+    _macSidebar?.setRestingCount(restingCount)
   }
 
   fileprivate func _reloadTabBar() {
@@ -2568,6 +2569,8 @@ extension SpaceController {
     sidebar.onSelect = { [weak self] tag in self?._moveToShell(idx: tag) }
     sidebar.onClose = { [weak self] tag in self?.tabBarDidRequestClose(index: tag) }
     sidebar.onNewSession = { [weak self] in self?.tabBarDidRequestNew() }
+    // Mac 顶栏是隐藏的，🌙 面板只能从侧栏进；没它的话 dock 😴 标的休息 tab 改不回在岗。
+    sidebar.onRestPanel = { [weak self] in self?.tabBarDidRequestRestPanel() }
     view.addSubview(sidebar)
     _macSidebar = sidebar
 
