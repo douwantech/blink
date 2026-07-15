@@ -30,6 +30,7 @@ final class CloudConfigSync: NSObject {
     "BlinkMachineStore.machines",
     "BlinkMachineStore.avatars",
     "BlinkUseTmuxMode",
+    "BlinkShowMachineBar",   // 设置里「切换机器条」开关
     "BlinkWorkDirStore.workDirs",
     "BlinkSessionPresetStore.presets",
     "TabStateStore.syncState",   // 终端 tab 列表跨设备同步

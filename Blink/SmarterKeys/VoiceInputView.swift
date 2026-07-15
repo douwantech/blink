@@ -1949,7 +1949,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [2, 2, 1, 3, 2][section]
+    [3, 2, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1967,6 +1967,13 @@ final class VoiceSettingsViewController: UITableViewController {
       let v = UserDefaults.standard.object(forKey: "BlinkAutoReconnect")
       sw.isOn = (v == nil) ? true : (v as? Bool ?? true)
       sw.addTarget(self, action: #selector(toggleAutoReconnect(_:)), for: .valueChanged)
+      cell.accessoryView = sw
+      cell.selectionStyle = .none
+    case (0, 2):
+      cell.textLabel?.text = "切换机器条"
+      let sw = UISwitch()
+      sw.isOn = BlinkMachineStore.showMachineBar
+      sw.addTarget(self, action: #selector(toggleMachineBar(_:)), for: .valueChanged)
       cell.accessoryView = sw
       cell.selectionStyle = .none
     case (1, 0):
@@ -2047,6 +2054,11 @@ final class VoiceSettingsViewController: UITableViewController {
   @objc private func toggleAutoReconnect(_ sw: UISwitch) {
     UserDefaults.standard.set(sw.isOn, forKey: "BlinkAutoReconnect")
     voiceView?.setHintForSettingsChange(sw.isOn ? "断线自动重连已开启" : "断线自动重连已关闭")
+  }
+
+  @objc private func toggleMachineBar(_ sw: UISwitch) {
+    BlinkMachineStore.showMachineBar = sw.isOn   // setter 会发通知，SpaceController 实时显隐
+    voiceView?.setHintForSettingsChange(sw.isOn ? "切换机器条已显示" : "切换机器条已隐藏")
   }
 
   private func presentAISettings() {

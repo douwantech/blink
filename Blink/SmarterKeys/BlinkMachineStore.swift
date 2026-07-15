@@ -268,6 +268,20 @@ enum HostReachability {
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
+  /// 「切换机器」浮动条是否显示。默认 true；在设置页可开关，改动发下面的通知让 SpaceController 实时响应。
+  @objc static var showMachineBar: Bool {
+    get {
+      if UserDefaults.standard.object(forKey: "BlinkShowMachineBar") == nil { return true }
+      return UserDefaults.standard.bool(forKey: "BlinkShowMachineBar")
+    }
+    set {
+      UserDefaults.standard.set(newValue, forKey: "BlinkShowMachineBar")
+      NotificationCenter.default.post(name: BlinkMachineStore.showMachineBarChanged, object: nil)
+    }
+  }
+
+  static let showMachineBarChanged = Notification.Name("BlinkShowMachineBarChanged")
+
   @objc func transcriptCommand(forMachineId machineId: String?, workDirId: String?, baseName: String) -> String? {
     let arr = machines
     let m: BlinkMachine?

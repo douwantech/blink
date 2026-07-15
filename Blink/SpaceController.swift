@@ -304,12 +304,25 @@ class SpaceController: UIViewController {
     view.bringSubviewToFront(_floatingDock)
   }
 
+  // 设置里开关「切换机器条」：实时显隐（长按临时隐藏的状态不覆盖设置——设置关了就一直不显示）
+  @objc private func _showMachineBarChanged() {
+    guard !_macLayoutEnabled else { return }
+    let on = BlinkMachineStore.showMachineBar
+    _floatingMachineBar.isHidden = !on || _floatingBarsHidden
+    if !_floatingMachineBar.isHidden {
+      _floatingMachineBar.alpha = 1
+      view.bringSubviewToFront(_floatingMachineBar)
+    }
+  }
+
   // 长按终端：切换两条浮动条（动作 dock + 切机器条）的显隐（TermView 长按发通知触发）
   @objc private func _toggleFloatingBars() {
     _floatingBarsHidden.toggle()
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     let hidden = _floatingBarsHidden
-    let bars: [UIView] = _macLayoutEnabled ? [_floatingDock] : [_floatingDock, _floatingMachineBar]
+    // 设置里关掉「切换机器条」时，长按不该把它重新显示出来
+    var bars: [UIView] = [_floatingDock]
+    if !_macLayoutEnabled && BlinkMachineStore.showMachineBar { bars.append(_floatingMachineBar) }
     for bar in bars {
       if !hidden {
         bar.isHidden = false
@@ -603,7 +616,11 @@ class SpaceController: UIViewController {
       _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
       _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
       _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+      _floatingMachineBar.isHidden = !BlinkMachineStore.showMachineBar   // 设置里可关
       view.addSubview(_floatingMachineBar)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(_showMachineBarChanged),
+        name: BlinkMachineStore.showMachineBarChanged, object: nil)
     }
     view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
