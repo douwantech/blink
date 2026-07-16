@@ -346,7 +346,9 @@ final class FloatingMachineBar: UIView {
 
     let machines = BlinkMachineStore.shared.machines
     if machines.isEmpty { isHidden = true; return }
-    isHidden = false
+    // 必须尊重设置里的开关：reload 会在 viewDidLayoutSubviews / 机器变更时被反复调用，
+    // 之前这里无条件 isHidden = false，把设置里关掉的状态又冲开了（重启后机器条照样冒出来）。
+    isHidden = !BlinkMachineStore.showMachineBar
 
     let grip = UIView(frame: CGRect(x: (Self.barW - 26) / 2, y: 8, width: 26, height: 4))
     grip.backgroundColor = UIColor.white.withAlphaComponent(0.25)
