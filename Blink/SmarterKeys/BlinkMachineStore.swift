@@ -905,6 +905,15 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     return resting.contains(key)
   }
 
+  /// 从 UserDefaults 重读休息集合。iCloud 同步把云端新值写进了持久域，但内存缓存还是旧的，
+  /// 收到 CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
+  @objc @discardableResult func reload() -> Bool {
+    let fresh = Set(UserDefaults.standard.stringArray(forKey: kKey) ?? [])
+    guard fresh != resting else { return false }
+    resting = fresh
+    return true
+  }
+
   @objc func setResting(_ on: Bool, key: String?) {
     guard let key = key, !key.isEmpty else { return }
     if on { resting.insert(key) } else { resting.remove(key) }
