@@ -34,6 +34,7 @@ final class CloudConfigSync: NSObject {
     "BlinkWorkDirStore.workDirs",
     "BlinkSessionPresetStore.presets",
     "TabStateStore.syncState",   // 终端 tab 列表跨设备同步
+    "TabRestStore.resting",      // 「休息」😴 标记跨设备同步（否则各设备各藏各的，tab 列表看着不一致）
     // 人员
     "BlinkPeopleStore.avatars",
     "BlinkPeopleStore.styles",

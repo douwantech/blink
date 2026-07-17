@@ -719,6 +719,10 @@ Please go to your subscriptions and cancel one of them!
       DispatchQueue.main.async { [weak self] in self?._cloudConfigDidRestore() }
       return
     }
+    // 休息标记跨设备同步：云端可能改了 TabRestStore.resting（内存缓存要重读），变了就刷新列表过滤 + 🌙 计数。
+    if TabRestStore.shared.reload() {
+      _reloadTabBar()
+    }
     let hasReal = _viewportsKeys.contains { k -> Bool in
       let term: TermController = SessionRegistry.shared[k]
       let p = term.mcpParams
