@@ -502,7 +502,7 @@ final class VoiceInputView: UIInputView {
     guard !source.isEmpty else { return }
     guard AITextPolisher.shared.enabled, !AITextPolisher.shared.apiKey.isEmpty else {
       // polish 不可用：fallback 直接显示 raw
-      if rawText != nil { setText(source) }
+      if rawText != nil { setText(source); lastPolished = source }
       return
     }
     guard !isPolishing else { return }
@@ -515,10 +515,12 @@ final class VoiceInputView: UIInputView {
       switch result {
       case .success(let polished):
         self.setText(polished)
+        self.lastPolished = polished   // 存下展示给用户的整理结果，提交时用它算「用户手改了什么」
         self.hintLabel.text = "已整理 · \(self.currentLocaleTitle())"
         self.hintLabel.textColor = .tertiaryLabel
       case .failure(let err):
         self.setText(source)  // polish 失败 fallback 到 ASR 原文
+        self.lastPolished = source
         self.hintLabel.text = self.currentLocaleTitle()
         self.hintLabel.textColor = .tertiaryLabel
         self.showToast("AI 整理失败: \(err.localizedDescription)", isError: true)
@@ -727,10 +729,14 @@ final class VoiceInputView: UIInputView {
     let text = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     AITextPolisher.shared.recordHistory(text)
-    if let raw = lastAsrRaw {
-      AITextPolisher.shared.recordCorrection(asrRaw: raw, final: text)
+    // 对比基准用「展示给用户的文本」（AI 整理后；整理不可用时是 ASR 原文），
+    // 只学「用户在此基础上手改的那一段」。不再用 ASR 原文作基准——否则会把 AI 整理
+    // 自己做的改动也当成用户纠错学回去，喂进下轮 prompt，形成自我强化的漂移。
+    if let shown = lastPolished ?? lastAsrRaw {
+      AITextPolisher.shared.recordCorrection(asrRaw: shown, final: text)
     }
     lastAsrRaw = nil
+    lastPolished = nil
     delegate?.voiceInput(self, didCommitText: text)
     setText("")
     delegate?.voiceInputDidRequestDismiss(self)
@@ -1162,6 +1168,7 @@ final class VoiceInputView: UIInputView {
   private var glmRecorder: AVAudioRecorder?
   private var glmRecordedFileURL: URL?
   private var lastAsrRaw: String?
+  private var lastPolished: String?   // 上次展示给用户的整理结果，用于算真实手改 delta
 
   private func startRecording() {
     let session = AVAudioSession.sharedInstance()
@@ -1457,6 +1464,13 @@ final class AITextPolisher {
       if let db = d.object(forKey: kDebounce) as? Double, db >= 3.0 { d.set(1.5, forKey: kDebounce) }
       d.set(true, forKey: "VoiceInputView.speedMigration.v1")
     }
+    // 一次性清理被污染的自动词表：旧逻辑拿「ASR原文→最终提交」挖词，把 AI 整理自己的
+    // 输出也当成纠错学了回去（跑→运行、里面→中 这类噪音滚雪球）。现改成只从「整理后→手改」
+    // 挖词，旧表已无价值且有害，清空重来；术语靠下面的固定 glossary 兜底。收藏/历史/整句修正记录不动。
+    if d.object(forKey: "VoiceInputView.termsCleanup.v2") == nil {
+      d.removeObject(forKey: kTerms)
+      d.set(true, forKey: "VoiceInputView.termsCleanup.v2")
+    }
     d.register(defaults: [
       kAPIKey: "",
       kModel: "glm-4-flashx",
@@ -1539,6 +1553,36 @@ final class AITextPolisher {
     - 比如 ASR 原文 "直接开始做" 就输出 "直接开始做"，不要回 "好的，请提供..."
     - 比如 ASR 原文 "你是谁" 就输出 "你是谁"，不要自我介绍
     - 输出永远是清理后的同语言文本，绝不输出对话回复
+    """
+
+  /// 用户专属固定术语表：从真实语音修正记录里提炼出的高频专有名词错听。
+  /// 最高优先级——ASR 只要出现左侧任一近音写法（或明显同音变体），一律改成右侧规范写法。
+  /// 只放「读音接近、含义唯一」的专名，不放风格改写（跑→运行 这类不进）。
+  private let userGlossary = """
+    用户专属术语表（固定，最高优先级；ASR 一旦出现近音写法，直接改成规范写法，即使词表/修正记录里没有）：
+    工具 / 命令：
+    - claude（听成 cloud / Cloud / cloudcode / CloudAI / 卡了带 / 卡老的 / 卡密）
+    - Claude Code（cloudcode / cloud code / CloudCodeAI）
+    - Claude（句中作产品名时首字母大写）
+    - git（get / q帕）；github（计划 / git hub）；commit（给客密）；merge（默记 / 给默记）
+    - PR（皮阿 / 皮啊 / P2 / P啊 / 一休）；issue（医院 / 艺术出来 / 哎呦）
+    - safecmd（SFCMD / selfcmd / Safemind / safe command）
+    - tmux（tmus）；cmux（CMS / 新music）；socket（sokia / sock / Sokki / SOCKET）
+    - SSH（sh / SS / ssh 规范为大写 SSH）；zsh（Jessie）；status（Stadia）
+    - oss（OSI / OHS）；ipa（IPA）；wiki（viki / wick / week / wikie / Viki）
+    - proxy（process / AIprocess）；VPN（V P N / VPA）
+    - tailscale（tailsquare）；clashx（crossX / CrossX）；Clash（Crash）
+    - peekaboo（Pico）；tab（table / tap）；tabbar（tablebar / tableau）；toolbar（拖把）
+    项目 / 专名：
+    - Mac（麦克 / max / make / Max / Make）；admin（A的门 / Adam）
+    - cto（GTO）；dev skill（deepseek 剧情 / devskull / devskill）；cto skill（GTO skill）
+    - binsoft（冰社 / BingSoft）；binku87（冰库八七）；binsoft-dev（大夫 / deep）
+    - blink；blinkd（BlinkD）；talkai
+    中文常错：
+    - 主分支（主分词）；原型（圆形）；弹窗（糖床 / 棒糖窗 / 棒糖 / 堂装 / 半弹窗听成堂装）
+    - 真机（蒸鸡）；横幅（红福 / banner）；均摊（金汤）
+    - 边距（的编辑）；错题（彻底）
+    规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。
     """
 
   func recordHistory(_ text: String) {
@@ -1807,6 +1851,20 @@ final class AITextPolisher {
     UserDefaults.standard.removeObject(forKey: kCorrections)
   }
 
+  /// 过滤自动词表里的噪音：纯虚词改写、大小写空转、含义级改写往往不是 ASR 错听，喂进去反而害整理。
+  private func isNoiseTermPair(wrong: String, correct: String) -> Bool {
+    let w = wrong.trimmingCharacters(in: .whitespacesAndNewlines)
+    let c = correct.trimmingCharacters(in: .whitespacesAndNewlines)
+    if w.isEmpty || c.isEmpty { return true }
+    if w.lowercased() == c.lowercased() { return true }   // SSH→SSH、PR→PR 这种只差大小写的空转
+    // 纯中文虚词/口语连接词的单字改写：风格偏好，不是错听
+    let stop: Set<String> = ["的","了","呀","吗","呢","啊","嗯","就","把","给","你","我","他","再",
+                             "跟","和","中","里","上","下","是","会","去","来","那","这","它","并",
+                             "然后","里面","的话","一个","这个","那个","一下"]
+    if stop.contains(w) || stop.contains(c) { return true }
+    return false
+  }
+
   private func historyBlock() -> String {
     var parts: [String] = []
     let history = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
@@ -1815,7 +1873,7 @@ final class AITextPolisher {
       let body = recent.map { "- \($0)" }.joined(separator: "\n")
       parts.append("用户近期已提交的输入（按从新到旧）：\n\(body)")
     }
-    let terms = termEntries.prefix(maxTermsInPrompt)
+    let terms = termEntries.filter { !isNoiseTermPair(wrong: $0.wrong, correct: $0.correct) }.prefix(maxTermsInPrompt)
     if !terms.isEmpty {
       let body = terms.map { "- 「\($0.wrong)」 → 「\($0.correct)」（\($0.count) 次）" }.joined(separator: "\n")
       parts.append("用户的高频错读词表（左=ASR 容易听成，右=用户实际想说，按频次降序；这是最重要的纠错依据，遇到表里左侧出现请优先按右侧改）：\n\(body)")
@@ -1837,7 +1895,7 @@ final class AITextPolisher {
       }
       return
     }
-    let fullSystem = systemPrompt + historyBlock()
+    let fullSystem = systemPrompt + "\n\n" + userGlossary + historyBlock()
     let payload: [String: Any] = [
       "model": model,
       "messages": [
