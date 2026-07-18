@@ -746,9 +746,26 @@ Please go to your subscriptions and cancel one of them!
 
   /// 活跃设备增量合并：iCloud 送来的列表里，本机（按 机器+目录+会话 签名）还没有的
   /// 「真实」tab 追加到末尾并 re-sort，当前 tab / 键盘焦点保持不变。
-  /// 只增不减 —— 别处（手机）关掉的 tab 不在这里删：删除同步风险高、会误伤本机正用的会话。
+  /// 增量追加之外，还要采纳云端的关闭墓碑（closedIds）：别处显式关掉的 tab 在这里也删掉，
+  /// 这样删除才能跨设备传播、且不会被本机没删又推回去复活。墓碑只删「显式关过」的，
+  /// 不会误伤本机正用但别处从没见过的会话。
   private func _appendNewSyncedTabs() {
-    let synced = TabStateStore.shared.syncedTabs()
+    guard let syncedState = TabStateStore.shared.syncedState() else { return }
+    let synced = syncedState.tabs
+    let closed = Set(syncedState.closedIds ?? [])
+
+    // 采纳别处的关闭：墓碑并进本地（本机后续 push 不再带这些），并把本机还留着的删掉。
+    // 仅当有新墓碑、或本机还留着被墓碑标记的 tab 时才动，避免每次云端变更都无谓回写（防 ping-pong）。
+    if !closed.isEmpty {
+      let localClosed = Set(TabStateStore.shared.snapshot().closedIds ?? [])
+      let hasNewTombstone = !closed.isSubset(of: localClosed)
+      let hasLocalToRemove = _viewportsKeys.contains { closed.contains($0) }
+      if hasNewTombstone || hasLocalToRemove {
+        TabStateStore.shared.closeTabs(Array(closed))
+        _removeKeys(closed)
+      }
+    }
+
     guard !synced.isEmpty else { return }
 
     func sig(_ mid: String?, _ wid: String?, _ tmux: String?) -> String {
@@ -763,6 +780,7 @@ Please go to your subscriptions and cancel one of them!
     for entry in synced {
       // 空白 shell（无机器/目录/会话）不追加
       guard entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil else { continue }
+      if closed.contains(entry.id) { continue }   // 已被墓碑标记的别再加回来
       let s = sig(entry.machineId, entry.workDirId, entry.tmuxSession)
       if seen.contains(s) { continue }
       seen.insert(s)
@@ -906,8 +924,42 @@ Please go to your subscriptions and cancel one of them!
   }
   
   func _closeCurrentSpace() {
+    // 墓碑：记下这次关闭，跨设备传播删除（否则别的设备没删、又会把它推回来复活）。
+    // 只在真·关闭时记；窗口移动走的是 _removeCurrentSpace，不记墓碑。
+    if let k = _currentKey { TabStateStore.shared.closeTabs([k]) }
     currentTerm()?.terminate()
     _removeCurrentSpace()
+  }
+
+  /// 采纳别处的关闭：把这些 key 从本机 UI 移除（终止会话、修当前 tab）。
+  /// 与 _removeCurrentSpace 不同，这里可一次删多个、且要处理「删到当前 tab」的补位。
+  private func _removeKeys(_ toRemove: Set<UUID>) {
+    guard _viewportsKeys.contains(where: { toRemove.contains($0) }) else { return }
+    let oldCurrentIdx = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) }
+    let currentRemoved = _currentKey.map { toRemove.contains($0) } ?? false
+
+    for key in _viewportsKeys where toRemove.contains(key) {
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = nil
+      term.terminate()
+      SessionRegistry.shared.remove(forKey: key)
+    }
+    let survivors = _viewportsKeys.filter { !toRemove.contains($0) }
+    _viewportsKeys = survivors   // didSet → 持久化 + 刷新 tab 栏/三栏
+
+    guard currentRemoved else { return }
+    if survivors.isEmpty {
+      _newShellAction(animated: false)
+      return
+    }
+    // 删到当前 tab：切到原位置附近的存活 tab
+    let newIdx = min(oldCurrentIdx ?? 0, survivors.count - 1)
+    let term: TermController = SessionRegistry.shared[survivors[newIdx]]
+    term.delegate = self
+    term.bgColor = view.backgroundColor ?? .black
+    _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+    _currentKey = survivors[newIdx]
+    if _macLayoutEnabled { _attachInputToCurrentTerm() }
   }
   
   private func _removeCurrentSpace(attachInput: Bool = true) {

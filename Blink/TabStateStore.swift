@@ -13,12 +13,14 @@ struct TabState: Codable {
   var tabs: [TabEntry]
   var currentId: UUID?
   var updatedAt: Double?   // epoch 秒；跨设备 last-writer-wins。老文件无此字段 → nil 视作 0
+  var closedIds: [UUID]?   // 墓碑：被显式关闭的 tab id，跨设备传播删除。老文件 nil → 视作空
 
-  init(version: Int = 1, tabs: [TabEntry] = [], currentId: UUID? = nil, updatedAt: Double? = nil) {
+  init(version: Int = 1, tabs: [TabEntry] = [], currentId: UUID? = nil, updatedAt: Double? = nil, closedIds: [UUID]? = nil) {
     self.version = version
     self.tabs = tabs
     self.currentId = currentId
     self.updatedAt = updatedAt
+    self.closedIds = closedIds
   }
 }
 
@@ -37,6 +39,10 @@ final class TabStateStore {
   private var pendingWork: DispatchWorkItem?
   private var dirty = false
   private(set) var state = TabState()
+
+  /// 墓碑集合上限：只需撑到所有设备都看过这次删除即可，旧的丢掉无害
+  ///（重建的 tab 会拿新 UUID，老墓碑不会误伤）。
+  private let maxTombstones = 500
 
   private init() {
     load()
@@ -59,12 +65,36 @@ final class TabStateStore {
   func snapshot() -> TabState { state }
 
   func update(_ mutate: (inout TabState) -> Void) {
-    let before = state.tabs
+    let beforeTabs = state.tabs
+    let beforeClosed = state.closedIds ?? []
     mutate(&state)
-    if state.tabs != before {   // tabs 真变了才刷新时间戳（切当前 tab 不算），供跨设备 last-writer-wins
+    // tabs 或墓碑真变了才刷新时间戳（切当前 tab 不算），供跨设备 last-writer-wins
+    if state.tabs != beforeTabs || (state.closedIds ?? []) != beforeClosed {
       state.updatedAt = Date().timeIntervalSince1970
     }
     scheduleSave()
+  }
+
+  /// 记录被关闭的 tab（本机关，或采纳别处的关闭）：加入墓碑集合并从 tabs 移除。
+  /// 墓碑随 state 一起同步到 iCloud，别的设备据此把这些 tab 也删掉 ——
+  /// 杜绝「一台关了、另一台没删又用更新的时间戳把它推回来」的复活。
+  /// 返回墓碑或 tabs 是否真的变了。
+  @discardableResult
+  func closeTabs(_ ids: [UUID]) -> Bool {
+    guard !ids.isEmpty else { return false }
+    let idset = Set(ids)
+    var changed = false
+    update { st in
+      var closed = st.closedIds ?? []
+      let existing = Set(closed)
+      for id in ids where !existing.contains(id) { closed.append(id); changed = true }
+      if closed.count > self.maxTombstones { closed.removeFirst(closed.count - self.maxTombstones) }
+      st.closedIds = closed
+      let beforeCount = st.tabs.count
+      st.tabs.removeAll { idset.contains($0.id) }
+      if st.tabs.count != beforeCount { changed = true }
+    }
+    return changed
   }
 
   func flushNow() {
@@ -123,8 +153,20 @@ final class TabStateStore {
     if hasRealTab(state.tabs) {
       guard (synced.updatedAt ?? 0) > (state.updatedAt ?? 0), synced.tabs != state.tabs else { return false }
     }
-    state = synced
-    let snap = synced
+    // 整份采纳前，把本地已有的墓碑并进来（别丢本机关过的记录），并据此剔除云端可能还带着的已关 tab。
+    let priorClosed = state.closedIds ?? []
+    var newState = synced
+    if !priorClosed.isEmpty {
+      var merged = synced.closedIds ?? []
+      let ex = Set(merged)
+      for id in priorClosed where !ex.contains(id) { merged.append(id) }
+      if merged.count > maxTombstones { merged.removeFirst(merged.count - maxTombstones) }
+      newState.closedIds = merged
+      let tomb = Set(merged)
+      newState.tabs.removeAll { tomb.contains($0.id) }
+    }
+    state = newState
+    let snap = newState
     ioQueue.async { [weak self] in
       guard let self else { return }
       if let d = try? JSONEncoder().encode(snap) { try? d.write(to: self.fileURL, options: [.atomic]) }
@@ -139,5 +181,13 @@ final class TabStateStore {
     guard let data = UserDefaults.standard.data(forKey: Self.kSyncKey),
           let synced = try? JSONDecoder().decode(TabState.self, from: data) else { return [] }
     return synced.tabs
+  }
+
+  /// 只读 iCloud 同步来的完整状态（含墓碑 closedIds），不改本地 state。
+  /// 活跃设备增量合并用：既要追加云端新 tab，也要采纳云端的关闭墓碑。
+  func syncedState() -> TabState? {
+    guard let data = UserDefaults.standard.data(forKey: Self.kSyncKey),
+          let synced = try? JSONDecoder().decode(TabState.self, from: data) else { return nil }
+    return synced
   }
 }
