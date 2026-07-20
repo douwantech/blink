@@ -470,8 +470,14 @@ static BOOL BlinkAutoReconnectEnabled(void) {
       [allowedPaths addObject:path];
     }
   }
-  
-  ios_setAllowedPaths(allowedPaths);
+
+  // ios_setAllowedPaths 会 objc_storeStrong 到 ios_system 的进程级全局 allowedPaths，本身不是
+  // 线程安全的。多个会话各自在自己的 _cmdQueue 上重连时会并发调它（executeWithArgs / _runCommand），
+  // 两个线程同时 storeStrong 会把旧值 double-release → EXC_BAD_ACCESS（栈里两条 mcp.command.queue
+  // 线程同崩在 ios_setAllowedPaths）。用共享的 Class 作锁把这次写全局串行化。
+  @synchronized ([MCPSession class]) {
+    ios_setAllowedPaths(allowedPaths);
+  }
 }
 
 - (void)_runSSHCopyIDWithArgs:(NSString *)args
