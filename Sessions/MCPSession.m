@@ -220,8 +220,14 @@ static BOOL BlinkAutoReconnectEnabled(void) {
     cmdline = [NSString stringWithFormat:@"browse %@", mayBeURLString];
   }
   
-  NSArray *arr = [cmdline componentsSeparatedByString:@" "];
-  NSString *cmd = arr[0];
+  // 命令派发用「trim 后按空白切分出的第一个非空 token」。原来直接取
+  // componentsSeparatedByString:@" " 的 [0]，遇到结尾 \r、Tab、前导/多重空格会把首词算错——
+  // blinkd 重连命令首词一旦不等于字面 "blinkd"，就会被丢给下面的 ios_system 分支，
+  // 打印 "blinkd: command not found" 并立即退出 → 满足 willReconnect → 死循环刷屏。
+  NSString *cmd = @"";
+  for (NSString *t in [cmdline componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+    if (t.length > 0) { cmd = t; break; }
+  }
 
   if ([cmd isEqualToString:@"exit"]) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -396,6 +402,9 @@ static BOOL BlinkAutoReconnectEnabled(void) {
   if (!_device) { return; }
   if (!BlinkAutoReconnectEnabled() || _autoConnectCommand.length == 0) { return; }
   if (_reconnectPending) { return; }
+  // blinkd/mosh 等子会话活着时不算掉线。它们是 _childSession，从不进 _sshClients，
+  // 只看 _sshClients 会把「blinkd 正连着」误判成掉线，每次切 tab 都重连一次。
+  if (_childSession) { return; }
   __block NSUInteger clientCount = 0;
   dispatch_sync(_sshQueue, ^{ clientCount = self->_sshClients.count; });
   if (clientCount > 0) { return; }   // 已有 ssh 在跑/在连，别打断

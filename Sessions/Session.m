@@ -156,10 +156,15 @@ void *run_session(void *sessionData)
   bool _attached;
   NSString *_args;
   char **_argv;
+  char *_argsBuf;   // makeargs 就地把空格改成 \0 来切 argv；必须用私有副本，绝不能改 _args(NSString) 的内部缓冲
 }
 
 - (void)_run {
-  int argc = makeargs(_args.UTF8String, &_argv);
+  // 关键：makeargs 会 in-place 把命令里的空格写成 \0。以前直接传 _args.UTF8String（NSString 内部缓冲），
+  // 会把这个 NSString 写坏——若调用方还持有同一个对象（如 MCPSession._autoConnectCommand 和传进来的 args
+  // 是同一对象），它的空格全变 \0，重连时首词就成了 "blinkd\0100..." → command not found。改用 strdup 副本隔离。
+  _argsBuf = strdup(_args.UTF8String ?: "");
+  int argc = makeargs(_argsBuf, &_argv);
   [self main:argc argv:_argv];
 }
 
@@ -173,6 +178,8 @@ void *run_session(void *sessionData)
   _delegate = nil;
   free(_argv);
   _argv = NULL;
+  free(_argsBuf);   // _argv 的各 token 指针指进 _argsBuf，等 main: 返回后一起释放
+  _argsBuf = NULL;
 }
 
 - (id)initWithDevice:(TermDevice *)device
