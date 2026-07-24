@@ -840,7 +840,14 @@ Please go to your subscriptions and cancel one of them!
     else {
       return
     }
-    
+
+    // 回前台主动拉一次 iCloud：设备间切换是「切前台」不是冷启动，只靠启动时那一次拉 +
+    // 极不可靠的 didChangeExternally，切过来常常看不到另一台的最新 tab。pullNow 里若有变化会
+    // post didRestore → _cloudConfigDidRestore 采纳/追加，跨设备 tab 才真正跟手。
+    if view.window?.windowScene === scene {
+      CloudConfigSync.shared.pullNow()
+    }
+
     #if targetEnvironment(macCatalyst)
     
     if scene.session.persistentIdentifier.hasPrefix("NSMenuBarScene") {

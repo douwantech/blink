@@ -92,6 +92,11 @@ final class CloudConfigSync: NSObject {
       self, selector: #selector(localChanged),
       name: UserDefaults.didChangeNotification, object: nil)
     schedulePush()
+
+    // 启动也主动拉一次：adoptSyncedIfNewer 读的是 UserDefaults 镜像，而镜像只有 didChangeExternally
+    // 到了才刷新；冷启动那一刻镜像往往还是本机自己的旧值。pullNow 直接读 KV，把云端值灌进镜像，
+    // 让启动时的采纳拿到的是真·云端最新。
+    pullNow()
   }
 
   // MARK: 本地 → iCloud
@@ -162,6 +167,34 @@ final class CloudConfigSync: NSObject {
     applyingRemote = false
     if changed {
       NotificationCenter.default.post(name: CloudConfigSync.didRestoreNotification, object: nil)
+    }
+  }
+
+  /// 主动从 iCloud 拉一次并应用。不等 `didChangeExternally`——那个投递极不可靠，
+  /// 尤其 app 回前台时常常收不到，导致「切到另一台设备看不到最新 tab」。
+  /// 回前台 / 变活跃时调这个：synchronize 触发下载，再把 KV 里和本地不同的 key 写回本地并通知刷新。
+  /// tab 用 last-writer-wins（adoptSyncedIfNewer 按 updatedAt 决定是否真采纳），所以这里即便把
+  /// 稍旧的云端值写进 mirror 也不会覆盖更新的本地 tab。
+  @objc func pullNow() {
+    guard started else { return }
+    kv.synchronize()
+    var toApply: [String] = []
+    for key in keys {
+      guard let remote = kv.object(forKey: key) else { continue }
+      let local = defaults.object(forKey: key)
+      if !Self.valuesEqual(local, remote) { toApply.append(key) }
+    }
+    if !toApply.isEmpty {
+      NSLog("[CloudConfigSync] pullNow：从 iCloud 应用 %d 个 key：%@", toApply.count, toApply.joined(separator: ","))
+      applyFromCloud(toApply)
+    }
+  }
+
+  private static func valuesEqual(_ a: Any?, _ b: Any?) -> Bool {
+    switch (a, b) {
+    case (nil, nil): return true
+    case (nil, _), (_, nil): return false
+    default: return (a as AnyObject).isEqual(b)
     }
   }
 
