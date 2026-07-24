@@ -544,10 +544,52 @@ extension SmarterTermInput {
   }
 
   override func paste(_ sender: Any?) {
+    // 剪贴板是图片：走图床上传 → 把返回 URL 写进终端（与键盘条粘贴按钮同一套 ImageHostUploader），
+    // 而不是让原生粘贴把本地文件路径当文本插进来。是文字才走原来的粘贴。
+    let pb = UIPasteboard.general
+    if pb.hasImages, let images = pb.images, !images.isEmpty {
+      _pasteClipboardImagesToHost(images)
+      return
+    }
     if shouldUseWKCopyAndPaste() {
       super.paste(sender)
     } else {
       device?.view?.paste(sender)
+    }
+  }
+
+  /// 剪贴板图片 → 图床（uguu.se，失败退 tmpfiles）→ 返回 URL（多张换行拼接）写入终端。
+  /// 与 VoiceInputView 的粘贴按钮共用 ImageHostUploader，行为一致。
+  private func _pasteClipboardImagesToHost(_ images: [UIImage]) {
+    guard let device = device else { return }
+    let total = images.count
+    _voiceInputView?.showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
+    var urls: [String?] = Array(repeating: nil, count: total)  // 保序
+    let group = DispatchGroup()
+    for (idx, image) in images.enumerated() {
+      guard let data = image.jpegData(compressionQuality: 0.75) else { continue }
+      group.enter()
+      ImageHostUploader.upload(jpegData: data) { url in
+        DispatchQueue.main.async {
+          urls[idx] = url
+          group.leave()
+        }
+      }
+    }
+    group.notify(queue: .main) { [weak self] in
+      guard let self else { return }
+      let good = urls.compactMap { $0 }
+      if good.isEmpty {
+        self._voiceInputView?.showToast("图片上传失败", isError: true)
+        return
+      }
+      let joined = good.joined(separator: "\n")
+      device.write(joined)   // 把图床 URL 写进终端
+      if good.count == total {
+        self._voiceInputView?.showToast(total == 1 ? "已插入图片链接" : "已插入 \(total) 个图片链接")
+      } else {
+        self._voiceInputView?.showToast("\(good.count)/\(total) 已插入，失败 \(total - good.count) 张", isError: true)
+      }
     }
   }
 
