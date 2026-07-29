@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "app_name", "value": "Tailscale" },
+    { "name": "EntryAbility_label", "value": "Tailscale" },
+    { "name": "perm_internet", "value": "Tailscale needs network access to reach your tailnet" },
+    { "name": "perm_netinfo", "value": "Tailscale reads network state to manage the tunnel" }
+  ]
+}

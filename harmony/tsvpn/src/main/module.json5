@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "tsvpn",
+    "type": "har",
+    "description": "Tailscale VPN + blinkd base library for HarmonyOS",
+    "deviceTypes": ["phone", "tablet"]
+  }
+}

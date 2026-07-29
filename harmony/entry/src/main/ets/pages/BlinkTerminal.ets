@@ -1,0 +1,485 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+// BlinkTerminal — Blink for HarmonyOS, in the spirit of the iOS app: you open it
+// and you're in a full-screen, all-black terminal. Typing goes straight into the
+// terminal (a transparent capture field over the screen, echoed by the remote),
+// with a persistent SmartKeys row along the bottom. Tailscale runs underneath
+// (auto-connects via the tsvpn base library) so the terminal reaches a blinkd
+// node on the tailnet — the HarmonyOS sibling of typing `ssh host` in Blink.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+import { common, wantAgent } from '@kit.AbilityKit';
+import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+import { vpnExtension } from '@kit.NetworkKit';
+import type Want from '@ohos.app.ability.Want';
+import { preferences } from '@kit.ArkData';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
+import { window, KeyboardAvoidMode } from '@kit.ArkUI';
+import { BlinkdClient, BlinkdState, Terminal, TailscaleCore, StatusStore } from 'tsvpn';
+
+const DOMAIN: number = 0x0B11;
+const TAG: string = 'BlinkTerminal';
+const BUNDLE: string = 'com.douwantech.tailscale';
+
+@Entry
+@Component
+struct BlinkTerminal {
+  // tailscale (underlying transport)
+  @State tsState: string = '';
+  @State tsIP: string = '';
+  @State tsConnected: boolean = false;
+  @State authKey: string = '';
+  @State hostname: string = 'harmony';
+  // blinkd session
+  @State bHost: string = '';
+  @State bPort: string = '7777';
+  @State bToken: string = '';
+  @State bExec: string = '';
+  @State bConnected: boolean = false;
+  @State display: string = '';
+  // real-time input capture (transparent field over the terminal)
+  @State inputBuf: string = '';
+  // ui
+  @State showConfig: boolean = false;
+  @State kbHeight: number = 0;   // system keyboard height (vp), to float SmartKeys above it
+  @State cols: number = 52;
+  @State rows: number = 30;
+
+  private client: BlinkdClient = new BlinkdClient();
+  private enc: util.TextEncoder = new util.TextEncoder();
+  private win: window.Window | null = null;
+  private term: Terminal = new Terminal();
+  private scroller: Scroller = new Scroller();
+  private tsPrefs: preferences.Preferences | null = null;
+  private bPrefs: preferences.Preferences | null = null;
+  private timer: number = -1;
+  private autoBlinkd: boolean = false;
+  private lastLen: number = 0;      // length of inputBuf already sent
+  private skipNext: boolean = false; // skip the onChange fired by clearing inputBuf
+
+  aboutToAppear(): void {
+    try {
+      TailscaleCore.version();
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'core self-test: %{public}s', `${e}`);
+    }
+    this.client.onData = (bytes: Uint8Array) => {
+      this.display = this.term.feed(bytes);
+      this.scroller.scrollEdge(Edge.Bottom);
+    };
+    this.client.onState = (s: BlinkdState, detail: string) => {
+      this.bConnected = (s === 'connected');
+      if (s === 'connecting') {
+        this.appendLine('· 连接 ' + this.bHost + ' …');
+      } else if (s === 'closed' || s === 'error') {
+        this.autoBlinkd = false;
+        this.appendLine('· 连接已断开');
+      }
+    };
+    this.setupKeyboard();
+    this.loadPrefs();
+  }
+
+  aboutToDisappear(): void {
+    this.client.close();
+    if (this.win !== null) {
+      try {
+        this.win.off('keyboardHeightChange');
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+
+  // Take over keyboard avoidance so the SmartKeys row sits directly on top of the
+  // system keyboard (like Blink's inputAccessoryView), instead of being covered.
+  private setupKeyboard(): void {
+    this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.NONE);
+    window.getLastWindow(this.getUIContext().getHostContext()).then((w: window.Window) => {
+      this.win = w;
+      w.on('keyboardHeightChange', (h: number) => {
+        this.kbHeight = px2vp(h);
+      });
+    }).catch((e: Object) => {
+      hilog.error(DOMAIN, TAG, 'keyboard: %{public}s', JSON.stringify(e));
+    });
+  }
+
+  // Print a local status line into the terminal (used before the shell is up).
+  private appendLine(s: string): void {
+    this.display = this.term.feed(this.enc.encodeInto(s + '\r\n'));
+    this.scroller.scrollEdge(Edge.Bottom);
+  }
+
+  private async loadPrefs(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      this.tsPrefs = await preferences.getPreferences(ctx, 'ts_prefs');
+      this.bPrefs = await preferences.getPreferences(ctx, 'blinkd_prefs');
+      this.authKey = await this.tsPrefs.get('authKey', '') as string;
+      this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
+      this.bHost = await this.bPrefs.get('host', '') as string;
+      this.bPort = await this.bPrefs.get('port', '7777') as string;
+      this.bToken = await this.bPrefs.get('token', '') as string;
+      this.bExec = await this.bPrefs.get('exec', '') as string;
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'loadPrefs: %{public}s', `${e}`);
+    }
+    this.appendLine(this.authKey.length > 0 ? '· 正在连接 tailscale …' : '· 点右上 ⚙ 设置 auth key');
+    if (this.authKey.length > 0 && !this.tsConnected) {
+      this.tsConnect();
+    }
+  }
+
+  private saveTs(key: string, value: string): void {
+    const p = this.tsPrefs;
+    if (p === null) {
+      return;
+    }
+    p.put(key, value).then(() => p.flush()).catch((e: Object) => {
+      hilog.error(DOMAIN, TAG, 'saveTs: %{public}s', JSON.stringify(e));
+    });
+  }
+
+  private saveB(key: string, value: string): void {
+    const p = this.bPrefs;
+    if (p === null) {
+      return;
+    }
+    p.put(key, value).then(() => p.flush()).catch((e: Object) => {
+      hilog.error(DOMAIN, TAG, 'saveB: %{public}s', JSON.stringify(e));
+    });
+  }
+
+  private filesDir(): string {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    return ctx.filesDir;
+  }
+
+  private buildWant(): Want {
+    return {
+      deviceId: '',
+      bundleName: BUNDLE,
+      abilityName: 'TailscaleVpnAbility',
+      parameters: {
+        stateDir: this.filesDir(),
+        hostname: this.hostname.length > 0 ? this.hostname : 'harmony',
+        controlURL: '',
+        authKey: this.authKey,
+      },
+    };
+  }
+
+  private tsConnect(): void {
+    vpnExtension.startVpnExtensionAbility(this.buildWant()).then(() => {
+      this.tsConnected = true;
+      this.tsState = 'Starting';
+      this.startPolling();
+      this.startKeepAlive();
+    }).catch((e: Object) => {
+      this.tsState = 'start failed';
+      hilog.error(DOMAIN, TAG, 'startVpn: %{public}s', JSON.stringify(e));
+    });
+  }
+
+  private tsDisconnect(): void {
+    vpnExtension.stopVpnExtensionAbility(this.buildWant()).catch((e: Object) => {
+      hilog.error(DOMAIN, TAG, 'stopVpn: %{public}s', JSON.stringify(e));
+    });
+    this.stopKeepAlive();
+    this.tsConnected = false;
+    this.tsState = '';
+    this.tsIP = '';
+    if (this.timer >= 0) {
+      clearInterval(this.timer);
+      this.timer = -1;
+    }
+  }
+
+  private async startKeepAlive(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const info: wantAgent.WantAgentInfo = {
+        wants: [{ bundleName: BUNDLE, abilityName: 'EntryAbility' }],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: 0,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
+      };
+      const wa = await wantAgent.getWantAgent(info);
+      await backgroundTaskManager.startBackgroundRunning(
+        ctx, backgroundTaskManager.BackgroundMode.DATA_TRANSFER, wa);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'startKeepAlive: %{public}s', `${e}`);
+    }
+  }
+
+  private async stopKeepAlive(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await backgroundTaskManager.stopBackgroundRunning(ctx);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'stopKeepAlive: %{public}s', `${e}`);
+    }
+  }
+
+  private startPolling(): void {
+    if (this.timer >= 0) {
+      clearInterval(this.timer);
+    }
+    this.timer = setInterval(() => {
+      const s: string = StatusStore.read(this.filesDir());
+      try {
+        const j = JSON.parse(s) as Record<string, Object>;
+        const state = j['backendState'] as string;
+        this.tsState = state ? state : 'Starting';
+        const ips = j['tailscaleIPs'] as string[];
+        this.tsIP = (ips && ips.length > 0) ? ips[0] : '';
+        if (state === 'Running' && !this.bConnected && !this.autoBlinkd
+            && this.bHost.length > 0 && this.bToken.length > 0) {
+          this.autoBlinkd = true;
+          this.bConnect();
+        }
+      } catch (e) {
+        // status file not written yet
+      }
+    }, 1500);
+  }
+
+  private bConnect(): void {
+    const p: number = parseInt(this.bPort);
+    if (this.bHost.trim().length === 0 || !p || this.bToken.trim().length === 0) {
+      this.showConfig = true;
+      return;
+    }
+    this.term.clear();
+    this.display = '';
+    this.inputBuf = '';
+    this.lastLen = 0;
+    this.client.connect(this.bHost.trim(), p, this.bToken.trim(), this.rows, this.cols, this.bExec.trim());
+  }
+
+  private bDisconnect(): void {
+    this.client.close();
+    this.bConnected = false;
+    this.autoBlinkd = false;
+  }
+
+  // Real-time input: send the delta since we last sent. Growth → send the new
+  // suffix; shrink (backspace) → send DELs. Enter is handled in onSubmit.
+  private onInput(v: string): void {
+    if (this.skipNext) {
+      this.skipNext = false;
+      this.lastLen = v.length;
+      return;
+    }
+    if (!this.bConnected) {
+      this.lastLen = v.length;
+      return;
+    }
+    if (v.length > this.lastLen) {
+      this.client.sendInput(v.substring(this.lastLen));
+    } else if (v.length < this.lastLen) {
+      const dels = new Uint8Array(this.lastLen - v.length);
+      dels.fill(0x7f);
+      this.client.sendBytes(dels);
+    }
+    this.lastLen = v.length;
+  }
+
+  private submitLine(): void {
+    if (this.bConnected) {
+      this.client.sendInput('\n');
+    }
+    this.skipNext = true;
+    this.inputBuf = '';
+    this.lastLen = 0;
+  }
+
+  private sendKey(bytes: number[]): void {
+    if (!this.bConnected) {
+      return;
+    }
+    this.client.sendBytes(new Uint8Array(bytes));
+  }
+
+  @Builder
+  smartKey(label: string, bytes: number[]) {
+    Text(label)
+      .fontSize(13)
+      .fontColor('#E8E8E8')
+      .fontFamily('monospace')
+      .backgroundColor('#2A2A2C')
+      .borderRadius(6)
+      .constraintSize({ minWidth: 42 })
+      .height(34)
+      .textAlign(TextAlign.Center)
+      .padding({ left: 10, right: 10 })
+      .onClick(() => this.sendKey(bytes))
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column() {
+        // ---- minimal top bar ----
+        Row({ space: 6 }) {
+          Text('●')
+            .fontSize(11)
+            .fontColor(this.tsState === 'Running' ? '#34C759' : (this.tsConnected ? '#FF9F0A' : '#666666'))
+          Text(this.headerText())
+            .fontSize(11)
+            .fontColor('#8E8E93')
+            .fontFamily('monospace')
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('⚙')
+            .fontSize(15)
+            .fontColor('#8E8E93')
+            .onClick(() => { this.showConfig = true; })
+        }
+        .width('100%')
+        .height(30)
+        .padding({ left: 14, right: 14 })
+        .backgroundColor('#000000')
+
+        // ---- full-screen terminal + transparent input capture ----
+        Stack({ alignContent: Alignment.TopStart }) {
+          Scroll(this.scroller) {
+            Text(this.display)
+              .fontSize(13)
+              .fontFamily('monospace')
+              .fontColor('#CFCFCF')
+              .textAlign(TextAlign.Start)
+              .width('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .align(Alignment.TopStart)
+          .padding({ left: 8, right: 8, top: 4 })
+          .onAreaChange((_o: Area, n: Area) => {
+            const w: number = n.width as number;
+            const h: number = n.height as number;
+            const c: number = Math.max(20, Math.floor(w / (13 * 0.6)));
+            const r: number = Math.max(6, Math.floor(h / (13 * 1.25)));
+            if (c !== this.cols || r !== this.rows) {
+              this.cols = c;
+              this.rows = r;
+              if (this.bConnected) {
+                this.client.sendResize(r, c);
+              }
+            }
+          })
+
+          // Transparent field over the whole terminal: tap anywhere to focus and
+          // type straight into the session; the remote echoes what you type.
+          TextInput({ text: this.inputBuf })
+            .width('100%')
+            .height('100%')
+            .backgroundColor(Color.Transparent)
+            .fontColor(Color.Transparent)
+            .caretColor(Color.Transparent)
+            .enterKeyType(EnterKeyType.Send)
+            .enableKeyboardOnFocus(true)
+            .onChange((v: string) => this.onInput(v))
+            .onSubmit(() => this.submitLine())
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .backgroundColor('#000000')
+
+        // ---- persistent SmartKeys row (horizontally scrollable) ----
+        Scroll() {
+          Row({ space: 6 }) {
+            this.smartKey('esc', [0x1b])
+            this.smartKey('^C', [0x03])
+            this.smartKey('^D', [0x04])
+            this.smartKey('tab', [0x09])
+            this.smartKey('~', [0x7e])
+            this.smartKey('/', [0x2f])
+            this.smartKey('|', [0x7c])
+            this.smartKey('-', [0x2d])
+            this.smartKey('↑', [0x1b, 0x5b, 0x41])
+            this.smartKey('↓', [0x1b, 0x5b, 0x42])
+            this.smartKey('←', [0x1b, 0x5b, 0x44])
+            this.smartKey('→', [0x1b, 0x5b, 0x43])
+          }
+          .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .backgroundColor('#0A0A0A')
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#000000')
+
+      // ---- config overlay (gear) ----
+      if (this.showConfig) {
+        Column() {
+          Column({ space: 8 }) {
+            Row() {
+              Text('设置').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFF').layoutWeight(1)
+              Text('完成').fontSize(14).fontColor('#0A84FF').onClick(() => { this.showConfig = false; })
+            }.width('100%').margin({ bottom: 4 })
+
+            Text('Tailscale').fontSize(11).fontColor('#8E8E93').width('100%').textAlign(TextAlign.Start)
+            TextInput({ text: this.authKey, placeholder: 'auth key (tskey-…)' })
+              .fontSize(12).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFF')
+              .onChange((v: string) => { this.authKey = v; this.saveTs('authKey', v); })
+            Button(this.tsConnected ? '断开 tailscale' : '连接 tailscale')
+              .fontSize(13).width('100%').height(38)
+              .backgroundColor(this.tsConnected ? '#3A3A3C' : '#34C759')
+              .onClick(() => { this.tsConnected ? this.tsDisconnect() : this.tsConnect(); })
+
+            Divider().color('#3A3A3C').margin({ top: 6, bottom: 6 })
+
+            Text('blinkd 目标').fontSize(11).fontColor('#8E8E93').width('100%').textAlign(TextAlign.Start)
+            Row({ space: 6 }) {
+              TextInput({ text: this.bHost, placeholder: 'host 例 100.x.y.z' })
+                .fontSize(12).layoutWeight(2).backgroundColor('#2A2A2C').fontColor('#FFF')
+                .onChange((v: string) => { this.bHost = v; this.saveB('host', v); })
+              TextInput({ text: this.bPort, placeholder: 'port' })
+                .fontSize(12).layoutWeight(1).type(InputType.Number).backgroundColor('#2A2A2C').fontColor('#FFF')
+                .onChange((v: string) => { this.bPort = v; this.saveB('port', v); })
+            }
+            TextInput({ text: this.bToken, placeholder: 'token' })
+              .fontSize(12).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFF')
+              .onChange((v: string) => { this.bToken = v; this.saveB('token', v); })
+            TextInput({ text: this.bExec, placeholder: '启动命令(可空=登录 zsh)' })
+              .fontSize(12).backgroundColor('#2A2A2C').fontColor('#FFF')
+              .onChange((v: string) => { this.bExec = v; this.saveB('exec', v); })
+            Button(this.bConnected ? '重连 blinkd' : '连接 blinkd')
+              .fontSize(13).width('100%').height(38).backgroundColor('#0A84FF')
+              .onClick(() => { this.showConfig = false; this.autoBlinkd = true; this.bConnect(); })
+          }
+          .width('88%')
+          .padding(16)
+          .backgroundColor('#1C1C1E')
+          .borderRadius(14)
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#000000CC')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor('#000000')
+    .padding({ bottom: this.kbHeight })
+  }
+
+  private headerText(): string {
+    if (this.bConnected) {
+      return this.bHost;
+    }
+    if (this.tsState === 'Running') {
+      return 'tailnet ready · ' + (this.tsIP.length > 0 ? this.tsIP : '');
+    }
+    return this.tsConnected ? ('tailscale ' + this.tsState) : 'tailscale off';
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Blink for HarmonyOS — terminal app (depends on tsvpn)",
+  "main": "",
+  "author": "",
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "tsvpn": "file:../tsvpn"
+  }
+}
