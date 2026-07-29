@@ -21,7 +21,7 @@ import { BlinkdClient, BlinkdState, Terminal, TailscaleCore, StatusStore } from 
 
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'BlinkTerminal';
-const BUNDLE: string = 'com.douwantech.tailscale';
+const BUNDLE: string = 'com.douwantech.blink';
 
 @Entry
 @Component
@@ -127,7 +127,13 @@ struct BlinkTerminal {
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'loadPrefs: %{public}s', `${e}`);
     }
-    this.appendLine(this.authKey.length > 0 ? '· 正在连接 tailscale …' : '· 点右上 ⚙ 设置 auth key');
+    this.appendLine('Blink · HarmonyOS — tailscale + blinkd');
+    this.appendLine('');
+    if (this.authKey.length > 0) {
+      this.appendLine('· 正在连接 tailscale …');
+    } else {
+      this.appendLine('⚙ 右上角设置 auth key + blinkd 目标，之后自动连接');
+    }
     if (this.authKey.length > 0 && !this.tsConnected) {
       this.tsConnect();
     }
@@ -305,43 +311,70 @@ struct BlinkTerminal {
   }
 
   @Builder
-  smartKey(label: string, bytes: number[]) {
+  smartKey(label: string, bytes: number[], accent: string) {
     Text(label)
-      .fontSize(13)
-      .fontColor('#E8E8E8')
+      .fontSize(14)
+      .fontColor(accent)
       .fontFamily('monospace')
-      .backgroundColor('#2A2A2C')
-      .borderRadius(6)
-      .constraintSize({ minWidth: 42 })
-      .height(34)
+      .backgroundColor('#141416')
+      .border({ width: 1, color: accent, radius: 9 })
+      .constraintSize({ minWidth: 46 })
+      .height(38)
       .textAlign(TextAlign.Center)
-      .padding({ left: 10, right: 10 })
+      .padding({ left: 12, right: 12 })
       .onClick(() => this.sendKey(bytes))
+  }
+
+  @Builder
+  sessionTab(label: string, selected: boolean) {
+    Row({ space: 5 }) {
+      Text('●')
+        .fontSize(8)
+        .fontColor(this.tsState === 'Running' ? '#34C759' : '#666666')
+      Text(label)
+        .fontSize(14)
+        .fontColor(selected ? '#FFFFFF' : '#8A8A8E')
+        .fontFamily('monospace')
+    }
+    .padding({ left: 13, right: 13, top: 6, bottom: 6 })
+    .backgroundColor(selected ? '#1E3A5F' : Color.Transparent)
+    .borderRadius(9)
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
         // ---- minimal top bar ----
-        Row({ space: 6 }) {
-          Text('●')
-            .fontSize(11)
-            .fontColor(this.tsState === 'Running' ? '#34C759' : (this.tsConnected ? '#FF9F0A' : '#666666'))
-          Text(this.headerText())
-            .fontSize(11)
-            .fontColor('#8E8E93')
-            .fontFamily('monospace')
-            .layoutWeight(1)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        // ---- toolbar row: ⚙ | filter pill | + ----
+        Row({ space: 10 }) {
           Text('⚙')
-            .fontSize(15)
-            .fontColor('#8E8E93')
+            .fontSize(19)
+            .fontColor('#3DD9C4')
+            .onClick(() => { this.showConfig = true; })
+          Row({ space: 5 }) {
+            Text('≡').fontSize(14).fontColor('#3DD9C4')
+            Text('全部').fontSize(13).fontColor('#3DD9C4')
+          }
+          .padding({ left: 12, right: 13, top: 4, bottom: 4 })
+          .border({ width: 1, color: '#2E6E68', radius: 15 })
+          Blank()
+          Text('＋')
+            .fontSize(24)
+            .fontColor('#3DD9C4')
             .onClick(() => { this.showConfig = true; })
         }
         .width('100%')
-        .height(30)
-        .padding({ left: 14, right: 14 })
+        .height(44)
+        .padding({ left: 14, right: 16 })
+        .backgroundColor('#000000')
+
+        // ---- session tab bar: user:machine tabs, current highlighted ----
+        Row({ space: 8 }) {
+          this.sessionTab(this.tabLabel(), true)
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Start)
+        .padding({ left: 14, right: 14, bottom: 7 })
         .backgroundColor('#000000')
 
         // ---- full-screen terminal + transparent input capture ----
@@ -391,21 +424,22 @@ struct BlinkTerminal {
 
         // ---- persistent SmartKeys row (horizontally scrollable) ----
         Scroll() {
-          Row({ space: 6 }) {
-            this.smartKey('esc', [0x1b])
-            this.smartKey('^C', [0x03])
-            this.smartKey('^D', [0x04])
-            this.smartKey('tab', [0x09])
-            this.smartKey('~', [0x7e])
-            this.smartKey('/', [0x2f])
-            this.smartKey('|', [0x7c])
-            this.smartKey('-', [0x2d])
-            this.smartKey('↑', [0x1b, 0x5b, 0x41])
-            this.smartKey('↓', [0x1b, 0x5b, 0x42])
-            this.smartKey('←', [0x1b, 0x5b, 0x44])
-            this.smartKey('→', [0x1b, 0x5b, 0x43])
+          Row({ space: 7 }) {
+            this.smartKey('esc', [0x1b], '#FF6B6B')
+            this.smartKey('^C', [0x03], '#FF9F45')
+            this.smartKey('^D', [0x04], '#FF9F45')
+            this.smartKey('tab', [0x09], '#3DD9C4')
+            this.smartKey('~', [0x7e], '#8A8A8E')
+            this.smartKey('/', [0x2f], '#8A8A8E')
+            this.smartKey('|', [0x7c], '#8A8A8E')
+            this.smartKey('-', [0x2d], '#8A8A8E')
+            this.smartKey('←', [0x1b, 0x5b, 0x44], '#3DD9C4')
+            this.smartKey('↑', [0x1b, 0x5b, 0x41], '#3DD9C4')
+            this.smartKey('↓', [0x1b, 0x5b, 0x42], '#3DD9C4')
+            this.smartKey('→', [0x1b, 0x5b, 0x43], '#3DD9C4')
+            this.smartKey('⏎', [0x0d], '#4A9EFF')
           }
-          .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+          .padding({ left: 10, right: 10, top: 8, bottom: 8 })
         }
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
@@ -477,9 +511,13 @@ struct BlinkTerminal {
     if (this.bConnected) {
       return this.bHost;
     }
-    if (this.tsState === 'Running') {
-      return 'tailnet ready · ' + (this.tsIP.length > 0 ? this.tsIP : '');
+    if (this.bHost.length > 0) {
+      return this.bHost;
     }
-    return this.tsConnected ? ('tailscale ' + this.tsState) : 'tailscale off';
+    return 'blink';
+  }
+
+  private tabLabel(): string {
+    return this.bHost.length > 0 ? ('blink:' + this.bHost) : 'blink';
   }
 }

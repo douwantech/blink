@@ -7,7 +7,7 @@ import { TailscaleCore, StatusStore } from 'tsvpn';
 
 const DOMAIN = 0x2020;
 const TAG = 'TailscaleVpn';
-const BUNDLE = 'com.douwantech.tailscale';
+const BUNDLE = 'com.douwantech.blink';
 // Placeholder tun address used only to establish the VPN quickly so OHOS keeps
 // this extension alive during login; replaced with the real node IP once known.
 const PLACEHOLDER_IP = '100.64.0.1';

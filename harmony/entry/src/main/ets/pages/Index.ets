@@ -11,7 +11,7 @@ import { StatusStore, TailscaleCore } from 'tsvpn';
 
 const DOMAIN = 0x2020;
 const TAG = 'TailscaleUI';
-const BUNDLE = 'com.douwantech.tailscale';
+const BUNDLE = 'com.douwantech.blink';
 
 @Entry
 @Component

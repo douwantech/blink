@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.douwantech.tailscale",
+    "bundleName": "com.douwantech.blink",
     "vendor": "douwantech",
     "versionCode": 1000000,
     "versionName": "1.0.0",
