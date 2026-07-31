@@ -90,3 +90,16 @@ function term_clear() { if (t) { t.clear(); } }
 function term_reset() { if (t) { t.reset(); } }
 function term_setFontSize(n) { if (t) { t.getPrefs().set('font-size', parseInt(n)); } }
 function term_scrollBottom() { if (t) { t.scrollEnd(); } }
+
+// Live theme switch from the settings UI: recolor background / foreground / cursor.
+function term_set_colors(bg, fg, cur) {
+  try {
+    if (t) {
+      var p = t.getPrefs();
+      p.set('background-color', bg);
+      p.set('foreground-color', fg);
+      p.set('cursor-color', cur);
+      document.body.style.backgroundColor = bg;
+    }
+  } catch (e) { _post('error', { message: String(e) }); }
+}
