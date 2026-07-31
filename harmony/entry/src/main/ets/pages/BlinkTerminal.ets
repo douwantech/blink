@@ -15,13 +15,25 @@ import { vpnExtension } from '@kit.NetworkKit';
 import type Want from '@ohos.app.ability.Want';
 import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { util } from '@kit.ArkTS';
+import { util, buffer } from '@kit.ArkTS';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
-import { BlinkdClient, BlinkdState, Terminal, TailscaleCore, StatusStore } from 'tsvpn';
+import { webview } from '@kit.ArkWeb';
+import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
 
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'BlinkTerminal';
 const BUNDLE: string = 'com.douwantech.blink';
+
+// Bridge object exposed to hterm's JS as window.arkBridge; JS calls post(op,data).
+class JsBridge {
+  private cb: (op: string, data: string) => void;
+  constructor(cb: (op: string, data: string) => void) {
+    this.cb = cb;
+  }
+  post(op: string, data: string): void {
+    this.cb(op, data);
+  }
+}
 
 @Entry
 @Component
@@ -38,7 +50,6 @@ struct BlinkTerminal {
   @State bToken: string = '';
   @State bExec: string = '';
   @State bConnected: boolean = false;
-  @State display: string = '';
   // real-time input capture (transparent field over the terminal)
   @State inputBuf: string = '';
   // ui
@@ -49,13 +60,17 @@ struct BlinkTerminal {
 
   private client: BlinkdClient = new BlinkdClient();
   private enc: util.TextEncoder = new util.TextEncoder();
+  private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
-  private term: Terminal = new Terminal();
-  private scroller: Scroller = new Scroller();
+  private webCtl: webview.WebviewController = new webview.WebviewController();
+  private jsBridge: JsBridge = new JsBridge((op: string, data: string): void => { this.onBridge(op, data); });
   private tsPrefs: preferences.Preferences | null = null;
   private bPrefs: preferences.Preferences | null = null;
   private timer: number = -1;
   private autoBlinkd: boolean = false;
+  private failCount: number = 0;       // consecutive quick reconnect failures (for backoff)
+  private cooldownUntil: number = 0;   // Date.now() ms; auto-reconnect won't fire before this
+  private connectedAt: number = 0;     // Date.now() ms when the current session connected
   private lastLen: number = 0;      // length of inputBuf already sent
   private skipNext: boolean = false; // skip the onChange fired by clearing inputBuf
 
@@ -66,16 +81,32 @@ struct BlinkTerminal {
       hilog.error(DOMAIN, TAG, 'core self-test: %{public}s', `${e}`);
     }
     this.client.onData = (bytes: Uint8Array) => {
-      this.display = this.term.feed(bytes);
-      this.scroller.scrollEdge(Edge.Bottom);
+      this.writeToTerm(bytes);
     };
     this.client.onState = (s: BlinkdState, detail: string) => {
       this.bConnected = (s === 'connected');
       if (s === 'connecting') {
         this.appendLine('· 连接 ' + this.bHost + ' …');
+      } else if (s === 'connected') {
+        this.connectedAt = Date.now();
       } else if (s === 'closed' || s === 'error') {
         this.autoBlinkd = false;
-        this.appendLine('· 连接已断开');
+        // Exponential backoff: a shell that exits instantly (or a dead daemon) must not
+        // get hammered every 1.5s poll tick. A session that held >10s counts as healthy
+        // → reset and let the poll reconnect promptly; a quick drop backs off
+        // 3→6→12→24→30s so we stop pounding the daemon.
+        const lasted: number = this.connectedAt > 0 ? (Date.now() - this.connectedAt) : 0;
+        this.connectedAt = 0;
+        if (lasted > 10000) {
+          this.failCount = 0;
+          this.cooldownUntil = 0;
+          this.appendLine('· 连接已断开');
+        } else {
+          this.failCount = this.failCount + 1;
+          const wait: number = Math.min(1500 * Math.pow(2, this.failCount), 30000);
+          this.cooldownUntil = Date.now() + wait;
+          this.appendLine('· 连接已断开，' + Math.round(wait / 1000) + ' 秒后重连');
+        }
       }
     };
     this.setupKeyboard();
@@ -109,8 +140,40 @@ struct BlinkTerminal {
 
   // Print a local status line into the terminal (used before the shell is up).
   private appendLine(s: string): void {
-    this.display = this.term.feed(this.enc.encodeInto(s + '\r\n'));
-    this.scroller.scrollEdge(Edge.Bottom);
+    // @ohos.buffer gives correct UTF-8 bytes for app text. (ArkTS TextEncoder garbled
+    // multi-byte, and passing raw Chinese through runJavaScript mangles it too.) base64
+    // → term_write_b64 is the exact clean path blinkd's shell output already renders with.
+    const b64: string = buffer.from(s + '\r\n', 'utf-8').toString('base64');
+    this.webCtl.runJavaScript(`term_write_b64('${b64}')`);
+  }
+
+  // Push raw bytes into the hterm renderer running in the Web component.
+  private writeToTerm(bytes: Uint8Array): void {
+    const b64: string = this.b64.encodeToStringSync(bytes);
+    this.webCtl.runJavaScript(`term_write_b64('${b64}')`);
+  }
+
+  // Messages from harmony_term.js (window.arkBridge.post).
+  private onBridge(op: string, dataStr: string): void {
+    if (op === 'sigwinch') {
+      try {
+        const d = JSON.parse(dataStr) as Record<string, number>;
+        const cols: number = d.cols as number;
+        const rows: number = d.rows as number;
+        if (cols > 0 && rows > 0) {
+          this.cols = cols;
+          this.rows = rows;
+          if (this.bConnected) {
+            this.client.sendResize(rows, cols);
+          }
+        }
+      } catch (e) {
+      }
+    } else if (op === 'error') {
+      hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
+    } else {
+      hilog.info(DOMAIN, TAG, 'hterm %{public}s: %{public}s', op, dataStr);
+    }
   }
 
   private async loadPrefs(): Promise<void> {
@@ -243,7 +306,8 @@ struct BlinkTerminal {
         const ips = j['tailscaleIPs'] as string[];
         this.tsIP = (ips && ips.length > 0) ? ips[0] : '';
         if (state === 'Running' && !this.bConnected && !this.autoBlinkd
-            && this.bHost.length > 0 && this.bToken.length > 0) {
+            && this.bHost.length > 0 && this.bToken.length > 0
+            && Date.now() >= this.cooldownUntil) {
           this.autoBlinkd = true;
           this.bConnect();
         }
@@ -259,8 +323,7 @@ struct BlinkTerminal {
       this.showConfig = true;
       return;
     }
-    this.term.clear();
-    this.display = '';
+    this.webCtl.runJavaScript('term_clear()');
     this.inputBuf = '';
     this.lastLen = 0;
     this.client.connect(this.bHost.trim(), p, this.bToken.trim(), this.rows, this.cols, this.bExec.trim());
@@ -270,6 +333,8 @@ struct BlinkTerminal {
     this.client.close();
     this.bConnected = false;
     this.autoBlinkd = false;
+    this.failCount = 0;
+    this.cooldownUntil = 0;
   }
 
   // Real-time input: send the delta since we last sent. Growth → send the new
@@ -379,31 +444,22 @@ struct BlinkTerminal {
 
         // ---- full-screen terminal + transparent input capture ----
         Stack({ alignContent: Alignment.TopStart }) {
-          Scroll(this.scroller) {
-            Text(this.display)
-              .fontSize(13)
-              .fontFamily('monospace')
-              .fontColor('#CFCFCF')
-              .textAlign(TextAlign.Start)
-              .width('100%')
-          }
-          .width('100%')
-          .height('100%')
-          .align(Alignment.TopStart)
-          .padding({ left: 8, right: 8, top: 4 })
-          .onAreaChange((_o: Area, n: Area) => {
-            const w: number = n.width as number;
-            const h: number = n.height as number;
-            const c: number = Math.max(20, Math.floor(w / (13 * 0.6)));
-            const r: number = Math.max(6, Math.floor(h / (13 * 1.25)));
-            if (c !== this.cols || r !== this.rows) {
-              this.cols = c;
-              this.rows = r;
-              if (this.bConnected) {
-                this.client.sendResize(r, c);
-              }
-            }
-          })
+          // hterm renderer (real VT: colors, cursor, alt-screen — vim/tmux/claude).
+          Web({ src: $rawfile('term/term.html'), controller: this.webCtl })
+            .javaScriptAccess(true)
+            .domStorageAccess(true)
+            .javaScriptProxy({
+              object: this.jsBridge,
+              name: 'arkBridge',
+              methodList: ['post'],
+              controller: this.webCtl,
+            })
+            .onPageEnd(() => {
+              this.webCtl.runJavaScript('term_init()');
+            })
+            .backgroundColor('#000000')
+            .width('100%')
+            .height('100%')
 
           // Transparent field over the whole terminal: tap anywhere to focus and
           // type straight into the session; the remote echoes what you type.
@@ -487,7 +543,7 @@ struct BlinkTerminal {
               .onChange((v: string) => { this.bExec = v; this.saveB('exec', v); })
             Button(this.bConnected ? '重连 blinkd' : '连接 blinkd')
               .fontSize(13).width('100%').height(38).backgroundColor('#0A84FF')
-              .onClick(() => { this.showConfig = false; this.autoBlinkd = true; this.bConnect(); })
+              .onClick(() => { this.showConfig = false; this.failCount = 0; this.cooldownUntil = 0; this.autoBlinkd = true; this.bConnect(); })
           }
           .width('88%')
           .padding(16)
