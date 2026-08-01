@@ -94,6 +94,7 @@ struct BlinkTerminal {
   @State fontSize: number = 13;
   @State kbHeight: number = 0;
   @State toolbarOpen: boolean = true;
+  @State panelOpen: boolean = false;   // bottom input panel — hidden until the mic button opens it (iOS voiceInputAutoShow)
   @State voiceMode: boolean = false;
   @State composerText: string = '';
   @State recording: boolean = false;
@@ -896,6 +897,21 @@ struct BlinkTerminal {
     }
   }
 
+  // Bottom input panel is hidden by default (matches iOS voiceInputAutoShow): the
+  // floating mic button opens it into voice mode; ⌄ collapses it fully again so the
+  // terminal goes full-screen.
+  private togglePanel(): void {
+    if (this.panelOpen && this.voiceMode) {
+      this.panelOpen = false;
+      this.voiceMode = false;
+      this.hideKeyboard();
+    } else {
+      this.panelOpen = true;
+      this.voiceMode = true;
+    }
+    this.tick++;
+  }
+
   private saveDockPos(): void {
     const p = this.uiPrefs;
     if (p === null) {
@@ -920,7 +936,7 @@ struct BlinkTerminal {
         this.circleBtn('🕐', '#4A9EFF', () => this.dumpTranscript())
         this.circleBtn('🔄', '#34C759', () => this.reconnectActive())
         this.circleBtn('🖥️', '#C74DE0', () => { this.sheet = 'machinePicker'; })
-        this.circleBtn('🎤', TEAL, () => { this.voiceMode = !this.voiceMode; this.tick++; this.hideKeyboard(); })
+        this.circleBtn('🎤', TEAL, () => this.togglePanel())
       }
     }
     .padding({ left: 6, right: 6, top: 8, bottom: 10 })
@@ -962,7 +978,7 @@ struct BlinkTerminal {
         Blank()
         Row({ space: 12 }) {
           Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; this.hideKeyboard(); })
-          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; this.hideKeyboard(); })
+          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.panelOpen = false; this.voiceMode = false; this.tick++; this.hideKeyboard(); })
         }
       }.width('100%')
 
@@ -1053,7 +1069,9 @@ struct BlinkTerminal {
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
-        this.bottomAccessory()
+        if (this.panelOpen) {
+          this.bottomAccessory()
+        }
       }
       .width('100%').height('100%').backgroundColor('#000000')
 
