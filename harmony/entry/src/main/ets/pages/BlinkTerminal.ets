@@ -111,6 +111,16 @@ struct BlinkTerminal {
   @State ntSession: string = '';
   @State mfEdit: Machine | null = null;
 
+  // floating-dock drag — mirrors iOS FloatingDockBar: free 2-D drag, clamped in-screen, remembered
+  @State dockX: number = -1;
+  @State dockY: number = -1;
+  private areaW: number = 0;
+  private areaH: number = 0;
+  private dockW: number = 52;
+  private dockH: number = 320;
+  private dockX0: number = 0;
+  private dockY0: number = 0;
+
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
   private b64: util.Base64Helper = new util.Base64Helper();
@@ -156,6 +166,8 @@ struct BlinkTerminal {
     this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
     this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
     this.fontSize = await this.uiPrefs.get('fontSize', 13) as number;
+    this.dockX = await this.uiPrefs.get('dockX', -1) as number;
+    this.dockY = await this.uiPrefs.get('dockY', -1) as number;
     await this.store.load(ctx);
     // pick the active tab (persisted current, else first visible)
     const vis = this.store.visibleTabs();
@@ -846,6 +858,55 @@ struct BlinkTerminal {
     return c !== null && c.unread && t.id !== this.activeTabId;
   }
 
+  private clampX(x: number): number {
+    const maxX = Math.max(4, this.areaW - this.dockW - 4);
+    return Math.min(Math.max(x, 4), maxX);
+  }
+
+  private clampY(y: number): number {
+    const maxY = Math.max(4, this.areaH - this.dockH - 4);
+    return Math.min(Math.max(y, 4), maxY);
+  }
+
+  // root-area probe: seed the dock's default spot (right edge, vertically centered)
+  // on first layout, otherwise re-clamp the remembered position into the new bounds.
+  private onRootArea(w: number, h: number): void {
+    this.areaW = w;
+    // Only capture the full height while the keyboard is down, so the dock keeps
+    // its spot instead of jumping up when the soft keyboard resizes the page.
+    if (this.kbHeight === 0) {
+      this.areaH = h;
+    }
+    if (this.dockX < 0 || this.dockY < 0) {
+      this.dockX = Math.max(4, w - this.dockW - 10);
+      this.dockY = Math.max(4, (this.areaH - this.dockH) / 2);
+    } else {
+      this.dockX = this.clampX(this.dockX);
+      this.dockY = this.clampY(this.dockY);
+    }
+  }
+
+  // Dismiss the soft keyboard by dropping focus — voice mode is record-driven and
+  // must not leave the system QWERTY sheet covering the composer.
+  private hideKeyboard(): void {
+    try {
+      this.getUIContext().getFocusController().clearFocus();
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'clearFocus: %{public}s', `${e}`);
+    }
+  }
+
+  private saveDockPos(): void {
+    const p = this.uiPrefs;
+    if (p === null) {
+      return;
+    }
+    p.put('dockX', this.dockX)
+      .then((): Promise<void> => p.put('dockY', this.dockY))
+      .then((): Promise<void> => p.flush())
+      .catch(() => {});
+  }
+
   @Builder
   floatingDock() {
     Column({ space: 10 }) {
@@ -859,11 +920,33 @@ struct BlinkTerminal {
         this.circleBtn('🕐', '#4A9EFF', () => this.dumpTranscript())
         this.circleBtn('🔄', '#34C759', () => this.reconnectActive())
         this.circleBtn('🖥️', '#C74DE0', () => { this.sheet = 'machinePicker'; })
-        this.circleBtn('🎤', TEAL, () => { this.voiceMode = !this.voiceMode; this.tick++; })
+        this.circleBtn('🎤', TEAL, () => { this.voiceMode = !this.voiceMode; this.tick++; this.hideKeyboard(); })
       }
     }
     .padding({ left: 6, right: 6, top: 8, bottom: 10 })
-    .backgroundColor('#1C1C1EE6').borderRadius(28).margin({ right: 6 })
+    .backgroundColor('#1C1C1EE6').borderRadius(28)
+    .position({ x: this.dockX, y: this.dockY })
+    .visibility(this.dockX < 0 ? Visibility.Hidden : Visibility.Visible)
+    .onAreaChange((_: Area, n: Area) => {
+      this.dockW = n.width as number;
+      this.dockH = n.height as number;
+      if (this.dockX >= 0) {
+        this.dockX = this.clampX(this.dockX);
+        this.dockY = this.clampY(this.dockY);
+      }
+    })
+    .gesture(
+      PanGesture({ fingers: 1, distance: 6 })
+        .onActionStart(() => {
+          this.dockX0 = this.dockX;
+          this.dockY0 = this.dockY;
+        })
+        .onActionUpdate((e: GestureEvent) => {
+          this.dockX = this.clampX(this.dockX0 + e.offsetX);
+          this.dockY = this.clampY(this.dockY0 + e.offsetY);
+        })
+        .onActionEnd(() => this.saveDockPos()),
+    )
   }
 
   @Builder
@@ -878,8 +961,8 @@ struct BlinkTerminal {
         }
         Blank()
         Row({ space: 12 }) {
-          Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; })
-          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; })
+          Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; this.hideKeyboard(); })
+          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; this.hideKeyboard(); })
         }
       }.width('100%')
 
@@ -919,6 +1002,7 @@ struct BlinkTerminal {
         TextInput({ text: this.composerText, placeholder: this.voiceHint })
           .layoutWeight(1).height(48).backgroundColor(CARD).fontColor('#FFFFFF')
           .placeholderColor('#6A6A6E').borderRadius(10)
+          .enableKeyboardOnFocus(false)
           .onChange((v: string) => { this.composerText = v; })
         Column({ space: 6 }) {
           Text('↵').fontSize(18).fontColor('#4A9EFF').width(60).height(40).textAlign(TextAlign.Center)
@@ -973,11 +1057,11 @@ struct BlinkTerminal {
       }
       .width('100%').height('100%').backgroundColor('#000000')
 
-      // floating dock (pass-through)
+      // floating dock — absolutely positioned & draggable (see dockX/dockY / onRootArea)
       Column() {
         this.floatingDock()
       }
-      .width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.End)
+      .width('100%').height('100%')
       .hitTestBehavior(HitTestMode.Transparent)
 
       // sheets / overlays
@@ -992,6 +1076,7 @@ struct BlinkTerminal {
       }
     }
     .width('100%').height('100%').backgroundColor('#000000').padding({ bottom: this.kbHeight })
+    .onAreaChange((_: Area, n: Area) => this.onRootArea(n.width as number, n.height as number))
   }
 
   // ---- helpers for dynamic labels ----
