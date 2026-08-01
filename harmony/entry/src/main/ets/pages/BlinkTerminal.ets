@@ -437,6 +437,27 @@ struct BlinkTerminal {
     this.refreshTabs();
   }
 
+  // Horizontal swipe over the terminal switches session (mirrors iOS SpaceController's
+  // page-swipe between shells): swipe left → next tab, swipe right → previous, wrapping
+  // around so a continued swipe cycles through every open session.
+  private swipeTab(dir: number): void {
+    const tabs = this.visTabs;
+    if (tabs.length <= 1) {
+      return;
+    }
+    const idx: number = tabs.findIndex((t: TabModel) => t.id === this.activeTabId);
+    if (idx < 0) {
+      return;
+    }
+    let n: number = idx + dir;
+    if (n < 0) {
+      n = tabs.length - 1;
+    } else if (n >= tabs.length) {
+      n = 0;
+    }
+    this.switchTab(tabs[n].id);
+  }
+
   private newTab(machineId: string, workDirId: string, session: string): void {
     const t: TabModel = {
       id: BlinkStore.newId(),
@@ -1069,6 +1090,18 @@ struct BlinkTerminal {
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
+        // Left/right swipe across the terminal cycles sessions. Horizontal-only pan so
+        // taps (keyboard focus) and vertical drags fall through; priorityGesture wins
+        // over the transparent input layer that sits on top of the Web view.
+        .priorityGesture(
+          PanGesture({ direction: PanDirection.Horizontal, distance: 30 })
+            .onActionEnd((e: GestureEvent) => {
+              if (Math.abs(e.offsetX) < 36) {
+                return;
+              }
+              this.swipeTab(e.offsetX < 0 ? 1 : -1);
+            }),
+        )
         if (this.panelOpen) {
           this.bottomAccessory()
         }
