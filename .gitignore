@@ -75,3 +75,7 @@ harmony/tsvpn/libs/arm64-v8a/*.so
 harmony/tsvpn/src/main/cpp/libtailscale_ohos.h
 # DevEco signing config carries plaintext key passwords — keep the tracked copy empty
 harmony/build-profile.local.json5
+# Seeded iOS config carries real machine tokens / GLM API key / admin passwords +
+# personal workDir avatars — stays local, never committed (mirrors build-profile secrecy)
+harmony/entry/src/main/resources/rawfile/seed_config.json
+harmony/entry/src/main/resources/rawfile/avatars/

@@ -1,20 +1,23 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
-// BlinkTerminal — Blink for HarmonyOS, in the spirit of the iOS app: a full-screen
-// black terminal with the iOS Blink chrome on top — a top bar (⚙ / machine pill /
-// moon·sparkles·＋), a horizontal session-tab strip, the floating round tool dock
-// on the right edge, and a rich bottom input accessory (two SmartKeys rows + arrow
-// pad + a voice/line composer). Typing goes straight into the terminal (a
-// transparent capture field over the screen, echoed by the remote). Tailscale runs
-// underneath (tsvpn base library) so the terminal reaches a blinkd node on the
-// tailnet — the HarmonyOS sibling of typing `ssh host` in Blink.
+// BlinkTerminal — Blink for HarmonyOS, the full iOS-fork experience:
+//   • multi-tab, multi-session — one live blinkd connection per tab (ConnPool),
+//     switching tabs never reconnects (hterm keeps every layer's screen), the
+//     tab strip / machine filter pill / new-tab flow mirror SpaceController.
+//   • config seeded from the user's real iOS app (BlinkStore ← seed_config.json):
+//     same machines, work dirs, tabs, favorites, voice-AI data.
+//   • bottom accessory reproduces VoiceInputView: SmartKeys, Claude command
+//     sheet, favorites/history pickers, and a real GLM voice pipeline
+//     (record → glm-asr → polish).
+//   • floating dock reproduces FloatingDockBar: rest toggle / browser /
+//     favorites / transcript / reconnect / machine switch / mic.
 //
-// The transport/terminal/input logic below is the device-verified path; the UI
-// layer (builders + build()) is the iOS-faithful chrome on top of it.
+// The transport/terminal/input plumbing is the device-verified path from the
+// single-session build, generalised to N sessions.
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-import { common, wantAgent } from '@kit.AbilityKit';
+import { common, wantAgent, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import type Want from '@ohos.app.ability.Want';
@@ -23,13 +26,19 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util, buffer } from '@kit.ArkTS';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
+import { BlinkStore, Machine, WorkDir, TabModel } from '../model/BlinkStores';
+import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
+import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
 
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'BlinkTerminal';
 const BUNDLE: string = 'com.douwantech.blink';
 
-// palette (matches the iOS Blink look)
+// palette
 const TEAL: string = '#3DD9C4';
 const CARD: string = '#141416';
 const HAIRLINE: string = '#2E6E68';
@@ -41,18 +50,20 @@ interface Theme {
   cursor: string;
 }
 
-// A few ready-made terminal themes (applied live to hterm via term_set_colors).
+// iOS fork's 5 bundled themes (Resources/Themes/*.js).
 const THEMES: Theme[] = [
-  { name: 'Blink 暗', bg: '#000000', fg: '#D4D4D4', cursor: 'rgba(61,217,196,0.65)' },
-  { name: 'Solarized', bg: '#002B36', fg: '#93A1A1', cursor: 'rgba(38,139,210,0.75)' },
-  { name: 'Monokai', bg: '#272822', fg: '#F8F8F2', cursor: 'rgba(166,226,46,0.75)' },
-  { name: 'Nord', bg: '#2E3440', fg: '#D8DEE9', cursor: 'rgba(136,192,208,0.75)' },
-  { name: 'WWDC16', bg: '#292C36', fg: '#C7C7C7', cursor: 'rgba(255,255,255,0.6)' },
+  { name: 'Default', bg: '#101010', fg: '#F0F0F0', cursor: 'rgba(63,222,233,0.5)' },
+  { name: 'Solarized', bg: '#002B36', fg: '#839496', cursor: 'rgba(131,148,150,0.4)' },
+  { name: 'Flat', bg: '#1A242F', fg: '#BDC3C7', cursor: 'rgba(229,190,12,0.5)' },
+  { name: 'WWDC 16', bg: '#292C36', fg: '#FFFFFF', cursor: 'rgba(229,190,12,0.5)' },
+  { name: 'Monokai Lt', bg: '#FFFFFF', fg: '#000000', cursor: 'rgba(0,0,0,0.5)' },
 ];
 
 const FONT_SIZES: number[] = [11, 12, 13, 14, 16, 18];
 
-// Bridge object exposed to hterm's JS as window.arkBridge; JS calls post(op,data).
+// what the bottom sheet is currently showing
+type Sheet = 'none' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig';
+
 class JsBridge {
   private cb: (op: string, data: string) => void;
   constructor(cb: (op: string, data: string) => void) {
@@ -66,51 +77,56 @@ class JsBridge {
 @Entry
 @Component
 struct BlinkTerminal {
-  // tailscale (underlying transport)
+  // tailscale transport
   @State tsState: string = '';
   @State tsIP: string = '';
   @State tsConnected: boolean = false;
   @State authKey: string = '';
   @State hostname: string = 'harmony';
-  // blinkd session
-  @State bHost: string = '';
-  @State bPort: string = '7777';
-  @State bToken: string = '';
-  @State bExec: string = '';
-  @State bConnected: boolean = false;
-  // real-time input capture (transparent field over the terminal)
-  @State inputBuf: string = '';
-  // ui
-  @State showConfig: boolean = false;
-  @State kbHeight: number = 0;   // system keyboard height (vp), to float SmartKeys above it
+  // ui reactivity: bump `tick` after any store/pool mutation to force re-render
+  @State tick: number = 0;
+  @State storeReady: boolean = false;
+  @State activeTabId: string = '';
+  @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
   @State cols: number = 52;
   @State rows: number = 30;
-  // iOS-style chrome state
-  @State toolbarOpen: boolean = true;   // right-edge floating dock expanded
-  @State voiceMode: boolean = false;    // show the bottom voice/line composer
-  @State composerText: string = '';     // text in the composer field
-  @State machineName: string = 'mac';   // machine pill label
-  @State tabs: string[] = ['jack:blink']; // session tabs (one real session for now)
-  @State activeTab: number = 0;
-  @State themeIdx: number = 0;          // index into THEMES
-  @State fontSize: number = 13;         // terminal font size (px)
+  @State themeIdx: number = 0;
+  @State fontSize: number = 13;
+  @State kbHeight: number = 0;
+  @State toolbarOpen: boolean = true;
+  @State voiceMode: boolean = false;
+  @State composerText: string = '';
+  @State recording: boolean = false;
+  @State voiceHint: string = '点击下方按钮开始说话';
+  @State inputBuf: string = '';
+  // overlays
+  @State sheet: Sheet = 'none';
+  @State showBrowser: boolean = false;
+  @State browserUrl: string = '';
+  @State showTranscript: boolean = false;
+  @State transcriptText: string = '';
+  // new-tab / machine-form scratch state
+  @State ntMachineId: string = '';
+  @State ntWorkDirId: string = '';
+  @State ntSession: string = '';
+  @State mfEdit: Machine | null = null;
 
-  private client: BlinkdClient = new BlinkdClient();
-  private enc: util.TextEncoder = new util.TextEncoder();
+  private store: BlinkStore = new BlinkStore();
+  private pool: ConnPool = new ConnPool();
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
   private webCtl: webview.WebviewController = new webview.WebviewController();
   private jsBridge: JsBridge = new JsBridge((op: string, data: string): void => { this.onBridge(op, data); });
   private tsPrefs: preferences.Preferences | null = null;
-  private bPrefs: preferences.Preferences | null = null;
   private uiPrefs: preferences.Preferences | null = null;
   private timer: number = -1;
-  private autoBlinkd: boolean = false;
-  private failCount: number = 0;       // consecutive quick reconnect failures (for backoff)
-  private cooldownUntil: number = 0;   // Date.now() ms; auto-reconnect won't fire before this
-  private connectedAt: number = 0;     // Date.now() ms when the current session connected
-  private lastLen: number = 0;      // length of inputBuf already sent
-  private skipNext: boolean = false; // skip the onChange fired by clearing inputBuf
+  private lastLen: number = 0;
+  private skipNext: boolean = false;
+  private recorder: VoiceRecorder = new VoiceRecorder();
+  private transcriptClient: BlinkdClient | null = null;
+  private avatarCache: Map<string, image.PixelMap> = new Map();
+
+  // ---- lifecycle ----
 
   aboutToAppear(): void {
     try {
@@ -118,52 +134,50 @@ struct BlinkTerminal {
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'core self-test: %{public}s', `${e}`);
     }
-    this.client.onData = (bytes: Uint8Array) => {
-      this.writeToTerm(bytes);
-    };
-    this.client.onState = (s: BlinkdState, detail: string) => {
-      this.bConnected = (s === 'connected');
-      if (s === 'connecting') {
-        this.appendLine('· 连接 ' + this.bHost + ' …');
-      } else if (s === 'connected') {
-        this.connectedAt = Date.now();
-      } else if (s === 'closed' || s === 'error') {
-        this.autoBlinkd = false;
-        // Exponential backoff: a shell that exits instantly (or a dead daemon) must not
-        // get hammered every 1.5s poll tick. A session that held >10s counts as healthy
-        // → reset and let the poll reconnect promptly; a quick drop backs off
-        // 3→6→12→24→30s so we stop pounding the daemon.
-        const lasted: number = this.connectedAt > 0 ? (Date.now() - this.connectedAt) : 0;
-        this.connectedAt = 0;
-        if (lasted > 10000) {
-          this.failCount = 0;
-          this.cooldownUntil = 0;
-          this.appendLine('· 连接已断开');
-        } else {
-          this.failCount = this.failCount + 1;
-          const wait: number = Math.min(1500 * Math.pow(2, this.failCount), 30000);
-          this.cooldownUntil = Date.now() + wait;
-          this.appendLine('· 连接已断开，' + Math.round(wait / 1000) + ' 秒后重连');
-        }
-      }
-    };
     this.setupKeyboard();
-    this.loadPrefs();
+    this.boot();
   }
 
   aboutToDisappear(): void {
-    this.client.close();
+    this.pool.closeAll();
     if (this.win !== null) {
       try {
         this.win.off('keyboardHeightChange');
       } catch (e) {
-        // ignore
       }
     }
   }
 
-  // Take over keyboard avoidance so the SmartKeys row sits directly on top of the
-  // system keyboard (like Blink's inputAccessoryView), instead of being covered.
+  private async boot(): Promise<void> {
+    const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.tsPrefs = await preferences.getPreferences(ctx, 'ts_prefs');
+    this.uiPrefs = await preferences.getPreferences(ctx, 'ui_prefs');
+    this.authKey = await this.tsPrefs.get('authKey', '') as string;
+    this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
+    this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
+    this.fontSize = await this.uiPrefs.get('fontSize', 13) as number;
+    await this.store.load(ctx);
+    // pick the active tab (persisted current, else first visible)
+    const vis = this.store.visibleTabs();
+    let cur = this.store.currentTabId;
+    if (this.store.tabById(cur) === null) {
+      cur = vis.length > 0 ? vis[0].id : '';
+    }
+    this.activeTabId = cur;
+    this.storeReady = true;
+    this.refreshTabs();
+    this.preloadAvatars(ctx);
+
+    this.appendLocal('Blink · HarmonyOS — ' + this.store.machines.length + ' 台机器 · ' +
+      this.store.tabs.length + ' 个会话');
+    if (this.authKey.length > 0) {
+      this.appendLocal('· 正在连接 tailscale …');
+      this.tsConnect();
+    } else {
+      this.appendLocal('⚙ 设置里填 tailscale auth key，之后自动连接');
+    }
+  }
+
   private setupKeyboard(): void {
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.NONE);
     window.getLastWindow(this.getUIContext().getHostContext()).then((w: window.Window) => {
@@ -176,138 +190,56 @@ struct BlinkTerminal {
     });
   }
 
-  // Print a local status line into the terminal (used before the shell is up).
-  private appendLine(s: string): void {
-    // @ohos.buffer gives correct UTF-8 bytes for app text. (ArkTS TextEncoder garbled
-    // multi-byte, and passing raw Chinese through runJavaScript mangles it too.) base64
-    // → term_write_b64 is the exact clean path blinkd's shell output already renders with.
-    const b64: string = buffer.from(s + '\r\n', 'utf-8').toString('base64');
-    this.webCtl.runJavaScript(`term_write_b64('${b64}')`);
+  // ---- terminal I/O ----
+
+  // Write a local status line into the active tab's terminal.
+  private appendLocal(s: string): void {
+    if (this.activeTabId.length === 0) {
+      return;
+    }
+    this.writeText(this.activeTabId, s + '\r\n');
   }
 
-  // Push raw bytes into the hterm renderer running in the Web component.
-  private writeToTerm(bytes: Uint8Array): void {
+  private writeText(tabId: string, s: string): void {
+    const b64: string = buffer.from(s, 'utf-8').toString('base64');
+    this.webCtl.runJavaScript(`term_write_b64('${tabId}','${b64}')`);
+  }
+
+  private writeBytes(tabId: string, bytes: Uint8Array): void {
     const b64: string = this.b64.encodeToStringSync(bytes);
-    this.webCtl.runJavaScript(`term_write_b64('${b64}')`);
+    this.webCtl.runJavaScript(`term_write_b64('${tabId}','${b64}')`);
   }
 
-  // Messages from harmony_term.js (window.arkBridge.post).
   private onBridge(op: string, dataStr: string): void {
     if (op === 'sigwinch') {
       try {
         const d = JSON.parse(dataStr) as Record<string, number>;
-        const cols: number = d.cols as number;
-        const rows: number = d.rows as number;
-        if (cols > 0 && rows > 0) {
-          this.cols = cols;
-          this.rows = rows;
-          if (this.bConnected) {
-            this.client.sendResize(rows, cols);
+        const c: number = d.cols as number;
+        const r: number = d.rows as number;
+        if (c > 0 && r > 0) {
+          this.cols = c;
+          this.rows = r;
+          const conn = this.pool.get(this.activeTabId);
+          if (conn !== null && conn.state === 'connected') {
+            conn.client.sendResize(r, c);
           }
         }
       } catch (e) {
       }
     } else if (op === 'ready') {
-      // terminal is up: re-apply the saved theme / font (hterm booted with defaults).
       const th: Theme = THEMES[this.themeIdx];
       this.webCtl.runJavaScript(`term_set_colors('${th.bg}','${th.fg}','${th.cursor}')`);
       this.webCtl.runJavaScript(`term_setFontSize(${this.fontSize})`);
+      // create + show the active tab's layer, then connect it once tailscale is up
+      if (this.activeTabId.length > 0) {
+        this.webCtl.runJavaScript(`term_show('${this.activeTabId}')`);
+      }
     } else if (op === 'error') {
       hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
-    } else {
-      hilog.info(DOMAIN, TAG, 'hterm %{public}s: %{public}s', op, dataStr);
     }
   }
 
-  private async loadPrefs(): Promise<void> {
-    try {
-      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      this.tsPrefs = await preferences.getPreferences(ctx, 'ts_prefs');
-      this.bPrefs = await preferences.getPreferences(ctx, 'blinkd_prefs');
-      this.uiPrefs = await preferences.getPreferences(ctx, 'ui_prefs');
-      this.authKey = await this.tsPrefs.get('authKey', '') as string;
-      this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
-      this.bHost = await this.bPrefs.get('host', '') as string;
-      this.bPort = await this.bPrefs.get('port', '7777') as string;
-      this.bToken = await this.bPrefs.get('token', '') as string;
-      this.bExec = await this.bPrefs.get('exec', '') as string;
-      this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
-      this.fontSize = await this.uiPrefs.get('fontSize', 13) as number;
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'loadPrefs: %{public}s', `${e}`);
-    }
-    this.appendLine('Blink · HarmonyOS — tailscale + blinkd');
-    this.appendLine('');
-    if (this.authKey.length > 0) {
-      this.appendLine('· 正在连接 tailscale …');
-    } else {
-      this.appendLine('⚙ 右上角设置 auth key + blinkd 目标，之后自动连接');
-    }
-    if (this.authKey.length > 0 && !this.tsConnected) {
-      this.tsConnect();
-    }
-  }
-
-  private saveTs(key: string, value: string): void {
-    const p = this.tsPrefs;
-    if (p === null) {
-      return;
-    }
-    p.put(key, value).then(() => p.flush()).catch((e: Object) => {
-      hilog.error(DOMAIN, TAG, 'saveTs: %{public}s', JSON.stringify(e));
-    });
-  }
-
-  private saveB(key: string, value: string): void {
-    const p = this.bPrefs;
-    if (p === null) {
-      return;
-    }
-    p.put(key, value).then(() => p.flush()).catch((e: Object) => {
-      hilog.error(DOMAIN, TAG, 'saveB: %{public}s', JSON.stringify(e));
-    });
-  }
-
-  private saveUi(key: string, value: number): void {
-    const p = this.uiPrefs;
-    if (p === null) {
-      return;
-    }
-    p.put(key, value).then(() => p.flush()).catch((e: Object) => {
-      hilog.error(DOMAIN, TAG, 'saveUi: %{public}s', JSON.stringify(e));
-    });
-  }
-
-  private toast(msg: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: msg, duration: 1500 });
-    } catch (e) {
-    }
-  }
-
-  // Re-attach the blinkd session now (the ⌘R / 🔄 refresh action).
-  private reconnect(): void {
-    this.failCount = 0;
-    this.cooldownUntil = 0;
-    this.autoBlinkd = true;
-    this.bConnect();
-  }
-
-  private applyTheme(i: number): void {
-    if (i < 0 || i >= THEMES.length) {
-      return;
-    }
-    this.themeIdx = i;
-    const th: Theme = THEMES[i];
-    this.webCtl.runJavaScript(`term_set_colors('${th.bg}','${th.fg}','${th.cursor}')`);
-    this.saveUi('themeIdx', i);
-  }
-
-  private applyFont(px: number): void {
-    this.fontSize = px;
-    this.webCtl.runJavaScript(`term_setFontSize(${px})`);
-    this.saveUi('fontSize', px);
-  }
+  // ---- tailscale ----
 
   private filesDir(): string {
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -376,7 +308,6 @@ struct BlinkTerminal {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
       await backgroundTaskManager.stopBackgroundRunning(ctx);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'stopKeepAlive: %{public}s', `${e}`);
     }
   }
 
@@ -392,63 +323,182 @@ struct BlinkTerminal {
         this.tsState = state ? state : 'Starting';
         const ips = j['tailscaleIPs'] as string[];
         this.tsIP = (ips && ips.length > 0) ? ips[0] : '';
-        if (state === 'Running' && !this.bConnected && !this.autoBlinkd
-            && this.bHost.length > 0 && this.bToken.length > 0
-            && Date.now() >= this.cooldownUntil) {
-          this.autoBlinkd = true;
-          this.bConnect();
+        if (state === 'Running' && this.activeTabId.length > 0) {
+          this.attach(this.activeTabId, false);
         }
       } catch (e) {
-        // status file not written yet
       }
     }, 1500);
   }
 
-  private bConnect(): void {
-    const p: number = parseInt(this.bPort);
-    if (this.bHost.trim().length === 0 || !p || this.bToken.trim().length === 0) {
-      this.showConfig = true;
+  // ---- per-tab connection ----
+
+  private attach(tabId: string, force: boolean): void {
+    const tab = this.store.tabById(tabId);
+    if (tab === null) {
       return;
     }
-    this.webCtl.runJavaScript('term_clear()');
+    const m = this.store.machineById(tab.machineId);
+    const ep = this.store.blinkdEndpoint(m);
+    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+      return;
+    }
+    const conn = this.pool.getOrCreate(tabId);
+    if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
+      return;
+    }
+    if (!force && Date.now() < conn.cooldownUntil) {
+      return;
+    }
+    conn.client.onData = (bytes: Uint8Array) => {
+      this.writeBytes(tabId, bytes);
+      if (tabId !== this.activeTabId && !conn.unread) {
+        conn.unread = true;
+        this.refreshTabs();
+      }
+    };
+    conn.client.onState = (st: BlinkdState, detail: string) => {
+      this.onConnState(tabId, st, detail);
+    };
+    this.webCtl.runJavaScript(`term_create('${tabId}')`);
+    conn.state = 'connecting';
+    this.tick++;
+    const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+    conn.client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
+  }
+
+  private onConnState(tabId: string, st: BlinkdState, detail: string): void {
+    const conn = this.pool.get(tabId);
+    if (conn === null) {
+      return;
+    }
+    // (refreshTabs at the end updates the strip's status dot)
+    if (st === 'connecting') {
+      conn.state = 'connecting';
+    } else if (st === 'connected') {
+      conn.state = 'connected';
+      conn.connectedAt = Date.now();
+      conn.everConnected = true;
+    } else if (st === 'closed' || st === 'error') {
+      const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
+      conn.connectedAt = 0;
+      conn.state = st;
+      if (this.store.autoReconnect) {
+        if (lasted > 10000) {
+          conn.failCount = 0;
+          conn.cooldownUntil = 0;
+        } else {
+          conn.failCount++;
+          const wait: number = Math.min(1500 * Math.pow(2, conn.failCount), 30000);
+          conn.cooldownUntil = Date.now() + wait;
+        }
+      }
+    }
+    this.refreshTabs();
+  }
+
+  private connState(tabId: string): ConnUiState {
+    const c = this.pool.get(tabId);
+    return c !== null ? c.state : 'idle';
+  }
+
+  // ---- tab operations ----
+
+  private switchTab(tabId: string): void {
+    if (tabId === this.activeTabId) {
+      return;
+    }
+    this.activeTabId = tabId;
+    this.store.currentTabId = tabId;
+    this.store.saveCurrent();
     this.inputBuf = '';
     this.lastLen = 0;
-    this.client.connect(this.bHost.trim(), p, this.bToken.trim(), this.rows, this.cols, this.bExec.trim());
+    this.webCtl.runJavaScript(`term_show('${tabId}')`);
+    const conn = this.pool.get(tabId);
+    if (conn !== null) {
+      conn.unread = false;
+    }
+    if (this.tsState === 'Running') {
+      this.attach(tabId, false);
+    }
+    this.refreshTabs();
   }
 
-  private bDisconnect(): void {
-    this.client.close();
-    this.bConnected = false;
-    this.autoBlinkd = false;
-    this.failCount = 0;
-    this.cooldownUntil = 0;
+  private newTab(machineId: string, workDirId: string, session: string): void {
+    const t: TabModel = {
+      id: BlinkStore.newId(),
+      machineId: machineId,
+      workDirId: workDirId,
+      tmuxSession: session.length > 0 ? session : 'new',
+      useTmux: true,
+    };
+    this.store.tabs.push(t);
+    this.store.saveTabs();
+    this.sheet = 'none';
+    this.refreshTabs();
+    this.switchTab(t.id);
   }
 
-  // Real-time input: send the delta since we last sent. Growth → send the new
-  // suffix; shrink (backspace) → send DELs. Enter is handled in onSubmit.
+  private closeTab(tabId: string): void {
+    this.pool.remove(tabId);
+    this.webCtl.runJavaScript(`term_dispose('${tabId}')`);
+    const idx: number = this.store.tabs.findIndex((x: TabModel) => x.id === tabId);
+    if (idx >= 0) {
+      this.store.tabs.splice(idx, 1);
+    }
+    this.store.saveTabs();
+    this.refreshTabs();
+    if (this.activeTabId === tabId) {
+      this.activeTabId = '';
+      if (this.visTabs.length > 0) {
+        this.switchTab(this.visTabs[0].id);
+      }
+    }
+  }
+
+  private reconnectActive(): void {
+    const conn = this.pool.get(this.activeTabId);
+    if (conn !== null) {
+      conn.failCount = 0;
+      conn.cooldownUntil = 0;
+      conn.client.close();
+    }
+    this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);
+    this.attach(this.activeTabId, true);
+  }
+
+  // ---- input ----
+
+  private activeClient(): BlinkdClient | null {
+    const c = this.pool.get(this.activeTabId);
+    return (c !== null && c.state === 'connected') ? c.client : null;
+  }
+
   private onInput(v: string): void {
     if (this.skipNext) {
       this.skipNext = false;
       this.lastLen = v.length;
       return;
     }
-    if (!this.bConnected) {
+    const client = this.activeClient();
+    if (client === null) {
       this.lastLen = v.length;
       return;
     }
     if (v.length > this.lastLen) {
-      this.client.sendInput(v.substring(this.lastLen));
+      client.sendInput(v.substring(this.lastLen));
     } else if (v.length < this.lastLen) {
       const dels = new Uint8Array(this.lastLen - v.length);
       dels.fill(0x7f);
-      this.client.sendBytes(dels);
+      client.sendBytes(dels);
     }
     this.lastLen = v.length;
   }
 
   private submitLine(): void {
-    if (this.bConnected) {
-      this.client.sendInput('\n');
+    const client = this.activeClient();
+    if (client !== null) {
+      client.sendInput('\n');
     }
     this.skipNext = true;
     this.inputBuf = '';
@@ -456,25 +506,210 @@ struct BlinkTerminal {
   }
 
   private sendKey(bytes: number[]): void {
-    if (!this.bConnected) {
-      return;
+    const client = this.activeClient();
+    if (client !== null) {
+      client.sendBytes(new Uint8Array(bytes));
     }
-    this.client.sendBytes(new Uint8Array(bytes));
   }
 
-  // Send the composed line to the shell, then clear the composer.
-  private sendComposer(): void {
-    if (this.composerText.length > 0 && this.bConnected) {
-      this.client.sendInput(this.composerText + '\n');
+  // send a full line + enter (Claude cmd / favorite / history / composer)
+  private sendLine(text: string): void {
+    const client = this.activeClient();
+    if (client !== null) {
+      client.sendInput(text);
+      client.sendInput('\n');
+    }
+  }
+
+  private toast(msg: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: msg, duration: 1600 });
+    } catch (e) {
+    }
+  }
+
+  // Reassign the @State tab list so ArkUI re-renders the strip (the store itself
+  // is a plain class ArkUI can't observe). Call after any tab/conn/filter change.
+  private refreshTabs(): void {
+    this.visTabs = this.store.visibleTabs();
+    this.tick++;
+  }
+
+  // ---- appearance ----
+
+  private applyTheme(i: number): void {
+    if (i < 0 || i >= THEMES.length) {
+      return;
+    }
+    this.themeIdx = i;
+    const th: Theme = THEMES[i];
+    this.webCtl.runJavaScript(`term_set_colors('${th.bg}','${th.fg}','${th.cursor}')`);
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('themeIdx', i).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+  }
+
+  private applyFont(px: number): void {
+    this.fontSize = px;
+    this.webCtl.runJavaScript(`term_setFontSize(${px})`);
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('fontSize', px).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+  }
+
+  // ---- voice pipeline ----
+
+  private async startVoice(): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const atm = abilityAccessCtrl.createAtManager();
+      const perms: Permissions[] = ['ohos.permission.MICROPHONE'];
+      await atm.requestPermissionsFromUser(ctx, perms);
+      await this.recorder.start();
+      this.recording = true;
+      this.voiceHint = '正在听 · 点击结束';
+    } catch (e) {
+      this.recording = false;
+      this.toast('录音启动失败: ' + e);
+    }
+  }
+
+  private async stopVoice(): Promise<void> {
+    this.recording = false;
+    this.voiceHint = '识别中…';
+    try {
+      const wav: Uint8Array = await this.recorder.stop();
+      if (wav.length <= 44) {
+        this.voiceHint = '点击下方按钮开始说话';
+        return;
+      }
+      const raw: string = await GlmClient.transcribe(wav, this.store.voice.apiKey);
+      let out: string = raw;
+      if (this.store.voice.enabled && this.store.voice.apiKey.length > 0) {
+        this.voiceHint = '整理中…';
+        try {
+          out = await GlmClient.polish(raw, this.store.voice.apiKey, this.store.voice.baseURL,
+            this.store.voice.model, this.store.history,
+            GlmClient.termEntries(this.store.terms), this.store.corrections);
+          // learn the correction pair (iOS recordCorrection)
+          if (out !== raw && raw.length > 0) {
+            this.store.corrections.push([raw, out]);
+            if (this.store.corrections.length > 60) {
+              this.store.corrections.shift();
+            }
+            this.store.saveCorrections();
+          }
+        } catch (e) {
+          out = raw;
+        }
+      }
+      this.composerText = this.composerText.length > 0 ? (this.composerText + out) : out;
+      this.voiceHint = '点击下方按钮开始说话';
+    } catch (e) {
+      this.voiceHint = '点击下方按钮开始说话';
+      this.toast('识别失败: ' + e);
+    }
+  }
+
+  private commitComposer(): void {
+    const text: string = this.composerText.trim();
+    if (text.length > 0) {
+      this.sendLine(text);
+      // record history (iOS recordHistory)
+      this.store.history.push(text);
+      if (this.store.history.length > 40) {
+        this.store.history.shift();
+      }
+      this.store.saveHistory();
     }
     this.composerText = '';
   }
 
-  ////////////////////////////////////////////////////////////////////////////
-  // UI builders
-  ////////////////////////////////////////////////////////////////////////////
+  private useFavorite(text: string): void {
+    this.sendLine(text);
+    const c = this.store.favoriteCounts[text];
+    this.store.favoriteCounts[text] = (c !== undefined ? c : 0) + 1;
+    this.store.saveFavorites();
+    this.sheet = 'none';
+  }
 
-  // A solid colored round button (right-edge dock).
+  private async pasteClipboard(): Promise<void> {
+    try {
+      const sys = pasteboard.getSystemPasteboard();
+      const data = await sys.getData();
+      const text: string = data.getPrimaryText();
+      if (text && text.length > 0) {
+        this.sendLine(text);
+      } else {
+        this.toast('剪贴板没有文本');
+      }
+    } catch (e) {
+      this.toast('粘贴失败');
+    }
+  }
+
+  private async pickAndUploadImage(): Promise<void> {
+    try {
+      const picker = new photoAccessHelper.PhotoViewPicker();
+      const res = await picker.select({
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE,
+        maxSelectNumber: 1,
+      });
+      if (res.photoUris.length === 0) {
+        return;
+      }
+      this.toast('上传图片中…');
+      const url: string = await Uploader.uploadImage(res.photoUris[0], 'image.png');
+      this.sendLine(url);
+    } catch (e) {
+      this.toast('图片上传失败: ' + e);
+    }
+  }
+
+  // ---- transcript dump (dock 🕐 / panel 📄) ----
+
+  private dumpTranscript(): void {
+    const tab = this.store.tabById(this.activeTabId);
+    if (tab === null) {
+      return;
+    }
+    const m = this.store.machineById(tab.machineId);
+    const ep = this.store.blinkdEndpoint(m);
+    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+      this.toast('机器未配置 blinkd');
+      return;
+    }
+    this.transcriptText = '正在抓取终端内容…';
+    this.showTranscript = true;
+    let buf: string = '';
+    const dec = util.TextDecoder.create('utf-8');
+    const client = new BlinkdClient();
+    this.transcriptClient = client;
+    client.onData = (bytes: Uint8Array) => {
+      buf += dec.decodeToString(bytes, { stream: true });
+    };
+    client.onState = (st: BlinkdState) => {
+      if (st === 'closed' || st === 'error') {
+        this.transcriptText = buf.length > 0 ? buf : '(无内容)';
+      }
+    };
+    const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+    // one-shot: blinkd runs `bash -c "<capture>"` then the connection ends
+    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols,
+      this.store.transcriptCommandForTab(tab));
+    setTimeout(() => {
+      this.transcriptText = buf.length > 0 ? buf : '(无内容)';
+      client.close();
+      this.transcriptClient = null;
+    }, 1600);
+  }
+
+  // ===========================================================================
+  // UI builders
+  // ===========================================================================
+
   @Builder
   circleBtn(glyph: string, bg: string, action: () => void) {
     Stack() {
@@ -484,184 +719,181 @@ struct BlinkTerminal {
     .onClick(action)
   }
 
-  // A small outlined round key (in the accessory rows).
   @Builder
   miniBtn(glyph: string, color: string, action: () => void) {
     Stack() {
       Text(glyph).fontSize(15).fontColor(color)
     }
-    .width(38).height(38).borderRadius(19)
-    .backgroundColor(CARD)
+    .width(38).height(38).borderRadius(19).backgroundColor(CARD)
     .border({ width: 1.5, color: color })
     .onClick(action)
   }
 
-  // A labeled pill key (esc / Clear / Claude …).
   @Builder
   pillKey(label: string, accent: string, action: () => void) {
     Text(label)
-      .fontSize(13)
-      .fontColor(accent)
-      .fontFamily('monospace')
-      .backgroundColor(CARD)
-      .border({ width: 1, color: accent, radius: 9 })
-      .constraintSize({ minWidth: 40 })
-      .height(38)
-      .textAlign(TextAlign.Center)
-      .padding({ left: 9, right: 9 })
-      .onClick(action)
+      .fontSize(13).fontColor(accent).fontFamily('monospace')
+      .backgroundColor(CARD).border({ width: 1, color: accent, radius: 9 })
+      .constraintSize({ minWidth: 40 }).height(38).textAlign(TextAlign.Center)
+      .padding({ left: 9, right: 9 }).onClick(action)
   }
 
-  // An arrow / nav key that sends a byte sequence.
   @Builder
   arrowKey(glyph: string, bytes: number[]) {
     Text(glyph)
-      .fontSize(16)
-      .fontColor(TEAL)
-      .backgroundColor(CARD)
-      .borderRadius(9)
-      .width(40)
-      .height(38)
-      .textAlign(TextAlign.Center)
+      .fontSize(16).fontColor(TEAL).backgroundColor(CARD).borderRadius(9)
+      .width(40).height(38).textAlign(TextAlign.Center)
       .onClick(() => this.sendKey(bytes))
   }
 
-  // ---- top bar: ⚙ | machine pill | 🌙n ✨ ＋ ----
+  // Load real iOS workDir icons (rawfile PNGs) into PixelMaps once. Dynamic
+  // $rawfile() in <Image> is unreliable at runtime, so decode to PixelMap and
+  // feed that instead.
+  private async preloadAvatars(ctx: common.UIAbilityContext): Promise<void> {
+    for (let i = 0; i < this.store.workDirs.length; i++) {
+      const w = this.store.workDirs[i];
+      if (w.hasIcon !== true || this.avatarCache.has(w.id)) {
+        continue;
+      }
+      try {
+        const raw: Uint8Array = await ctx.resourceManager.getRawFileContent('avatars/' + w.id + '.png');
+        const src = image.createImageSource(raw.buffer as ArrayBuffer);
+        const pm = await src.createPixelMap();
+        this.avatarCache.set(w.id, pm);
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, 'avatar %{public}s: %{public}s', w.id, `${e}`);
+      }
+    }
+    this.tick++;
+  }
+
+  // avatar for a workDir (real iOS icon if decoded, else colored initial)
+  @Builder
+  avatar(w: WorkDir | null, active: boolean, size: number) {
+    if (w !== null && this.avatarCache.has(w.id)) {
+      Image(this.avatarCache.get(w.id))
+        .width(size).height(size).borderRadius(size / 2).objectFit(ImageFit.Cover)
+    } else {
+      Stack() {
+        Text(w !== null && w.name.length > 0 ? w.name.substring(0, 1).toUpperCase() : '?')
+          .fontSize(size * 0.5).fontColor('#FFFFFF')
+      }
+      .width(size).height(size).borderRadius(size / 2)
+      .backgroundColor(active ? '#B4694E' : '#5A5A5E')
+    }
+  }
+
   @Builder
   topBar() {
     Row() {
-      Text('⚙')
-        .fontSize(20)
-        .fontColor(TEAL)
-        .onClick(() => { this.showConfig = true; })
+      Text('⚙').fontSize(20).fontColor(TEAL).onClick(() => { this.sheet = 'settings'; })
       Row({ space: 5 }) {
         Text('≡').fontSize(15).fontColor(TEAL)
-        Text(this.machineName).fontSize(14).fontColor(TEAL)
+        Text(this.machineFilterLabel()).fontSize(14).fontColor(TEAL)
       }
       .padding({ left: 12, right: 13, top: 4, bottom: 4 })
-      .border({ width: 1, color: HAIRLINE, radius: 16 })
-      .margin({ left: 12 })
-      .onClick(() => this.toast('机器选择 · 开发中'))
-
+      .border({ width: 1, color: HAIRLINE, radius: 16 }).margin({ left: 12 })
+      .onClick(() => { this.sheet = 'machinePicker'; })
       Blank()
-
       Row({ space: 3 }) {
         Text('🌙').fontSize(16)
-        Text(this.tabs.length.toString()).fontSize(15).fontColor('#B0A8FF')
-      }
-      .onClick(() => this.toast('保持唤醒中'))
+        Text(this.restBadge()).fontSize(15).fontColor('#B0A8FF')
+      }.onClick(() => { this.store.workMode = !this.store.workMode; this.store.saveWorkMode(); this.refreshTabs(); })
       Text('✨').fontSize(17).margin({ left: 12 }).onClick(() => this.toast('AI 助手 · 开发中'))
-      Text('＋').fontSize(24).fontColor(TEAL).margin({ left: 12 })
-        .onClick(() => { this.showConfig = true; })
+      Text('＋').fontSize(24).fontColor(TEAL).margin({ left: 12 }).onClick(() => this.openNewTab())
     }
-    .width('100%')
-    .height(46)
-    .padding({ left: 14, right: 16 })
-    .backgroundColor('#000000')
-  }
-
-  // ---- session tab: avatar chip + user:machine, current highlighted ----
-  @Builder
-  sessionTab(label: string, idx: number) {
-    Row({ space: 6 }) {
-      // avatar chip (warm-tone placeholder, no emoji dependency)
-      Stack() {
-        Text(label.length > 0 ? label.substring(0, 1).toUpperCase() : 'J')
-          .fontSize(10).fontColor('#FFFFFF')
-      }
-      .width(20).height(20).borderRadius(10)
-      .backgroundColor(idx === this.activeTab ? '#B4694E' : '#5A5A5E')
-
-      Text(label)
-        .fontSize(14)
-        .fontColor(idx === this.activeTab ? '#FFFFFF' : '#8A8A8E')
-        .fontFamily('monospace')
-    }
-    .padding({ left: 10, right: 13, top: 6, bottom: 6 })
-    .backgroundColor(idx === this.activeTab ? '#16323A' : Color.Transparent)
-    .border(idx === this.activeTab
-      ? { width: 1, color: HAIRLINE, radius: 11 }
-      : { width: 0, color: Color.Transparent, radius: 11 })
-    .onClick(() => { this.activeTab = idx; })
+    .width('100%').height(46).padding({ left: 14, right: 16 }).backgroundColor('#000000')
   }
 
   @Builder
   tabBar() {
     Scroll() {
       Row({ space: 8 }) {
-        ForEach(this.tabs, (t: string, i: number) => {
-          this.sessionTab(t, i)
-        })
-        Text('＋')
-          .fontSize(18).fontColor('#5A5A5E')
-          .padding({ left: 6, right: 6 })
-          .onClick(() => { this.showConfig = true; })
+        ForEach(this.visTabs, (t: TabModel) => {
+          this.sessionTab(t)
+        }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : ''))
+        Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
+          .onClick(() => this.openNewTab())
       }
       .padding({ left: 14, right: 14 })
     }
-    .scrollable(ScrollDirection.Horizontal)
-    .scrollBar(BarState.Off)
-    .width('100%')
-    .padding({ bottom: 7 })
-    .backgroundColor('#000000')
+    .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+    .width('100%').padding({ bottom: 7 }).backgroundColor('#000000')
   }
 
-  // ---- right-edge floating tool dock (collapsible) ----
+  @Builder
+  sessionTab(t: TabModel) {
+    Row({ space: 6 }) {
+      Text('●').fontSize(8).fontColor(this.dotColor(t.id))
+      this.avatar(this.store.workDirById(t.workDirId), t.id === this.activeTabId, 20)
+      Text(this.store.tabTitle(t))
+        .fontSize(14)
+        .fontColor(t.id === this.activeTabId ? '#FFFFFF' : (this.tabUnread(t) ? TEAL : '#8A8A8E'))
+        .fontFamily('monospace')
+        .decoration({ type: this.store.isResting(t.id) ? TextDecorationType.LineThrough : TextDecorationType.None })
+    }
+    .padding({ left: 10, right: 12, top: 6, bottom: 6 })
+    .backgroundColor(t.id === this.activeTabId ? '#16323A' : Color.Transparent)
+    .border(t.id === this.activeTabId
+      ? { width: 1, color: HAIRLINE, radius: 11 }
+      : { width: 0, color: Color.Transparent, radius: 11 })
+    .onClick(() => this.switchTab(t.id))
+    .gesture(LongPressGesture().onAction(() => this.confirmCloseTab(t)))
+  }
+
+  private tabUnread(t: TabModel): boolean {
+    const c = this.pool.get(t.id);
+    return c !== null && c.unread && t.id !== this.activeTabId;
+  }
+
   @Builder
   floatingDock() {
     Column({ space: 10 }) {
-      // grabber — tap to collapse / expand
-      Row()
-        .width(34).height(5).borderRadius(3).backgroundColor('#5A5A5E')
+      Row().width(34).height(5).borderRadius(3).backgroundColor('#5A5A5E')
         .onClick(() => { this.toolbarOpen = !this.toolbarOpen; })
       if (this.toolbarOpen) {
-        this.circleBtn('🌙', '#8E8E93', () => this.toast('保持唤醒'))
-        this.circleBtn('🌐', '#4A9EFF', () => this.toast('浏览器 · 开发中'))
-        this.circleBtn('⭐', '#FFCC00', () => this.toast('收藏 · 开发中'))
-        this.circleBtn('🕐', '#4A9EFF', () => this.toast('历史 · 开发中'))
-        this.circleBtn('🔄', '#34C759', () => this.reconnect())
-        this.circleBtn('🖥️', '#C74DE0', () => this.toast('投屏 · 开发中'))
-        this.circleBtn('🎤', TEAL, () => { this.voiceMode = !this.voiceMode; })
+        this.circleBtn('🌙', this.store.isResting(this.activeTabId) ? '#5E5CE6' : '#8E8E93',
+          () => this.toggleRest())
+        this.circleBtn('🌐', '#4A5CE6', () => this.openBrowser())
+        this.circleBtn('⭐', '#FFCC00', () => { this.sheet = 'favorites'; })
+        this.circleBtn('🕐', '#4A9EFF', () => this.dumpTranscript())
+        this.circleBtn('🔄', '#34C759', () => this.reconnectActive())
+        this.circleBtn('🖥️', '#C74DE0', () => { this.sheet = 'machinePicker'; })
+        this.circleBtn('🎤', TEAL, () => { this.voiceMode = !this.voiceMode; this.tick++; })
       }
     }
     .padding({ left: 6, right: 6, top: 8, bottom: 10 })
-    .backgroundColor('#1C1C1EE6')
-    .borderRadius(28)
-    .margin({ right: 6 })
+    .backgroundColor('#1C1C1EE6').borderRadius(28).margin({ right: 6 })
   }
 
-  // ---- bottom input accessory: two SmartKeys rows + arrow pad + composer ----
   @Builder
   bottomAccessory() {
     Column({ space: 8 }) {
-      // row 1: dev / ✕ / ⭐ / 🕐  ……  keyboard / collapse
       Row() {
         Row({ space: 7 }) {
-          this.pillKey('dev', '#8A8A8E', () => this.toast('workspace: dev'))
-          this.miniBtn('✕', '#FF3B30', () => { this.voiceMode = false; })
-          this.miniBtn('★', '#FFCC00', () => this.toast('收藏'))
-          this.miniBtn('↺', TEAL, () => this.toast('历史'))
+          this.pillKey('切换', '#8A8A8E', () => this.openNewTab())
+          this.miniBtn('✕', '#FF3B30', () => this.confirmCloseActive())
+          this.miniBtn('★', '#FFCC00', () => { this.sheet = 'favorites'; })
+          this.miniBtn('↺', TEAL, () => { this.sheet = 'history'; })
         }
         Blank()
         Row({ space: 12 }) {
-          Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => this.toast('键盘'))
-          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; })
+          Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; })
+          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; })
         }
-      }
-      .width('100%')
+      }.width('100%')
 
-      // row 2: Clear / ESC / Claude / ⟳  ……  arrow pad
       Row() {
         Row({ space: 7 }) {
-          this.pillKey('Clear', '#8A8A8E', () => this.sendKey([0x0c]))
+          this.pillKey('Clear', '#8A8A8E', () => this.sendKey([0x15]))
           this.pillKey('ESC', '#FF6B6B', () => this.sendKey([0x1b]))
-          this.pillKey('Claude', '#FF9F45', () => { if (this.bConnected) { this.client.sendInput('claude'); } })
-          this.miniBtn('⟳', TEAL, () => this.reconnect())
+          this.pillKey('Claude', '#FF9F45', () => { this.sheet = 'claude'; })
+          this.miniBtn('⟳', TEAL, () => this.reconnectActive())
         }
         Blank()
         Column({ space: 6 }) {
           Row({ space: 6 }) {
-            this.arrowKey('⇤', [0x09])
+            this.arrowKey('⇤', [0x1b, 0x5b, 0x5a])
             this.arrowKey('↑', [0x1b, 0x5b, 0x41])
             Text('').width(40).height(38)
           }
@@ -671,69 +903,50 @@ struct BlinkTerminal {
             this.arrowKey('→', [0x1b, 0x5b, 0x43])
           }
         }
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
+      }.width('100%').alignItems(VerticalAlign.Top)
 
-      // composer (voice / line) — shown in voice mode
       if (this.voiceMode) {
         this.composer()
       }
     }
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 8, bottom: 10 })
-    .backgroundColor('#0A0A0A')
+    .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 10 }).backgroundColor('#0A0A0A')
   }
 
   @Builder
   composer() {
     Column({ space: 10 }) {
       Row({ space: 10 }) {
-        TextInput({ text: this.composerText, placeholder: '点击下方按钮开始说话' })
-          .layoutWeight(1)
-          .height(48)
-          .backgroundColor(CARD)
-          .fontColor('#FFFFFF')
-          .placeholderColor('#6A6A6E')
-          .borderRadius(10)
+        TextInput({ text: this.composerText, placeholder: this.voiceHint })
+          .layoutWeight(1).height(48).backgroundColor(CARD).fontColor('#FFFFFF')
+          .placeholderColor('#6A6A6E').borderRadius(10)
           .onChange((v: string) => { this.composerText = v; })
         Column({ space: 6 }) {
-          Text('↵')
-            .fontSize(18).fontColor('#4A9EFF')
-            .width(60).height(40).textAlign(TextAlign.Center)
+          Text('↵').fontSize(18).fontColor('#4A9EFF').width(60).height(40).textAlign(TextAlign.Center)
             .border({ width: 1, color: '#3A5A8A', radius: 9 })
-            .onClick(() => { if (this.bConnected) { this.client.sendInput('\n'); } })
+            .onClick(() => this.sendKey([0x0d]))
           Row({ space: 10 }) {
-            Text('📄').fontSize(18).onClick(() => this.toast('粘贴 · 开发中'))
-            Text('🖼️').fontSize(18).onClick(() => this.toast('图片 · 开发中'))
-            Text('📥').fontSize(18).onClick(() => this.toast('下载 · 开发中'))
+            Text('📄').fontSize(18).onClick(() => this.dumpTranscript())
+            Text('🖼️').fontSize(18).onClick(() => this.pickAndUploadImage())
+            Text('📥').fontSize(18).onClick(() => this.pasteClipboard())
           }
         }
-      }
-      .width('100%')
+      }.width('100%')
 
       Row({ space: 14 }) {
         Stack() {
-          Text('🎤').fontSize(22)
+          Text(this.recording ? '⏹' : '🎤').fontSize(22)
         }
-        .width(52).height(52).borderRadius(26).backgroundColor('#4A9EFF')
-        .onClick(() => this.toast('语音识别 · 开发中'))
+        .width(52).height(52).borderRadius(26)
+        .backgroundColor(this.recording ? '#FF3B30' : '#4A9EFF')
+        .onClick(() => { this.recording ? this.stopVoice() : this.startVoice(); })
 
-        Text('清空')
-          .fontSize(16).fontColor('#FF6B6B')
-          .layoutWeight(1).textAlign(TextAlign.Center)
+        Text('清空').fontSize(16).fontColor('#FF6B6B').layoutWeight(1).textAlign(TextAlign.Center)
           .onClick(() => { this.composerText = ''; })
-
-        Button('确定 ↵')
-          .fontSize(16).fontColor('#FFFFFF')
-          .backgroundColor('#4A9EFF')
-          .height(48).layoutWeight(1)
-          .onClick(() => this.sendComposer())
-      }
-      .width('100%')
+        Button('确定 ↵').fontSize(16).fontColor('#FFFFFF').backgroundColor('#4A9EFF')
+          .height(48).layoutWeight(1).onClick(() => this.commitComposer())
+      }.width('100%')
     }
-    .width('100%')
-    .padding({ top: 8 })
+    .width('100%').padding({ top: 8 })
   }
 
   build() {
@@ -741,199 +954,515 @@ struct BlinkTerminal {
       Column() {
         this.topBar()
         this.tabBar()
-
-        // ---- full-screen terminal + transparent input capture ----
         Stack({ alignContent: Alignment.TopStart }) {
-          // hterm renderer (real VT: colors, cursor, alt-screen — vim/tmux/claude).
           Web({ src: $rawfile('term/term.html'), controller: this.webCtl })
-            .javaScriptAccess(true)
-            .domStorageAccess(true)
+            .javaScriptAccess(true).domStorageAccess(true)
             .javaScriptProxy({
-              object: this.jsBridge,
-              name: 'arkBridge',
-              methodList: ['post'],
-              controller: this.webCtl,
+              object: this.jsBridge, name: 'arkBridge', methodList: ['post'], controller: this.webCtl,
             })
-            .onPageEnd(() => {
-              this.webCtl.runJavaScript('term_init()');
-            })
-            .backgroundColor('#000000')
-            .width('100%')
-            .height('100%')
-
-          // Transparent field over the whole terminal: tap anywhere to focus and
-          // type straight into the session; the remote echoes what you type.
+            .onPageEnd(() => { this.webCtl.runJavaScript('term_init()'); })
+            .backgroundColor('#000000').width('100%').height('100%')
           TextInput({ text: this.inputBuf })
-            .width('100%')
-            .height('100%')
-            .backgroundColor(Color.Transparent)
-            .fontColor(Color.Transparent)
-            .caretColor(Color.Transparent)
-            .enterKeyType(EnterKeyType.Send)
-            .enableKeyboardOnFocus(true)
-            .onChange((v: string) => this.onInput(v))
-            .onSubmit(() => this.submitLine())
+            .width('100%').height('100%')
+            .backgroundColor(Color.Transparent).fontColor(Color.Transparent).caretColor(Color.Transparent)
+            .enterKeyType(EnterKeyType.Send).enableKeyboardOnFocus(true)
+            .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
         }
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor('#000000')
-
+        .width('100%').layoutWeight(1).backgroundColor('#000000')
         this.bottomAccessory()
       }
-      .width('100%')
-      .height('100%')
-      .backgroundColor('#000000')
+      .width('100%').height('100%').backgroundColor('#000000')
 
-      // ---- right-edge floating dock (pass-through wrapper) ----
+      // floating dock (pass-through)
       Column() {
         this.floatingDock()
       }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.End)
+      .width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.End)
       .hitTestBehavior(HitTestMode.Transparent)
 
-      // ---- settings sheet ----
-      if (this.showConfig) {
-        this.settingsSheet()
+      // sheets / overlays
+      if (this.sheet !== 'none') {
+        this.sheetChrome()
+      }
+      if (this.showBrowser) {
+        this.browserOverlay()
+      }
+      if (this.showTranscript) {
+        this.transcriptOverlay()
       }
     }
-    .width('100%')
-    .height('100%')
-    .backgroundColor('#000000')
-    .padding({ bottom: this.kbHeight })
+    .width('100%').height('100%').backgroundColor('#000000').padding({ bottom: this.kbHeight })
   }
 
-  ////////////////////////////////////////////////////////////////////////////
-  // Settings sheet
-  ////////////////////////////////////////////////////////////////////////////
+  // ---- helpers for dynamic labels ----
+
+  private machineFilterLabel(): string {
+    if (this.store.filterMachineId.length === 0) {
+      return '全部';
+    }
+    const m = this.store.machineById(this.store.filterMachineId);
+    return m !== null ? this.store.machineDisplayName(m) : '全部';
+  }
+
+  private restBadge(): string {
+    return this.store.restingCount().toString();
+  }
+
+  private dotColor(tabId: string): string {
+    const s = this.connState(tabId);
+    if (s === 'connected') {
+      return '#34C759';
+    }
+    if (s === 'connecting') {
+      return '#FF9F45';
+    }
+    if (s === 'error' || s === 'closed') {
+      return '#FF3B30';
+    }
+    return '#666666';
+  }
+
+  private reversedHistory(): string[] {
+    const h = this.store.history;
+    const out: string[] = [];
+    for (let i = h.length - 1; i >= 0; i--) {
+      out.push(h[i]);
+    }
+    return out;
+  }
+
+  private toggleRest(): void {
+    if (this.activeTabId.length === 0) {
+      return;
+    }
+    const now = this.store.toggleResting(this.activeTabId);
+    this.toast(now ? '已标记休息 😴' : '已标记在岗');
+    this.tick++;
+  }
+
+  private openNewTab(): void {
+    const defM: string = this.store.filterMachineId.length > 0 ? this.store.filterMachineId
+      : (this.store.machines.length > 0 ? this.store.machines[0].id : '');
+    this.ntMachineId = defM;
+    this.ntWorkDirId = this.store.workDirs.length > 0 ? this.store.workDirs[0].id : '';
+    this.ntSession = '';
+    this.sheet = 'newTab';
+  }
+
+  private openBrowser(): void {
+    this.browserUrl = this.store.pinned.length > 0 ? this.store.pinned[0].url : 'https://www.baidu.com';
+    this.showBrowser = true;
+  }
+
+  private confirmCloseActive(): void {
+    const t = this.store.tabById(this.activeTabId);
+    if (t !== null) {
+      this.confirmCloseTab(t);
+    }
+  }
+
+  private confirmCloseTab(t: TabModel): void {
+    this.getUIContext().showAlertDialog({
+      title: '关闭会话',
+      message: '关闭「' + this.store.tabTitle(t) + '」？(仅关本机标签，tmux 会话仍在)',
+      primaryButton: { value: '关闭', fontColor: '#FF3B30', action: () => this.closeTab(t.id) },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
+  // ===========================================================================
+  // sheets
+  // ===========================================================================
+
+  // Shared sheet chrome: backdrop + bottom card + grabber + title; the body is
+  // dispatched by this.sheet. (ArkTS @Builder can't take a lambda-as-content
+  // param, so we dispatch instead of passing a closure.)
+  @Builder
+  sheetChrome() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Column().width('100%').height('100%').backgroundColor('#000000CC')
+        .onClick(() => { this.sheet = 'none'; })
+      Column() {
+        Row().width(38).height(5).borderRadius(3).backgroundColor('#3A3A3C').margin({ top: 8, bottom: 10 })
+        Row() {
+          Text(this.sheetTitle()).fontSize(18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF').layoutWeight(1)
+          Text('完成').fontSize(15).fontColor('#0A84FF').onClick(() => { this.sheet = 'none'; })
+        }.width('100%').padding({ left: 16, right: 16, bottom: 8 })
+
+        if (this.sheet === 'settings') {
+          this.settingsBody()
+        } else if (this.sheet === 'machinePicker') {
+          this.machinePickerBody()
+        } else if (this.sheet === 'newTab') {
+          this.newTabBody()
+        } else if (this.sheet === 'claude') {
+          this.listBody(CLAUDE_COMMANDS, (c: string) => { this.sendLine(c); this.sheet = 'none'; })
+        } else if (this.sheet === 'favorites') {
+          this.listBody(this.store.favorites, (c: string) => this.useFavorite(c))
+        } else if (this.sheet === 'history') {
+          this.listBody(this.reversedHistory(), (c: string) => { this.sendLine(c); this.sheet = 'none'; })
+        } else if (this.sheet === 'machineForm') {
+          this.machineFormBody()
+        } else if (this.sheet === 'workDirs') {
+          this.workDirsBody()
+        } else if (this.sheet === 'aiConfig') {
+          this.aiConfigBody()
+        }
+      }
+      .width('100%').height(this.sheetHeight()).backgroundColor('#0C0C0E')
+      .borderRadius({ topLeft: 18, topRight: 18 })
+    }
+    .width('100%').height('100%')
+  }
+
+  private sheetTitle(): string {
+    if (this.sheet === 'settings') {
+      return '设置';
+    } else if (this.sheet === 'machinePicker') {
+      return '选择机器';
+    } else if (this.sheet === 'newTab') {
+      return '新建会话';
+    } else if (this.sheet === 'claude') {
+      return 'Claude 命令';
+    } else if (this.sheet === 'favorites') {
+      return '收藏短语';
+    } else if (this.sheet === 'history') {
+      return '语音历史';
+    } else if (this.sheet === 'machineForm') {
+      return '机器管理';
+    } else if (this.sheet === 'workDirs') {
+      return '工作目录';
+    } else if (this.sheet === 'aiConfig') {
+      return 'AI 配置';
+    }
+    return '';
+  }
+
+  private sheetHeight(): string {
+    if (this.sheet === 'settings') {
+      return '86%';
+    } else if (this.sheet === 'machinePicker') {
+      return '60%';
+    } else if (this.sheet === 'newTab' || this.sheet === 'machineForm' || this.sheet === 'workDirs') {
+      return '82%';
+    } else if (this.sheet === 'aiConfig') {
+      return '70%';
+    }
+    return '70%';
+  }
 
   @Builder
   sectionHeader(title: string) {
-    Text(title)
-      .fontSize(12).fontColor('#8E8E93')
-      .width('100%').textAlign(TextAlign.Start)
+    Text(title).fontSize(12).fontColor('#8E8E93').width('100%').textAlign(TextAlign.Start)
       .margin({ top: 6, bottom: 4 })
   }
 
+  // -- generic list picker (Claude / favorites / history) --
   @Builder
-  settingsSheet() {
-    Stack({ alignContent: Alignment.Bottom }) {
-      // tap-outside backdrop
-      Column()
-        .width('100%').height('100%').backgroundColor('#000000CC')
-        .onClick(() => { this.showConfig = false; })
-      Column() {
-        // grabber + title bar
-        Row()
-          .width(38).height(5).borderRadius(3).backgroundColor('#3A3A3C')
-          .margin({ top: 8, bottom: 10 })
-        Row() {
-          Text('设置').fontSize(18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF').layoutWeight(1)
-          Text('完成').fontSize(15).fontColor('#0A84FF').onClick(() => { this.showConfig = false; })
+  listBody(items: string[], onPick: (s: string) => void) {
+    List() {
+      ForEach(items, (it: string) => {
+        ListItem() {
+          Text(it).fontSize(15).fontColor('#EDEDED').fontFamily('monospace')
+            .width('100%').padding({ top: 13, bottom: 13, left: 4, right: 4 }).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        .width('100%').padding({ left: 16, right: 16, bottom: 8 })
-
-        Scroll() {
-          Column({ space: 8 }) {
-            // ---- Tailscale ----
-            this.sectionHeader('Tailscale')
-            Column({ space: 10 }) {
-              TextInput({ text: this.authKey, placeholder: 'auth key (tskey-…)' })
-                .fontSize(13).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                .onChange((v: string) => { this.authKey = v; this.saveTs('authKey', v); })
-              TextInput({ text: this.hostname, placeholder: '本机名 (hostname)' })
-                .fontSize(13).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                .onChange((v: string) => { this.hostname = v; this.saveTs('hostname', v); })
-              Row({ space: 8 }) {
-                Text(this.tsState.length > 0 ? ('● ' + this.tsState) : '● 未连接')
-                  .fontSize(12).fontColor(this.tsState === 'Running' ? '#34C759' : '#8E8E93').layoutWeight(1)
-                Text(this.tsIP).fontSize(12).fontColor('#8E8E93')
-              }.width('100%')
-              Button(this.tsConnected ? '断开 tailscale' : '连接 tailscale')
-                .fontSize(14).width('100%').height(40)
-                .backgroundColor(this.tsConnected ? '#3A3A3C' : '#34C759')
-                .onClick(() => { this.tsConnected ? this.tsDisconnect() : this.tsConnect(); })
-            }
-            .width('100%').padding(14).backgroundColor('#1C1C1E').borderRadius(12)
-
-            // ---- blinkd target ----
-            this.sectionHeader('blinkd 目标')
-            Column({ space: 10 }) {
-              Row({ space: 8 }) {
-                TextInput({ text: this.bHost, placeholder: 'host 例 100.x.y.z' })
-                  .fontSize(13).layoutWeight(2).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                  .onChange((v: string) => { this.bHost = v; this.saveB('host', v); })
-                TextInput({ text: this.bPort, placeholder: 'port' })
-                  .fontSize(13).layoutWeight(1).type(InputType.Number).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                  .onChange((v: string) => { this.bPort = v; this.saveB('port', v); })
-              }
-              TextInput({ text: this.bToken, placeholder: 'token' })
-                .fontSize(13).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                .onChange((v: string) => { this.bToken = v; this.saveB('token', v); })
-              TextInput({ text: this.bExec, placeholder: '启动命令 (可空 = 登录 zsh)' })
-                .fontSize(13).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
-                .onChange((v: string) => { this.bExec = v; this.saveB('exec', v); })
-              Button(this.bConnected ? '重连 blinkd' : '连接 blinkd')
-                .fontSize(14).width('100%').height(40).backgroundColor('#0A84FF')
-                .onClick(() => { this.showConfig = false; this.reconnect(); })
-            }
-            .width('100%').padding(14).backgroundColor('#1C1C1E').borderRadius(12)
-
-            // ---- appearance ----
-            this.sectionHeader('外观 · 主题')
-            Column({ space: 10 }) {
-              Row({ space: 8 }) {
-                ForEach(THEMES, (th: Theme, i: number) => {
-                  Column({ space: 4 }) {
-                    Stack() {
-                      Text('Aa').fontSize(13).fontColor(th.fg)
-                    }
-                    .width(46).height(38).borderRadius(8).backgroundColor(th.bg)
-                    .border(i === this.themeIdx
-                      ? { width: 2, color: TEAL }
-                      : { width: 1, color: '#3A3A3C' })
-                    Text(th.name).fontSize(10)
-                      .fontColor(i === this.themeIdx ? TEAL : '#8E8E93')
-                  }
-                  .onClick(() => this.applyTheme(i))
-                })
-              }
-              .width('100%').justifyContent(FlexAlign.SpaceBetween)
-
-              Divider().color('#3A3A3C')
-
-              Row() {
-                Text('字号').fontSize(13).fontColor('#FFFFFF').layoutWeight(1)
-                Row({ space: 6 }) {
-                  ForEach(FONT_SIZES, (px: number) => {
-                    Text(px.toString())
-                      .fontSize(13)
-                      .fontColor(px === this.fontSize ? '#000000' : '#C7C7C7')
-                      .backgroundColor(px === this.fontSize ? TEAL : '#2A2A2C')
-                      .width(34).height(32).textAlign(TextAlign.Center).borderRadius(7)
-                      .onClick(() => this.applyFont(px))
-                  })
-                }
-              }.width('100%')
-            }
-            .width('100%').padding(14).backgroundColor('#1C1C1E').borderRadius(12)
-
-            Text('Blink · HarmonyOS')
-              .fontSize(11).fontColor('#5A5A5E').width('100%').textAlign(TextAlign.Center).margin({ top: 8, bottom: 16 })
-          }
-          .width('100%').padding({ left: 16, right: 16 })
-        }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-      }
-      .width('100%')
-      .height('82%')
-      .backgroundColor('#0C0C0E')
-      .borderRadius({ topLeft: 18, topRight: 18 })
+        .onClick(() => onPick(it))
+      }, (it: string, i: number) => it + i)
     }
-    .width('100%')
-    .height('100%')
+    .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
+  }
+
+  // -- machine filter / switch --
+  @Builder
+  machinePickerBody() {
+    List() {
+      ListItem() {
+        Row() {
+          Text('全部机器').fontSize(16).fontColor('#FFFFFF').layoutWeight(1)
+          if (this.store.filterMachineId.length === 0) {
+            Text('✓').fontSize(16).fontColor(TEAL)
+          }
+        }.width('100%').padding({ top: 14, bottom: 14 })
+      }.onClick(() => { this.store.filterMachineId = ''; this.store.saveFilter(); this.sheet = 'none'; this.refreshTabs(); })
+      ForEach(this.store.machines, (m: Machine) => {
+        ListItem() {
+          Row({ space: 10 }) {
+            Column() {
+              Text(this.store.machineDisplayName(m)).fontSize(16).fontColor('#FFFFFF')
+              Text(m.user + '@' + m.host + ' · ' + (m.transport === 'blinkd' ? 'Socket' : 'SSH'))
+                .fontSize(11).fontColor('#8E8E93')
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.store.filterMachineId === m.id) {
+              Text('✓').fontSize(16).fontColor(TEAL)
+            }
+          }.width('100%').padding({ top: 12, bottom: 12 })
+        }.onClick(() => { this.store.filterMachineId = m.id; this.store.saveFilter(); this.sheet = 'none'; this.refreshTabs(); })
+      }, (m: Machine) => m.id)
+    }
+    .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
+  }
+
+  // -- new tab (machine + workDir + session) --
+  @Builder
+  newTabBody() {
+    Scroll() {
+      Column({ space: 8 }) {
+        this.sectionHeader('机器')
+        Column() {
+          ForEach(this.store.machines, (m: Machine) => {
+            Row() {
+              Text(this.store.machineDisplayName(m)).fontSize(15).fontColor('#FFFFFF').layoutWeight(1)
+              if (this.ntMachineId === m.id) {
+                Text('✓').fontSize(15).fontColor(TEAL)
+              }
+            }.width('100%').padding({ top: 11, bottom: 11 }).onClick(() => { this.ntMachineId = m.id; })
+          }, (m: Machine) => m.id)
+        }.padding({ left: 14, right: 14 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('工作目录')
+        Column() {
+          ForEach(this.store.workDirs, (w: WorkDir) => {
+            Row({ space: 10 }) {
+              this.avatar(w, false, 24)
+              Column() {
+                Text(w.name).fontSize(15).fontColor('#FFFFFF')
+                Text(w.path).fontSize(10).fontColor('#8E8E93').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.ntWorkDirId === w.id) {
+                Text('✓').fontSize(15).fontColor(TEAL)
+              }
+            }.width('100%').padding({ top: 9, bottom: 9 }).onClick(() => { this.ntWorkDirId = w.id; })
+          }, (w: WorkDir) => w.id)
+        }.padding({ left: 14, right: 14 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('会话名 (tmux)')
+        TextInput({ text: this.ntSession, placeholder: '留空 = new' })
+          .fontSize(14).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+          .onChange((v: string) => { this.ntSession = v; })
+
+        Button('创建并连接').fontSize(15).width('100%').height(44).backgroundColor('#0A84FF')
+          .margin({ top: 10, bottom: 20 })
+          .onClick(() => this.newTab(this.ntMachineId, this.ntWorkDirId, this.ntSession))
+      }
+      .width('100%').padding({ left: 16, right: 16 })
+    }.layoutWeight(1).scrollBar(BarState.Off)
+  }
+
+  // -- settings (mirrors iOS VoiceSettingsViewController groups) --
+  @Builder
+  settingsBody() {
+    Scroll() {
+      Column({ space: 8 }) {
+        this.sectionHeader('机器')
+        Column({ space: 2 }) {
+          this.navRow('机器管理', this.store.machines.length + ' 台', () => { this.mfEdit = null; this.sheet = 'machineForm'; })
+          this.toggleRow('断线自动重连', this.store.autoReconnect, (v: boolean) => { this.store.autoReconnect = v; this.store.saveAutoReconnect(); })
+        }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('工作目录')
+        Column({ space: 2 }) {
+          this.navRow('工作目录', this.store.workDirs.length + ' 个', () => { this.sheet = 'workDirs'; })
+          this.navRow('员工头像', this.store.people.length + ' 人', () => this.toast('员工：' + this.store.people.join('、')))
+        }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('识别 & AI 整理')
+        Column({ space: 2 }) {
+          this.navRow('识别语言', this.store.locale, () => this.toast('当前 ' + this.store.locale))
+          this.toggleRow('AI 整理', this.store.voice.enabled, (v: boolean) => { this.store.voice.enabled = v; this.store.saveVoice(); })
+          this.navRow('AI 配置', this.store.voice.model, () => { this.sheet = 'aiConfig'; })
+          this.navRow('AI 历史/修正/词表',
+            this.store.history.length + '条 · ' + this.store.corrections.length + '对 · ' +
+            GlmClient.termEntries(this.store.terms).length + '词', () => this.toast('语音学习数据'))
+        }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('Tailscale')
+        Column({ space: 10 }) {
+          TextInput({ text: this.authKey, placeholder: 'auth key (tskey-…)' })
+            .fontSize(13).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+            .onChange((v: string) => { this.authKey = v; this.saveTs('authKey', v); })
+          Row() {
+            Text(this.tsState.length > 0 ? ('● ' + this.tsState) : '● 未连接')
+              .fontSize(12).fontColor(this.tsState === 'Running' ? '#34C759' : '#8E8E93').layoutWeight(1)
+            Text(this.tsIP).fontSize(12).fontColor('#8E8E93')
+          }.width('100%')
+          Button(this.tsConnected ? '断开 tailscale' : '连接 tailscale')
+            .fontSize(14).width('100%').height(40)
+            .backgroundColor(this.tsConnected ? '#3A3A3C' : '#34C759')
+            .onClick(() => { this.tsConnected ? this.tsDisconnect() : this.tsConnect(); })
+        }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('外观 · 主题')
+        Column({ space: 10 }) {
+          Row() {
+            ForEach(THEMES, (th: Theme, i: number) => {
+              Column({ space: 4 }) {
+                Stack() {
+                  Text('Aa').fontSize(13).fontColor(th.fg)
+                }.width(46).height(38).borderRadius(8).backgroundColor(th.bg)
+                .border(i === this.themeIdx ? { width: 2, color: TEAL } : { width: 1, color: '#3A3A3C' })
+                Text(th.name).fontSize(9).fontColor(i === this.themeIdx ? TEAL : '#8E8E93')
+              }.onClick(() => this.applyTheme(i))
+            }, (th: Theme) => th.name)
+          }.width('100%').justifyContent(FlexAlign.SpaceBetween)
+          Divider().color('#3A3A3C')
+          Row() {
+            Text('字号').fontSize(13).fontColor('#FFFFFF').layoutWeight(1)
+            Row({ space: 6 }) {
+              ForEach(FONT_SIZES, (px: number) => {
+                Text(px.toString()).fontSize(13)
+                  .fontColor(px === this.fontSize ? '#000000' : '#C7C7C7')
+                  .backgroundColor(px === this.fontSize ? TEAL : '#2A2A2C')
+                  .width(34).height(32).textAlign(TextAlign.Center).borderRadius(7)
+                  .onClick(() => this.applyFont(px))
+              }, (px: number) => px.toString())
+            }
+          }.width('100%')
+        }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
+
+        Text('Blink · HarmonyOS').fontSize(11).fontColor('#5A5A5E').width('100%')
+          .textAlign(TextAlign.Center).margin({ top: 8, bottom: 20 })
+      }.width('100%').padding({ left: 16, right: 16 })
+    }.layoutWeight(1).scrollBar(BarState.Off)
+  }
+
+  @Builder
+  navRow(label: string, detail: string, action: () => void) {
+    Row() {
+      Text(label).fontSize(15).fontColor('#FFFFFF').layoutWeight(1)
+      Text(detail).fontSize(13).fontColor('#8E8E93')
+      Text(' ›').fontSize(16).fontColor('#8E8E93')
+    }.width('100%').padding({ top: 12, bottom: 12 }).onClick(action)
+  }
+
+  @Builder
+  toggleRow(label: string, on: boolean, onChange: (v: boolean) => void) {
+    Row() {
+      Text(label).fontSize(15).fontColor('#FFFFFF').layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: on }).selectedColor('#34C759')
+        .onChange((v: boolean) => { onChange(v); this.tick++; })
+    }.width('100%').padding({ top: 8, bottom: 8 })
+  }
+
+  // -- machine list (delete; add/edit via seeded config) --
+  @Builder
+  machineFormBody() {
+    Scroll() {
+      Column({ space: 10 }) {
+        ForEach(this.store.machines, (m: Machine) => {
+          Row({ space: 10 }) {
+            Column() {
+              Text(this.store.machineDisplayName(m)).fontSize(15).fontColor('#FFFFFF')
+              Text(m.user + '@' + m.host + '  ·  ' + (m.transport === 'blinkd' ? 'Socket ' + (m.blinkdHost !== undefined ? m.blinkdHost : '') : 'SSH'))
+                .fontSize(11).fontColor('#8E8E93')
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Text('删除').fontSize(13).fontColor('#FF3B30').onClick(() => this.deleteMachine(m))
+          }.width('100%').padding({ top: 10, bottom: 10, left: 14, right: 14 })
+          .backgroundColor('#1C1C1E').borderRadius(10)
+        }, (m: Machine) => m.id + this.tick)
+        Text('这些机器已从你 iOS 的配置同步过来。连接方式 Socket=blinkd，SSH 走 mac 中转。')
+          .fontSize(11).fontColor('#6A6A6E').width('100%').margin({ top: 6, bottom: 20 })
+      }.width('100%').padding({ left: 16, right: 16 })
+    }.layoutWeight(1).scrollBar(BarState.Off)
+  }
+
+  @Builder
+  workDirsBody() {
+    List() {
+      ForEach(this.store.workDirs, (w: WorkDir) => {
+        ListItem() {
+          Row({ space: 10 }) {
+            this.avatar(w, false, 30)
+            Column() {
+              Text(w.name).fontSize(15).fontColor('#FFFFFF')
+              Text(w.path).fontSize(11).fontColor('#8E8E93').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          }.width('100%').padding({ top: 10, bottom: 10 })
+        }
+      }, (w: WorkDir) => w.id)
+    }.layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
+  }
+
+  @Builder
+  aiConfigBody() {
+    Column({ space: 12 }) {
+      this.sectionHeader('GLM API Key')
+      TextInput({ text: this.store.voice.apiKey, placeholder: 'API Key' })
+        .fontSize(13).type(InputType.Password).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+        .onChange((v: string) => { this.store.voice.apiKey = v; this.store.saveVoice(); })
+      this.sectionHeader('模型')
+      TextInput({ text: this.store.voice.model, placeholder: 'glm-4-flashx' })
+        .fontSize(13).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+        .onChange((v: string) => { this.store.voice.model = v; this.store.saveVoice(); })
+      this.sectionHeader('Base URL')
+      TextInput({ text: this.store.voice.baseURL, placeholder: 'https://…/chat/completions' })
+        .fontSize(12).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+        .onChange((v: string) => { this.store.voice.baseURL = v; this.store.saveVoice(); })
+      Text('语音识别 glm-asr-2512，整理用上面的模型。都走智谱 bigmodel。')
+        .fontSize(11).fontColor('#6A6A6E').width('100%').margin({ top: 4 })
+    }.width('100%').padding({ left: 16, right: 16 }).alignItems(HorizontalAlign.Start)
+  }
+
+  // ---- browser overlay ----
+  @Builder
+  browserOverlay() {
+    Column() {
+      Row({ space: 10 }) {
+        Text('‹ 关闭').fontSize(15).fontColor(TEAL).onClick(() => { this.showBrowser = false; })
+        Text(this.browserUrl).fontSize(12).fontColor('#8E8E93').layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').height(44).padding({ left: 14, right: 14 }).backgroundColor('#1C1C1E')
+      Web({ src: this.browserUrl, controller: new webview.WebviewController() })
+        .width('100%').layoutWeight(1)
+    }
+    .width('100%').height('100%').backgroundColor('#000000')
+  }
+
+  // ---- transcript overlay ----
+  @Builder
+  transcriptOverlay() {
+    Column() {
+      Row() {
+        Text('终端内容').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF').layoutWeight(1)
+        Text('复制').fontSize(14).fontColor(TEAL).margin({ right: 16 }).onClick(() => this.copyTranscript())
+        Text('关闭').fontSize(14).fontColor('#0A84FF').onClick(() => { this.showTranscript = false; })
+      }.width('100%').height(48).padding({ left: 16, right: 16 })
+      Scroll() {
+        Text(this.transcriptText).fontSize(12).fontColor('#D4D4D4').fontFamily('monospace')
+          .width('100%').textAlign(TextAlign.Start).padding(12)
+      }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+    }
+    .width('100%').height('100%').backgroundColor('#0C0C0E')
+  }
+
+  private copyTranscript(): void {
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.transcriptText);
+    pasteboard.getSystemPasteboard().setData(data).then(() => this.toast('已复制')).catch(() => {});
+  }
+
+  private deleteMachine(m: Machine): void {
+    this.getUIContext().showAlertDialog({
+      title: '删除机器',
+      message: '删除「' + this.store.machineDisplayName(m) + '」？',
+      primaryButton: {
+        value: '删除', fontColor: '#FF3B30', action: () => {
+          const i = this.store.machines.findIndex((x: Machine) => x.id === m.id);
+          if (i >= 0) {
+            this.store.machines.splice(i, 1);
+            this.store.saveMachines();
+            this.tick++;
+          }
+        },
+      },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
+  private saveTs(key: string, value: string): void {
+    const p = this.tsPrefs;
+    if (p === null) {
+      return;
+    }
+    p.put(key, value).then((): Promise<void> => p.flush()).catch(() => {});
   }
 }

@@ -54,6 +54,11 @@
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
         "reason": "$string:perm_internet",
         "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+      },
+      {
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:perm_mic",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
       }
     ]
   }
