@@ -939,6 +939,17 @@ struct BlinkTerminal {
     }
   }
 
+  // Explicitly raise the soft keyboard (double-tap the terminal). Terminal taps no longer
+  // auto-focus the input (focusOnTouch(false)); requestFocus + enableKeyboardOnFocus(true)
+  // is the deliberate way back in.
+  private showKeyboard(): void {
+    try {
+      this.getUIContext().getFocusController().requestFocus('termInput');
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'requestFocus: %{public}s', `${e}`);
+    }
+  }
+
   // Bottom input panel is hidden by default (matches iOS voiceInputAutoShow): the
   // floating mic button opens it into voice mode; ⌄ collapses it fully again so the
   // terminal goes full-screen.
@@ -1105,23 +1116,36 @@ struct BlinkTerminal {
             .onPageEnd(() => { this.webCtl.runJavaScript('term_init()'); })
             .backgroundColor('#000000').width('100%').height('100%')
           TextInput({ text: this.inputBuf })
+            .id('termInput')
             .width('100%').height('100%')
             .backgroundColor(Color.Transparent).fontColor(Color.Transparent).caretColor(Color.Transparent)
-            .enterKeyType(EnterKeyType.Send).enableKeyboardOnFocus(true)
+            .enterKeyType(EnterKeyType.Send)
+            // A tap must NOT pop the keyboard (it covers the terminal you're reading):
+            // focusOnTouch(false) stops touch from focusing the field; enableKeyboardOnFocus(true)
+            // still lets an explicit double-tap → requestFocus raise it. Mirrors iOS
+            // canTerminalBecomeFirstResponder gating + interactive keyboard dismiss.
+            .focusOnTouch(false).enableKeyboardOnFocus(true)
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
-        // Left/right swipe across the terminal cycles sessions. Horizontal-only pan so
-        // taps (keyboard focus) and vertical drags fall through; priorityGesture wins
-        // over the transparent input layer that sits on top of the Web view.
+        // Terminal gestures (priority over the transparent input layer on top of the Web):
+        //   • horizontal swipe → cycle sessions
+        //   • vertical swipe   → dismiss the soft keyboard (iOS keyboardDismissMode=.interactive)
+        //   • double-tap       → raise the keyboard (a single tap deliberately does NOT)
         .priorityGesture(
-          PanGesture({ direction: PanDirection.Horizontal, distance: 30 })
-            .onActionEnd((e: GestureEvent) => {
-              if (Math.abs(e.offsetX) < 36) {
-                return;
-              }
-              this.swipeTab(e.offsetX < 0 ? 1 : -1);
-            }),
+          GestureGroup(GestureMode.Parallel,
+            PanGesture({ direction: PanDirection.Horizontal, distance: 30 })
+              .onActionEnd((e: GestureEvent) => {
+                if (Math.abs(e.offsetX) < 36) {
+                  return;
+                }
+                this.swipeTab(e.offsetX < 0 ? 1 : -1);
+              }),
+            PanGesture({ direction: PanDirection.Vertical, distance: 30 })
+              .onActionStart(() => this.hideKeyboard()),
+            TapGesture({ count: 2 })
+              .onAction(() => this.showKeyboard()),
+          ),
         )
         if (this.panelOpen) {
           this.bottomAccessory()
