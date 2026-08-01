@@ -64,6 +64,11 @@ function _applyPrefs(t) {
   p.set('enable-bold', true);
   p.set('cursor-blink', true);
   p.set('audible-bell-sound', '');
+  // In a full-screen app (alt-screen + application-cursor: vim/less/man/tmux copy-mode)
+  // a scroll-wheel turns into ↑/↓ arrow keys, so a drag scrolls those apps. A plain
+  // shell still scrolls the hterm scrollback; an app that enabled mouse reporting still
+  // gets the wheel forwarded. Mirrors Blink/iTerm behaviour.
+  p.set('scroll-wheel-may-send-arrow-keys', true);
 }
 
 // Create a terminal layer for session `id` (no-op if it exists).
@@ -167,6 +172,40 @@ function term_setFontSize(n) {
 }
 
 function term_scrollBottom() { if (activeId && terms[activeId]) { terms[activeId].scrollEnd(); } }
+
+// --- drag → scroll, routed by which screen the terminal is on ---
+// term_wheel(dyPx): finger-down (dyPx>0) reveals older lines.
+//  • Full-screen app (alt-screen: tmux/vim/less/claude-in-tmux): send SGR mouse-wheel
+//    sequences straight to the app. blinkd restores the screen on reconnect but never
+//    replays tmux's mouse-mode DECSET, so hterm's mouseReport reads stale 0 — we can't
+//    rely on hterm forwarding. Sending the wheel ourselves lets a mouse-on app (tmux
+//    mouse on) scroll its OWN history (copy-mode). btn 64 = wheel-up, 65 = wheel-down.
+//  • Plain shell (primary screen): dispatch a real wheel event so hterm scrolls its
+//    scrollback buffer.
+function term_wheel(dyPx) {
+  var t = activeId ? terms[activeId] : null;
+  if (!t || !t.scrollPort_ || !t.scrollPort_.screen_) { return; }
+  var onAlt = (typeof t.isPrimaryScreen === 'function') && !t.isPrimaryScreen();
+  var ch = (t.scrollPort_.characterSize && t.scrollPort_.characterSize.height) || 16;
+  var lines = Math.max(1, Math.round(Math.abs(dyPx) / ch));
+  if (onAlt) {
+    // hterm's io is NOT wired to blinkd (harmony captures keys in ArkTS, not hterm),
+    // so t.io.sendString would go nowhere. Hand the wheel to ArkTS to send the SGR
+    // mouse bytes over the blinkd connection instead. btn 64 = up (older), 65 = down.
+    var btn = dyPx > 0 ? 64 : 65;
+    _post('wheel', { btn: btn, lines: lines });
+  } else {
+    // Plain shell: hterm owns the scrollback, so dispatch a real wheel locally.
+    var el = t.scrollPort_.screen_;
+    try {
+      var ev = new WheelEvent('wheel', {
+        deltaY: -dyPx, deltaMode: 0, clientX: 100, clientY: 200,
+        bubbles: true, cancelable: true,
+      });
+      el.dispatchEvent(ev);
+    } catch (e3) {}
+  }
+}
 
 // Live theme switch from the settings UI: recolor every session.
 function term_set_colors(bg, fg, cur) {

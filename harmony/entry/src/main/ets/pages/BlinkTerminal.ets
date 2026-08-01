@@ -127,6 +127,8 @@ struct BlinkTerminal {
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
   private tabScroller: Scroller = new Scroller();   // scroll the tab strip to the active tab on switch/swipe
+  private panMode: string = '';   // active terminal drag axis: '' undecided | 'h' switch tab | 'v' scroll
+  private lastPanY: number = 0;   // last vertical offset seen this drag (for incremental scroll)
   private lastTabPerMachine: Record<string, string> = {};   // each machine's last-active tab (iOS _lastKeyPerMachine)
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
@@ -255,6 +257,30 @@ struct BlinkTerminal {
       }
     } else if (op === 'error') {
       hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
+    } else if (op === 'wheel') {
+      this.sendWheel(dataStr);
+    }
+  }
+
+  // A vertical drag over a full-screen app (alt-screen) becomes SGR mouse-wheel bytes
+  // sent over the blinkd connection — hterm's io isn't wired to blinkd, so JS asks us
+  // to send. tmux(mouse on) forwards the wheel to the app (claude), which scrolls its
+  // own history. btn 64 = wheel-up (older lines), 65 = wheel-down.
+  private sendWheel(dataStr: string): void {
+    const client = this.activeClient();
+    if (client === null) {
+      return;
+    }
+    try {
+      const d = JSON.parse(dataStr) as Record<string, number>;
+      const btn: number = d.btn as number;
+      const lines: number = Math.min(d.lines as number, 8);
+      let s: string = '';
+      for (let i = 0; i < lines; i++) {
+        s += `\x1b[<${btn};40;10M`;
+      }
+      client.sendInput(s);
+    } catch (e) {
     }
   }
 
@@ -989,6 +1015,27 @@ struct BlinkTerminal {
     this.swipeTab(e.offsetX < 0 ? 1 : -1);
   }
 
+  // The single terminal PanGesture: lock the axis on the first update past a small
+  // threshold, then a vertical drag live-scrolls (1:1 with the finger) while a
+  // horizontal one is left for onActionEnd → onHSwipe.
+  private onTermPan(e: GestureEvent): void {
+    if (this.panMode === '') {
+      const ax: number = Math.abs(e.offsetX);
+      const ay: number = Math.abs(e.offsetY);
+      if (ax > ay && ax > 18) {
+        this.panMode = 'h';
+      } else if (ay >= ax && ay > 12) {
+        this.panMode = 'v';
+      }
+    }
+    if (this.panMode === 'v') {
+      const dyVp: number = e.offsetY - this.lastPanY;
+      this.lastPanY = e.offsetY;
+      const dyPx: number = this.getUIContext().vp2px(dyVp);
+      this.webCtl.runJavaScript(`term_wheel(${dyPx})`);
+    }
+  }
+
   // Bottom input panel is hidden by default (matches iOS voiceInputAutoShow): the
   // floating mic button opens it into voice mode; ⌄ collapses it fully again so the
   // terminal goes full-screen.
@@ -1167,14 +1214,19 @@ struct BlinkTerminal {
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
-        // Terminal gestures (priority over the transparent input layer on top of the Web):
-        //   • horizontal swipe → cycle sessions
-        //   • double-tap       → toggle the soft keyboard (up→dismiss, down→raise)
-        // Vertical drags are deliberately NOT claimed, so the terminal keeps its own scroll.
+        // Terminal gestures — one direction-free PanGesture, disambiguated by hand,
+        // so ArkUI (not the Web) owns every drag. Letting touches reach hterm made it
+        // preventDefault them (ScrollPort.onTouch_) and killed even the swipe, so we
+        // keep all touch in ArkUI: the first update past a threshold locks the axis —
+        // horizontal → cycle sessions on release; vertical → live-scroll the scrollback
+        // by driving x-screen.scrollTop from JS (term_scroll_move). Double-tap toggles
+        // the soft keyboard; a plain tap does nothing (never auto-pops the keyboard).
         .priorityGesture(
           GestureGroup(GestureMode.Parallel,
-            PanGesture({ direction: PanDirection.Horizontal, distance: 30 })
-              .onActionEnd((e: GestureEvent) => this.onHSwipe(e)),
+            PanGesture({ distance: 12 })
+              .onActionStart(() => { this.panMode = ''; this.lastPanY = 0; })
+              .onActionUpdate((e: GestureEvent) => this.onTermPan(e))
+              .onActionEnd((e: GestureEvent) => { if (this.panMode === 'h') { this.onHSwipe(e); } }),
             TapGesture({ count: 2 })
               .onAction(() => { this.kbHeight > 0 ? this.hideKeyboard() : this.showKeyboard(); })),
         )
