@@ -127,6 +127,7 @@ struct BlinkTerminal {
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
   private tabScroller: Scroller = new Scroller();   // scroll the tab strip to the active tab on switch/swipe
+  private lastTabPerMachine: Record<string, string> = {};   // each machine's last-active tab (iOS _lastKeyPerMachine)
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
   private webCtl: webview.WebviewController = new webview.WebviewController();
@@ -176,7 +177,9 @@ struct BlinkTerminal {
     // pick the active tab (persisted current, else first visible)
     const vis = this.store.visibleTabs();
     let cur = this.store.currentTabId;
-    if (this.store.tabById(cur) === null) {
+    // current must sit within the visible set (machine filter + rest hiding), else the
+    // terminal boots blank on a filtered-out tab — fall back to the first visible one.
+    if (vis.findIndex((t: TabModel) => t.id === cur) < 0) {
       cur = vis.length > 0 ? vis[0].id : '';
     }
     this.activeTabId = cur;
@@ -585,6 +588,34 @@ struct BlinkTerminal {
     this.restCount = this.store.restingCount();
     this.filterLabel = this.machineFilterLabel();
     this.tick++;
+  }
+
+  // Switch the machine filter AND move onto that machine's session — iOS _applyMachineFilter.
+  // Picking a machine used to only filter the strip; the terminal stayed on the old machine's
+  // tab (which then got filtered out, leaving nothing highlighted). Now: remember the tab we're
+  // leaving, apply the filter, then land on that machine's remembered tab (else the current tab
+  // if still visible, else its first). switchTab handles the reconnect + strip scroll.
+  private applyMachineFilter(machineId: string): void {
+    const curTab = this.store.tabById(this.activeTabId);
+    if (curTab !== null) {
+      this.lastTabPerMachine[curTab.machineId] = this.activeTabId;
+    }
+    this.store.filterMachineId = machineId;
+    this.store.saveFilter();
+    this.refreshTabs();
+    const filtered = this.visTabs;
+    let target: string = '';
+    const remembered: string | undefined = machineId.length > 0 ? this.lastTabPerMachine[machineId] : undefined;
+    if (remembered !== undefined && filtered.some((t: TabModel) => t.id === remembered)) {
+      target = remembered;
+    } else if (filtered.some((t: TabModel) => t.id === this.activeTabId)) {
+      target = this.activeTabId;
+    } else if (filtered.length > 0) {
+      target = filtered[0].id;
+    }
+    if (target.length > 0 && target !== this.activeTabId) {
+      this.switchTab(target);
+    }
   }
 
   // ---- appearance ----
@@ -1413,7 +1444,7 @@ struct BlinkTerminal {
             Text('✓').fontSize(16).fontColor(TEAL)
           }
         }.width('100%').padding({ top: 14, bottom: 14 })
-      }.onClick(() => { this.store.filterMachineId = ''; this.store.saveFilter(); this.sheet = 'none'; this.refreshTabs(); })
+      }.onClick(() => { this.sheet = 'none'; this.applyMachineFilter(''); })
       ForEach(this.store.machines, (m: Machine) => {
         ListItem() {
           Row({ space: 10 }) {
@@ -1426,7 +1457,7 @@ struct BlinkTerminal {
               Text('✓').fontSize(16).fontColor(TEAL)
             }
           }.width('100%').padding({ top: 12, bottom: 12 })
-        }.onClick(() => { this.store.filterMachineId = m.id; this.store.saveFilter(); this.sheet = 'none'; this.refreshTabs(); })
+        }.onClick(() => { this.sheet = 'none'; this.applyMachineFilter(m.id); })
       }, (m: Machine) => m.id)
     }
     .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
