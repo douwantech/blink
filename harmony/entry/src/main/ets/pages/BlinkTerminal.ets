@@ -981,6 +981,14 @@ struct BlinkTerminal {
     }
   }
 
+  // Horizontal terminal swipe → cycle sessions (shared by both gesture variants).
+  private onHSwipe(e: GestureEvent): void {
+    if (Math.abs(e.offsetX) < 36) {
+      return;
+    }
+    this.swipeTab(e.offsetX < 0 ? 1 : -1);
+  }
+
   // Bottom input panel is hidden by default (matches iOS voiceInputAutoShow): the
   // floating mic button opens it into voice mode; ⌄ collapses it fully again so the
   // terminal goes full-screen.
@@ -1161,22 +1169,14 @@ struct BlinkTerminal {
         .width('100%').layoutWeight(1).backgroundColor('#000000')
         // Terminal gestures (priority over the transparent input layer on top of the Web):
         //   • horizontal swipe → cycle sessions
-        //   • vertical swipe   → dismiss the soft keyboard (iOS keyboardDismissMode=.interactive)
-        //   • double-tap       → raise the keyboard (a single tap deliberately does NOT)
+        //   • double-tap       → toggle the soft keyboard (up→dismiss, down→raise)
+        // Vertical drags are deliberately NOT claimed, so the terminal keeps its own scroll.
         .priorityGesture(
           GestureGroup(GestureMode.Parallel,
             PanGesture({ direction: PanDirection.Horizontal, distance: 30 })
-              .onActionEnd((e: GestureEvent) => {
-                if (Math.abs(e.offsetX) < 36) {
-                  return;
-                }
-                this.swipeTab(e.offsetX < 0 ? 1 : -1);
-              }),
-            PanGesture({ direction: PanDirection.Vertical, distance: 30 })
-              .onActionStart(() => this.hideKeyboard()),
+              .onActionEnd((e: GestureEvent) => this.onHSwipe(e)),
             TapGesture({ count: 2 })
-              .onAction(() => this.showKeyboard()),
-          ),
+              .onAction(() => { this.kbHeight > 0 ? this.hideKeyboard() : this.showKeyboard(); })),
         )
         if (this.panelOpen) {
           this.bottomAccessory()
