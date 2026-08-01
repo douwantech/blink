@@ -335,6 +335,17 @@ export class BlinkStore {
     return i < 0;
   }
 
+  // Explicit set (rest-panel switches): true = resting/hidden, false = on-duty/shown.
+  setResting(tabId: string, resting: boolean): void {
+    const i: number = this.resting.indexOf(tabId);
+    if (resting && i < 0) {
+      this.resting.push(tabId);
+    } else if (!resting && i >= 0) {
+      this.resting.splice(i, 1);
+    }
+    this.saveResting();
+  }
+
   restingCount(): number {
     let n: number = 0;
     for (let i = 0; i < this.tabs.length; i++) {
@@ -345,7 +356,9 @@ export class BlinkStore {
     return n;
   }
 
-  // Tabs visible under the current machine filter (+ work mode hides resting).
+  // Tabs visible in the strip. Resting (😴) tabs are ALWAYS hidden — iOS keeps
+  // _workModeOn constant-true (SpaceController.swift:525) — except the current tab,
+  // which is never hidden (_hiddenByWorkMode:1616) so the strip is never left empty.
   visibleTabs(): TabModel[] {
     const out: TabModel[] = [];
     for (let i = 0; i < this.tabs.length; i++) {
@@ -353,7 +366,7 @@ export class BlinkStore {
       if (this.filterMachineId.length > 0 && t.machineId !== this.filterMachineId) {
         continue;
       }
-      if (this.workMode && this.isResting(t.id)) {
+      if (this.isResting(t.id) && t.id !== this.currentTabId) {
         continue;
       }
       out.push(t);

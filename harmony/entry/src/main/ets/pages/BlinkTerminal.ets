@@ -59,10 +59,10 @@ const THEMES: Theme[] = [
   { name: 'Monokai Lt', bg: '#FFFFFF', fg: '#000000', cursor: 'rgba(0,0,0,0.5)' },
 ];
 
-const FONT_SIZES: number[] = [11, 12, 13, 14, 16, 18];
+const FONT_SIZES: number[] = [10, 11, 12, 13, 14, 16, 18];
 
 // what the bottom sheet is currently showing
-type Sheet = 'none' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig';
+type Sheet = 'none' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel';
 
 class JsBridge {
   private cb: (op: string, data: string) => void;
@@ -88,10 +88,12 @@ struct BlinkTerminal {
   @State storeReady: boolean = false;
   @State activeTabId: string = '';
   @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
+  @State restCount: number = 0;      // resting-session count on the top-bar 🌙 (topBar() reads no other @State)
+  @State filterLabel: string = '全部'; // machine-filter pill text, same reason
   @State cols: number = 52;
   @State rows: number = 30;
   @State themeIdx: number = 0;
-  @State fontSize: number = 13;
+  @State fontSize: number = 11;
   @State kbHeight: number = 0;
   @State toolbarOpen: boolean = true;
   @State panelOpen: boolean = false;   // bottom input panel — hidden until the mic button opens it (iOS voiceInputAutoShow)
@@ -124,6 +126,7 @@ struct BlinkTerminal {
 
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
+  private tabScroller: Scroller = new Scroller();   // scroll the tab strip to the active tab on switch/swipe
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
   private webCtl: webview.WebviewController = new webview.WebviewController();
@@ -166,7 +169,7 @@ struct BlinkTerminal {
     this.authKey = await this.tsPrefs.get('authKey', '') as string;
     this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
     this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
-    this.fontSize = await this.uiPrefs.get('fontSize', 13) as number;
+    this.fontSize = await this.uiPrefs.get('fontSize', 11) as number;
     this.dockX = await this.uiPrefs.get('dockX', -1) as number;
     this.dockY = await this.uiPrefs.get('dockY', -1) as number;
     await this.store.load(ctx);
@@ -435,6 +438,16 @@ struct BlinkTerminal {
       this.attach(tabId, false);
     }
     this.refreshTabs();
+    this.scrollToActiveTab();
+  }
+
+  // Keep the active tab visible in the strip after a switch/swipe (iOS scrollToItem):
+  // scroll the horizontal tab List so the current tab sits centered.
+  private scrollToActiveTab(): void {
+    const idx: number = this.visTabs.findIndex((t: TabModel) => t.id === this.activeTabId);
+    if (idx >= 0) {
+      this.tabScroller.scrollToIndex(idx, true, ScrollAlign.CENTER);
+    }
   }
 
   // Horizontal swipe over the terminal switches session (mirrors iOS SpaceController's
@@ -564,8 +577,13 @@ struct BlinkTerminal {
 
   // Reassign the @State tab list so ArkUI re-renders the strip (the store itself
   // is a plain class ArkUI can't observe). Call after any tab/conn/filter change.
+  // Also mirror the top-bar's dynamic labels into @State: topBar() is a no-arg
+  // @Builder that reads no @State directly, so ArkUI skips re-running it unless a
+  // @State it reads changes — that's why 🌙 count / filter pill go through @State.
   private refreshTabs(): void {
     this.visTabs = this.store.visibleTabs();
+    this.restCount = this.store.restingCount();
+    this.filterLabel = this.machineFilterLabel();
     this.tick++;
   }
 
@@ -823,7 +841,7 @@ struct BlinkTerminal {
       Text('⚙').fontSize(20).fontColor(TEAL).onClick(() => { this.sheet = 'settings'; })
       Row({ space: 5 }) {
         Text('≡').fontSize(15).fontColor(TEAL)
-        Text(this.machineFilterLabel()).fontSize(14).fontColor(TEAL)
+        Text(this.filterLabel).fontSize(14).fontColor(TEAL)
       }
       .padding({ left: 12, right: 13, top: 4, bottom: 4 })
       .border({ width: 1, color: HAIRLINE, radius: 16 }).margin({ left: 12 })
@@ -831,8 +849,8 @@ struct BlinkTerminal {
       Blank()
       Row({ space: 3 }) {
         Text('🌙').fontSize(16)
-        Text(this.restBadge()).fontSize(15).fontColor('#B0A8FF')
-      }.onClick(() => { this.store.workMode = !this.store.workMode; this.store.saveWorkMode(); this.refreshTabs(); })
+        Text(this.restCount.toString()).fontSize(15).fontColor('#B0A8FF')
+      }.onClick(() => { this.sheet = 'restPanel'; })
       Text('✨').fontSize(17).margin({ left: 12 }).onClick(() => this.toast('AI 助手 · 开发中'))
       Text('＋').fontSize(24).fontColor(TEAL).margin({ left: 12 }).onClick(() => this.openNewTab())
     }
@@ -841,18 +859,21 @@ struct BlinkTerminal {
 
   @Builder
   tabBar() {
-    Scroll() {
-      Row({ space: 8 }) {
-        ForEach(this.visTabs, (t: TabModel) => {
+    // Horizontal List (not Scroll) so switchTab/swipeTab can scrollToIndex the active
+    // tab into view — the strip now follows left/right session switches (iOS scrollToItem).
+    List({ space: 8, scroller: this.tabScroller }) {
+      ForEach(this.visTabs, (t: TabModel) => {
+        ListItem() {
           this.sessionTab(t)
-        }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : ''))
+        }
+      }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : ''))
+      ListItem() {
         Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
           .onClick(() => this.openNewTab())
       }
-      .padding({ left: 14, right: 14 })
     }
-    .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-    .width('100%').padding({ bottom: 7 }).backgroundColor('#000000')
+    .listDirection(Axis.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+    .width('100%').height(40).padding({ left: 14, right: 14, bottom: 7 }).backgroundColor('#000000')
   }
 
   @Builder
@@ -1140,10 +1161,6 @@ struct BlinkTerminal {
     return m !== null ? this.store.machineDisplayName(m) : '全部';
   }
 
-  private restBadge(): string {
-    return this.store.restingCount().toString();
-  }
-
   private dotColor(tabId: string): string {
     const s = this.connState(tabId);
     if (s === 'connected') {
@@ -1167,13 +1184,61 @@ struct BlinkTerminal {
     return out;
   }
 
+  // dock 🌙: toggle the current tab's rest flag. Mirrors iOS _toggleRestForCurrentTab —
+  // resting tabs are always hidden from the strip, so after parking one we jump to the
+  // next working tab (same machine first, following the machine filter if it lives
+  // elsewhere) so the strip isn't left showing only the tab just parked. Un-resting
+  // just re-renders in place.
   private toggleRest(): void {
     if (this.activeTabId.length === 0) {
       return;
     }
-    const now = this.store.toggleResting(this.activeTabId);
-    this.toast(now ? '已标记休息 😴' : '已标记在岗');
-    this.tick++;
+    const key: string = this.activeTabId;
+    const nowResting: boolean = this.store.toggleResting(key);
+    this.toast(nowResting ? '已标记休息 😴' : '已标记在岗');
+    if (nowResting) {
+      const target: string = this.nextWorkingTab(key);
+      if (target.length > 0) {
+        const cur = this.store.tabById(key);
+        const tgt = this.store.tabById(target);
+        if (this.store.filterMachineId.length > 0 && cur !== null && tgt !== null &&
+          tgt.machineId !== cur.machineId) {
+          this.store.filterMachineId = tgt.machineId;
+          this.store.saveFilter();
+        }
+        this.switchTab(target);
+        return;
+      }
+    }
+    this.refreshTabs();
+  }
+
+  // Next non-resting tab to land on after parking `key` (iOS _nextWorkingKey): prefer the
+  // same machine scanning forward & wrapping, else fall back to a working tab anywhere.
+  private nextWorkingTab(key: string): string {
+    const tabs = this.store.tabs;
+    const pos: number = tabs.findIndex((t: TabModel) => t.id === key);
+    if (pos < 0 || tabs.length <= 1) {
+      return '';
+    }
+    const cur = this.store.tabById(key);
+    const curM: string = cur !== null ? cur.machineId : '';
+    let sameMachine: string = '';
+    let otherMachine: string = '';
+    const n: number = tabs.length;
+    for (let step = 1; step < n; step++) {
+      const cand = tabs[(pos + step) % n];
+      if (cand.id === key || this.store.isResting(cand.id)) {
+        continue;
+      }
+      if (cand.machineId === curM) {
+        sameMachine = cand.id;
+        break;
+      } else if (otherMachine.length === 0) {
+        otherMachine = cand.id;
+      }
+    }
+    return sameMachine.length > 0 ? sameMachine : otherMachine;
   }
 
   private openNewTab(): void {
@@ -1243,6 +1308,8 @@ struct BlinkTerminal {
           this.workDirsBody()
         } else if (this.sheet === 'aiConfig') {
           this.aiConfigBody()
+        } else if (this.sheet === 'restPanel') {
+          this.restPanelBody()
         }
       }
       .width('100%').height(this.sheetHeight()).backgroundColor('#0C0C0E')
@@ -1270,6 +1337,8 @@ struct BlinkTerminal {
       return '工作目录';
     } else if (this.sheet === 'aiConfig') {
       return 'AI 配置';
+    } else if (this.sheet === 'restPanel') {
+      return '员工在岗 / 休息';
     }
     return '';
   }
@@ -1537,6 +1606,38 @@ struct BlinkTerminal {
       Text('语音识别 glm-asr-2512，整理用上面的模型。都走智谱 bigmodel。')
         .fontSize(11).fontColor('#6A6A6E').width('100%').margin({ top: 4 })
     }.width('100%').padding({ left: 16, right: 16 }).alignItems(HorizontalAlign.Start)
+  }
+
+  // -- rest panel (iOS RestPanelViewController): every session with an on-duty/rest
+  // switch. Resting sessions are hidden from the strip, so this is the only place to
+  // put them back on duty. Switch ON = on-duty (shown), OFF = resting (hidden).
+  @Builder
+  restPanelBody() {
+    List() {
+      ForEach(this.store.tabs, (t: TabModel) => {
+        ListItem() {
+          Row({ space: 10 }) {
+            this.avatar(this.store.workDirById(t.workDirId), false, 30)
+            Column({ space: 2 }) {
+              Text(this.store.tabTitle(t)).fontSize(15).fontColor('#FFFFFF')
+              Text(this.machineNameForTab(t) + ' · ' + (this.store.isResting(t.id) ? '😴 休息中' : '在岗'))
+                .fontSize(11).fontColor(this.store.isResting(t.id) ? '#B0A8FF' : '#8E8E93')
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(t.id) })
+              .selectedColor('#34C759')
+              .onChange((on: boolean) => { this.store.setResting(t.id, !on); this.refreshTabs(); })
+          }.width('100%').padding({ top: 10, bottom: 10 })
+        }
+      }, (t: TabModel) => t.id + (this.store.isResting(t.id) ? '_r' : '_w') + '_' + this.tick)
+    }
+    .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
+    Text('开关打开＝在岗（显示在标签栏），关闭＝休息（从标签栏隐藏）。休息中的员工也能在这里随时改回在岗。')
+      .fontSize(11).fontColor('#6A6A6E').width('100%').padding({ left: 16, right: 16, top: 8, bottom: 16 })
+  }
+
+  private machineNameForTab(t: TabModel): string {
+    const m = this.store.machineById(t.machineId);
+    return m !== null ? this.store.machineDisplayName(m) : '其他';
   }
 
   // ---- browser overlay ----
