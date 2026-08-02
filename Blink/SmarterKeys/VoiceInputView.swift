@@ -25,6 +25,8 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
   func voiceInputDidRequestPaste(_ view: VoiceInputView)
+  func voiceInputDidRequestOpenBrowser(_ view: VoiceInputView)
+  func voiceInputDidRequestOpenDesktop(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestPasteText text: String)
 }
 
@@ -338,6 +340,8 @@ final class VoiceInputView: UIView {
       Tool(act: "claude", symbol: "sparkles", text: nil, warn: false),
       Tool(act: "transcript", symbol: "doc.text", text: nil, warn: false),
       Tool(act: "server", symbol: "server.rack", text: nil, warn: false),
+      Tool(act: "browser", symbol: "globe", text: nil, warn: false),
+      Tool(act: "desktop", symbol: "display", text: nil, warn: false),
       nil,
       Tool(act: "up", symbol: "arrow.up", text: nil, warn: false),
       Tool(act: "down", symbol: "arrow.down", text: nil, warn: false),
@@ -414,6 +418,8 @@ final class VoiceInputView: UIView {
     case "claude": claudeTapped()
     case "transcript": transcriptTapped()
     case "server": settingsTapped()
+    case "browser": delegate?.voiceInputDidRequestOpenBrowser(self)
+    case "desktop": delegate?.voiceInputDidRequestOpenDesktop(self)
     case "up": delegate?.voiceInput(self, didRequestSendArrow: .up)
     case "down": delegate?.voiceInput(self, didRequestSendArrow: .down)
     case "left": delegate?.voiceInput(self, didRequestSendArrow: .left)

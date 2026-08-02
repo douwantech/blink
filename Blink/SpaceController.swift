@@ -133,8 +133,6 @@ class SpaceController: UIViewController {
   // 上下滚终端/失焦都不会被收走。仅手机布局用；Mac 直输不加。
   private let _voiceDock = VoiceInputView()
   private var _voiceDockInstalled = false
-  private var _floatingDock = FloatingDockBar()
-  private var _floatingDockPlaced = false
   private var _floatingMachineBar = FloatingMachineBar()
   private var _floatingMachineBarPlaced = false
   private var _floatingBarsHidden = false   // 长按屏幕切换两条浮动条显隐
@@ -278,11 +276,6 @@ class SpaceController: UIViewController {
       }
       view.bringSubviewToFront(_floatingMachineBar)
     }
-    if !_floatingDockPlaced {
-      _floatingDock.restorePosition(in: view)
-      _floatingDockPlaced = true
-    }
-    view.bringSubviewToFront(_floatingDock)
   }
 
   /// 安装常驻底部 dock：钉在 keyboardLayoutGuide 顶部（没键盘→钉底部安全区；键盘起→浮到键盘上方）。
@@ -323,9 +316,7 @@ class SpaceController: UIViewController {
   }
 
   private func _updateFloatingMicVisibility() {
-    // 玻璃 dock 常驻显示（语音 + 浏览器都在里面），只保证在最前；除非被长按隐藏了
-    _floatingDock.isHidden = _floatingBarsHidden
-    view.bringSubviewToFront(_floatingDock)
+    // 浮动竖条已移除：语音/浏览器/远程桌面入口都在底部常驻 dock 里
   }
 
   // 设置里开关「切换机器条」：实时显隐（长按临时隐藏的状态不覆盖设置——设置关了就一直不显示）
@@ -345,7 +336,7 @@ class SpaceController: UIViewController {
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     let hidden = _floatingBarsHidden
     // 设置里关掉「切换机器条」时，长按不该把它重新显示出来
-    var bars: [UIView] = [_floatingDock]
+    var bars: [UIView] = []
     if !_macLayoutEnabled && BlinkMachineStore.showMachineBar { bars.append(_floatingMachineBar) }
     for bar in bars {
       if !hidden {
@@ -364,7 +355,6 @@ class SpaceController: UIViewController {
   @objc private func _voiceRecordingStateChanged(_ note: Notification) {
     let recording = (note.userInfo?["recording"] as? Bool) ?? false
     _voiceIsRecording = recording
-    _floatingDock.setMicRecording(recording)
   }
 
   // 浮动条语音钮：录音中单点=停止；否则=弹面板（不开录）
@@ -665,17 +655,7 @@ class SpaceController: UIViewController {
         
     self.view.addSubview(_bottomTapAreaView)
 
-    // 玻璃 dock（方案 A）：语音 + 浏览器合并成靠右竖胶囊，可拖动
-    _floatingDock.micButton.addTarget(self, action: #selector(_unhideVoiceInput), for: .touchUpInside)
-    _floatingDock.micButton.addTarget(self, action: #selector(_prepareVoiceHaptic), for: .touchDown)
-    _floatingDock.micButton.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(_voiceMicLongPressed(_:))))
-    _floatingDock.browserButton.addTarget(self, action: #selector(_openPinnedBrowser), for: .touchUpInside)
-    _floatingDock.favoritesButton.addTarget(self, action: #selector(_openFavoritesPicker), for: .touchUpInside)
-    _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
-    _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
-    _floatingDock.sleepButton.addTarget(self, action: #selector(_toggleRestForCurrentTab), for: .touchUpInside)
-    _floatingDock.desktopButton.addTarget(self, action: #selector(_openRemoteDesktop), for: .touchUpInside)
-    _floatingDock.desktopButton.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(_openRemoteDesktopViaApp(_:))))
+    // 浮动竖条已移除：语音/浏览器/远程桌面等入口全在底部常驻 dock 工具行
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
 
     // E2E 自截屏后门：仅测试设备手动开 BlinkE2ESnapshotHook 才注册（生产 inert）。
@@ -697,7 +677,6 @@ class SpaceController: UIViewController {
         self, selector: #selector(_showMachineBarChanged),
         name: BlinkMachineStore.showMachineBarChanged, object: nil)
     }
-    view.addSubview(_floatingDock)
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidHideForMic), name: UIResponder.keyboardDidHideNotification, object: nil)
@@ -1697,7 +1676,6 @@ extension SpaceController {
   @objc private func _toggleRestForCurrentTab() {
     guard let key = _currentKey else { return }
     let nowResting = TabRestStore.shared.toggle(key.uuidString)
-    _floatingDock.setResting(nowResting)
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
     let target = nowResting && _workModeOn ? _nextWorkingKey(excluding: key) : nil
@@ -1738,7 +1716,6 @@ extension SpaceController {
 
   /// 让 dock 的 😴 钮反映当前 tab 的休息状态；顶栏（Mac 上是侧栏）🌙 按钮刷新休息人数。
   private func _syncSleepButton() {
-    _floatingDock.setResting(TabRestStore.shared.isResting(_currentKey?.uuidString))
     let restingCount = _viewportsKeys.filter { TabRestStore.shared.isResting($0.uuidString) }.count
     _tabBar.setRestingCount(restingCount)
     _macSidebar?.setRestingCount(restingCount)

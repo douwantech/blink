@@ -752,6 +752,14 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.dumpTranscriptForCurrentShell()
   }
 
+  func voiceInputDidRequestOpenBrowser(_ view: VoiceInputView) {
+    spaceController?._openPinnedBrowser()
+  }
+
+  func voiceInputDidRequestOpenDesktop(_ view: VoiceInputView) {
+    spaceController?._openRemoteDesktop()
+  }
+
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow) {
     let seq: String
     switch direction {
