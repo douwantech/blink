@@ -129,6 +129,8 @@ class SpaceController: UIViewController {
   private var _snippetsVC: SnippetsViewController? = nil
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
+  /// 供外部（如 SmarterTermInput 的 ⌘V 贴图）借 dock 弹 toast
+  var voiceDock: VoiceInputView { _voiceDock }
   // 常驻底部语音 dock（第三块布局）：钉在 keyboardLayoutGuide 顶部，跟键盘生命周期解绑，
   // 上下滚终端/失焦都不会被收走。仅手机布局用；Mac 直输不加。
   private let _voiceDock = VoiceInputView()

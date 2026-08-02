@@ -578,7 +578,7 @@ extension SmarterTermInput {
   private func _pasteClipboardImagesToHost(_ images: [UIImage]) {
     guard let device = device else { return }
     let total = images.count
-    _voiceInputView?.showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
+    spaceController?.voiceDock.showToast(total == 1 ? "上传中…" : "正在上传 \(total) 张…")
     var urls: [String?] = Array(repeating: nil, count: total)  // 保序
     let group = DispatchGroup()
     for (idx, image) in images.enumerated() {
@@ -595,15 +595,15 @@ extension SmarterTermInput {
       guard let self else { return }
       let good = urls.compactMap { $0 }
       if good.isEmpty {
-        self._voiceInputView?.showToast("图片上传失败", isError: true)
+        self.spaceController?.voiceDock.showToast("图片上传失败", isError: true)
         return
       }
       let joined = good.joined(separator: "\n")
       device.write(joined)   // 把图床 URL 写进终端
       if good.count == total {
-        self._voiceInputView?.showToast(total == 1 ? "已插入图片链接" : "已插入 \(total) 个图片链接")
+        self.spaceController?.voiceDock.showToast(total == 1 ? "已插入图片链接" : "已插入 \(total) 个图片链接")
       } else {
-        self._voiceInputView?.showToast("\(good.count)/\(total) 已插入，失败 \(total - good.count) 张", isError: true)
+        self.spaceController?.voiceDock.showToast("\(good.count)/\(total) 已插入，失败 \(total - good.count) 张", isError: true)
       }
     }
   }
