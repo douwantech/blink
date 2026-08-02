@@ -161,6 +161,7 @@ final class VoiceInputView: UIView {
     // ---- 工具行 ----
     toolsScroll.showsHorizontalScrollIndicator = false
     toolsScroll.showsVerticalScrollIndicator = false
+    toolsScroll.isPagingEnabled = true   // 工具行整页翻，不做自由滚
     toolsScroll.translatesAutoresizingMaskIntoConstraints = false
     toolsStack.axis = .horizontal
     toolsStack.spacing = 9
@@ -339,7 +340,6 @@ final class VoiceInputView: UIView {
       nil,
       Tool(act: "claude", symbol: "sparkles", text: nil, warn: false),
       Tool(act: "transcript", symbol: "doc.text", text: nil, warn: false),
-      Tool(act: "server", symbol: "server.rack", text: nil, warn: false),
       Tool(act: "browser", symbol: "globe", text: nil, warn: false),
       Tool(act: "desktop", symbol: "display", text: nil, warn: false),
       nil,
@@ -352,9 +352,6 @@ final class VoiceInputView: UIView {
       Tool(act: "tab", symbol: nil, text: "Tab", warn: false),
       Tool(act: "esc", symbol: nil, text: "Esc", warn: false),
       Tool(act: "clear", symbol: "delete.left", text: nil, warn: false),
-      nil,
-      Tool(act: "min", symbol: "chevron.down", text: nil, warn: false),
-      Tool(act: "close", symbol: "xmark", text: nil, warn: true),
     ]
     for t in tools {
       guard let t else { toolsStack.addArrangedSubview(makeSeparator()); continue }
@@ -417,7 +414,6 @@ final class VoiceInputView: UIView {
     case "history": historyQuickTapped()
     case "claude": claudeTapped()
     case "transcript": transcriptTapped()
-    case "server": settingsTapped()
     case "browser": delegate?.voiceInputDidRequestOpenBrowser(self)
     case "desktop": delegate?.voiceInputDidRequestOpenDesktop(self)
     case "up": delegate?.voiceInput(self, didRequestSendArrow: .up)
@@ -429,8 +425,6 @@ final class VoiceInputView: UIView {
     case "tab": delegate?.voiceInputDidRequestSendTab(self)
     case "esc": delegate?.voiceInputDidRequestSendEsc(self)
     case "clear": delegate?.voiceInputDidRequestClearLine(self)
-    case "min": minimizeTapped()
-    case "close": closeTabTapped()
     default: break
     }
   }

@@ -134,6 +134,7 @@ class SpaceController: UIViewController {
   // 常驻底部语音 dock（第三块布局）：钉在 keyboardLayoutGuide 顶部，跟键盘生命周期解绑，
   // 上下滚终端/失焦都不会被收走。仅手机布局用；Mac 直输不加。
   private let _voiceDock = VoiceInputView()
+  private let _dockBottomFill = UIView()
   private var _voiceDockInstalled = false
   private var _floatingMachineBar = FloatingMachineBar()
   private var _floatingMachineBarPlaced = false
@@ -270,6 +271,7 @@ class SpaceController: UIViewController {
       }
       view.bringSubviewToFront(_tabBar)
       _voiceDock.delegate = KBTracker.shared.input
+      view.bringSubviewToFront(_dockBottomFill)
       view.bringSubviewToFront(_voiceDock)
       if !_floatingMachineBarPlaced {
         _floatingMachineBar.reload(currentId: _tabFilterMachineId)
@@ -286,11 +288,21 @@ class SpaceController: UIViewController {
     _voiceDockInstalled = true
     _voiceDock.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(_voiceDock)
+    // dock 下面的 home 指示条安全区补同色底，别露 view 的纯黑
+    _dockBottomFill.backgroundColor = _voiceDock.backgroundColor
+    _dockBottomFill.isUserInteractionEnabled = false
+    _dockBottomFill.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(_dockBottomFill)
     NSLayoutConstraint.activate([
       _voiceDock.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       _voiceDock.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       _voiceDock.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
       _voiceDock.heightAnchor.constraint(equalToConstant: VoiceInputView.dockHeight),
+
+      _dockBottomFill.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      _dockBottomFill.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      _dockBottomFill.topAnchor.constraint(equalTo: _voiceDock.bottomAnchor),
+      _dockBottomFill.bottomAnchor.constraint(equalTo: view.bottomAnchor),
     ])
     _voiceDock.delegate = KBTracker.shared.input
   }
