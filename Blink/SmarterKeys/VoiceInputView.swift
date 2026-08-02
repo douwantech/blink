@@ -43,7 +43,8 @@ final class VoiceInputView: UIView {
   // MARK: - Dock 视图
   private let toolsScroll = UIScrollView()
   private let toolsStack = UIStackView()
-  private var kbdPill: UIButton?
+  private let keysRow2Stack = UIStackView()   // 键盘分组第二行：占语音条的槽位
+  private let groupSeg = UISegmentedControl(items: ["功能", "键盘"])
   private weak var lastTappedPill: UIButton?
 
   // 输入条
@@ -72,6 +73,7 @@ final class VoiceInputView: UIView {
   // MARK: - 语音/优化状态
   private var localText = ""          // 本地实时识别原文（= committedText + 当前段 partial）
   private var committedText = ""      // 已结束段落的累积文字：停顿会切段，切段时并入这里防丢
+  private var currentPiece = ""       // 当前段最新 partial：段被错误/重置吞掉时靠它兜底并入
   private var optimizedText: String?  // 走完 GLM/polish 的优化文本
   private var showingOptimized = false
 
@@ -159,6 +161,18 @@ final class VoiceInputView: UIView {
     backgroundColor = Self.dockBG
 
     // ---- 工具行 ----
+    groupSeg.selectedSegmentIndex = 0
+    groupSeg.backgroundColor = UIColor.white.withAlphaComponent(0.035)
+    groupSeg.selectedSegmentTintColor = UIColor.white.withAlphaComponent(0.16)
+    groupSeg.setTitleTextAttributes(
+      [.foregroundColor: UIColor.white.withAlphaComponent(0.55),
+       .font: UIFont.systemFont(ofSize: 12)], for: .normal)
+    groupSeg.setTitleTextAttributes(
+      [.foregroundColor: UIColor.white.withAlphaComponent(0.95),
+       .font: UIFont.systemFont(ofSize: 12, weight: .semibold)], for: .selected)
+    groupSeg.addTarget(self, action: #selector(toolsGroupChanged), for: .valueChanged)
+    groupSeg.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(groupSeg)
     toolsScroll.showsHorizontalScrollIndicator = false
     toolsScroll.showsVerticalScrollIndicator = false
     toolsScroll.isPagingEnabled = true   // 工具行整页翻，不做自由滚
@@ -169,6 +183,12 @@ final class VoiceInputView: UIView {
     toolsStack.translatesAutoresizingMaskIntoConstraints = false
     toolsScroll.addSubview(toolsStack)
     addSubview(toolsScroll)
+    keysRow2Stack.axis = .horizontal
+    keysRow2Stack.spacing = 9
+    keysRow2Stack.alignment = .center
+    keysRow2Stack.isHidden = true
+    keysRow2Stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(keysRow2Stack)
     buildTools()
 
     // ---- 优化状态条 ----
@@ -266,13 +286,17 @@ final class VoiceInputView: UIView {
 
     NSLayoutConstraint.activate([
       toolsScroll.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-      toolsScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+      toolsScroll.leadingAnchor.constraint(equalTo: groupSeg.trailingAnchor, constant: 4),
       toolsScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
       toolsScroll.heightAnchor.constraint(equalToConstant: 42),
 
+      groupSeg.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      groupSeg.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
+      groupSeg.heightAnchor.constraint(equalToConstant: 34),
+
       toolsStack.topAnchor.constraint(equalTo: toolsScroll.topAnchor),
       toolsStack.bottomAnchor.constraint(equalTo: toolsScroll.bottomAnchor),
-      toolsStack.leadingAnchor.constraint(equalTo: toolsScroll.leadingAnchor, constant: 13),
+      toolsStack.leadingAnchor.constraint(equalTo: toolsScroll.leadingAnchor, constant: 6),
       toolsStack.trailingAnchor.constraint(equalTo: toolsScroll.trailingAnchor, constant: -13),
       toolsStack.heightAnchor.constraint(equalTo: toolsScroll.heightAnchor),
 
@@ -292,6 +316,11 @@ final class VoiceInputView: UIView {
       fieldContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
       fieldContainer.topAnchor.constraint(equalTo: toolsScroll.bottomAnchor, constant: 8),
       fieldHeightConstraint,
+
+      keysRow2Stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      keysRow2Stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -13),
+      keysRow2Stack.topAnchor.constraint(equalTo: toolsScroll.bottomAnchor, constant: 8),
+      keysRow2Stack.heightAnchor.constraint(equalToConstant: fieldHeight),
 
       fieldMic.leadingAnchor.constraint(equalTo: fieldContainer.leadingAnchor, constant: 15),
       fieldMic.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
@@ -328,37 +357,58 @@ final class VoiceInputView: UIView {
   // MARK: - 工具 pill 行
   private struct Tool { let act: String; let symbol: String?; let text: String?; let warn: Bool }
 
-  private func buildTools() {
-    let tools: [Tool?] = [
-      Tool(act: "kbd", symbol: "keyboard", text: nil, warn: false),
-      nil,
-      Tool(act: "fav", symbol: "star", text: nil, warn: false),
-      Tool(act: "img", symbol: "photo", text: nil, warn: false),
-      Tool(act: "paste", symbol: "doc.on.clipboard", text: nil, warn: false),
-      Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
-      Tool(act: "history", symbol: "clock", text: nil, warn: false),
-      nil,
-      Tool(act: "claude", symbol: "sparkles", text: nil, warn: false),
-      Tool(act: "transcript", symbol: "doc.text", text: nil, warn: false),
-      Tool(act: "browser", symbol: "globe", text: nil, warn: false),
-      Tool(act: "desktop", symbol: "display", text: nil, warn: false),
-      nil,
-      Tool(act: "up", symbol: "arrow.up", text: nil, warn: false),
-      Tool(act: "down", symbol: "arrow.down", text: nil, warn: false),
-      Tool(act: "left", symbol: "arrow.left", text: nil, warn: false),
-      Tool(act: "right", symbol: "arrow.right", text: nil, warn: false),
-      Tool(act: "return", symbol: "return", text: nil, warn: false),
-      Tool(act: "shifttab", symbol: nil, text: "⇤", warn: false),
-      Tool(act: "tab", symbol: nil, text: "Tab", warn: false),
-      Tool(act: "esc", symbol: nil, text: "Esc", warn: false),
-      Tool(act: "clear", symbol: "delete.left", text: nil, warn: false),
-    ]
+  // 功能分组：收藏/图片/停止…（语音输入常驻在下方按住说话条）
+  private let funcTools: [Tool?] = [
+    Tool(act: "fav", symbol: "star", text: nil, warn: false),
+    Tool(act: "img", symbol: "photo", text: nil, warn: false),
+    Tool(act: "esc", symbol: "stop.fill", text: nil, warn: false),
+    Tool(act: "paste", symbol: "doc.on.clipboard", text: nil, warn: false),
+    Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
+    Tool(act: "history", symbol: "clock", text: nil, warn: false),
+    nil,
+    Tool(act: "transcript", symbol: "doc.text", text: nil, warn: false),
+    Tool(act: "browser", symbol: "globe", text: nil, warn: false),
+    Tool(act: "desktop", symbol: "display", text: nil, warn: false),
+  ]
+
+  // 键盘分组：两行铺开（键盘模式不需要语音条，第二行借用它的位置）
+  private let keyToolsRow1: [Tool?] = [
+    Tool(act: "up", symbol: "arrow.up", text: nil, warn: false),
+    Tool(act: "down", symbol: "arrow.down", text: nil, warn: false),
+    Tool(act: "left", symbol: "arrow.left", text: nil, warn: false),
+    Tool(act: "right", symbol: "arrow.right", text: nil, warn: false),
+  ]
+  private let keyToolsRow2: [Tool?] = [
+    Tool(act: "return", symbol: "return", text: nil, warn: false),
+    Tool(act: "shifttab", symbol: nil, text: "⇤", warn: false),
+    Tool(act: "clear", symbol: "delete.left", text: nil, warn: false),
+  ]
+
+  private func fill(_ stack: UIStackView, with tools: [Tool?]) {
+    stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     for t in tools {
-      guard let t else { toolsStack.addArrangedSubview(makeSeparator()); continue }
-      let pill = makePill(t)
-      toolsStack.addArrangedSubview(pill)
-      if t.act == "kbd" { kbdPill = pill }
+      guard let t else { stack.addArrangedSubview(makeSeparator()); continue }
+      stack.addArrangedSubview(makePill(t))
     }
+  }
+
+  private func buildTools() {
+    if groupSeg.selectedSegmentIndex == 1 {
+      fill(toolsStack, with: keyToolsRow1)
+      fill(keysRow2Stack, with: keyToolsRow2)
+    } else {
+      fill(toolsStack, with: funcTools)
+      fill(keysRow2Stack, with: [])
+    }
+    toolsScroll.setContentOffset(.zero, animated: false)
+  }
+
+  @objc private func toolsGroupChanged() {
+    buildTools()
+    let kb = groupSeg.selectedSegmentIndex == 1
+    if kb, isRecording { finishRecording(cancelled: true) }
+    fieldContainer.isHidden = kb
+    keysRow2Stack.isHidden = !kb
   }
 
   private func makeSeparator() -> UIView {
@@ -406,7 +456,6 @@ final class VoiceInputView: UIView {
       UIView.animate(withDuration: 0.08) { sender.transform = .identity }
     }
     switch act {
-    case "kbd": toggleKeyboardMode()
     case "fav": favoritesQuickTapped()
     case "img": imagePickTapped()
     case "paste": pasteTapped()
@@ -449,10 +498,9 @@ final class VoiceInputView: UIView {
       composeToggle.isHidden = true
       composeBar.isHidden = true
       toolsScroll.isHidden = false
+      groupSeg.isHidden = false
       styleSend(active: false)
       setFieldState(.idle)
-      kbdPill?.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
-      kbdPill?.backgroundColor = UIColor.white.withAlphaComponent(0.035)
     case .review:
       fieldMic.isHidden = true
       recDot.isHidden = true
@@ -460,6 +508,7 @@ final class VoiceInputView: UIView {
       discardButton.isHidden = false
       composeBar.isHidden = false
       toolsScroll.isHidden = true
+      groupSeg.isHidden = true
       inputTextView.isHidden = false
       NSLayoutConstraint.deactivate([fieldLeadingToText])
       fieldLeadingToText = inputTextView.leadingAnchor.constraint(equalTo: discardButton.trailingAnchor, constant: 2)
@@ -504,12 +553,6 @@ final class VoiceInputView: UIView {
       // 光标/顶部对齐，长文本从头显示
       inputTextView.setContentOffset(.zero, animated: false)
     }
-  }
-
-  // MARK: - 键盘模式：dock 是 inputView，内联打字会顶掉自己，所以直接切系统键盘
-  private func toggleKeyboardMode() {
-    if isRecording { finishRecording(cancelled: true) }
-    delegate?.voiceInputDidRequestKeyboard(self)
   }
 
   /// 点识别/优化文本 → 弹层编辑（inputView 内无法内联打字）
@@ -594,6 +637,10 @@ final class VoiceInputView: UIView {
   // MARK: - 本地实时识别 + 录音（供松开后再走 GLM 优化）
   private func startRecording(latched: Bool) {
     guard !isRecording else { return }
+    if groupSeg.selectedSegmentIndex == 1 {   // 键盘分组下语音条是藏着的，先切回功能组
+      groupSeg.selectedSegmentIndex = 0
+      toolsGroupChanged()
+    }
     isLatched = latched
     recCancelled = false
     localText = ""
@@ -646,6 +693,7 @@ final class VoiceInputView: UIView {
     composeToggle.isHidden = true
     composeBar.isHidden = false
     toolsScroll.isHidden = true
+    groupSeg.isHidden = true
     startRecDotPulse()
     showBubble()
     if isLatched {
@@ -665,19 +713,38 @@ final class VoiceInputView: UIView {
     }
     request = req
 
+    currentPiece = ""
     task = recognizer?.recognitionTask(with: req) { [weak self] result, error in
       guard let self else { return }
       guard self.request === req else { return }   // 旧任务的迟到回调，忽略
       if let result {
         let piece = result.bestTranscription.formattedString
-        self.localText = self.committedText + piece
-        self.updateBubble(cancel: self.recCancelled)
-        if result.isFinal, self.isRecording {
-          self.committedText += piece
-          self.restartRecognitionTask()
+        // 停顿切段的三种形态都要接住：
+        // ① 结果带 speechRecognitionMetadata（utterance 结束，之后 partial 从空重来）
+        // ② isFinal（任务整个结束）
+        // ③ 不发信号直接把 partial 重置成新段（骤然变短，下面 else 分支兜底）
+        if result.speechRecognitionMetadata != nil || result.isFinal {
+          if !piece.isEmpty { self.committedText += piece }
+          self.currentPiece = ""
+          self.localText = self.committedText
+          self.updateBubble(cancel: self.recCancelled)
+          if result.isFinal, self.isRecording { self.restartRecognitionTask() }
+        } else {
+          if self.currentPiece.count >= 6, piece.count * 2 < self.currentPiece.count,
+             !self.currentPiece.hasPrefix(piece) {
+            self.committedText += self.currentPiece
+          }
+          self.currentPiece = piece
+          self.localText = self.committedText + piece
+          self.updateBubble(cancel: self.recCancelled)
         }
       } else if error != nil, self.isRecording {
-        // 段中断（静音超时等）：保住已识别文字，续新任务接着听
+        // 段中断（静音超时等）没有 final：把最后的 partial 并入，不丢字
+        if !self.currentPiece.isEmpty {
+          self.committedText += self.currentPiece
+          self.currentPiece = ""
+          self.localText = self.committedText
+        }
         self.restartRecognitionTask()
       }
     }
@@ -941,8 +1008,6 @@ final class VoiceInputView: UIView {
   }
 
   // MARK: - 既有业务动作（工具 pill 复用）
-  @objc private func keyboardTapped() { toggleKeyboardMode() }
-
   @objc private func claudeTapped() {
     let entries: [(label: String, command: String)] = [
       ("cc · 自定义快捷", "cc"),
