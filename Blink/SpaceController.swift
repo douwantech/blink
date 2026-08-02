@@ -129,6 +129,10 @@ class SpaceController: UIViewController {
   private var _snippetsVC: SnippetsViewController? = nil
   private var _blinkMenu: BlinkMenu? = nil
   private var _bottomTapAreaView = UIView()
+  // 常驻底部语音 dock（第三块布局）：钉在 keyboardLayoutGuide 顶部，跟键盘生命周期解绑，
+  // 上下滚终端/失焦都不会被收走。仅手机布局用；Mac 直输不加。
+  private let _voiceDock = VoiceInputView()
+  private var _voiceDockInstalled = false
   private var _floatingDock = FloatingDockBar()
   private var _floatingDockPlaced = false
   private var _floatingMachineBar = FloatingMachineBar()
@@ -249,7 +253,10 @@ class SpaceController: UIViewController {
     if _macLayoutEnabled {
       _layoutMacThreeColumn(safeTop: safeTop)
     } else {
-      let tabH: CGFloat = 64
+      let tabH: CGFloat = 50   // 单行 tab 栏（原型：38pt 胶囊 + 上下留白）
+      _installVoiceDockIfNeeded()
+      // 底部给常驻 dock 让出高度（dock 高 + 底部安全区）
+      let dockReserved = VoiceInputView.dockHeight + view.safeAreaInsets.bottom
       _statusBarBg.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: safeTop)
       _tabBar.frame = CGRect(x: 0, y: safeTop, width: view.bounds.width, height: tabH)
       view.bringSubviewToFront(_statusBarBg)
@@ -258,10 +265,12 @@ class SpaceController: UIViewController {
           x: 0,
           y: safeTop + tabH,
           width: view.bounds.width,
-          height: max(0, view.bounds.height - safeTop - tabH)
+          height: max(0, view.bounds.height - safeTop - tabH - dockReserved)
         )
       }
       view.bringSubviewToFront(_tabBar)
+      _voiceDock.delegate = KBTracker.shared.input
+      view.bringSubviewToFront(_voiceDock)
       if !_floatingMachineBarPlaced {
         _floatingMachineBar.reload(currentId: _tabFilterMachineId)
         _floatingMachineBar.restorePosition(in: view)
@@ -274,6 +283,21 @@ class SpaceController: UIViewController {
       _floatingDockPlaced = true
     }
     view.bringSubviewToFront(_floatingDock)
+  }
+
+  /// 安装常驻底部 dock：钉在 keyboardLayoutGuide 顶部（没键盘→钉底部安全区；键盘起→浮到键盘上方）。
+  private func _installVoiceDockIfNeeded() {
+    guard !_voiceDockInstalled, !_macLayoutEnabled else { return }
+    _voiceDockInstalled = true
+    _voiceDock.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(_voiceDock)
+    NSLayoutConstraint.activate([
+      _voiceDock.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      _voiceDock.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      _voiceDock.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+      _voiceDock.heightAnchor.constraint(equalToConstant: VoiceInputView.dockHeight),
+    ])
+    _voiceDock.delegate = KBTracker.shared.input
   }
 
   @objc private func _voiceInputAutoShowChanged() {
@@ -378,6 +402,55 @@ class SpaceController: UIViewController {
 
   @objc func _openPinnedBrowser() {
     _presentSharedBrowser()
+  }
+
+  /// 当前 tab 机器的 RustDesk 配置;没配则弹提示返回 nil
+  private func _rustdeskMachine() -> BlinkMachine? {
+    let store = BlinkMachineStore.shared
+    let mid = currentTerm()?.mcpParams?.machineId
+    let machine = mid.flatMap { id in store.machines.first { $0.id == id } } ?? store.currentMachine
+    guard let m = machine, let rid = m.rustdeskId, !rid.isEmpty else {
+      let name = machine?.displayName ?? "当前机器"
+      let alert = UIAlertController(
+        title: "未配置远程桌面",
+        message: "在「机器 → \(name) → 远程桌面」里填上这台机器的 RustDesk ID（和固定密码）。",
+        preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "确定", style: .default))
+      present(alert, animated: true)
+      return nil
+    }
+    return m
+  }
+
+  // dock 🖥️ 钮：打开内嵌 RustDesk 远程桌面页（核心库直连，不切 App）
+  @objc func _openRemoteDesktop() {
+    guard let m = _rustdeskMachine(), let rid = m.rustdeskId else { return }
+    // 传 SSH 通道(同一台机器的 host/user),供"双击识别窗口并缩放"用
+    let host = BlinkMachineStore.bestHost(for: m)
+    let vc = RemoteDesktopViewController(peerId: rid, password: m.rustdeskPassword ?? "",
+                                        sshHost: host, sshUser: m.user)
+    present(vc, animated: true)
+  }
+
+  // dock 🖥️ 长按：保底走深链拉起独立 RustDesk App
+  @objc func _openRemoteDesktopViaApp(_ g: UILongPressGestureRecognizer) {
+    guard g.state == .began else { return }
+    guard let m = _rustdeskMachine(), let rid = m.rustdeskId else { return }
+    var link = "rustdesk://connection/new/\(rid)"
+    if let pwd = m.rustdeskPassword, !pwd.isEmpty,
+       let enc = pwd.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+      link += "?password=\(enc)"
+    }
+    guard let url = URL(string: link) else { return }
+    UIApplication.shared.open(url, options: [:]) { [weak self] ok in
+      guard !ok, let self else { return }
+      let alert = UIAlertController(
+        title: "打不开 RustDesk",
+        message: "手机上似乎没装 RustDesk App（com.aitools.rustdesk）。",
+        preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "确定", style: .default))
+      self.present(alert, animated: true)
+    }
   }
 
   // dock 收藏钮：弹收藏短语选择器，选中的直接发到当前终端
@@ -514,7 +587,7 @@ class SpaceController: UIViewController {
   private let _tabBar = BlinkTabBar()
   private let _statusBarBg: UIView = {
     let v = UIView()
-    v.backgroundColor = UIColor(white: 0.12, alpha: 1.0)
+    v.backgroundColor = UIColor(red: 0.043, green: 0.047, blue: 0.055, alpha: 1)   // #0b0c0e，与 tab 栏/dock 同色
     v.isUserInteractionEnabled = false
     return v
   }()
@@ -601,6 +674,8 @@ class SpaceController: UIViewController {
     _floatingDock.historyButton.addTarget(self, action: #selector(dumpTranscriptForCurrentShell), for: .touchUpInside)
     _floatingDock.refreshButton.addTarget(self, action: #selector(reloadCurrentShell), for: .touchUpInside)
     _floatingDock.sleepButton.addTarget(self, action: #selector(_toggleRestForCurrentTab), for: .touchUpInside)
+    _floatingDock.desktopButton.addTarget(self, action: #selector(_openRemoteDesktop), for: .touchUpInside)
+    _floatingDock.desktopButton.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(_openRemoteDesktopViaApp(_:))))
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceRecordingStateChanged(_:)), name: VoiceInputView.recordingStateChangedNotification, object: nil)
 
     // E2E 自截屏后门：仅测试设备手动开 BlinkE2ESnapshotHook 才注册（生产 inert）。
@@ -1705,7 +1780,7 @@ extension SpaceController {
           titles.append(title)
           var icon: UIImage? = nil
           if let img = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)?.iconImage {
-            icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 22, height: 22))
+            icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
           }
           icons.append(icon)
           unread.append(term.meta.hasUnread)
@@ -1752,7 +1827,7 @@ extension SpaceController {
       var icon: UIImage? = nil
       if let wid = term.mcpParams?.workDirId,
          let img = BlinkWorkDirStore.shared.workDir(forId: wid)?.iconImage {
-        icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 22, height: 22))
+        icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
       }
       icons.append(icon)
       unread.append(term.meta.hasUnread)

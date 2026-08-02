@@ -13,6 +13,9 @@ final class BlinkMachine: Codable {
   var blinkdHost: String?
   var blinkdPort: Int?
   var blinkdToken: String?
+  // RustDesk 远程桌面(可选):这台机器被控端的 9 位 ID 和固定密码,dock 🖥️ 钮深链拉起直连
+  var rustdeskId: String?
+  var rustdeskPassword: String?
 
   init(id: String = UUID().uuidString, name: String = "", host: String, host2: String? = nil, lanHost: String? = nil, user: String,
        transport: String? = nil, blinkdHost: String? = nil, blinkdPort: Int? = nil, blinkdToken: String? = nil) {
@@ -663,6 +666,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   private let blinkdTokenField = UITextField()
   private var useBlinkdSelected = false
 
+  // RustDesk 远程桌面（可选）
+  private let rustdeskIdField = UITextField()
+  private let rustdeskPasswordField = UITextField()
+
   init(editing machine: BlinkMachine?) {
     if let m = machine {
       self.machine = m
@@ -694,6 +701,9 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     configureField(blinkdHostField, placeholder: "daemon 地址,如 100.64.0.1", value: machine.blinkdHost ?? "", returnKey: .next, keyboard: .URL)
     configureField(blinkdPortField, placeholder: "7777", value: machine.blinkdPort.map(String.init) ?? "", returnKey: .next, keyboard: .numberPad)
     configureField(blinkdTokenField, placeholder: "daemon token", value: machine.blinkdToken ?? "", returnKey: .done, keyboard: .default)
+
+    configureField(rustdeskIdField, placeholder: "9 位数字 ID,如 172641532", value: machine.rustdeskId ?? "", returnKey: .next, keyboard: .numberPad)
+    configureField(rustdeskPasswordField, placeholder: "固定密码(无人值守)", value: machine.rustdeskPassword ?? "", returnKey: .done, keyboard: .default)
   }
 
   @objc private func transportChanged() {
@@ -720,17 +730,22 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     tf.clearButtonMode = .whileEditing
   }
 
-  // section 0=SSH 基础字段, 1=连接方式(SSH/Socket + blinkd 配置), 2=删除(非新建)
-  override func numberOfSections(in tv: UITableView) -> Int { isNew ? 2 : 3 }
+  // section 0=SSH 基础字段, 1=连接方式(SSH/Socket + blinkd 配置), 2=远程桌面(RustDesk), 3=删除(非新建)
+  override func numberOfSections(in tv: UITableView) -> Int { isNew ? 3 : 4 }
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
     switch section {
     case 0: return 5
     case 1: return 1 + (useBlinkdSelected ? 3 : 0)   // 连接方式 + (选 Socket 才显 地址/端口/token)
+    case 2: return 2                                  // RustDesk ID + 密码
     default: return 1                                 // 删除
     }
   }
   override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-    section == 1 ? "连接方式" : nil
+    switch section {
+    case 1: return "连接方式"
+    case 2: return "远程桌面（RustDesk）"
+    default: return nil
+    }
   }
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
     switch section {
@@ -740,19 +755,28 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
       return useBlinkdSelected
         ? "Socket：手机直连这台机器的 blinkd daemon，不走 SSH（绕过 MDM）。填 daemon 的地址/端口/token。"
         : "SSH：走系统 sshd（默认）。选 Socket 需要这台机器上跑着 blinkd daemon。"
+    case 2:
+      return "可选。填这台机器 RustDesk 被控端的 ID 和固定密码后，dock 的 🖥️ 按钮可一键拉起 RustDesk 直连看屏/控制。"
     default:
       return nil
     }
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-    // 删除 section(非新建时的最后一个 section = 2)
-    if indexPath.section == 2 {
+    // 删除 section(非新建时的最后一个 section = 3)
+    if indexPath.section == 3 {
       let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
       cell.textLabel?.text = "删除机器"
       cell.textLabel?.textColor = .systemRed
       cell.textLabel?.textAlignment = .center
       return cell
+    }
+    // 远程桌面 section
+    if indexPath.section == 2 {
+      let (label, field): (String, UITextField) = indexPath.row == 0
+        ? ("ID", rustdeskIdField)
+        : ("密码", rustdeskPasswordField)
+      return makeFieldCell(label: label, field: field)
     }
     // 连接方式 section
     if indexPath.section == 1 {
@@ -829,7 +853,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
   override func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: true)
-    guard indexPath.section == 2 else { return }
+    guard indexPath.section == 3 else { return }
     let alert = UIAlertController(title: "删除机器？", message: machine.displayName, preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
@@ -867,6 +891,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
       machine.blinkdToken = bt.isEmpty ? nil : bt
       machine.blinkdPort = Int((blinkdPortField.text ?? "").trimmingCharacters(in: .whitespaces))
     }
+    let rdId = (rustdeskIdField.text ?? "").trimmingCharacters(in: .whitespaces)
+    let rdPwd = (rustdeskPasswordField.text ?? "").trimmingCharacters(in: .whitespaces)
+    machine.rustdeskId = rdId.isEmpty ? nil : rdId
+    machine.rustdeskPassword = rdPwd.isEmpty ? nil : rdPwd
     BlinkMachineStore.shared.addOrUpdate(machine)
     HostReachability.invalidate()
     navigationController?.popViewController(animated: true)
@@ -1033,13 +1061,10 @@ final class HorizontalOnlyScrollView: UIScrollView {
 
   private let scrollView = HorizontalOnlyScrollView()
   private let stack = UIStackView()
-  private let rowsStack = UIStackView()
-  private let topRow = UIView()
-  private let addButton = UIButton(type: .system)
-  private let settingsButton = UIButton(type: .system)
-  private let filterChipButton = UIButton(type: .system)
-  private let restPanelButton = UIButton(type: .system)
-  private let assistantButton = UIButton(type: .system)
+  private let menuButton = UIButton(type: .system)
+  private let hairline = UIView()
+  private var filterTitle = "全部"
+  private var restingCount = 0
 
   @objc init() {
     super.init(frame: .zero)
@@ -1048,115 +1073,77 @@ final class HorizontalOnlyScrollView: UIScrollView {
   required init?(coder: NSCoder) { fatalError() }
 
   private func setupUI() {
-    backgroundColor = UIColor(white: 0.12, alpha: 1.0)
+    backgroundColor = UIColor(red: 0.043, green: 0.047, blue: 0.055, alpha: 1)   // #0b0c0e，与底部 dock 同色
 
-    settingsButton.setImage(UIImage(systemName: "gearshape"), for: .normal)
-    settingsButton.tintColor = .systemBlue
-    settingsButton.translatesAutoresizingMaskIntoConstraints = false
-    settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
-
-    addButton.setImage(UIImage(systemName: "plus"), for: .normal)
-    addButton.tintColor = .systemBlue
-    addButton.translatesAutoresizingMaskIntoConstraints = false
-    addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
-
-    // 顶栏的 sparkles 按钮：打开气泡 chat UI（跟新加的"助手 tab"=终端 互补）
-    assistantButton.setImage(UIImage(systemName: "sparkles"), for: .normal)
-    assistantButton.tintColor = .systemPurple
-    assistantButton.translatesAutoresizingMaskIntoConstraints = false
-    assistantButton.addTarget(self, action: #selector(assistantTapped), for: .touchUpInside)
-
-    var chipCfg = UIButton.Configuration.plain()
-    chipCfg.title = "全部"
-    chipCfg.image = UIImage(systemName: "line.3.horizontal.decrease.circle")
-    chipCfg.imagePadding = 4
-    chipCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 10)
-    chipCfg.baseForegroundColor = .systemTeal
-    filterChipButton.configuration = chipCfg
-    filterChipButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
-    filterChipButton.layer.cornerRadius = 6
-    filterChipButton.layer.borderWidth = 1
-    filterChipButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.5).cgColor
-    filterChipButton.translatesAutoresizingMaskIntoConstraints = false
-    filterChipButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
-
-    // 🌙 按钮：弹出「员工在岗/休息」管理列表。有人休息时在图标右边显示人数。
-    var restCfg = UIButton.Configuration.plain()
-    restCfg.image = UIImage(systemName: "moon.zzz.fill")
-    restCfg.imagePadding = 3
-    restCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
-    restCfg.baseForegroundColor = .systemIndigo
-    restPanelButton.configuration = restCfg
-    restPanelButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
-    restPanelButton.translatesAutoresizingMaskIntoConstraints = false
-    restPanelButton.addTarget(self, action: #selector(restPanelTapped), for: .touchUpInside)
-
-    topRow.translatesAutoresizingMaskIntoConstraints = false
-    topRow.addSubview(settingsButton)
-    topRow.addSubview(filterChipButton)
-    topRow.addSubview(restPanelButton)
-    topRow.addSubview(assistantButton)
-    topRow.addSubview(addButton)
+    // 右侧唯一入口：⋯ 菜单（原控制行 ＋/筛选/🌙/✨/⚙️ 全收进来）
+    menuButton.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+    menuButton.tintColor = UIColor.white.withAlphaComponent(0.85)
+    menuButton.backgroundColor = UIColor.white.withAlphaComponent(0.035)
+    menuButton.layer.cornerRadius = 12
+    menuButton.layer.borderWidth = 1
+    menuButton.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+    menuButton.showsMenuAsPrimaryAction = true
+    menuButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(menuButton)
+    rebuildMenu()
 
     scrollView.translatesAutoresizingMaskIntoConstraints = false
     scrollView.showsHorizontalScrollIndicator = false
     stack.axis = .horizontal
-    stack.spacing = 4
+    stack.spacing = 7
+    stack.alignment = .center
     stack.translatesAutoresizingMaskIntoConstraints = false
     scrollView.addSubview(stack)
+    addSubview(scrollView)
 
-    rowsStack.axis = .vertical
-    rowsStack.spacing = 6
-    rowsStack.translatesAutoresizingMaskIntoConstraints = false
-    rowsStack.addArrangedSubview(topRow)
-    rowsStack.addArrangedSubview(scrollView)
-    addSubview(rowsStack)
+    hairline.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+    hairline.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(hairline)
 
     NSLayoutConstraint.activate([
-      settingsButton.leadingAnchor.constraint(equalTo: topRow.leadingAnchor, constant: 8),
-      settingsButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      settingsButton.widthAnchor.constraint(equalToConstant: 32),
-      settingsButton.heightAnchor.constraint(equalToConstant: 28),
+      menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      menuButton.widthAnchor.constraint(equalToConstant: 36),
+      menuButton.heightAnchor.constraint(equalToConstant: 36),
 
-      filterChipButton.leadingAnchor.constraint(equalTo: settingsButton.trailingAnchor, constant: 6),
-      filterChipButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      filterChipButton.heightAnchor.constraint(equalToConstant: 26),
-
-      addButton.trailingAnchor.constraint(equalTo: topRow.trailingAnchor, constant: -8),
-      addButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      addButton.widthAnchor.constraint(equalToConstant: 32),
-      addButton.heightAnchor.constraint(equalToConstant: 28),
-
-      assistantButton.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -2),
-      assistantButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      assistantButton.widthAnchor.constraint(equalToConstant: 32),
-      assistantButton.heightAnchor.constraint(equalToConstant: 28),
-
-      restPanelButton.trailingAnchor.constraint(equalTo: assistantButton.leadingAnchor, constant: -2),
-      restPanelButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
-      restPanelButton.heightAnchor.constraint(equalToConstant: 28),
-
-      topRow.heightAnchor.constraint(equalToConstant: 28),
-
-      rowsStack.leadingAnchor.constraint(equalTo: leadingAnchor),
-      rowsStack.trailingAnchor.constraint(equalTo: trailingAnchor),
-      rowsStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-      rowsStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+      scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+      scrollView.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -8),
+      scrollView.centerYAnchor.constraint(equalTo: centerYAnchor),
+      scrollView.heightAnchor.constraint(equalToConstant: 38),
 
       stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
       stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-      stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 8),
+      stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 12),
       stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -8),
       stack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor),
+
+      hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
+      hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
+      hairline.bottomAnchor.constraint(equalTo: bottomAnchor),
+      hairline.heightAnchor.constraint(equalToConstant: 1),
     ])
   }
 
-  @objc private func settingsTapped() {
-    delegate?.tabBarDidRequestSettings()
-  }
-
-  @objc private func assistantTapped() {
-    delegate?.tabBarDidRequestAssistantChat()
+  /// ⋯ 菜单：筛选标题 / 休息人数变化时重建
+  private func rebuildMenu() {
+    let newTab = UIAction(title: "新建 tab", image: UIImage(systemName: "plus")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestNew()
+    }
+    let filter = UIAction(title: "按机器筛选 · \(filterTitle)",
+                          image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestMachineFilter()
+    }
+    let rest = UIAction(title: restingCount > 0 ? "在岗 / 休息 · \(restingCount) 人休息中" : "在岗 / 休息",
+                        image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestRestPanel()
+    }
+    let chat = UIAction(title: "助手对话", image: UIImage(systemName: "sparkles")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestAssistantChat()
+    }
+    let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestSettings()
+    }
+    menuButton.menu = UIMenu(children: [newTab, filter, rest, chat, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
@@ -1173,9 +1160,8 @@ final class HorizontalOnlyScrollView: UIScrollView {
   func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-    var newCfg = filterChipButton.configuration
-    newCfg?.title = filterTitle ?? "全部"
-    filterChipButton.configuration = newCfg
+    self.filterTitle = filterTitle ?? "全部"
+    rebuildMenu()
 
     var visibleIndexOfCurrent = -1
     for (i, title) in titles.enumerated() {
@@ -1202,43 +1188,86 @@ final class HorizontalOnlyScrollView: UIScrollView {
     scrollView.scrollRectToVisible(target, animated: animated)
   }
 
-  @objc private func filterTapped() {
-    delegate?.tabBarDidRequestMachineFilter()
-  }
-
-  @objc private func restPanelTapped() {
-    delegate?.tabBarDidRequestRestPanel()
-  }
-
-  /// 外部（SpaceController）刷新 🌙 按钮上的休息人数。0 人不显示数字。
+  /// 外部（SpaceController）刷新休息人数（显示在 ⋯ 菜单的「在岗/休息」项里）。
   @objc func setRestingCount(_ n: Int) {
-    var cfg = restPanelButton.configuration
-    cfg?.title = n > 0 ? " \(n)" : nil
-    restPanelButton.configuration = cfg
-    restPanelButton.tintColor = n > 0 ? .systemIndigo : .systemGray
+    restingCount = n
+    rebuildMenu()
+  }
+
+  // 无头像时按标题生成渐变首字头像（配色对齐原型 AV 渐变对）
+  private static let avatarPalette: [(UIColor, UIColor)] = [
+    (UIColor(red: 0.30, green: 0.55, blue: 1, alpha: 1), UIColor(red: 0.54, green: 0.36, blue: 1, alpha: 1)),
+    (UIColor(red: 1, green: 0.48, blue: 0.35, alpha: 1), UIColor(red: 1, green: 0.36, blue: 0.63, alpha: 1)),
+    (UIColor(red: 0.23, green: 0.63, blue: 1, alpha: 1), UIColor(red: 0.22, green: 0.82, blue: 0.75, alpha: 1)),
+    (UIColor(red: 0.54, green: 0.36, blue: 1, alpha: 1), UIColor(red: 0.30, green: 0.82, blue: 1, alpha: 1)),
+    (UIColor(red: 1, green: 0.62, blue: 0.26, alpha: 1), UIColor(red: 1, green: 0.36, blue: 0.63, alpha: 1)),
+    (UIColor(red: 0.22, green: 0.82, blue: 0.75, alpha: 1), UIColor(red: 0.30, green: 0.55, blue: 1, alpha: 1)),
+  ]
+
+  private func initialAvatar(for title: String, size: CGFloat = 26) -> UIImage {
+    // hashValue 每次启动随机化，用 unicode 标量和保证同名同色
+    let seed = title.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+    let pair = Self.avatarPalette[abs(seed) % Self.avatarPalette.count]
+    let rect = CGRect(x: 0, y: 0, width: size, height: size)
+    let img = UIGraphicsImageRenderer(size: rect.size).image { ctx in
+      UIBezierPath(ovalIn: rect).addClip()
+      if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                               colors: [pair.0.cgColor, pair.1.cgColor] as CFArray,
+                               locations: [0, 1]) {
+        ctx.cgContext.drawLinearGradient(grad, start: .zero, end: CGPoint(x: size, y: size), options: [])
+      }
+      let initial = String(title.prefix(1)).uppercased()
+      let attrs: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: size * 0.46, weight: .bold),
+        .foregroundColor: UIColor.white,
+      ]
+      let ts = (initial as NSString).size(withAttributes: attrs)
+      (initial as NSString).draw(at: CGPoint(x: (size - ts.width) / 2, y: (size - ts.height) / 2), withAttributes: attrs)
+    }
+    return img.withRenderingMode(.alwaysOriginal)
   }
 
   private func makeTabButton(title: String, icon: UIImage?, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
     var cfg = UIButton.Configuration.plain()
-    cfg.title = title
-    if let icon {
-      cfg.image = icon
-      cfg.imagePadding = 6
-      cfg.imagePlacement = .leading
-    }
-    let leadingInset: CGFloat = icon != nil ? 8 : 12
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: leadingInset, bottom: 4, trailing: hasUnread ? 18 : 12)
-    cfg.baseForegroundColor = isCurrent ? .label : .secondaryLabel
+    var at = AttributedString(title)
+    at.font = UIFont.systemFont(ofSize: 14, weight: isCurrent ? .semibold : .regular)
+    cfg.attributedTitle = at
+    cfg.image = icon ?? initialAvatar(for: title)
+    cfg.imagePadding = 7
+    cfg.imagePlacement = .leading
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
+    cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : 0.55)
     let btn = UIButton(configuration: cfg)
-    btn.titleLabel?.font = .systemFont(ofSize: 13, weight: isCurrent ? .semibold : .regular)
-    btn.layer.cornerRadius = 6
+    btn.layer.cornerRadius = 19
     btn.layer.masksToBounds = false
-    btn.backgroundColor = isCurrent ? UIColor.systemBlue.withAlphaComponent(0.18) : .clear
+    btn.layer.borderWidth = isCurrent ? 1 : 0
+    btn.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
+    btn.backgroundColor = isCurrent ? UIColor.white.withAlphaComponent(0.07) : .clear
+    btn.heightAnchor.constraint(equalToConstant: 38).isActive = true
     btn.tag = index
     btn.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
     let longPress = UILongPressGestureRecognizer(target: self, action: #selector(tabLongPressed(_:)))
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
+
+    // 在岗绿点（带微光）
+    let status = UIView()
+    status.translatesAutoresizingMaskIntoConstraints = false
+    status.backgroundColor = UIColor(red: 0.23, green: 0.82, blue: 0.50, alpha: 1)   // #3ad07f
+    status.layer.cornerRadius = 3.5
+    status.layer.shadowColor = status.backgroundColor?.cgColor
+    status.layer.shadowOpacity = 0.7
+    status.layer.shadowRadius = 3
+    status.layer.shadowOffset = .zero
+    status.isUserInteractionEnabled = false
+    btn.addSubview(status)
+    NSLayoutConstraint.activate([
+      status.widthAnchor.constraint(equalToConstant: 7),
+      status.heightAnchor.constraint(equalToConstant: 7),
+      status.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -11),
+      status.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
+    ])
+
     if hasUnread {
       let dot = UIView()
       dot.translatesAutoresizingMaskIntoConstraints = false
@@ -1250,7 +1279,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
         dot.widthAnchor.constraint(equalToConstant: 8),
         dot.heightAnchor.constraint(equalToConstant: 8),
         dot.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -4),
-        dot.topAnchor.constraint(equalTo: btn.topAnchor, constant: 4),
+        dot.topAnchor.constraint(equalTo: btn.topAnchor, constant: 2),
       ])
     }
     return btn
@@ -1265,9 +1294,6 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidRequestClose(index: btn.tag)
   }
 
-  @objc private func addTapped() {
-    delegate?.tabBarDidRequestNew()
-  }
 }
 
 // MARK: - WorkDir

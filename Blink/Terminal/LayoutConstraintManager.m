@@ -186,6 +186,14 @@
     UIEdgeInsets deviceMargins = window.safeAreaInsets;
     BOOL fullScreen = CGRectEqualToRect(mainScreen.bounds, window.bounds);
     UIEdgeInsets result = UIEdgeInsetsZero;
+
+    // iPhone：SpaceController 三块布局已经把状态栏/tab 条排在上面、常驻语音 dock 垫在下面，
+    // 视口整体落在安全区内，这里再按窗口安全区缩进就是双重扣除——只保留左右（横屏刘海）。
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone) {
+        result.left = deviceMargins.left;
+        result.right = deviceMargins.right;
+        return result;
+    }
     
     switch (mode) {
         case BKLayoutModeDefault:

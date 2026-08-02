@@ -200,10 +200,9 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     _scrollView.alwaysBounceVertical = false
     _scrollView.alwaysBounceHorizontal = false
     _scrollView.isDirectionalLockEnabled = true
-    // iPad have dismiss button on keyboard
-    if UIDevice.current.userInterfaceIdiom != .pad {
-      _scrollView.keyboardDismissMode = .interactive
-    }
+    // 语音 dock 是终端的 inputView：交互式 dismiss 会让上下滚终端时把 dock 一起收掉。
+    // 直接关掉，dock 常驻底部。（切系统键盘时也不再支持下滑收起，可接受。）
+    _scrollView.keyboardDismissMode = .none
     _scrollView.delaysContentTouches = false
     _scrollView.delegate = self
     
@@ -253,8 +252,25 @@ class UIScrollViewWithoutHitTest: UIScrollView {
 
 
     _hoverRecognizer.addTarget(self, action: #selector(_onHover(_:)))
+
+    // 语音 dock 在场时关掉「上下拖终端交互式收键盘」，避免把 dock（＝inputView）一起拖下去；
+    // 切回真键盘（dock 收起）再恢复 .interactive。
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(_applyKeyboardDismissMode),
+      name: VoiceInputView.dockActiveChangedNotification, object: nil)
+    _applyKeyboardDismissMode()
   }
-  
+
+  @objc private func _applyKeyboardDismissMode() {
+    // dock 常驻：终端两个滚动视图都不做交互式收键盘
+    _scrollView.keyboardDismissMode = .none
+    _termScrollView.keyboardDismissMode = .none
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+  }
+
   private var _reportedY:CGFloat = 0
   
   @objc func _on1fTap(_ recognizer: UITapGestureRecognizer) {

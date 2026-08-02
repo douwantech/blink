@@ -45,7 +45,11 @@ import Combine
   
   private var _inputAccessoryView: UIView? = nil
 
-  private var _voiceInputView: VoiceInputView?
+  // dock 已移到 SpaceController 常驻底部条；这里只在语音模式给一个 0 高占位 inputView，
+  // 让终端保持 firstResponder 但不弹系统键盘（keyboardLayoutGuide 落到底部，dock 钉底）。
+  private var _dockSpacer: UIView?
+  // 点 ⌨️ 时置 true → inputView 返回 nil → 弹系统键盘；再点一次收起。
+  var wantsSystemKeyboard: Bool = false
 
   /// Mac（Designed-for-iPad，或 BlinkForceMacLayout 调试强开）＝硬件键盘直输：
   /// 默认不弹语音面板、终端永远可收键盘输入。语音面板仍可由 dock 的 mic 钮 / ⌘⇧M 显式唤起。
@@ -246,12 +250,23 @@ import Combine
 
   override var inputView: UIView? {
     guard useVoiceInput else { return nil }
-    if _voiceInputView == nil {
-      let v = VoiceInputView()
-      v.delegate = self
-      _voiceInputView = v
+    if wantsSystemKeyboard { return nil }   // 点 ⌨️：弹系统键盘
+    // 语音模式：0 高占位，不弹键盘；真正的 dock 是 SpaceController 常驻底部条
+    if _dockSpacer == nil {
+      let v = UIView()
+      v.backgroundColor = .clear
+      v.translatesAutoresizingMaskIntoConstraints = false
+      v.heightAnchor.constraint(equalToConstant: 0).isActive = true
+      _dockSpacer = v
     }
-    return _voiceInputView
+    return _dockSpacer
+  }
+
+  /// 点 ⌨️：切系统键盘显隐。dock 常驻不动。
+  func toggleSystemKeyboard() {
+    wantsSystemKeyboard.toggle()
+    if let cv = contentView() { cv.reloadInputViews() } else { reloadInputViews() }
+    if wantsSystemKeyboard { _ = becomeFirstResponder() }
   }
 
   func setUseVoiceInput(_ enabled: Bool) {
@@ -685,16 +700,18 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   }
 
   func voiceInputDidRequestKeyboard(_ view: VoiceInputView) {
-    setUseVoiceInput(false)
+    // dock 常驻：⌨️ 只切系统键盘显隐，不再收 dock
+    if Self.directHKBInput { setUseVoiceInput(false); return }
+    toggleSystemKeyboard()
   }
 
   func voiceInputDidRequestDismiss(_ view: VoiceInputView) {
     if Self.directHKBInput {
-      // Mac 直输：关面板＝回到硬件键盘直输，保持焦点不丢
       setUseVoiceInput(false)
       return
     }
-    _ = resignFirstResponder()
+    // dock 常驻：只收起系统键盘（若开着），dock 不动
+    if wantsSystemKeyboard { toggleSystemKeyboard() }
   }
 
   func voiceInputDidRequestMinimize(_ view: VoiceInputView) {
@@ -702,8 +719,8 @@ extension SmarterTermInput: VoiceInputViewDelegate {
       setUseVoiceInput(false)
       return
     }
-    Self.voiceInputAutoShow = false
-    _ = resignFirstResponder()
+    // dock 常驻：收起系统键盘即可
+    if wantsSystemKeyboard { toggleSystemKeyboard() }
   }
 
   func voiceInputDidRequestSendEsc(_ view: VoiceInputView) {
@@ -713,6 +730,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
   /// Shift+Tab = 终端的 back-tab（CSI Z）。Claude Code 用它循环权限模式。
   func voiceInputDidRequestSendShiftTab(_ view: VoiceInputView) {
     device?.write("\u{1B}[Z")
+  }
+
+  func voiceInputDidRequestSendTab(_ view: VoiceInputView) {
+    device?.write("\t")
   }
 
   func voiceInputDidRequestClearLine(_ view: VoiceInputView) {
