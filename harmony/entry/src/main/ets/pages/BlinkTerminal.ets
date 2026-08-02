@@ -481,23 +481,40 @@ struct BlinkTerminal {
 
   // Horizontal swipe over the terminal switches session (mirrors iOS SpaceController's
   // page-swipe between shells): swipe left → next tab, swipe right → previous, wrapping
-  // around so a continued swipe cycles through every open session.
+  // around so a continued swipe cycles through EVERY open session — across machines too.
+  // We walk the full tab list (not the filtered visTabs), skipping resting tabs, so a
+  // machine filter can't trap the swipe on one machine. When the next tab lives on a
+  // different machine we carry the filter onto it (same cross-machine jump toggleRest
+  // does), so the strip + filter pill follow the swipe across the boundary instead of
+  // leaving the highlighted tab off-strip.
   private swipeTab(dir: number): void {
-    const tabs = this.visTabs;
-    if (tabs.length <= 1) {
+    const all: TabModel[] = [];
+    for (let i = 0; i < this.store.tabs.length; i++) {
+      const t = this.store.tabs[i];
+      if (this.store.isResting(t.id) && t.id !== this.activeTabId) {
+        continue;
+      }
+      all.push(t);
+    }
+    if (all.length <= 1) {
       return;
     }
-    const idx: number = tabs.findIndex((t: TabModel) => t.id === this.activeTabId);
+    const idx: number = all.findIndex((t: TabModel) => t.id === this.activeTabId);
     if (idx < 0) {
       return;
     }
     let n: number = idx + dir;
     if (n < 0) {
-      n = tabs.length - 1;
-    } else if (n >= tabs.length) {
+      n = all.length - 1;
+    } else if (n >= all.length) {
       n = 0;
     }
-    this.switchTab(tabs[n].id);
+    const target: TabModel = all[n];
+    if (this.store.filterMachineId.length > 0 && target.machineId !== this.store.filterMachineId) {
+      this.store.filterMachineId = target.machineId;
+      this.store.saveFilter();
+    }
+    this.switchTab(target.id);
   }
 
   private newTab(machineId: string, workDirId: string, session: string): void {
