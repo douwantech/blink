@@ -100,6 +100,8 @@ final class VoiceInputView: UIView {
   private var isLatched = false          // 浮动条 mic 触发的「点一下开始、点发送结束」模式
   private var recCancelled = false
   private var holdStartY: CGFloat = 0
+  private var holdStartTime: CFTimeInterval = 0
+  private var holdActive = false         // 手指仍按在语音条上（权限异步回调期间抬指就别开录了）
   private var audioFile: AVAudioFile?
   private var audioFileURL: URL?
 
@@ -575,6 +577,14 @@ final class VoiceInputView: UIView {
     findViewController()?.present(nav, animated: true)
   }
 
+  /// 轻点语音条（没按住）→ 浮动打字条（贴键盘，不占整页）
+  private func openManualInput() {
+    guard let window = self.window else { return }
+    FloatingTextInputPanel.present(in: window) { [weak self] text in
+      self?.commitText(text)
+    }
+  }
+
   @objc private func sendTapped() {
     switch mode {
     case .review:
@@ -618,6 +628,8 @@ final class VoiceInputView: UIView {
     guard mode == .voice, !isLatched else { return }
     switch g.state {
     case .began:
+      holdActive = true
+      holdStartTime = CACurrentMediaTime()
       holdStartY = g.location(in: fieldContainer).y
       startRecording(latched: false)
     case .changed:
@@ -628,7 +640,17 @@ final class VoiceInputView: UIView {
         setFieldState(wantCancel ? .cancel : .recording)
         updateBubble(cancel: wantCancel)
       }
-    case .ended, .cancelled, .failed:
+    case .ended:
+      holdActive = false
+      if !recCancelled, CACurrentMediaTime() - holdStartTime < 0.35 {
+        // 只是点了一下：不当录音，弹手动输入
+        finishRecording(cancelled: true, silent: true)
+        openManualInput()
+      } else {
+        finishRecording(cancelled: recCancelled)
+      }
+    case .cancelled, .failed:
+      holdActive = false
       finishRecording(cancelled: recCancelled)
     default: break
     }
@@ -648,6 +670,8 @@ final class VoiceInputView: UIView {
     requestPermissionsThen { [weak self] granted in
       guard let self else { return }
       guard granted else { return }
+      // 权限回调是异步的：快速点按时手指已抬，这时再开录会没人来停
+      guard latched || self.holdActive else { return }
       self.beginLocalASR()
     }
   }
@@ -760,7 +784,7 @@ final class VoiceInputView: UIView {
     }
   }
 
-  private func finishRecording(cancelled: Bool) {
+  private func finishRecording(cancelled: Bool, silent: Bool = false) {
     guard isRecording else { return }
     isRecording = false
     let wasLatched = isLatched
@@ -785,7 +809,7 @@ final class VoiceInputView: UIView {
       recDot.isHidden = true; fieldMic.isHidden = false
       mode = .voice; applyMode()
       if let wav { try? FileManager.default.removeItem(at: wav) }
-      showToast("已取消")
+      if !silent { showToast("已取消") }
       return
     }
     guard !text.isEmpty else {
@@ -2485,15 +2509,146 @@ final class LanguagePickerViewController: UITableViewController {
   }
 }
 
+// MARK: - 轻点语音条弹出的浮动打字条（贴键盘顶，点空白处收起）
+
+final class FloatingTextInputPanel: UIView, UITextViewDelegate {
+  private let card = UIView()
+  private let textView = UITextView()
+  private let placeholder = UILabel()
+  private let sendBtn = UIButton(type: .system)
+  private var textHeightC: NSLayoutConstraint!
+  var onSend: ((String) -> Void)?
+
+  @discardableResult
+  static func present(in window: UIWindow, onSend: @escaping (String) -> Void) -> FloatingTextInputPanel {
+    let p = FloatingTextInputPanel(frame: .zero)
+    p.onSend = onSend
+    p.translatesAutoresizingMaskIntoConstraints = false
+    window.addSubview(p)
+    NSLayoutConstraint.activate([
+      p.topAnchor.constraint(equalTo: window.topAnchor),
+      p.leadingAnchor.constraint(equalTo: window.leadingAnchor),
+      p.trailingAnchor.constraint(equalTo: window.trailingAnchor),
+      p.bottomAnchor.constraint(equalTo: window.bottomAnchor),
+    ])
+    p.alpha = 0
+    UIView.animate(withDuration: 0.15) { p.alpha = 1 }
+    p.textView.becomeFirstResponder()
+    return p
+  }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = UIColor.black.withAlphaComponent(0.28)
+
+    card.backgroundColor = UIColor(red: 0.10, green: 0.125, blue: 0.175, alpha: 1)
+    card.layer.cornerRadius = 20
+    card.layer.borderWidth = 1
+    card.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+    card.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(card)
+
+    textView.backgroundColor = .clear
+    textView.textColor = .white
+    textView.tintColor = UIColor(red: 0.20, green: 0.88, blue: 0.63, alpha: 1)
+    textView.font = .systemFont(ofSize: 16)
+    textView.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
+    textView.textContainer.lineFragmentPadding = 0
+    textView.autocorrectionType = .no
+    textView.spellCheckingType = .no
+    textView.smartDashesType = .no
+    textView.smartQuotesType = .no
+    textView.returnKeyType = .send
+    textView.delegate = self
+    textView.translatesAutoresizingMaskIntoConstraints = false
+    card.addSubview(textView)
+
+    placeholder.text = "输入命令…"
+    placeholder.font = .systemFont(ofSize: 16)
+    placeholder.textColor = UIColor.white.withAlphaComponent(0.35)
+    placeholder.translatesAutoresizingMaskIntoConstraints = false
+    card.addSubview(placeholder)
+
+    sendBtn.setImage(UIImage(systemName: "arrow.up.circle.fill",
+                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .semibold)),
+                     for: .normal)
+    sendBtn.tintColor = UIColor(red: 0.20, green: 0.88, blue: 0.63, alpha: 1)
+    sendBtn.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
+    sendBtn.translatesAutoresizingMaskIntoConstraints = false
+    card.addSubview(sendBtn)
+
+    textHeightC = textView.heightAnchor.constraint(equalToConstant: 40)
+    NSLayoutConstraint.activate([
+      card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+      card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+      card.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor, constant: -8),
+
+      textView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+      textView.trailingAnchor.constraint(equalTo: sendBtn.leadingAnchor, constant: -8),
+      textView.topAnchor.constraint(equalTo: card.topAnchor, constant: 4),
+      textView.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -4),
+      textHeightC,
+
+      placeholder.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+      placeholder.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+
+      sendBtn.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+      sendBtn.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+      sendBtn.widthAnchor.constraint(equalToConstant: 32),
+      sendBtn.heightAnchor.constraint(equalToConstant: 32),
+    ])
+
+    let tap = UITapGestureRecognizer(target: self, action: #selector(scrimTapped(_:)))
+    addGestureRecognizer(tap)
+  }
+
+  required init?(coder: NSCoder) { fatalError() }
+
+  @objc private func scrimTapped(_ g: UITapGestureRecognizer) {
+    // 只点空白处才收起，点卡片内不动
+    if !card.frame.contains(g.location(in: self)) { dismissPanel() }
+  }
+
+  @objc private func sendTapped() {
+    let v = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !v.isEmpty else { dismissPanel(); return }
+    onSend?(v)
+    dismissPanel()
+  }
+
+  private func dismissPanel() {
+    textView.resignFirstResponder()
+    UIView.animate(withDuration: 0.15, animations: { self.alpha = 0 }) { _ in
+      self.removeFromSuperview()
+    }
+  }
+
+  // MARK: UITextViewDelegate
+  func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+    if text == "\n" { sendTapped(); return false }   // 回车＝发送
+    return true
+  }
+
+  func textViewDidChange(_ tv: UITextView) {
+    placeholder.isHidden = !tv.text.isEmpty
+    let h = min(max(tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude)).height, 40), 120)
+    if textHeightC.constant != h {
+      textHeightC.constant = h
+      layoutIfNeeded()
+    }
+  }
+}
+
 final class VoiceEditTextViewController: UIViewController {
   private let textView = UITextView()
   var initialText: String = ""
+  var screenTitle: String = "编辑识别结果"
   var onDone: ((String) -> Void)?
 
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
-    title = "编辑识别结果"
+    title = screenTitle
 
     textView.font = .systemFont(ofSize: 18)
     textView.text = initialText
