@@ -161,7 +161,7 @@ final class FloatingDockBar: UIView {
   private static let kPosX = "FloatingDockBar.posX"
   private static let kPosY = "FloatingDockBar.posY"
   static let barW: CGFloat = 58
-  static let barH: CGFloat = 322
+  static let barH: CGFloat = 372
 
   let micButton = UIButton(type: .system)
   let browserButton = UIButton(type: .system)
@@ -169,6 +169,7 @@ final class FloatingDockBar: UIView {
   let historyButton = UIButton(type: .system)
   let refreshButton = UIButton(type: .system)
   let sleepButton = UIButton(type: .system)
+  let desktopButton = UIButton(type: .system)   // 🖥️ RustDesk 远程桌面
   private var dragPan: UIPanGestureRecognizer!
   private var didMove = false
 
@@ -203,7 +204,7 @@ final class FloatingDockBar: UIView {
     grip.isUserInteractionEnabled = false
     addSubview(grip)
 
-    // 从上到下：休息(😴) / 浏览器 / 收藏 / 查看历史 / 刷新 / 输入(mic)。输入钮放最下面最好按。
+    // 从上到下：休息(😴) / 浏览器 / 收藏 / 查看历史 / 刷新 / 远程桌面(🖥️) / 输入(mic)。输入钮放最下面最好按。
     let x = (Self.barW - 44) / 2
     _configCircle(sleepButton, icon: "moon.zzz.fill", color: .systemGray)
     sleepButton.frame = CGRect(x: x, y: 16, width: 44, height: 44)
@@ -225,8 +226,12 @@ final class FloatingDockBar: UIView {
     refreshButton.frame = CGRect(x: x, y: 216, width: 44, height: 44)
     addSubview(refreshButton)
 
+    _configCircle(desktopButton, icon: "display", color: .systemPurple)
+    desktopButton.frame = CGRect(x: x, y: 266, width: 44, height: 44)
+    addSubview(desktopButton)
+
     _configCircle(micButton, icon: "mic.fill", color: .systemTeal)
-    micButton.frame = CGRect(x: x, y: 266, width: 44, height: 44)
+    micButton.frame = CGRect(x: x, y: 316, width: 44, height: 44)
     addSubview(micButton)
   }
 

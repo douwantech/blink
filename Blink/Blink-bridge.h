@@ -69,6 +69,7 @@ typedef void (*mosh_state_callback) (const void *context, const void *buffer, si
 #import "BlinkMenu.h"
 #import "GeoManager.h"
 #import "mosh/moshiosbridge.h"
+#include "RustDesk/rustdesk_native.h"
 
 
 #endif /* Blink_bridge_h */
