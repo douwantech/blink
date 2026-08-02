@@ -1,0 +1,11 @@
+{
+  "name": "tsvpn",
+  "version": "1.0.0",
+  "description": "Tailscale VPN + blinkd base library for HarmonyOS (Go core + NAPI bridge)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "libtsbridge.so": "file:./src/main/cpp/types/libtsbridge"
+  }
+}

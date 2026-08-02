@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "tailscale-harmony",
+  "version": "1.0.0",
+  "description": "Tailscale client for HarmonyOS Next (Go core + NAPI + VpnExtensionAbility)",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19"
+  }
+}
