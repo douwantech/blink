@@ -135,10 +135,12 @@ export class BlinkStore {
 
   async load(ctx: common.UIAbilityContext): Promise<void> {
     this.prefs = await preferences.getPreferences(ctx, P_KEY);
-    const seeded: boolean = await this.prefs.get('seeded_v1', false) as boolean;
+    // v2: v1 曾在 seed_config.json 缺失的包上跑过（播种失败也记了已播种），
+    // 换 key 让那批安装重新播种一次真实 iOS 配置。
+    const seeded: boolean = await this.prefs.get('seeded_v2', false) as boolean;
     if (!seeded) {
       await this.seedFromRawfile(ctx);
-      await this.prefs.put('seeded_v1', true);
+      await this.prefs.put('seeded_v2', true);
       await this.persistAll();
       return;
     }

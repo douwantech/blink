@@ -13,6 +13,10 @@
 // Bridge: ArkTS -> JS uses webController.runJavaScript("term_xxx(...)").
 //         JS -> ArkTS uses window.arkBridge.post(op, jsonData) (javaScriptProxy).
 
+// 切 tab / 转屏触发 resize 时 hterm 会在屏幕中间闪一个 "列x行" 的尺寸提示，
+// iOS 版是靠 hterm_all.patches.js 干掉的（这里没加载那个文件），同样 stub 掉。
+hterm.Terminal.prototype.overlaySize = function() {};
+
 var terms = {};       // id -> hterm.Terminal
 var layers = {};      // id -> layer div
 var _pending = {};    // id -> [binary-string chunks] queued before that term is ready

@@ -6,11 +6,9 @@
 //     tab strip / machine filter pill / new-tab flow mirror SpaceController.
 //   • config seeded from the user's real iOS app (BlinkStore ← seed_config.json):
 //     same machines, work dirs, tabs, favorites, voice-AI data.
-//   • bottom accessory reproduces VoiceInputView: SmartKeys, Claude command
-//     sheet, favorites/history pickers, and a real GLM voice pipeline
-//     (record → glm-asr → polish).
-//   • floating dock reproduces FloatingDockBar: rest toggle / browser /
-//     favorites / transcript / reconnect / machine switch / mic.
+//   • persistent bottom dock reproduces the latest VoiceInputView: 功能/键盘
+//     tool groups, hold-to-talk field (record → glm-asr → polish → review),
+//     tap-to-type floating input panel.
 //
 // The transport/terminal/input plumbing is the device-verified path from the
 // single-session build, generalised to N sessions.
@@ -27,6 +25,7 @@ import { util, buffer } from '@kit.ArkTS';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
@@ -40,8 +39,6 @@ const BUNDLE: string = 'com.douwantech.blink';
 
 // palette
 const TEAL: string = '#3DD9C4';
-const CARD: string = '#141416';
-const HAIRLINE: string = '#2E6E68';
 
 interface Theme {
   name: string;
@@ -59,10 +56,10 @@ const THEMES: Theme[] = [
   { name: 'Monokai Lt', bg: '#FFFFFF', fg: '#000000', cursor: 'rgba(0,0,0,0.5)' },
 ];
 
-const FONT_SIZES: number[] = [10, 11, 12, 13, 14, 16, 18];
+const FONT_SIZES: number[] = [8, 9, 10, 11, 12, 13, 14];
 
 // what the bottom sheet is currently showing
-type Sheet = 'none' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel';
+type Sheet = 'none' | 'more' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel';
 
 class JsBridge {
   private cb: (op: string, data: string) => void;
@@ -95,12 +92,15 @@ struct BlinkTerminal {
   @State themeIdx: number = 0;
   @State fontSize: number = 11;
   @State kbHeight: number = 0;
-  @State toolbarOpen: boolean = true;
-  @State panelOpen: boolean = false;   // bottom input panel — hidden until the mic button opens it (iOS voiceInputAutoShow)
-  @State voiceMode: boolean = false;
-  @State composerText: string = '';
+  @State topInset: number = 0;       // 状态栏高度（沉浸式后自己垫 #0b0c0e 背景）
+  @State botInset: number = 0;       // 底部导航条/安全区高度（垫 dock 同色）
+  // 常驻底部 dock（iOS VoiceInputView 最新版）：功能/键盘两组工具 + 按住说话条
+  @State toolsGroup: number = 0;       // 0 = 功能, 1 = 键盘
+  @State fieldMode: string = 'idle';   // idle | recording | busy | review
+  @State reviewText: string = '';
   @State recording: boolean = false;
-  @State voiceHint: string = '点击下方按钮开始说话';
+  @State showManualInput: boolean = false;
+  @State manualText: string = '';
   @State inputBuf: string = '';
   // overlays
   @State sheet: Sheet = 'none';
@@ -113,16 +113,6 @@ struct BlinkTerminal {
   @State ntWorkDirId: string = '';
   @State ntSession: string = '';
   @State mfEdit: Machine | null = null;
-
-  // floating-dock drag — mirrors iOS FloatingDockBar: free 2-D drag, clamped in-screen, remembered
-  @State dockX: number = -1;
-  @State dockY: number = -1;
-  private areaW: number = 0;
-  private areaH: number = 0;
-  private dockW: number = 52;
-  private dockH: number = 320;
-  private dockX0: number = 0;
-  private dockY0: number = 0;
 
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
@@ -137,6 +127,7 @@ struct BlinkTerminal {
   private tsPrefs: preferences.Preferences | null = null;
   private uiPrefs: preferences.Preferences | null = null;
   private timer: number = -1;
+  private lastVpnKick: number = 0;   // 看门狗上次重拉 VPN 的时刻（节流）
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -172,9 +163,16 @@ struct BlinkTerminal {
     this.authKey = await this.tsPrefs.get('authKey', '') as string;
     this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
     this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
-    this.fontSize = await this.uiPrefs.get('fontSize', 11) as number;
-    this.dockX = await this.uiPrefs.get('dockX', -1) as number;
-    this.dockY = await this.uiPrefs.get('dockY', -1) as number;
+    this.fontSize = await this.uiPrefs.get('fontSize', 9) as number;
+    // 一次性迁移 v2：旧默认(11/10)缩到新默认 9（只动没自选过字号的安装，
+    // fontSize pref 只有用户在设置里点过档位才会写入）
+    const fsShrunk: boolean = await this.uiPrefs.get('fs_shrunk_v2', false) as boolean;
+    if (!fsShrunk) {
+      if (this.fontSize === 11 || this.fontSize === 10) {
+        this.fontSize = 9;
+      }
+      this.uiPrefs.put('fs_shrunk_v2', true).then((): Promise<void> => this.uiPrefs!.flush()).catch(() => {});
+    }
     await this.store.load(ctx);
     // pick the active tab (persisted current, else first visible)
     const vis = this.store.visibleTabs();
@@ -206,6 +204,14 @@ struct BlinkTerminal {
       w.on('keyboardHeightChange', (h: number) => {
         this.kbHeight = px2vp(h);
       });
+      // 沉浸式：内容铺进状态栏/导航条区域，避让高度由页面自己垫正确的背景色
+      // （iOS：状态栏/tab 条 #0b0c0e，底部安全区随 dock #0A0A0A）
+      w.setWindowLayoutFullScreen(true).catch((): void => {});
+      w.setWindowSystemBarProperties({ statusBarContentColor: '#F2F2F2' }).catch((): void => {});
+      const sys = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      this.topInset = px2vp(sys.topRect.height);
+      const nav = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+      this.botInset = px2vp(nav.bottomRect.height);
     }).catch((e: Object) => {
       hilog.error(DOMAIN, TAG, 'keyboard: %{public}s', JSON.stringify(e));
     });
@@ -361,6 +367,7 @@ struct BlinkTerminal {
       clearInterval(this.timer);
     }
     this.timer = setInterval(() => {
+      this.vpnWatchdog();
       const s: string = StatusStore.read(this.filesDir());
       try {
         const j = JSON.parse(s) as Record<string, Object>;
@@ -374,6 +381,36 @@ struct BlinkTerminal {
       } catch (e) {
       }
     }, 1500);
+  }
+
+  // VPN 看门狗：息屏/省电时系统会杀掉 :vpn 扩展进程，status 文件停更但内容
+  // 还停留在旧的 Running，app 便一直红点连不上。VPN 活着时每 1.5s 写一次
+  // status，mtime 超过 8s 没动即判死，自动重拉扩展（15s 节流防风暴）。
+  private vpnWatchdog(): void {
+    if (this.authKey.length === 0) {
+      return;
+    }
+    try {
+      const st = fs.statSync(StatusStore.path(this.filesDir()));
+      const age: number = Date.now() - st.mtime * 1000;
+      if (age > 8000 && Date.now() - this.lastVpnKick > 15000) {
+        this.lastVpnKick = Date.now();
+        this.tsState = 'Restarting VPN';
+        hilog.warn(DOMAIN, TAG, 'ts status stale %{public}d ms, restarting vpn ext', age);
+        vpnExtension.startVpnExtensionAbility(this.buildWant()).catch((e: Object) => {
+          hilog.error(DOMAIN, TAG, 'vpn rekick: %{public}s', JSON.stringify(e));
+        });
+        // 旧 tun 上的连接全成了半开死链（state 还挂着 connected 但永远收不到
+        // 数据），attach 会以为活着而跳过。主动断开，让它们在新 tun 上重拨。
+        this.pool.all().forEach((c: SessionConn) => {
+          c.failCount = 0;
+          c.cooldownUntil = 0;
+          c.client.close();
+        });
+      }
+    } catch (e) {
+      // status 文件还不存在：首连由 boot()/tsConnect 负责，这里不掺和
+    }
   }
 
   // ---- per-tab connection ----
@@ -462,6 +499,12 @@ struct BlinkTerminal {
     const conn = this.pool.get(tabId);
     if (conn !== null) {
       conn.unread = false;
+      // 用户主动切过来：清掉重连退避（最长 30s），否则断着的 tab 在冷却期内
+      // attach 会静默跳过，切过去就是一片空白、只能手点刷新。
+      if (conn.state !== 'connected' && conn.state !== 'connecting') {
+        conn.failCount = 0;
+        conn.cooldownUntil = 0;
+      }
     }
     if (this.tsState === 'Running') {
       this.attach(tabId, false);
@@ -606,11 +649,19 @@ struct BlinkTerminal {
   }
 
   // send a full line + enter (Claude cmd / favorite / history / composer)
+  // 回车只发一个、但延迟一拍：claude 这类 TUI 会把紧跟文本的回车并进粘贴
+  // 内容里（表现为要手动再按一次回车才发送），隔开发就稳了。不能补发第二个
+  // 回车——/rewind 这类弹菜单的命令会被第二下直接确认关掉。
   private sendLine(text: string): void {
     const client = this.activeClient();
     if (client !== null) {
       client.sendInput(text);
-      client.sendInput('\n');
+      setTimeout(() => {
+        const c = this.activeClient();
+        if (c !== null) {
+          c.sendInput('\r');
+        }
+      }, 180);
     }
   }
 
@@ -685,9 +736,12 @@ struct BlinkTerminal {
     }
   }
 
-  // ---- voice pipeline ----
+  // ---- voice pipeline（按住说话，iOS VoiceInputView 流程）----
 
-  private async startVoice(): Promise<void> {
+  private async holdStart(): Promise<void> {
+    if (this.fieldMode === 'busy' || this.fieldMode === 'review' || this.recording) {
+      return;
+    }
     try {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
       const atm = abilityAccessCtrl.createAtManager();
@@ -695,26 +749,29 @@ struct BlinkTerminal {
       await atm.requestPermissionsFromUser(ctx, perms);
       await this.recorder.start();
       this.recording = true;
-      this.voiceHint = '正在听 · 点击结束';
+      this.fieldMode = 'recording';
     } catch (e) {
       this.recording = false;
+      this.fieldMode = 'idle';
       this.toast('录音启动失败: ' + e);
     }
   }
 
-  private async stopVoice(): Promise<void> {
+  private async holdEnd(): Promise<void> {
+    if (!this.recording) {
+      return;
+    }
     this.recording = false;
-    this.voiceHint = '识别中…';
+    this.fieldMode = 'busy';
     try {
       const wav: Uint8Array = await this.recorder.stop();
       if (wav.length <= 44) {
-        this.voiceHint = '点击下方按钮开始说话';
+        this.fieldMode = 'idle';
         return;
       }
       const raw: string = await GlmClient.transcribe(wav, this.store.voice.apiKey);
       let out: string = raw;
-      if (this.store.voice.enabled && this.store.voice.apiKey.length > 0) {
-        this.voiceHint = '整理中…';
+      if (this.store.voice.enabled && this.store.voice.apiKey.length > 0 && raw.length > 0) {
         try {
           out = await GlmClient.polish(raw, this.store.voice.apiKey, this.store.voice.baseURL,
             this.store.voice.model, this.store.history,
@@ -731,26 +788,66 @@ struct BlinkTerminal {
           out = raw;
         }
       }
-      this.composerText = this.composerText.length > 0 ? (this.composerText + out) : out;
-      this.voiceHint = '点击下方按钮开始说话';
+      const text: string = out.trim();
+      if (text.length > 0) {
+        this.reviewText = text;
+        this.fieldMode = 'review';
+      } else {
+        this.fieldMode = 'idle';
+      }
     } catch (e) {
-      this.voiceHint = '点击下方按钮开始说话';
+      this.fieldMode = 'idle';
       this.toast('识别失败: ' + e);
     }
   }
 
-  private commitComposer(): void {
-    const text: string = this.composerText.trim();
-    if (text.length > 0) {
-      this.sendLine(text);
-      // record history (iOS recordHistory)
-      this.store.history.push(text);
-      if (this.store.history.length > 40) {
-        this.store.history.shift();
-      }
-      this.store.saveHistory();
+  // send + record history (iOS commitText)
+  private commitLine(text: string): void {
+    const t: string = text.trim();
+    if (t.length === 0) {
+      return;
     }
-    this.composerText = '';
+    this.sendLine(t);
+    this.store.history.push(t);
+    if (this.store.history.length > 40) {
+      this.store.history.shift();
+    }
+    this.store.saveHistory();
+  }
+
+  private sendReview(): void {
+    this.commitLine(this.reviewText);
+    this.reviewText = '';
+    this.fieldMode = 'idle';
+  }
+
+  private discardReview(): void {
+    this.reviewText = '';
+    this.fieldMode = 'idle';
+    this.toast('已丢弃');
+  }
+
+  // 轻点语音条（没按住）→ 浮动打字条（iOS FloatingTextInputPanel）
+  private openManualInput(prefill: string): void {
+    this.manualText = prefill;
+    this.showManualInput = true;
+    setTimeout(() => {
+      try {
+        this.getUIContext().getFocusController().requestFocus('manualInput');
+      } catch (e) {
+      }
+    }, 120);
+  }
+
+  private sendManual(): void {
+    this.commitLine(this.manualText);
+    this.manualText = '';
+    this.showManualInput = false;
+    if (this.fieldMode === 'review') {
+      this.reviewText = '';
+      this.fieldMode = 'idle';
+    }
+    this.hideKeyboard();
   }
 
   private useFavorite(text: string): void {
@@ -836,42 +933,6 @@ struct BlinkTerminal {
   // UI builders
   // ===========================================================================
 
-  @Builder
-  circleBtn(glyph: string, bg: string, action: () => void) {
-    Stack() {
-      Text(glyph).fontSize(20).fontColor('#FFFFFF')
-    }
-    .width(46).height(46).borderRadius(23).backgroundColor(bg)
-    .onClick(action)
-  }
-
-  @Builder
-  miniBtn(glyph: string, color: string, action: () => void) {
-    Stack() {
-      Text(glyph).fontSize(15).fontColor(color)
-    }
-    .width(38).height(38).borderRadius(19).backgroundColor(CARD)
-    .border({ width: 1.5, color: color })
-    .onClick(action)
-  }
-
-  @Builder
-  pillKey(label: string, accent: string, action: () => void) {
-    Text(label)
-      .fontSize(13).fontColor(accent).fontFamily('monospace')
-      .backgroundColor(CARD).border({ width: 1, color: accent, radius: 9 })
-      .constraintSize({ minWidth: 40 }).height(38).textAlign(TextAlign.Center)
-      .padding({ left: 9, right: 9 }).onClick(action)
-  }
-
-  @Builder
-  arrowKey(glyph: string, bytes: number[]) {
-    Text(glyph)
-      .fontSize(16).fontColor(TEAL).backgroundColor(CARD).borderRadius(9)
-      .width(40).height(38).textAlign(TextAlign.Center)
-      .onClick(() => this.sendKey(bytes))
-  }
-
   // Load real iOS workDir icons (rawfile PNGs) into PixelMaps once. Dynamic
   // $rawfile() in <Image> is unreliable at runtime, so decode to PixelMap and
   // feed that instead.
@@ -890,7 +951,9 @@ struct BlinkTerminal {
         hilog.warn(DOMAIN, TAG, 'avatar %{public}s: %{public}s', w.id, `${e}`);
       }
     }
-    this.tick++;
+    // 解码完成后重建 tab 条：visTabs 重新赋值 + key 里的 avatarCache.size 变化
+    // 才会让 ForEach 丢弃字母兜底条目换成真头像。
+    this.refreshTabs();
   }
 
   // avatar for a workDir (real iOS icon if decoded, else colored initial)
@@ -909,63 +972,63 @@ struct BlinkTerminal {
     }
   }
 
-  @Builder
-  topBar() {
-    Row() {
-      Text('⚙').fontSize(20).fontColor(TEAL).onClick(() => { this.sheet = 'settings'; })
-      Row({ space: 5 }) {
-        Text('≡').fontSize(15).fontColor(TEAL)
-        Text(this.filterLabel).fontSize(14).fontColor(TEAL)
-      }
-      .padding({ left: 12, right: 13, top: 4, bottom: 4 })
-      .border({ width: 1, color: HAIRLINE, radius: 16 }).margin({ left: 12 })
-      .onClick(() => { this.sheet = 'machinePicker'; })
-      Blank()
-      Row({ space: 3 }) {
-        Text('🌙').fontSize(16)
-        Text(this.restCount.toString()).fontSize(15).fontColor('#B0A8FF')
-      }.onClick(() => { this.sheet = 'restPanel'; })
-      Text('✨').fontSize(17).margin({ left: 12 }).onClick(() => this.toast('AI 助手 · 开发中'))
-      Text('＋').fontSize(24).fontColor(TEAL).margin({ left: 12 }).onClick(() => this.openNewTab())
-    }
-    .width('100%').height(46).padding({ left: 14, right: 16 }).backgroundColor('#000000')
-  }
-
+  // 截图样式的单行顶栏：tab 胶囊横滑 + 右侧 ⋯ 更多（原 ⚙/机器/🌙/＋ 都在里面）
   @Builder
   tabBar() {
-    // Horizontal List (not Scroll) so switchTab/swipeTab can scrollToIndex the active
-    // tab into view — the strip now follows left/right session switches (iOS scrollToItem).
-    List({ space: 8, scroller: this.tabScroller }) {
-      ForEach(this.visTabs, (t: TabModel) => {
+    Row({ space: 8 }) {
+      // Horizontal List (not Scroll) so switchTab/swipeTab can scrollToIndex the active
+      // tab into view — the strip now follows left/right session switches (iOS scrollToItem).
+      List({ space: 8, scroller: this.tabScroller }) {
+        ForEach(this.visTabs, (t: TabModel) => {
+          ListItem() {
+            this.sessionTab(t)
+          }
+        }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : '') + '_' + this.avatarCache.size)
         ListItem() {
-          this.sessionTab(t)
+          Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
+            .onClick(() => this.openNewTab())
         }
-      }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : ''))
-      ListItem() {
-        Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
-          .onClick(() => this.openNewTab())
       }
+      .listDirection(Axis.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+      .layoutWeight(1).height(40)
+      Stack() {
+        Text('⋯').fontSize(20).fontColor('#DADADA')
+      }
+      .width(40).height(40).borderRadius(20)
+      .backgroundColor('#161618').border({ width: 1, color: '#14FFFFFF' })
+      .onClick(() => { this.sheet = 'more'; })
     }
-    .listDirection(Axis.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
-    .width('100%').height(40).padding({ left: 14, right: 14, bottom: 7 }).backgroundColor('#000000')
+    .width('100%').height(52).padding({ left: 12, right: 12, top: 4, bottom: 8 })
+    .backgroundColor('#0b0c0e')
   }
 
+  // ⋯ 菜单：设置 / 机器 / 新建 / 在岗休息
+  @Builder
+  moreBody() {
+    Column({ space: 2 }) {
+      this.navRow('⚙ 设置', '', () => { this.sheet = 'settings'; })
+      this.navRow('🖥 选择机器', this.filterLabel, () => { this.sheet = 'machinePicker'; })
+      this.navRow('＋ 新建会话', '', () => this.openNewTab())
+      this.navRow('🌙 员工在岗 / 休息', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
+    }.width('100%').padding({ left: 16, right: 16 })
+  }
+
+  // 截图样式：深灰圆角胶囊，头像在左、白字标题、右侧小状态点
   @Builder
   sessionTab(t: TabModel) {
-    Row({ space: 6 }) {
-      Text('●').fontSize(8).fontColor(this.dotColor(t.id))
-      this.avatar(this.store.workDirById(t.workDirId), t.id === this.activeTabId, 20)
+    Row({ space: 7 }) {
+      this.avatar(this.store.workDirById(t.workDirId), t.id === this.activeTabId, 26)
       Text(this.store.tabTitle(t))
-        .fontSize(14)
-        .fontColor(t.id === this.activeTabId ? '#FFFFFF' : (this.tabUnread(t) ? TEAL : '#8A8A8E'))
-        .fontFamily('monospace')
+        .fontSize(15)
+        .fontWeight(t.id === this.activeTabId ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(t.id === this.activeTabId ? '#FFFFFF' : (this.tabUnread(t) ? TEAL : '#9A9A9E'))
         .decoration({ type: this.store.isResting(t.id) ? TextDecorationType.LineThrough : TextDecorationType.None })
+      Text('●').fontSize(7).fontColor(this.dotColor(t.id))
     }
-    .padding({ left: 10, right: 12, top: 6, bottom: 6 })
-    .backgroundColor(t.id === this.activeTabId ? '#16323A' : Color.Transparent)
-    .border(t.id === this.activeTabId
-      ? { width: 1, color: HAIRLINE, radius: 11 }
-      : { width: 0, color: Color.Transparent, radius: 11 })
+    .padding({ left: 6, right: 12, top: 5, bottom: 5 })
+    .backgroundColor(t.id === this.activeTabId ? '#2A2A2E' : '#161618')
+    .borderRadius(21)
+    .border({ width: 1, color: t.id === this.activeTabId ? '#2EFFFFFF' : '#14FFFFFF' })
     .onClick(() => this.switchTab(t.id))
     .gesture(LongPressGesture().onAction(() => this.confirmCloseTab(t)))
   }
@@ -973,34 +1036,6 @@ struct BlinkTerminal {
   private tabUnread(t: TabModel): boolean {
     const c = this.pool.get(t.id);
     return c !== null && c.unread && t.id !== this.activeTabId;
-  }
-
-  private clampX(x: number): number {
-    const maxX = Math.max(4, this.areaW - this.dockW - 4);
-    return Math.min(Math.max(x, 4), maxX);
-  }
-
-  private clampY(y: number): number {
-    const maxY = Math.max(4, this.areaH - this.dockH - 4);
-    return Math.min(Math.max(y, 4), maxY);
-  }
-
-  // root-area probe: seed the dock's default spot (right edge, vertically centered)
-  // on first layout, otherwise re-clamp the remembered position into the new bounds.
-  private onRootArea(w: number, h: number): void {
-    this.areaW = w;
-    // Only capture the full height while the keyboard is down, so the dock keeps
-    // its spot instead of jumping up when the soft keyboard resizes the page.
-    if (this.kbHeight === 0) {
-      this.areaH = h;
-    }
-    if (this.dockX < 0 || this.dockY < 0) {
-      this.dockX = Math.max(4, w - this.dockW - 10);
-      this.dockY = Math.max(4, (this.areaH - this.dockH) / 2);
-    } else {
-      this.dockX = this.clampX(this.dockX);
-      this.dockY = this.clampY(this.dockY);
-    }
   }
 
   // Dismiss the soft keyboard by dropping focus — voice mode is record-driven and
@@ -1013,16 +1048,6 @@ struct BlinkTerminal {
     }
   }
 
-  // Explicitly raise the soft keyboard (double-tap the terminal). Terminal taps no longer
-  // auto-focus the input (focusOnTouch(false)); requestFocus + enableKeyboardOnFocus(true)
-  // is the deliberate way back in.
-  private showKeyboard(): void {
-    try {
-      this.getUIContext().getFocusController().requestFocus('termInput');
-    } catch (e) {
-      hilog.warn(DOMAIN, TAG, 'requestFocus: %{public}s', `${e}`);
-    }
-  }
 
   // Horizontal terminal swipe → cycle sessions (shared by both gesture variants).
   private onHSwipe(e: GestureEvent): void {
@@ -1053,162 +1078,212 @@ struct BlinkTerminal {
     }
   }
 
-  // Bottom input panel is hidden by default (matches iOS voiceInputAutoShow): the
-  // floating mic button opens it into voice mode; ⌄ collapses it fully again so the
-  // terminal goes full-screen.
-  private togglePanel(): void {
-    if (this.panelOpen && this.voiceMode) {
-      this.panelOpen = false;
-      this.voiceMode = false;
-      this.hideKeyboard();
-    } else {
-      this.panelOpen = true;
-      this.voiceMode = true;
-    }
-    this.tick++;
-  }
+  // ===========================================================================
+  // bottom dock — iOS VoiceInputView 最新版：功能/键盘分组 + 按住说话
+  // ===========================================================================
 
-  private saveDockPos(): void {
-    const p = this.uiPrefs;
-    if (p === null) {
-      return;
+  private switchToolsGroup(idx: number): void {
+    this.toolsGroup = idx;
+    if (idx === 1 && this.recording) {
+      // 切到键盘组时丢弃进行中的录音
+      this.recording = false;
+      this.fieldMode = 'idle';
+      this.recorder.stop().then((_: Uint8Array): void => {}).catch((): void => {});
     }
-    p.put('dockX', this.dockX)
-      .then((): Promise<void> => p.put('dockY', this.dockY))
-      .then((): Promise<void> => p.flush())
-      .catch(() => {});
   }
 
   @Builder
-  floatingDock() {
-    Column({ space: 10 }) {
-      Row().width(34).height(5).borderRadius(3).backgroundColor('#5A5A5E')
-        .onClick(() => { this.toolbarOpen = !this.toolbarOpen; })
-      if (this.toolbarOpen) {
-        this.circleBtn('🌙', this.store.isResting(this.activeTabId) ? '#5E5CE6' : '#8E8E93',
-          () => this.toggleRest())
-        this.circleBtn('🌐', '#4A5CE6', () => this.openBrowser())
-        this.circleBtn('⭐', '#FFCC00', () => { this.sheet = 'favorites'; })
-        this.circleBtn('🕐', '#4A9EFF', () => this.dumpTranscript())
-        this.circleBtn('🔄', '#34C759', () => this.reconnectActive())
-        this.circleBtn('🖥️', '#C74DE0', () => { this.sheet = 'machinePicker'; })
-        this.circleBtn('🎤', TEAL, () => this.togglePanel())
-      }
-    }
-    .padding({ left: 6, right: 6, top: 8, bottom: 10 })
-    .backgroundColor('#1C1C1EE6').borderRadius(28)
-    .position({ x: this.dockX, y: this.dockY })
-    .visibility(this.dockX < 0 ? Visibility.Hidden : Visibility.Visible)
-    .onAreaChange((_: Area, n: Area) => {
-      this.dockW = n.width as number;
-      this.dockH = n.height as number;
-      if (this.dockX >= 0) {
-        this.dockX = this.clampX(this.dockX);
-        this.dockY = this.clampY(this.dockY);
-      }
-    })
-    .gesture(
-      PanGesture({ fingers: 1, distance: 6 })
-        .onActionStart(() => {
-          this.dockX0 = this.dockX;
-          this.dockY0 = this.dockY;
-        })
-        .onActionUpdate((e: GestureEvent) => {
-          this.dockX = this.clampX(this.dockX0 + e.offsetX);
-          this.dockY = this.clampY(this.dockY0 + e.offsetY);
-        })
-        .onActionEnd(() => this.saveDockPos()),
-    )
+  segItem(label: string, idx: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.toolsGroup === idx ? '#F2F2F2' : '#8CFFFFFF')
+      .fontWeight(this.toolsGroup === idx ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+      .backgroundColor(this.toolsGroup === idx ? '#29FFFFFF' : Color.Transparent)
+      .borderRadius(15)
+      .onClick(() => this.switchToolsGroup(idx))
   }
 
   @Builder
-  bottomAccessory() {
-    Column({ space: 8 }) {
-      Row() {
-        Row({ space: 7 }) {
-          this.pillKey('切换', '#8A8A8E', () => this.openNewTab())
-          this.miniBtn('✕', '#FF3B30', () => this.confirmCloseActive())
-          this.miniBtn('★', '#FFCC00', () => { this.sheet = 'favorites'; })
-          this.miniBtn('↺', TEAL, () => { this.sheet = 'history'; })
-        }
-        Blank()
-        Row({ space: 12 }) {
-          Text('⌨').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.voiceMode = false; this.tick++; this.hideKeyboard(); })
-          Text('⌄').fontSize(20).fontColor('#8A8A8E').onClick(() => { this.panelOpen = false; this.voiceMode = false; this.tick++; this.hideKeyboard(); })
-        }
-      }.width('100%')
-
-      Row() {
-        Row({ space: 7 }) {
-          this.pillKey('Clear', '#8A8A8E', () => this.sendKey([0x15]))
-          this.pillKey('ESC', '#FF6B6B', () => this.sendKey([0x1b]))
-          this.pillKey('Claude', '#FF9F45', () => { this.sheet = 'claude'; })
-          this.miniBtn('⟳', TEAL, () => this.reconnectActive())
-        }
-        Blank()
-        Column({ space: 6 }) {
-          Row({ space: 6 }) {
-            this.arrowKey('⇤', [0x1b, 0x5b, 0x5a])
-            this.arrowKey('↑', [0x1b, 0x5b, 0x41])
-            Text('').width(40).height(38)
-          }
-          Row({ space: 6 }) {
-            this.arrowKey('←', [0x1b, 0x5b, 0x44])
-            this.arrowKey('↓', [0x1b, 0x5b, 0x42])
-            this.arrowKey('→', [0x1b, 0x5b, 0x43])
-          }
-        }
-      }.width('100%').alignItems(VerticalAlign.Top)
-
-      if (this.voiceMode) {
-        this.composer()
-      }
+  dockPill(glyph: string, action: () => void) {
+    Stack() {
+      Text(glyph).fontSize(19).fontColor('#E8E8E8')
     }
-    .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 10 }).backgroundColor('#0A0A0A')
+    .width(54).height(44).borderRadius(15)
+    .backgroundColor('#0FFFFFFF')
+    .border({ width: 1, color: '#24FFFFFF' })
+    .onClick(action)
+  }
+
+  // 系统符号版药丸（对齐 iOS SF Symbol 单色线框图标，不用彩色 emoji）
+  @Builder
+  symPill(res: Resource, action: () => void) {
+    Stack() {
+      SymbolGlyph(res).fontSize(21).fontColor(['#E8E8E8'])
+    }
+    .width(54).height(44).borderRadius(15)
+    .backgroundColor('#0FFFFFFF')
+    .border({ width: 1, color: '#24FFFFFF' })
+    .onClick(action)
   }
 
   @Builder
-  composer() {
-    Column({ space: 10 }) {
-      Row({ space: 10 }) {
-        TextInput({ text: this.composerText, placeholder: this.voiceHint })
-          .layoutWeight(1).height(48).backgroundColor(CARD).fontColor('#FFFFFF')
-          .placeholderColor('#6A6A6E').borderRadius(10)
-          .enableKeyboardOnFocus(false)
-          .onChange((v: string) => { this.composerText = v; })
-        Column({ space: 6 }) {
-          Text('↵').fontSize(18).fontColor('#4A9EFF').width(60).height(40).textAlign(TextAlign.Center)
-            .border({ width: 1, color: '#3A5A8A', radius: 9 })
-            .onClick(() => this.sendKey([0x0d]))
-          Row({ space: 10 }) {
-            Text('📄').fontSize(18).onClick(() => this.dumpTranscript())
-            Text('🖼️').fontSize(18).onClick(() => this.pickAndUploadImage())
-            Text('📥').fontSize(18).onClick(() => this.pasteClipboard())
-          }
+  bottomDock() {
+    Column({ space: 9 }) {
+      Row({ space: 8 }) {
+        Row({ space: 2 }) {
+          this.segItem('功能', 0)
+          this.segItem('键盘', 1)
         }
-      }.width('100%')
+        .padding(3).backgroundColor('#09FFFFFF').borderRadius(18)
+        if (this.fieldMode === 'recording' || this.fieldMode === 'busy') {
+          // 录音/识别时工具行槽位改显状态（iOS composeBar 同槽位替换）
+          Row({ space: 8 }) {
+            Text('●').fontSize(10).fontColor('#FF453A')
+            Text(this.fieldMode === 'recording' ? '正在聆听…' : 'AI 识别整理中…')
+              .fontSize(13).fontColor('#A0FFFFFF')
+          }
+          .layoutWeight(1).padding({ left: 8 })
+        } else {
+          Scroll() {
+            Row({ space: 9 }) {
+              if (this.toolsGroup === 0) {
+                // 顺序对齐 iOS funcTools：star/photo/esc■/paste/refresh/history | 分隔 |
+                // transcript/browser/desktop；✨(Claude 命令) 是鸿蒙特有，放最后。
+                this.symPill($r('sys.symbol.star'), () => { this.sheet = 'favorites'; })
+                this.symPill($r('sys.symbol.picture'), () => this.pickAndUploadImage())
+                this.dockPill('■', () => this.sendKey([0x1b]))
+                this.symPill($r('sys.symbol.text_clipboard'), () => this.pasteClipboard())
+                this.symPill($r('sys.symbol.arrow_clockwise'), () => this.reconnectActive())
+                this.symPill($r('sys.symbol.arrow_counterclockwise_clock'), () => { this.sheet = 'history'; })
+                Row().width(1).height(26).backgroundColor('#1FFFFFFF')
+                this.symPill($r('sys.symbol.doc_plaintext'), () => this.dumpTranscript())
+                this.symPill($r('sys.symbol.discover'), () => this.openBrowser())
+                this.symPill($r('sys.symbol.desktop'), () => { this.sheet = 'machinePicker'; })
+                this.symPill($r('sys.symbol.wand_and_stars'), () => { this.sheet = 'claude'; })
+              } else {
+                // iOS keyToolsRow1：只有四个方向键
+                this.dockPill('↑', () => this.sendKey([0x1b, 0x5b, 0x41]))
+                this.dockPill('↓', () => this.sendKey([0x1b, 0x5b, 0x42]))
+                this.dockPill('←', () => this.sendKey([0x1b, 0x5b, 0x44]))
+                this.dockPill('→', () => this.sendKey([0x1b, 0x5b, 0x43]))
+              }
+            }
+          }
+          .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+          .enablePaging(true)
+        }
+      }
+      .width('100%')
 
-      Row({ space: 14 }) {
+      if (this.toolsGroup === 0) {
+        this.voiceField()
+      } else {
+        this.keysRow2()
+      }
+    }
+    .width('100%').padding({ left: 13, right: 13, top: 10, bottom: 12 })
+    .backgroundColor('#0A0A0A')
+  }
+
+  // 键盘组第二行：占语音条的槽位，严格对齐 iOS keyToolsRow2：
+  // return / ⇤(shift-tab) / delete_left(Ctrl+U 清当前输入行)。
+  @Builder
+  keysRow2() {
+    Row({ space: 9 }) {
+      this.dockPill('⏎', () => this.sendKey([0x0d]))
+      this.dockPill('⇤', () => this.sendKey([0x1b, 0x5b, 0x5a]))
+      this.symPill($r('sys.symbol.delete_left'), () => this.sendKey([0x15]))
+    }
+    .width('100%').height(48)
+  }
+
+  // 按住说话条：长按录音，松开 ASR+AI 整理进 review；轻点弹浮动打字条
+  @Builder
+  voiceField() {
+    Row({ space: 8 }) {
+      if (this.fieldMode === 'review') {
+        Text('✕').fontSize(15).fontColor('#FF6B6B')
+          .width(34).height(34).textAlign(TextAlign.Center)
+          .onClick(() => this.discardReview())
+        Text(this.reviewText)
+          .fontSize(14).fontColor('#FFFFFF').layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .onClick(() => this.openManualInput(this.reviewText))
+      } else {
+        SymbolGlyph($r('sys.symbol.mic')).fontSize(17)
+          .fontColor([this.fieldMode === 'recording' ? '#FF9F9F' : '#66FFFFFF'])
+          .margin({ left: 8 })
+        Text(this.fieldMode === 'recording' ? '正在聆听 · 松开发送'
+          : (this.fieldMode === 'busy' ? '识别中…' : '按住说话…'))
+          .fontSize(14)
+          .fontColor(this.fieldMode === 'recording' ? '#FF9F9F' : '#66FFFFFF')
+          .layoutWeight(1)
+      }
+      Stack() {
+        Text('↑').fontSize(17).fontWeight(FontWeight.Bold)
+          .fontColor(this.fieldMode === 'review' ? '#0B1B14' : '#660B1B14')
+      }
+      .width(34).height(34).borderRadius(17)
+      .backgroundColor(this.fieldMode === 'review' ? '#33E0A1' : '#5933E0A1')
+      .onClick(() => {
+        if (this.fieldMode === 'review') {
+          this.sendReview();
+        }
+      })
+    }
+    .width('100%').height(48).borderRadius(24)
+    .padding({ left: 8, right: 7 })
+    .backgroundColor(this.fieldMode === 'recording' ? '#24FF3B30' : '#0BFFFFFF')
+    .border({ width: 1, color: this.fieldMode === 'recording' ? '#66FF3B30' : '#24FFFFFF' })
+    .gesture(GestureGroup(GestureMode.Exclusive,
+      LongPressGesture({ duration: 280 })
+        .onAction(() => { this.holdStart(); })
+        .onActionEnd(() => { this.holdEnd(); })
+        .onActionCancel(() => { this.holdEnd(); }),
+      TapGesture()
+        .onAction(() => {
+          if (this.fieldMode === 'idle') {
+            this.openManualInput('');
+          }
+        })))
+  }
+
+  // 浮动打字条（iOS FloatingTextInputPanel）：贴键盘顶，点空白收起
+  @Builder
+  manualInputOverlay() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Column().width('100%').height('100%').backgroundColor('#47000000')
+        .onClick(() => { this.showManualInput = false; this.hideKeyboard(); })
+      Row({ space: 8 }) {
+        TextInput({ text: this.manualText, placeholder: '输入命令…' })
+          .id('manualInput')
+          .layoutWeight(1).height(44).fontSize(15)
+          .backgroundColor(Color.Transparent).fontColor('#FFFFFF')
+          .placeholderColor('#59FFFFFF').caretColor('#33E0A1')
+          .enterKeyType(EnterKeyType.Send)
+          .onChange((v: string) => { this.manualText = v; })
+          .onSubmit(() => this.sendManual())
         Stack() {
-          Text(this.recording ? '⏹' : '🎤').fontSize(22)
+          Text('↑').fontSize(17).fontWeight(FontWeight.Bold).fontColor('#0B1B14')
         }
-        .width(52).height(52).borderRadius(26)
-        .backgroundColor(this.recording ? '#FF3B30' : '#4A9EFF')
-        .onClick(() => { this.recording ? this.stopVoice() : this.startVoice(); })
-
-        Text('清空').fontSize(16).fontColor('#FF6B6B').layoutWeight(1).textAlign(TextAlign.Center)
-          .onClick(() => { this.composerText = ''; })
-        Button('确定 ↵').fontSize(16).fontColor('#FFFFFF').backgroundColor('#4A9EFF')
-          .height(48).layoutWeight(1).onClick(() => this.commitComposer())
-      }.width('100%')
+        .width(34).height(34).borderRadius(17).backgroundColor('#33E0A1')
+        .onClick(() => this.sendManual())
+      }
+      .width('94%').height(56).borderRadius(20)
+      .padding({ left: 10, right: 10 })
+      .backgroundColor('#1A212C')
+      .border({ width: 1, color: '#24FFFFFF' })
+      .margin({ bottom: this.kbHeight > 0 ? 10 : 10 + this.botInset })
     }
-    .width('100%').padding({ top: 8 })
+    .width('100%').height('100%')
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
-        this.topBar()
+        // 状态栏避让区：和 tab 条同色（iOS _statusBarBg #0b0c0e）
+        Row().width('100%').height(this.topInset).backgroundColor('#0b0c0e')
         this.tabBar()
         Stack({ alignContent: Alignment.TopStart }) {
           Web({ src: $rawfile('term/term.html'), controller: this.webCtl })
@@ -1236,29 +1311,20 @@ struct BlinkTerminal {
         // preventDefault them (ScrollPort.onTouch_) and killed even the swipe, so we
         // keep all touch in ArkUI: the first update past a threshold locks the axis —
         // horizontal → cycle sessions on release; vertical → live-scroll the scrollback
-        // by driving x-screen.scrollTop from JS (term_scroll_move). Double-tap toggles
-        // the soft keyboard; a plain tap does nothing (never auto-pops the keyboard).
+        // by driving x-screen.scrollTop from JS (term_scroll_move). 终端上点击/双击
+        // 都不弹键盘（快速连点会被误判双击）——系统键盘只从 dock 的 ⌨ 药丸或
+        // 各输入框自己弹出。
         .priorityGesture(
-          GestureGroup(GestureMode.Parallel,
-            PanGesture({ distance: 12 })
-              .onActionStart(() => { this.panMode = ''; this.lastPanY = 0; })
-              .onActionUpdate((e: GestureEvent) => this.onTermPan(e))
-              .onActionEnd((e: GestureEvent) => { if (this.panMode === 'h') { this.onHSwipe(e); } }),
-            TapGesture({ count: 2 })
-              .onAction(() => { this.kbHeight > 0 ? this.hideKeyboard() : this.showKeyboard(); })),
+          PanGesture({ distance: 12 })
+            .onActionStart(() => { this.panMode = ''; this.lastPanY = 0; })
+            .onActionUpdate((e: GestureEvent) => this.onTermPan(e))
+            .onActionEnd((e: GestureEvent) => { if (this.panMode === 'h') { this.onHSwipe(e); } }),
         )
-        if (this.panelOpen) {
-          this.bottomAccessory()
-        }
+        this.bottomDock()
+        // 底部导航条/安全区：dock 同色填充；键盘弹出时页面整体被 kbHeight 顶起，不再垫
+        Row().width('100%').height(this.kbHeight > 0 ? 0 : this.botInset).backgroundColor('#0A0A0A')
       }
       .width('100%').height('100%').backgroundColor('#000000')
-
-      // floating dock — absolutely positioned & draggable (see dockX/dockY / onRootArea)
-      Column() {
-        this.floatingDock()
-      }
-      .width('100%').height('100%')
-      .hitTestBehavior(HitTestMode.Transparent)
 
       // sheets / overlays
       if (this.sheet !== 'none') {
@@ -1270,9 +1336,11 @@ struct BlinkTerminal {
       if (this.showTranscript) {
         this.transcriptOverlay()
       }
+      if (this.showManualInput) {
+        this.manualInputOverlay()
+      }
     }
     .width('100%').height('100%').backgroundColor('#000000').padding({ bottom: this.kbHeight })
-    .onAreaChange((_: Area, n: Area) => this.onRootArea(n.width as number, n.height as number))
   }
 
   // ---- helpers for dynamic labels ----
@@ -1379,13 +1447,6 @@ struct BlinkTerminal {
     this.showBrowser = true;
   }
 
-  private confirmCloseActive(): void {
-    const t = this.store.tabById(this.activeTabId);
-    if (t !== null) {
-      this.confirmCloseTab(t);
-    }
-  }
-
   private confirmCloseTab(t: TabModel): void {
     this.getUIContext().showAlertDialog({
       title: '关闭会话',
@@ -1405,7 +1466,7 @@ struct BlinkTerminal {
   @Builder
   sheetChrome() {
     Stack({ alignContent: Alignment.Bottom }) {
-      Column().width('100%').height('100%').backgroundColor('#000000CC')
+      Column().width('100%').height('100%').backgroundColor('#CC000000')
         .onClick(() => { this.sheet = 'none'; })
       Column() {
         Row().width(38).height(5).borderRadius(3).backgroundColor('#3A3A3C').margin({ top: 8, bottom: 10 })
@@ -1414,7 +1475,9 @@ struct BlinkTerminal {
           Text('完成').fontSize(15).fontColor('#0A84FF').onClick(() => { this.sheet = 'none'; })
         }.width('100%').padding({ left: 16, right: 16, bottom: 8 })
 
-        if (this.sheet === 'settings') {
+        if (this.sheet === 'more') {
+          this.moreBody()
+        } else if (this.sheet === 'settings') {
           this.settingsBody()
         } else if (this.sheet === 'machinePicker') {
           this.machinePickerBody()
@@ -1438,12 +1501,15 @@ struct BlinkTerminal {
       }
       .width('100%').height(this.sheetHeight()).backgroundColor('#0C0C0E')
       .borderRadius({ topLeft: 18, topRight: 18 })
+      .padding({ bottom: this.botInset })
     }
     .width('100%').height('100%')
   }
 
   private sheetTitle(): string {
-    if (this.sheet === 'settings') {
+    if (this.sheet === 'more') {
+      return '更多';
+    } else if (this.sheet === 'settings') {
       return '设置';
     } else if (this.sheet === 'machinePicker') {
       return '选择机器';
@@ -1468,7 +1534,9 @@ struct BlinkTerminal {
   }
 
   private sheetHeight(): string {
-    if (this.sheet === 'settings') {
+    if (this.sheet === 'more') {
+      return '42%';
+    } else if (this.sheet === 'settings') {
       return '86%';
     } else if (this.sheet === 'machinePicker') {
       return '60%';
@@ -1777,6 +1845,7 @@ struct BlinkTerminal {
         .width('100%').layoutWeight(1)
     }
     .width('100%').height('100%').backgroundColor('#000000')
+    .padding({ top: this.topInset, bottom: this.botInset })
   }
 
   // ---- transcript overlay ----
@@ -1794,6 +1863,7 @@ struct BlinkTerminal {
       }.layoutWeight(1).width('100%').align(Alignment.TopStart)
     }
     .width('100%').height('100%').backgroundColor('#0C0C0E')
+    .padding({ top: this.topInset, bottom: this.botInset })
   }
 
   private copyTranscript(): void {
