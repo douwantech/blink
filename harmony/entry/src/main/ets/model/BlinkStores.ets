@@ -81,7 +81,7 @@ export interface VoiceConfig {
   debounce: number;
 }
 
-interface SeedConfig {
+export interface SeedConfig {
   machines: Machine[];
   workDirs: WorkDir[];
   people: string[];
@@ -99,6 +99,8 @@ interface SeedConfig {
   locale: string;
   resting: string[];
   workMode: boolean;
+  autoReconnect?: boolean;
+  updatedAt?: number;   // iOS 推送时的 epoch 秒，配置同步用 last-writer-wins
 }
 
 // ---- store ----
@@ -225,6 +227,33 @@ export class BlinkStore {
       return;
     }
     p.put(key, v).then((): Promise<void> => p.flush()).catch(() => {});
+  }
+
+  // 方案一配置同步：整体采纳 iOS 推来的配置（形状同 seed），但当前 tab 若仍
+  // 存在则保住不跳。调用方负责清理已消失 tab 的连接和刷新 UI。
+  async applySync(s: SeedConfig): Promise<void> {
+    const keep: string = this.currentTabId;
+    this.machines = s.machines;
+    this.workDirs = s.workDirs;
+    this.people = s.people;
+    this.presets = s.presets;
+    this.tabs = s.tabs;
+    this.pinned = s.pinned;
+    this.favorites = s.favorites;
+    this.favoriteCounts = s.favoriteCounts;
+    this.history = s.history;
+    this.corrections = s.corrections;
+    this.terms = s.terms;
+    this.voice = s.voice;
+    this.filterMachineId = s.filterMachineId;
+    this.locale = s.locale;
+    this.resting = s.resting;
+    this.workMode = s.workMode;
+    if (s.autoReconnect !== undefined) {
+      this.autoReconnect = s.autoReconnect;
+    }
+    this.currentTabId = this.tabs.findIndex((t: TabModel) => t.id === keep) >= 0 ? keep : s.currentId;
+    await this.persistAll();
   }
 
   async persistAll(): Promise<void> {

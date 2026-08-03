@@ -29,7 +29,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
-import { BlinkStore, Machine, WorkDir, TabModel } from '../model/BlinkStores';
+import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig } from '../model/BlinkStores';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
 
@@ -128,6 +128,12 @@ struct BlinkTerminal {
   private uiPrefs: preferences.Preferences | null = null;
   private timer: number = -1;
   private lastVpnKick: number = 0;   // 看门狗上次重拉 VPN 的时刻（节流）
+  private lastCfgPull: number = 0;   // 配置同步上次拉取时刻（节流）
+  private cfgPullBusy: boolean = false;
+  private cfgWatcher: BlinkdClient | null = null;   // 常驻监听 Mac 配置文件变化
+  private cfgWatchBuf: string = '';
+  private lastWatchMtime: string = '';
+  private lastWatchTry: number = 0;
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -147,6 +153,10 @@ struct BlinkTerminal {
   }
 
   aboutToDisappear(): void {
+    if (this.cfgWatcher !== null) {
+      this.cfgWatcher.close();
+      this.cfgWatcher = null;
+    }
     this.pool.closeAll();
     if (this.win !== null) {
       try {
@@ -378,9 +388,187 @@ struct BlinkTerminal {
         if (state === 'Running' && this.activeTabId.length > 0) {
           this.attach(this.activeTabId, false);
         }
+        if (state === 'Running') {
+          this.pullSyncConfig();
+          this.ensureCfgWatcher();
+        }
       } catch (e) {
       }
     }, 1500);
+  }
+
+  // ---- 配置同步（方案一：iOS → Mac → 鸿蒙 单向）----
+  // iOS 端把 seed 形状的配置推到各机器 ~/.blink/sync/blink_config.json；
+  // 这里经 blinkd 一次性 exec 拉回，updatedAt 比上次采纳的新才应用。
+  // 节流 5 分钟；回前台（onPageShow）清零节流立即拉一次。
+  private pullSyncConfig(): void {
+    if (this.cfgPullBusy || !this.storeReady || this.tsState !== 'Running') {
+      return;
+    }
+    if (Date.now() - this.lastCfgPull < 300000) {
+      return;
+    }
+    this.lastCfgPull = Date.now();
+    let host: string = '';
+    let port: number = 7777;
+    let token: string = '';
+    for (let i = 0; i < this.store.machines.length; i++) {
+      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
+      if (ep !== null && ep.blinkdHost !== undefined && ep.blinkdToken !== undefined) {
+        host = ep.blinkdHost;
+        token = ep.blinkdToken;
+        port = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+        break;
+      }
+    }
+    if (host.length === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, TAG, 'cfg pull start %{public}s:%{public}d', host, port);
+    this.cfgPullBusy = true;
+    let buf: string = '';
+    const dec = util.TextDecoder.create('utf-8');
+    const client = new BlinkdClient();
+    client.onData = (bytes: Uint8Array) => {
+      buf += dec.decodeToString(bytes, { stream: true });
+    };
+    client.onState = (st: BlinkdState) => {
+      if (st === 'closed' || st === 'error') {
+        this.finishCfgPull(buf);
+      }
+    };
+    // base64 输出躲开 PTY 对换行/控制字节的加工，收端反解。
+    // 结束以连接关闭（cat 跑完进程退出）为准；15s 只是兜底——冷启动时
+    // tailscale 握手可能要好几秒，5s 固定窗曾把迟到的数据整个丢掉。
+    client.connect(host, port, token, 24, 80,
+      'cat ~/.blink/sync/blink_config.json 2>/dev/null | base64');
+    setTimeout(() => {
+      this.finishCfgPull(buf);
+      client.close();
+    }, 15000);
+  }
+
+  // 常驻监听：在 Mac 上跑一个小循环，配置文件 mtime 一变就吐一行
+  // CFGCHANGED:<mtime>，收到即立刻拉取——iOS 上把员工标记休息/加机器，
+  // 鸿蒙几秒内自动跟上，不用等回前台。断线由 poll 兜底重建（10s 间隔）。
+  private ensureCfgWatcher(): void {
+    if (this.cfgWatcher !== null || !this.storeReady || this.tsState !== 'Running') {
+      return;
+    }
+    if (Date.now() - this.lastWatchTry < 10000) {
+      return;
+    }
+    this.lastWatchTry = Date.now();
+    let host: string = '';
+    let port: number = 7777;
+    let token: string = '';
+    for (let i = 0; i < this.store.machines.length; i++) {
+      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
+      if (ep !== null && ep.blinkdHost !== undefined && ep.blinkdToken !== undefined) {
+        host = ep.blinkdHost;
+        token = ep.blinkdToken;
+        port = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+        break;
+      }
+    }
+    if (host.length === 0) {
+      return;
+    }
+    const client = new BlinkdClient();
+    this.cfgWatcher = client;
+    this.cfgWatchBuf = '';
+    const dec = util.TextDecoder.create('utf-8');
+    client.onData = (bytes: Uint8Array) => {
+      this.cfgWatchBuf += dec.decodeToString(bytes, { stream: true });
+      const lines: string[] = this.cfgWatchBuf.split('\n');
+      this.cfgWatchBuf = lines[lines.length - 1];   // 尾巴可能是半行，留着
+      for (let i = 0; i < lines.length - 1; i++) {
+        const at: number = lines[i].indexOf('CFGCHANGED:');
+        if (at < 0) {
+          continue;
+        }
+        const mtime: string = lines[i].substring(at + 11).trim();
+        if (mtime.length > 0 && mtime !== this.lastWatchMtime) {
+          // 首行也触发：监听可能在文件已更新之后才连上（比如刚重连），
+          // 跳过首行会漏掉那次变更。多余的拉取由 updatedAt 门槛挡住，无害。
+          this.lastWatchMtime = mtime;
+          this.lastCfgPull = 0;
+          this.pullSyncConfig();
+        }
+      }
+    };
+    client.onState = (st: BlinkdState) => {
+      if (st === 'closed' || st === 'error') {
+        if (this.cfgWatcher === client) {
+          this.cfgWatcher = null;   // poll 兜底重建
+        }
+      }
+    };
+    client.connect(host, port, token, 24, 80,
+      'last=""; while true; do cur=$(stat -f %m ~/.blink/sync/blink_config.json 2>/dev/null); ' +
+      'if [ "$cur" != "$last" ]; then last="$cur"; echo "CFGCHANGED:$cur"; fi; sleep 2; done');
+  }
+
+  private finishCfgPull(buf: string): void {
+    if (!this.cfgPullBusy) {
+      return;
+    }
+    this.cfgPullBusy = false;
+    const b64: string = buf.replace(new RegExp('[^A-Za-z0-9+/=]', 'g'), '');
+    hilog.info(DOMAIN, TAG, 'cfg pull got %{public}d raw / %{public}d b64', buf.length, b64.length);
+    if (b64.length < 16) {
+      // 空结果多半是冷启动抢跑：status 文件还是旧 Running、tun 其实没起来，
+      // TCP 连不上。15s 后再试，别让 5 分钟节流把首次同步堵死。
+      this.lastCfgPull = Date.now() - 285000;
+      return;
+    }
+    try {
+      const bytes: Uint8Array = this.b64.decodeSync(b64);
+      const dec = util.TextDecoder.create('utf-8');
+      const cfg: SeedConfig = JSON.parse(dec.decodeToString(bytes)) as SeedConfig;
+      const stamp: number = cfg.updatedAt !== undefined ? cfg.updatedAt : 0;
+      const last: number = this.uiPrefs !== null ? this.uiPrefs.getSync('cfgSyncStamp', 0) as number : 0;
+      if (stamp <= last || cfg.machines === undefined || cfg.machines.length === 0) {
+        return;
+      }
+      this.applySyncedConfig(cfg, stamp);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'cfg sync parse: %{public}s', `${e}`);
+    }
+  }
+
+  private async applySyncedConfig(cfg: SeedConfig, stamp: number): Promise<void> {
+    const prevActive: string = this.activeTabId;
+    await this.store.applySync(cfg);
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('cfgSyncStamp', stamp).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    // 清掉已不存在 tab 的连接与终端图层
+    this.pool.all().forEach((c: SessionConn) => {
+      if (this.store.tabById(c.tabId) === null) {
+        this.pool.remove(c.tabId);
+        this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
+      }
+    });
+    this.refreshTabs();
+    if (this.store.tabById(prevActive) !== null) {
+      this.activeTabId = prevActive;
+    } else {
+      this.activeTabId = '';
+      if (this.visTabs.length > 0) {
+        this.switchTab(this.visTabs[0].id);
+      }
+    }
+    hilog.info(DOMAIN, TAG, 'cfg synced from iOS: %{public}d machines %{public}d tabs',
+      cfg.machines.length, cfg.tabs.length);
+    this.toast('配置已从 iOS 同步');
+  }
+
+  // 回前台：清零节流，立即拉一次最新配置
+  onPageShow(): void {
+    this.lastCfgPull = 0;
+    this.pullSyncConfig();
   }
 
   // VPN 看门狗：息屏/省电时系统会杀掉 :vpn 扩展进程，status 文件停更但内容

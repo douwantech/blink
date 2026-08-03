@@ -914,6 +914,8 @@ Please go to your subscriptions and cancel one of them!
     // post didRestore → _cloudConfigDidRestore 采纳/追加，跨设备 tab 才真正跟手。
     if view.window?.windowScene === scene {
       CloudConfigSync.shared.pullNow()
+      // 顺手把配置推到各台机器的 ~/.blink/sync/（60s 节流），鸿蒙端从那里拉
+      ConfigSyncPush.shared.pushSoon()
     }
 
     #if targetEnvironment(macCatalyst)

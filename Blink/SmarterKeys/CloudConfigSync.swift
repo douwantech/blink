@@ -104,6 +104,9 @@ final class CloudConfigSync: NSObject {
   @objc private func localChanged() {
     guard !applyingRemote else { return }   // 拉回写本地时不要再回推
     schedulePush()
+    // 顺手让 Mac 侧的同步文件也跟上（3s 合并窗口直推，不吃 60s 节流），
+    // 鸿蒙端的常驻监听靠它做到秒级跟随。
+    ConfigSyncPush.shared.noteChanged()
   }
 
   private func schedulePush() {
@@ -222,5 +225,159 @@ final class CloudConfigSync: NSObject {
 
   private func plistSize(_ value: Any) -> Int? {
     (try? PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0))?.count
+  }
+}
+
+// MARK: - 方案一：iOS → Mac 配置单向同步（鸿蒙从 Mac 拉）
+//
+// 把与鸿蒙 seed_config.json 同形状的配置 JSON 推到每台 blinkd 机器的
+// ~/.blink/sync/blink_config.json；鸿蒙端启动/回前台时经 blinkd 拉取，
+// updatedAt 比本地新才采纳。触发：App 进后台 + 回前台（60s 节流），
+// 全程尽力而为，失败静默——同步丢一两次无所谓，下次再推。
+
+import Network
+import UIKit
+
+final class ConfigSyncPush: NSObject {
+  @objc static let shared = ConfigSyncPush()
+  private var lastPush = Date.distantPast
+
+  private override init() {
+    super.init()
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(pushSoon),
+      name: UIApplication.didEnterBackgroundNotification, object: nil)
+  }
+
+  /// 节流入口：前后台切换都打这里
+  @objc func pushSoon() {
+    guard Date().timeIntervalSince(lastPush) > 60 else { return }
+    lastPush = Date()
+    DispatchQueue.global(qos: .utility).async { self.pushNow() }
+  }
+
+  private var changePending = false
+
+  /// 配置真的变了（CloudConfigSync 的本地改动钩子）：3s 合并窗口后直推，
+  /// 绕过 60s 节流——员工休息/加机器这类改动要秒级到达鸿蒙。
+  @objc func noteChanged() {
+    guard !changePending else { return }
+    changePending = true
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3.0) { [weak self] in
+      guard let self else { return }
+      self.changePending = false
+      self.lastPush = Date()
+      self.pushNow()
+    }
+  }
+
+  private func pushNow() {
+    var payload = Self.exportJSON(slim: false)?.base64EncodedString() ?? ""
+    // blinkd 帧长上限 u16=64KB：超了就砍掉学习类大头（history/corrections/terms）
+    if payload.count > 60_000 {
+      payload = Self.exportJSON(slim: true)?.base64EncodedString() ?? ""
+    }
+    guard !payload.isEmpty, payload.count <= 60_000 else { return }
+    let script = "mkdir -p ~/.blink/sync && printf '%s' '\(payload)' | openssl base64 -d -A > ~/.blink/sync/.cfg.tmp && mv ~/.blink/sync/.cfg.tmp ~/.blink/sync/blink_config.json"
+    guard let mdata = UserDefaults.standard.data(forKey: "BlinkMachineStore.machines"),
+          let machines = (try? JSONSerialization.jsonObject(with: mdata)) as? [[String: Any]] else { return }
+    for m in machines {
+      guard let host = m["blinkdHost"] as? String, !host.isEmpty,
+            let token = m["blinkdToken"] as? String, !token.isEmpty else { continue }
+      Self.send(host: host, port: UInt16(m["blinkdPort"] as? Int ?? 7777), token: token, script: script)
+    }
+  }
+
+  // 导出为鸿蒙 SeedConfig 形状（键名与 rawfile/seed_config.json 一致）
+  private static func exportJSON(slim: Bool) -> Data? {
+    let d = UserDefaults.standard
+    func decoded(_ key: String) -> [Any] {
+      guard let data = d.data(forKey: key),
+            let obj = try? JSONSerialization.jsonObject(with: data) else { return [] }
+      return (obj as? [Any]) ?? []
+    }
+    var workDirs: [[String: Any]] = []
+    for case var w as [String: Any] in decoded("BlinkWorkDirStore.workDirs") {
+      w["hasIcon"] = w["iconImageData"] != nil
+      w.removeValue(forKey: "iconImageData")   // 头像不走这条通道（几十 KB 一张）
+      workDirs.append(w)
+    }
+    var tabs: [[String: Any]] = []
+    var currentId = ""
+    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    if let data = try? Data(contentsOf: docs.appendingPathComponent("blink_tabs.json")),
+       let st = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+      let closed = Set((st["closedIds"] as? [String]) ?? [])
+      for case let t as [String: Any] in (st["tabs"] as? [Any]) ?? [] {
+        guard let id = t["id"] as? String, !closed.contains(id) else { continue }
+        tabs.append([
+          "id": id,
+          "machineId": (t["machineId"] as? String) ?? "",
+          "workDirId": (t["workDirId"] as? String) ?? "",
+          "tmuxSession": (t["tmuxSession"] as? String) ?? "new",
+          "useTmux": (t["useTmux"] as? Bool) ?? true,
+        ])
+      }
+      currentId = (st["currentId"] as? String) ?? ""
+    }
+    let root: [String: Any] = [
+      "machines": decoded("BlinkMachineStore.machines"),
+      "workDirs": workDirs,
+      "people": decoded("BlinkPeopleStore.names"),
+      "presets": decoded("BlinkSessionPresetStore.presets"),
+      "tabs": tabs,
+      "currentId": currentId,
+      "pinned": decoded("PinnedTabsStore.tabs"),
+      "favorites": d.stringArray(forKey: "VoiceInputView.aiFavorites") ?? [],
+      "favoriteCounts": d.dictionary(forKey: "VoiceInputView.aiFavoriteCounts") ?? [:],
+      "history": slim ? [] : (d.stringArray(forKey: "VoiceInputView.aiHistory") ?? []),
+      "corrections": slim ? [] : ((d.array(forKey: "VoiceInputView.aiCorrections") as? [[String]]) ?? []),
+      "terms": slim ? [:] : (d.dictionary(forKey: "VoiceInputView.aiTerms") ?? [:]),
+      "voice": [
+        "enabled": (d.object(forKey: "VoiceInputView.aiEnabled") as? Bool) ?? true,
+        "apiKey": d.string(forKey: "VoiceInputView.aiAPIKey") ?? "",
+        "model": d.string(forKey: "VoiceInputView.aiModel") ?? "glm-4-flashx",
+        "baseURL": d.string(forKey: "VoiceInputView.aiBaseURL") ?? "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "debounce": (d.object(forKey: "VoiceInputView.aiDebounce") as? Double) ?? 1.5,
+      ] as [String: Any],
+      "locale": d.string(forKey: "VoiceInputView.localeIdentifier") ?? "zh-CN",
+      "resting": d.stringArray(forKey: "TabRestStore.resting") ?? [],
+      "filterMachineId": d.string(forKey: "BlinkTabFilterMachineId") ?? "",
+      "autoReconnect": (d.object(forKey: "BlinkAutoReconnect") as? Bool) ?? true,
+      "workMode": true,
+      "updatedAt": Date().timeIntervalSince1970,
+    ]
+    return try? JSONSerialization.data(withJSONObject: root)
+  }
+
+  // blinkd 裸 TCP：0x01 token 帧 → 0x04 exec 帧（daemon 侧 bash -c 跑），u16 BigEndian
+  private static func frame(_ type: UInt8, _ payload: Data) -> Data {
+    var out = Data([type])
+    out.append(UInt8((payload.count >> 8) & 0xff))
+    out.append(UInt8(payload.count & 0xff))
+    out.append(payload)
+    return out
+  }
+
+  private static func send(host: String, port: UInt16, token: String, script: String) {
+    guard let p = NWEndpoint.Port(rawValue: port) else { return }
+    let conn = NWConnection(host: NWEndpoint.Host(host), port: p, using: .tcp)
+    var out = frame(0x01, Data(token.utf8))
+    out.append(frame(0x04, Data(script.utf8)))
+    conn.stateUpdateHandler = { st in
+      switch st {
+      case .ready:
+        conn.send(content: out, completion: .contentProcessed { _ in
+          // 给 daemon 一点执行时间再断开
+          DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) { conn.cancel() }
+        })
+      case .failed:
+        conn.cancel()
+      default:
+        break
+      }
+    }
+    conn.start(queue: .global(qos: .utility))
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10) { conn.cancel() }   // 兜底超时
   }
 }
