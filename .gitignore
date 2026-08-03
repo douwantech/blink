@@ -79,3 +79,4 @@ harmony/build-profile.local.json5
 # personal workDir avatars — stays local, never committed (mirrors build-profile secrecy)
 harmony/entry/src/main/resources/rawfile/seed_config.json
 harmony/entry/src/main/resources/rawfile/avatars/
+.hvigor/
