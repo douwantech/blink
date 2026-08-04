@@ -392,15 +392,18 @@ final class VoiceInputView: UIView {
 
   // 键盘分组：两行铺开（键盘模式不需要语音条，第二行借用它的位置）
   private let keyToolsRow1: [Tool?] = [
-    Tool(act: "up", symbol: "arrow.up", text: nil, warn: false),
-    Tool(act: "down", symbol: "arrow.down", text: nil, warn: false),
-    Tool(act: "left", symbol: "arrow.left", text: nil, warn: false),
-    Tool(act: "right", symbol: "arrow.right", text: nil, warn: false),
+    Tool(act: "up", symbol: "asset:tool_up", text: nil, warn: false),
+    Tool(act: "down", symbol: "asset:tool_down", text: nil, warn: false),
+    Tool(act: "left", symbol: "asset:tool_left", text: nil, warn: false),
+    Tool(act: "right", symbol: "asset:tool_right", text: nil, warn: false),
   ]
   private let keyToolsRow2: [Tool?] = [
-    Tool(act: "return", symbol: "return", text: nil, warn: false),
-    Tool(act: "shifttab", symbol: nil, text: "⇤", warn: false),
-    Tool(act: "clear", symbol: "delete.left", text: nil, warn: false),
+    // Claude 斜杠命令（自定义 Lucide 图标）：走 didCommitText（发文本→停一拍→单回车）
+    Tool(act: "rewind", symbol: "asset:tool_rewind", text: nil, warn: false),
+    Tool(act: "compact", symbol: "asset:tool_compact", text: nil, warn: false),
+    Tool(act: "return", symbol: "asset:tool_return", text: nil, warn: false),
+    Tool(act: "shifttab", symbol: "asset:tool_mode", text: nil, warn: false),
+    Tool(act: "clear", symbol: "asset:tool_clear", text: nil, warn: false),
   ]
 
   private func fill(_ stack: UIStackView, with tools: [Tool?]) {
@@ -450,8 +453,21 @@ final class VoiceInputView: UIView {
     b.layer.borderColor = (t.warn ? Self.warnRed.withAlphaComponent(0.32) : UIColor.white.withAlphaComponent(0.14)).cgColor
     b.tintColor = color
     if let sym = t.symbol {
-      let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-      b.setImage(UIImage(systemName: sym, withConfiguration: cfg), for: .normal)
+      if sym.hasPrefix("asset:") {
+        // 自定义矢量图标（资源目录里的 SVG，模板着色跟随 tintColor）
+        let name = String(sym.dropFirst("asset:".count))
+        if let base = UIImage(named: name) {
+          let pt: CGFloat = 22   // 键盘组全部改用 Lucide 图标，统一 22pt
+          let sz = CGSize(width: pt, height: pt)
+          let scaled = UIGraphicsImageRenderer(size: sz).image { _ in
+            base.draw(in: CGRect(origin: .zero, size: sz))
+          }.withRenderingMode(.alwaysTemplate)
+          b.setImage(scaled, for: .normal)
+        }
+      } else {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        b.setImage(UIImage(systemName: sym, withConfiguration: cfg), for: .normal)
+      }
     } else if let txt = t.text {
       b.setTitle(txt, for: .normal)
       b.setTitleColor(color, for: .normal)
@@ -493,6 +509,8 @@ final class VoiceInputView: UIView {
     case "shifttab": delegate?.voiceInputDidRequestSendShiftTab(self)
     case "tab": delegate?.voiceInputDidRequestSendTab(self)
     case "esc": delegate?.voiceInputDidRequestSendEsc(self)
+    case "rewind": delegate?.voiceInput(self, didCommitText: "/rewind")
+    case "compact": delegate?.voiceInput(self, didCommitText: "/compact")
     case "clear": delegate?.voiceInputDidRequestClearLine(self)
     default: break
     }

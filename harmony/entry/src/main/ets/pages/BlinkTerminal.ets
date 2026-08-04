@@ -1653,6 +1653,18 @@ struct BlinkTerminal {
     .onClick(action)
   }
 
+  // 自定义矢量图标版药丸（media 里的 SVG，描边色已烘焙成 #E8E8E8）
+  @Builder
+  imgPill(res: Resource, action: () => void) {
+    Stack() {
+      Image(res).width(22).height(22).objectFit(ImageFit.Contain).draggable(false)
+    }
+    .width(54).height(44).borderRadius(15)
+    .backgroundColor('#0FFFFFFF')
+    .border({ width: 1, color: '#24FFFFFF' })
+    .onClick(action)
+  }
+
   @Builder
   bottomDock() {
     Column({ space: 9 }) {
@@ -1688,10 +1700,10 @@ struct BlinkTerminal {
                 this.symPill($r('sys.symbol.wand_and_stars'), () => { this.sheet = 'claude'; })
               } else {
                 // iOS keyToolsRow1：只有四个方向键
-                this.dockPill('↑', () => this.sendKey([0x1b, 0x5b, 0x41]))
-                this.dockPill('↓', () => this.sendKey([0x1b, 0x5b, 0x42]))
-                this.dockPill('←', () => this.sendKey([0x1b, 0x5b, 0x44]))
-                this.dockPill('→', () => this.sendKey([0x1b, 0x5b, 0x43]))
+                this.imgPill($r('app.media.tool_up'), () => this.sendKey([0x1b, 0x5b, 0x41]))
+                this.imgPill($r('app.media.tool_down'), () => this.sendKey([0x1b, 0x5b, 0x42]))
+                this.imgPill($r('app.media.tool_left'), () => this.sendKey([0x1b, 0x5b, 0x44]))
+                this.imgPill($r('app.media.tool_right'), () => this.sendKey([0x1b, 0x5b, 0x43]))
               }
             }
           }
@@ -1731,9 +1743,12 @@ struct BlinkTerminal {
   @Builder
   keysRow2() {
     Row({ space: 9 }) {
-      this.dockPill('⏎', () => this.sendKey([0x0d]))
-      this.dockPill('⇤', () => this.sendKey([0x1b, 0x5b, 0x5a]))
-      this.symPill($r('sys.symbol.delete_left'), () => this.sendKey([0x15]))
+      // Claude 斜杠命令（自定义 Lucide 图标）：走 sendLine（发文本→停一拍→单回车）
+      this.imgPill($r('app.media.tool_rewind'), () => this.sendLine('/rewind'))
+      this.imgPill($r('app.media.tool_compact'), () => this.sendLine('/compact'))
+      this.imgPill($r('app.media.tool_return'), () => this.sendKey([0x0d]))
+      this.imgPill($r('app.media.tool_mode'), () => this.sendKey([0x1b, 0x5b, 0x5a]))
+      this.imgPill($r('app.media.tool_clear'), () => this.sendKey([0x15]))
     }
     .width('100%').height(48)
   }
