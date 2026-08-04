@@ -216,6 +216,13 @@ enum HostReachability {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
       let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
       let inner = resumeOrNew(pathArg)
+      // 启动脚本落到远端固定路径（boot 文件）。session 已存在时 `tmux new-session -A` 只会
+      // attach，inner（cd + claude resume）不会重跑——坏 session（cd 失败/claude 退出后
+      // 只剩裸 shell 停在错误目录）就永远修不好。所以 attach 前检测 pane 前台进程：
+      // 是裸 shell 就 send-keys 重新 source boot 文件自愈（重新 cd 进工作目录 + resume claude）；
+      // claude 还活着则不打扰。点「刷新」/自动重连都走这条路。
+      let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
+      let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-u; tmux send-keys -t \#(outerSession) " source \#(bootFile)" Enter;; esac; fi"#
       // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装那）也加载进来。
       // 末尾 `; exec $SHELL -il`：万一 claude 没起来/退出，掉到登录 shell 而不是整个会话塌掉，
       // 既停掉疯狂重连，也让报错（如 command not found: claude）留在屏上看得到。
@@ -223,7 +230,11 @@ enum HostReachability {
       \(detectSock)
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
       \(migrate)
-      exec tmux new-session -A -s \(outerSession) $SHELL -lic '\(inner); echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il'
+      cat > \(bootFile) <<'BLINKBOOT'
+      \(inner)
+      BLINKBOOT
+      \(heal)
+      exec tmux new-session -A -s \(outerSession) $SHELL -lic 'source \(bootFile); echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
         // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析

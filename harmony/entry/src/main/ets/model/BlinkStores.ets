@@ -534,10 +534,25 @@ export class BlinkStore {
     const migrate: string = 'if [ "' + session + '" != "' + outerSession + '" ] && tmux has-session -t "' + session +
       '" 2>/dev/null && ! tmux has-session -t "' + outerSession + '" 2>/dev/null; then tmux rename-session -t "' +
       session + '" "' + outerSession + '" 2>/dev/null; fi';
+    // Boot file + self-heal (iOS BlinkMachineStore.swift useTmux branch, verbatim):
+    // `-A` on an existing session only attaches — inner (cd + claude resume) never
+    // reruns, so a broken session (bare shell in the wrong dir) stays broken forever.
+    // Before attaching, if the pane's foreground process is a bare shell, send-keys
+    // `source <boot>` to re-cd into the workdir and resume claude; leave claude alone
+    // if it is still running. Refresh / auto-reconnect both go through this path.
+    const bootFile: string = '/tmp/.blink-boot-' + outerSession + '.sh';
+    const heal: string = 'if tmux has-session -t ' + outerSession +
+      ' 2>/dev/null; then PC=$(tmux display-message -p -t ' + outerSession +
+      " '#{pane_current_command}' 2>/dev/null); case \"$PC\" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t " +
+      outerSession + ' C-u; tmux send-keys -t ' + outerSession + ' " source ' + bootFile + '" Enter;; esac; fi';
     return detectSock + '\n' +
       'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin\n' +
       migrate + '\n' +
-      'exec tmux new-session -A -s ' + outerSession + " $SHELL -lic '" + inner + tail + "'";
+      "cat > " + bootFile + " <<'BLINKBOOT'\n" +
+      inner + '\n' +
+      'BLINKBOOT\n' +
+      heal + '\n' +
+      'exec tmux new-session -A -s ' + outerSession + " $SHELL -lic 'source " + bootFile + tail + "'";
   }
 
   // The exec frame payload for a tab (what blinkd's `bash -c` runs).
