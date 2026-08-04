@@ -100,7 +100,9 @@ export interface SeedConfig {
   resting: string[];
   workMode: boolean;
   autoReconnect?: boolean;
-  updatedAt?: number;   // iOS 推送时的 epoch 秒，配置同步用 last-writer-wins
+  updatedAt?: number;   // 推送时的 epoch 秒，配置同步用 last-writer-wins
+  origin?: string;      // 'ios' | 'harmony'——谁写的文件；拉到自己写的直接跳过防回声
+  closedIds?: string[]; // 显式关闭的 tab 墓碑，跨设备传播删除（防复活）
 }
 
 // ---- store ----
@@ -122,6 +124,7 @@ export class BlinkStore {
   corrections: string[][] = [];        // [asrRaw, final] pairs
   terms: Record<string, Record<string, number>> = {};  // wrong -> {correct: count}
   resting: string[] = [];              // resting tab ids (TabRestStore)
+  closedIds: string[] = [];            // 关过的 tab 墓碑（同 iOS TabState.closedIds）
   workMode: boolean = false;           // "只显示工作中"
   autoReconnect: boolean = true;       // BlinkAutoReconnect
   locale: string = 'zh-CN';            // 识别语言
@@ -134,6 +137,10 @@ export class BlinkStore {
   };
 
   private prefs: preferences.Preferences | null = null;
+
+  /// 本地配置真的变了（save* 落盘时触发；applySync/seed 的 persistAll 不触发）。
+  /// BlinkTerminal 挂上防抖推送，把配置回流到 Mac 文件 → iOS。
+  onLocalChange: (() => void) | null = null;
 
   async load(ctx: common.UIAbilityContext): Promise<void> {
     this.prefs = await preferences.getPreferences(ctx, P_KEY);
@@ -158,6 +165,7 @@ export class BlinkStore {
     this.corrections = this.readJson<string[][]>('corrections', []);
     this.terms = this.readJson<Record<string, Record<string, number>>>('terms', {});
     this.resting = this.readJson<string[]>('resting', []);
+    this.closedIds = this.readJson<string[]>('closedIds', []);
     const v = this.readJson<VoiceConfig | null>('voice', null);
     if (v !== null) {
       this.voice = v;
@@ -219,6 +227,9 @@ export class BlinkStore {
     p.put(key, JSON.stringify(v)).then((): Promise<void> => p.flush()).catch((e: Object) => {
       hilog.error(DOMAIN, TAG, 'put %{public}s: %{public}s', key, JSON.stringify(e));
     });
+    if (this.onLocalChange !== null) {
+      this.onLocalChange();
+    }
   }
 
   private putVal(key: string, v: preferences.ValueType): void {
@@ -227,24 +238,51 @@ export class BlinkStore {
       return;
     }
     p.put(key, v).then((): Promise<void> => p.flush()).catch(() => {});
+    // 切当前 tab 不算配置变更（iOS 侧同样不为它刷新时间戳），别每次切 tab 都推一轮
+    if (key !== 'currentTabId' && this.onLocalChange !== null) {
+      this.onLocalChange();
+    }
   }
 
-  // 方案一配置同步：整体采纳 iOS 推来的配置（形状同 seed），但当前 tab 若仍
+  // 配置同步：整体采纳对端推来的配置（形状同 seed），但当前 tab 若仍
   // 存在则保住不跳。调用方负责清理已消失 tab 的连接和刷新 UI。
   async applySync(s: SeedConfig): Promise<void> {
     const keep: string = this.currentTabId;
+    // 墓碑合并：两端显式关过的 tab 都不留——防「对端还开着又用整份列表把它推回来复活」
+    const merged: string[] = this.closedIds.slice();
+    const incoming: string[] = s.closedIds !== undefined ? s.closedIds : [];
+    for (let i = 0; i < incoming.length; i++) {
+      if (merged.indexOf(incoming[i]) < 0) {
+        merged.push(incoming[i]);
+      }
+    }
+    while (merged.length > 500) {
+      merged.shift();
+    }
+    this.closedIds = merged;
     this.machines = s.machines;
     this.workDirs = s.workDirs;
     this.people = s.people;
     this.presets = s.presets;
-    this.tabs = s.tabs;
+    this.tabs = s.tabs.filter((t: TabModel) => merged.indexOf(t.id) < 0);
     this.pinned = s.pinned;
     this.favorites = s.favorites;
     this.favoriteCounts = s.favoriteCounts;
-    this.history = s.history;
-    this.corrections = s.corrections;
-    this.terms = s.terms;
+    // 学习类大头可能被发端瘦身成空（帧上限），空的不覆盖本地积累
+    if (s.history.length > 0) {
+      this.history = s.history;
+    }
+    if (s.corrections.length > 0) {
+      this.corrections = s.corrections;
+    }
+    if (Object.keys(s.terms).length > 0) {
+      this.terms = s.terms;
+    }
+    const localKey: string = this.voice.apiKey;
     this.voice = s.voice;
+    if (this.voice.apiKey.length === 0) {
+      this.voice.apiKey = localKey;   // 对端 key 为空不冲掉本地
+    }
     this.filterMachineId = s.filterMachineId;
     this.locale = s.locale;
     this.resting = s.resting;
@@ -254,6 +292,35 @@ export class BlinkStore {
     }
     this.currentTabId = this.tabs.findIndex((t: TabModel) => t.id === keep) >= 0 ? keep : s.currentId;
     await this.persistAll();
+  }
+
+  // 双向同步的推送端：把本地配置导成 blink_config.json 形状（同 iOS exportJSON）。
+  // slim=true 时砍掉学习类大头（history/corrections/terms），躲 blinkd 64KB 帧上限。
+  exportSync(updatedAt: number, slim: boolean): SeedConfig {
+    const cfg: SeedConfig = {
+      machines: this.machines,
+      workDirs: this.workDirs,
+      people: this.people,
+      presets: this.presets,
+      tabs: this.tabs,
+      currentId: this.currentTabId,
+      pinned: this.pinned,
+      favorites: this.favorites,
+      history: slim ? [] : this.history,
+      terms: slim ? {} : this.terms,
+      corrections: slim ? [] : this.corrections,
+      favoriteCounts: this.favoriteCounts,
+      voice: this.voice,
+      filterMachineId: this.filterMachineId,
+      locale: this.locale,
+      resting: this.resting,
+      workMode: this.workMode,
+      autoReconnect: this.autoReconnect,
+      updatedAt: updatedAt,
+      origin: 'harmony',
+      closedIds: this.closedIds,
+    };
+    return cfg;
   }
 
   async persistAll(): Promise<void> {
@@ -273,6 +340,7 @@ export class BlinkStore {
     await p.put('corrections', JSON.stringify(this.corrections));
     await p.put('terms', JSON.stringify(this.terms));
     await p.put('resting', JSON.stringify(this.resting));
+    await p.put('closedIds', JSON.stringify(this.closedIds));
     await p.put('voice', JSON.stringify(this.voice));
     await p.put('currentTabId', this.currentTabId);
     await p.put('filterMachineId', this.filterMachineId);
@@ -295,6 +363,7 @@ export class BlinkStore {
   saveCorrections(): void { this.putJson('corrections', this.corrections); }
   saveTerms(): void { this.putJson('terms', this.terms); }
   saveResting(): void { this.putJson('resting', this.resting); }
+  saveClosed(): void { this.putJson('closedIds', this.closedIds); }
   saveVoice(): void { this.putJson('voice', this.voice); }
   saveCurrent(): void { this.putVal('currentTabId', this.currentTabId); }
   saveFilter(): void { this.putVal('filterMachineId', this.filterMachineId); }

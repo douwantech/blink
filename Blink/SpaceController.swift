@@ -2850,6 +2850,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     self.webView = WKWebView(frame: .zero, configuration: config)
     super.init(nibName: nil, bundle: nil)
     webView.configuration.userContentController.add(self, name: "copy")
+    webView.configuration.userContentController.add(self, name: "fetchImage")
   }
 
   convenience init(text: String) {
@@ -2858,8 +2859,53 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
   required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
   func userContentController(_ ctrl: WKUserContentController, didReceive msg: WKScriptMessage) {
-    guard msg.name == "copy", let text = msg.body as? String else { return }
-    UIPasteboard.general.string = text
+    if msg.name == "copy", let text = msg.body as? String {
+      UIPasteboard.general.string = text
+      return
+    }
+    if msg.name == "fetchImage", let d = msg.body as? [String: Any],
+       let url = d["url"] as? String, let id = d["id"] as? String {
+      fetchImage(url: url, id: id)
+    }
+  }
+
+  /// 页内 <img> 加载失败(多半是门禁 401——WebView 的挑战回调对子资源不生效)时,
+  /// 原生带 Basic 账密把图抓回来,以 data URI 塞回去,让门禁内的截图也能直接显示。
+  private func fetchImage(url: String, id: String) {
+    guard let u = URL(string: url) else { return }
+    var req = URLRequest(url: u, timeoutInterval: 20)
+    if let cred = Self.basicAuth(forHost: u.host ?? "") {
+      let token = Data("\(cred.0):\(cred.1)".utf8).base64EncodedString()
+      req.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
+    }
+    URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+      let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+      let mime = (resp as? HTTPURLResponse)?.mimeType ?? "image/png"
+      // 6MB 上限：整页长图也够用，再大塞 data URI 会把 WebView 拖垮
+      guard let data, code == 200, data.count < 6_000_000 else {
+        DispatchQueue.main.async { self?.evalImage(id: id, dataURI: "") }
+        return
+      }
+      let uri = "data:\(mime);base64,\(data.base64EncodedString())"
+      DispatchQueue.main.async { self?.evalImage(id: id, dataURI: uri) }
+    }.resume()
+  }
+
+  private func evalImage(id: String, dataURI: String) {
+    let js = dataURI.isEmpty ? "imgGiveUp('\(id)')" : "imgReady('\(id)','\(dataURI)')"
+    webView.evaluateJavaScript(js, completionHandler: nil)
+  }
+
+  /// 该 host 的 Basic 账密：钉住的浏览器 tab 里存的优先，prototype 原型站有内置兜底。
+  static func basicAuth(forHost host: String) -> (String, String)? {
+    for t in PinnedTabsStore.shared.tabs {
+      guard let user = t.authUser, !user.isEmpty,
+            let pwd = t.authPassword, !pwd.isEmpty,
+            let u = URL(string: t.url), u.host == host else { continue }
+      return (user, pwd)
+    }
+    if host == "prototype.douwantech.com" { return ("binku87", "binku87works") }
+    return nil
   }
 
   override func viewDidLoad() {
@@ -3078,6 +3124,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     hr { border: none; border-top: 1px solid #e2e4e8; margin: 1.5em 0; }
     p { margin: 0.5em 0; }
     img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
+    a.md-img-fallback { word-break: break-all; }
     video.md-video { width: 100%; max-width: 100%; min-height: 180px; border-radius: 8px; margin: 0.5em 0 0; display: block; background: #000; }
     a.md-video-link { display: inline-block; font-size: 13px; color: #1a73e8; margin: 0.2em 0 0.7em; text-decoration: none; }
     #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -3187,6 +3234,41 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     function escapeHTML(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+    // 图加载不出来：多半是门禁 401（WebView 的 auth 挑战对 <img> 子资源不生效），
+    // 先请原生带 Basic 账密抓回来塞 data URI；原生也拿不到才退成可点链接。
+    var imgSeq = 0;
+    var imgWaiting = {};
+    function imgFail(el) {
+      var u = el.getAttribute('src') || '';
+      if (el.dataset.retried || u.indexOf('data:') === 0) { imgLink(el, u); return; }
+      el.dataset.retried = '1';
+      var id = 'gi' + (++imgSeq);
+      imgWaiting[id] = el;
+      el.dataset.origsrc = u;
+      el.removeAttribute('src');
+      el.alt = '载入中…';
+      try {
+        window.webkit.messageHandlers.fetchImage.postMessage({url: u, id: id});
+      } catch (e) { imgLink(el, u); }
+    }
+    function imgLink(el, u) {
+      var a = document.createElement('a');
+      a.href = u; a.textContent = u; a.className = 'md-img-fallback';
+      el.replaceWith(a);
+    }
+    function imgReady(id, uri) {
+      var el = imgWaiting[id];
+      if (!el) { return; }
+      delete imgWaiting[id];
+      el.alt = '';
+      el.src = uri;
+    }
+    function imgGiveUp(id) {
+      var el = imgWaiting[id];
+      if (!el) { return; }
+      delete imgWaiting[id];
+      imgLink(el, el.dataset.origsrc || '');
+    }
     // 把已转义文本里的裸 http(s) URL 包成可点链接（用于代码块——里面的链接原本点不动）。
     // 输入已 escapeHTML 过，URL 里的 & 已是 &amp;，href 要还原回 &。
     function linkifyEscaped(s) {
@@ -3208,11 +3290,11 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       s = s.replace(/`([^`]+)`/g, (_, c) => '<code>' + escapeHTML(c) + '</code>');
       // 2. markdown image ![alt](url)
       s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
-        '<img class="md-img" src="' + url + '" alt="' + alt + '">');
+        '<img class="md-img" src="' + url + '" alt="' + alt + '" onerror="imgFail(this)">');
       // 3. markdown link [text](url) — image/video url 也转成内联媒体
       s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
         if (/\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?.*)?$/i.test(url)) {
-          return '<img class="md-img" src="' + url + '" alt="' + text + '">';
+          return '<img class="md-img" src="' + url + '" alt="' + text + '" onerror="imgFail(this)">';
         }
         if (/\.(?:mp4|mov|m4v|webm|ogv)(?:\?.*)?$/i.test(url)) {
           return '<video class="md-video" src="' + url + '" controls playsinline webkit-playsinline preload="metadata"></video>' +
@@ -3226,7 +3308,7 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       // 4. bare image URL — 必须在 bold/italic 之前处理，否则会被 ** 包成 plain 粗体
       //    URL char 类排除 * ，防止 **url** 把闭合 ** 吞进 URL
       s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:jpe?g|png|gif|webp|bmp|heic|svg)(?:\?[^\s<"\)*]*)?)/gi,
-        (m) => '<img class="md-img" src="' + m + '">');
+        (m) => '<img class="md-img" src="' + m + '" onerror="imgFail(this)">');
       // 4.5. bare video URL → 内联 <video controls>
       s = s.replace(/(https?:\/\/[^\s<"\)*]+?\.(?:mp4|mov|m4v|webm|ogv)(?:\?[^\s<"\)*]*)?)/gi,
         (m) => '<video class="md-video" src="' + m + '" controls playsinline webkit-playsinline preload="metadata"></video>' +
@@ -3692,6 +3774,24 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       return
     }
     decisionHandler(.allow)
+  }
+
+  /// 消息里内联的 <img> 撞上门禁（Basic Auth）时，用钉住浏览器 tab 里存的账密应答——
+  /// prototype 站等图床的凭证跟浏览器共用一份，门禁内截图就能直接显示出来。
+  func webView(_ webView: WKWebView,
+               didReceive challenge: URLAuthenticationChallenge,
+               completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    let method = challenge.protectionSpace.authenticationMethod
+    let basicLike = method == NSURLAuthenticationMethodHTTPBasic
+      || method == NSURLAuthenticationMethodHTTPDigest
+    if basicLike, challenge.previousFailureCount == 0 {
+      let host = challenge.protectionSpace.host
+      if let cred = Self.basicAuth(forHost: challenge.protectionSpace.host) {
+        completionHandler(.useCredential, URLCredential(user: cred.0, password: cred.1, persistence: .forSession))
+        return
+      }
+    }
+    completionHandler(.performDefaultHandling, nil)
   }
 
   @objc private func closeTapped() { dismiss(animated: true) }

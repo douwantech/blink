@@ -18,6 +18,7 @@
 import { common, wantAgent, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { vpnExtension } from '@kit.NetworkKit';
+import { http } from '@kit.NetworkKit';
 import type Want from '@ohos.app.ability.Want';
 import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -135,6 +136,8 @@ struct BlinkTerminal {
   private cfgWatchBuf: string = '';
   private lastWatchMtime: string = '';
   private lastWatchTry: number = 0;
+  private cfgPushDirty: boolean = false;   // 本地配置改了、还没推到 Mac
+  private cfgPushTimer: number = -1;       // 3s 合并窗口
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -166,6 +169,10 @@ struct BlinkTerminal {
       this.cfgWatcher.close();
       this.cfgWatcher = null;
     }
+    if (this.cfgPushTimer >= 0) {
+      clearTimeout(this.cfgPushTimer);
+      this.cfgPushTimer = -1;
+    }
     this.pool.closeAll();
     if (this.win !== null) {
       try {
@@ -193,6 +200,10 @@ struct BlinkTerminal {
       this.uiPrefs.put('fs_shrunk_v2', true).then((): Promise<void> => this.uiPrefs!.flush()).catch(() => {});
     }
     await this.store.load(ctx);
+    // 双向同步：本地配置一变（save* 落盘）→ 3s 合并窗口后推到各机器的 blink_config.json
+    this.store.onLocalChange = (): void => {
+      this.notifyCfgChanged();
+    };
     // pick the active tab (persisted current, else first visible)
     const vis = this.store.visibleTabs();
     let cur = this.store.currentTabId;
@@ -400,16 +411,72 @@ struct BlinkTerminal {
         if (state === 'Running') {
           this.pullSyncConfig();
           this.ensureCfgWatcher();
+          this.pushSyncConfig();   // 改动时 VPN 没通留下的 dirty，通了补推
         }
       } catch (e) {
       }
     }, 1500);
   }
 
-  // ---- 配置同步（方案一：iOS → Mac → 鸿蒙 单向）----
-  // iOS 端把 seed 形状的配置推到各机器 ~/.blink/sync/blink_config.json；
-  // 这里经 blinkd 一次性 exec 拉回，updatedAt 比上次采纳的新才应用。
-  // 节流 5 分钟；回前台（onPageShow）清零节流立即拉一次。
+  // ---- 配置同步（双向：iOS ⇄ Mac 文件 ⇄ 鸿蒙）----
+  // 两端都把 seed 形状的配置推到各机器 ~/.blink/sync/blink_config.json（带 origin），
+  // 这里经 blinkd 一次性 exec 拉回，origin 不是自己且 updatedAt 更新才应用。
+  // 拉取节流 5 分钟；watcher 盯 mtime 秒级跟随；回前台（onPageShow）立即拉一次。
+
+  // 本地配置变了（store save* 落盘触发）：3s 合并窗口后推送
+  private notifyCfgChanged(): void {
+    this.cfgPushDirty = true;
+    if (this.cfgPushTimer >= 0) {
+      return;
+    }
+    this.cfgPushTimer = setTimeout(() => {
+      this.cfgPushTimer = -1;
+      this.pushSyncConfig();
+    }, 3000);
+  }
+
+  // 把本地配置推到所有 blinkd 机器（origin=harmony）。VPN 没通时留着 dirty，
+  // poll 的 Running 分支补推。写完记 cfgSyncStamp——自己写的文件 watcher 会响，
+  // 拉回来靠 origin + stamp 双门槛跳过，不成环。
+  private pushSyncConfig(): void {
+    if (!this.cfgPushDirty || !this.storeReady || this.tsState !== 'Running') {
+      return;
+    }
+    this.cfgPushDirty = false;
+    const stamp: number = Date.now() / 1000;
+    const enc = new util.TextEncoder();
+    let b64: string = this.b64.encodeToStringSync(enc.encodeInto(JSON.stringify(this.store.exportSync(stamp, false))));
+    if (b64.length > 60000) {
+      // blinkd 帧长上限 u16=64KB：超了砍掉学习类大头（history/corrections/terms）
+      b64 = this.b64.encodeToStringSync(enc.encodeInto(JSON.stringify(this.store.exportSync(stamp, true))));
+    }
+    if (b64.length === 0 || b64.length > 60000) {
+      return;
+    }
+    const script: string = "mkdir -p ~/.blink/sync && printf '%s' '" + b64 +
+      "' | openssl base64 -d -A > ~/.blink/sync/.cfg.tmp && mv ~/.blink/sync/.cfg.tmp ~/.blink/sync/blink_config.json";
+    let sent: number = 0;
+    for (let i = 0; i < this.store.machines.length; i++) {
+      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
+      if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+        continue;
+      }
+      const client = new BlinkdClient();
+      client.connect(ep.blinkdHost, ep.blinkdPort !== undefined ? ep.blinkdPort : 7777,
+        ep.blinkdToken, 24, 80, script);
+      setTimeout(() => {
+        client.close();
+      }, 8000);
+      sent++;
+    }
+    if (sent > 0) {
+      const p = this.uiPrefs;
+      if (p !== null) {
+        p.put('cfgSyncStamp', stamp).then((): Promise<void> => p.flush()).catch(() => {});
+      }
+      hilog.info(DOMAIN, TAG, 'cfg push to %{public}d machines (%{public}d b64)', sent, b64.length);
+    }
+  }
   private pullSyncConfig(): void {
     if (this.cfgPullBusy || !this.storeReady || this.tsState !== 'Running') {
       return;
@@ -535,6 +602,9 @@ struct BlinkTerminal {
       const bytes: Uint8Array = this.b64.decodeSync(b64);
       const dec = util.TextDecoder.create('utf-8');
       const cfg: SeedConfig = JSON.parse(dec.decodeToString(bytes)) as SeedConfig;
+      if (cfg.origin === 'harmony') {
+        return;   // 自己写的文件，别回声采纳
+      }
       const stamp: number = cfg.updatedAt !== undefined ? cfg.updatedAt : 0;
       const last: number = this.uiPrefs !== null ? this.uiPrefs.getSync('cfgSyncStamp', 0) as number : 0;
       if (stamp <= last || cfg.machines === undefined || cfg.machines.length === 0) {
@@ -772,12 +842,43 @@ struct BlinkTerminal {
     this.switchTab(t.id);
   }
 
+  // 按 host 找钉住浏览器 tab 里存的 Basic Auth 账密(prototype 门禁站等,与浏览器共用一份)
+  private pinnedAuthFor(host: string): string[] | null {
+    for (let i = 0; i < this.store.pinned.length; i++) {
+      const t = this.store.pinned[i];
+      if (t.authUser === undefined || t.authUser.length === 0 || t.authPassword === undefined) {
+        continue;
+      }
+      const m = t.url.match(new RegExp('^https?://([^/]+)'));
+      if (m === null) {
+        continue;
+      }
+      const h: string = m[1];
+      if (h === host || h.split(':')[0] === host) {
+        return [t.authUser, t.authPassword];
+      }
+    }
+    // 内置兜底：prototype 原型站没钉住时也能显示门禁内截图（钉住 tab 的账密优先）
+    if (host === 'prototype.douwantech.com') {
+      return ['binku87', 'binku87works'];
+    }
+    return null;
+  }
+
   private closeTab(tabId: string): void {
     this.pool.remove(tabId);
     this.webCtl.runJavaScript(`term_dispose('${tabId}')`);
     const idx: number = this.store.tabs.findIndex((x: TabModel) => x.id === tabId);
     if (idx >= 0) {
       this.store.tabs.splice(idx, 1);
+    }
+    // 墓碑：显式关闭要跨设备传播，否则 iOS 那边还开着又会整份推回来复活
+    if (this.store.closedIds.indexOf(tabId) < 0) {
+      this.store.closedIds.push(tabId);
+      while (this.store.closedIds.length > 500) {
+        this.store.closedIds.shift();
+      }
+      this.store.saveClosed();
     }
     this.store.saveTabs();
     this.refreshTabs();
@@ -1172,6 +1273,9 @@ struct BlinkTerminal {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, t);
       pasteboard.getSystemPasteboard().setData(data).then(() => this.toast('已复制')).catch(() => {});
     };
+    this.chatBridge.onFetchImage = (url: string, id: string): void => {
+      this.fetchChatImage(url, id);
+    };
     const cached = this.loadChatCache(tab.id);
     this.chatRefreshing = true;
     this.renderChat(cached !== null ? cached.body : '');
@@ -1179,6 +1283,51 @@ struct BlinkTerminal {
     this.fetchChatDelta(tab, ep.blinkdHost,
       ep.blinkdPort !== undefined ? ep.blinkdPort : 7777, ep.blinkdToken,
       cached !== null ? cached.file : '', cached !== null ? cached.lines : 0);
+  }
+
+  // 页内 <img> 加载失败(多半是门禁 401——Web 的 auth 挑战对子资源不生效):
+  // 原生带 Basic 账密抓回来,以 data URI 塞回去,门禁内的截图也能直接显示。
+  private fetchChatImage(url: string, id: string): void {
+    const header: Record<string, string> = {};
+    let host: string = '';
+    const m = url.match(new RegExp('^https?://([^/:]+)'));
+    if (m !== null) {
+      host = m[1];
+    }
+    const cred: string[] | null = this.pinnedAuthFor(host);
+    if (cred !== null) {
+      const enc = new util.TextEncoder();
+      header['Authorization'] = 'Basic ' + this.b64.encodeToStringSync(enc.encodeInto(cred[0] + ':' + cred[1]));
+    }
+    const req = http.createHttp();
+    req.request(url, {
+      method: http.RequestMethod.GET,
+      header: header,
+      connectTimeout: 10000,
+      readTimeout: 25000,
+      expectDataType: http.HttpDataType.ARRAY_BUFFER,
+    }).then((rsp: http.HttpResponse) => {
+      req.destroy();
+      const bytes = rsp.result as ArrayBuffer;
+      // 6MB 上限:整页长图也够用,再大塞 data URI 会把 Web 拖垮
+      if (rsp.responseCode !== 200 || bytes.byteLength === 0 || bytes.byteLength > 6000000) {
+        this.chatWebCtl.runJavaScript(`imgGiveUp('${id}')`);
+        return;
+      }
+      let mime: string = 'image/png';
+      const ct = rsp.header as Record<string, string>;
+      if (ct !== undefined && typeof ct['content-type'] === 'string') {
+        mime = ct['content-type'].split(';')[0];
+      }
+      const uri: string = 'data:' + mime + ';base64,' + this.b64.encodeToStringSync(new Uint8Array(bytes));
+      this.chatWebCtl.runJavaScript(`imgReady('${id}','${uri}')`);
+    }).catch(() => {
+      req.destroy();
+      try {
+        this.chatWebCtl.runJavaScript(`imgGiveUp('${id}')`);
+      } catch (e) {
+      }
+    });
   }
 
   // 生成 HTML 落到 filesDir,Web loadUrl(带 ?v= 防缓存);controller 未挂载时由
@@ -2264,10 +2413,23 @@ struct BlinkTerminal {
           .layoutWeight(1).width('100%')
           .backgroundColor('#F4F5F7')
           .fileAccess(true)
+          .onHttpAuthRequest((event) => {
+            // 消息里内联的 <img> 撞上门禁(Basic Auth):用钉住浏览器 tab 存的账密应答,
+            // 门禁内截图直接显示;没有匹配凭证就取消,让 onerror 回退成链接
+            if (event) {
+              const cred: string[] | null = this.pinnedAuthFor(event.host);
+              if (cred !== null) {
+                event.handler.confirm(cred[0], cred[1]);
+              } else {
+                event.handler.cancel();
+              }
+            }
+            return true;
+          })
           .javaScriptProxy({
             object: this.chatBridge,
             name: 'blinkNative',
-            methodList: ['copy'],
+            methodList: ['copy', 'fetchImage'],
             controller: this.chatWebCtl,
           })
       }
@@ -2328,12 +2490,17 @@ interface TranscriptCacheH {
   body: string;
 }
 
-// Web 里 JS 调 native 复制(javaScriptProxy 注入为 window.blinkNative)
+// Web 里 JS 调 native(javaScriptProxy 注入为 window.blinkNative):复制 + 带账密抓图
 class ChatBridge {
   onCopy: (t: string) => void = (_t: string): void => {};
+  onFetchImage: (url: string, id: string) => void = (_u: string, _i: string): void => {};
 
   copy(t: string): void {
     this.onCopy(t);
+  }
+
+  fetchImage(url: string, id: string): void {
+    this.onFetchImage(url, id);
   }
 }
 
@@ -2379,15 +2546,31 @@ function buildChatHtml(payloadB64: string, avatarURI: string, claudeName: string
     'blockquote{border-left:3px solid #e2e4e8;padding-left:12px;margin:.6em 0;color:#5f6670;}' +
     'hr{border:none;border-top:1px solid #e2e4e8;margin:1.5em 0;}p{margin:.5em 0;}' +
     'img{max-width:100%;border-radius:8px;}' +
+    'img.md-img{margin:.5em 0;display:block;}' +
+    'a.md-img-fallback{word-break:break-all;}' +
     '</style></head><body><div id="content"></div><script>' +
     'function escapeHTML(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}' +
     'function decodeB64(b){var bin=atob(b);var a=new Uint8Array(bin.length);' +
     'for(var i=0;i<bin.length;i++){a[i]=bin.charCodeAt(i);}return new TextDecoder("utf-8").decode(a);}' +
     'function utf8B64(s){return btoa(unescape(encodeURIComponent(s)));}' +
+    'var imgSeq=0;var imgWaiting={};' +
+    'function imgLink(el,u){var a=document.createElement("a");a.href=u;a.textContent=u;' +
+    'a.className="md-img-fallback";el.replaceWith(a);}' +
+    'function imgFail(el){var u=el.getAttribute("src")||"";' +
+    'if(el.dataset.retried||u.indexOf("data:")===0){imgLink(el,u);return;}' +
+    'el.dataset.retried="1";var id="gi"+(++imgSeq);imgWaiting[id]=el;el.dataset.origsrc=u;' +
+    'el.removeAttribute("src");el.alt="载入中…";' +
+    'try{window.blinkNative.fetchImage(u,id);}catch(e){imgLink(el,u);}}' +
+    'function imgReady(id,uri){var el=imgWaiting[id];if(!el){return;}delete imgWaiting[id];' +
+    'el.alt="";el.src=uri;}' +
+    'function imgGiveUp(id){var el=imgWaiting[id];if(!el){return;}delete imgWaiting[id];' +
+    'imgLink(el,el.dataset.origsrc||"");}' +
     'function inline(s){s=escapeHTML(s);' +
     's=s.replace(/`([^`\\n]+)`/g,"<code>$1</code>");' +
     's=s.replace(/\\*\\*([^*\\n]+)\\*\\*/g,"<strong>$1</strong>");' +
     's=s.replace(/(https?:\\/\\/[^\\s<>"\']+)/g,\'<a href="$1">$1</a>\');' +
+    's=s.replace(/<a href="([^"]+\\.(?:jpe?g|png|gif|webp|bmp|heic)(?:\\?[^"]*)?)">[^<]*<\\/a>/gi,' +
+    '\'<img class="md-img" src="$1" onerror="imgFail(this)">\');' +
     'return s;}' +
     'function copyMsg(btn){try{var t=decodeB64(btn.getAttribute("data-content"));' +
     'if(window.blinkNative&&window.blinkNative.copy){window.blinkNative.copy(t);}' +

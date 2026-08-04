@@ -97,6 +97,9 @@ final class CloudConfigSync: NSObject {
     // 到了才刷新；冷启动那一刻镜像往往还是本机自己的旧值。pullNow 直接读 KV，把云端值灌进镜像，
     // 让启动时的采纳拿到的是真·云端最新。
     pullNow()
+
+    // 双向同步的另一半：鸿蒙推到 Mac 文件的配置，这里拉回来。
+    ConfigSyncPull.start()
   }
 
   // MARK: 本地 → iCloud
@@ -106,7 +109,8 @@ final class CloudConfigSync: NSObject {
     schedulePush()
     // 顺手让 Mac 侧的同步文件也跟上（3s 合并窗口直推，不吃 60s 节流），
     // 鸿蒙端的常驻监听靠它做到秒级跟随。
-    ConfigSyncPush.shared.noteChanged()
+    // 正在采纳鸿蒙推来的配置时不回推文件（防 ping-pong）；iCloud 镜像照常。
+    if !ConfigSyncPull.applying { ConfigSyncPush.shared.noteChanged() }
   }
 
   private func schedulePush() {
@@ -228,11 +232,12 @@ final class CloudConfigSync: NSObject {
   }
 }
 
-// MARK: - 方案一：iOS → Mac 配置单向同步（鸿蒙从 Mac 拉）
+// MARK: - iOS ⇄ Mac ⇄ 鸿蒙 双向配置同步
 //
-// 把与鸿蒙 seed_config.json 同形状的配置 JSON 推到每台 blinkd 机器的
-// ~/.blink/sync/blink_config.json；鸿蒙端启动/回前台时经 blinkd 拉取，
-// updatedAt 比本地新才采纳。触发：App 进后台 + 回前台（60s 节流），
+// 汇合点：每台 blinkd 机器的 ~/.blink/sync/blink_config.json（鸿蒙 seed 形状）。
+// 两端都「本地改动 → 防抖后推到所有机器」+「watcher 盯文件 mtime → 变了就拉」。
+// 冲突 last-writer-wins（updatedAt epoch 秒）；payload 带 origin（ios/harmony），
+// 拉到自己写的文件直接跳过，防回声循环。tab 删除靠 closedIds 墓碑传播。
 // 全程尽力而为，失败静默——同步丢一两次无所谓，下次再推。
 
 import Network
@@ -304,10 +309,12 @@ final class ConfigSyncPush: NSObject {
     }
     var tabs: [[String: Any]] = []
     var currentId = ""
+    var closedIds: [String] = []
     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     if let data = try? Data(contentsOf: docs.appendingPathComponent("blink_tabs.json")),
        let st = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-      let closed = Set((st["closedIds"] as? [String]) ?? [])
+      closedIds = (st["closedIds"] as? [String]) ?? []
+      let closed = Set(closedIds)
       for case let t as [String: Any] in (st["tabs"] as? [Any]) ?? [] {
         guard let id = t["id"] as? String, !closed.contains(id) else { continue }
         tabs.append([
@@ -327,6 +334,7 @@ final class ConfigSyncPush: NSObject {
       "presets": decoded("BlinkSessionPresetStore.presets"),
       "tabs": tabs,
       "currentId": currentId,
+      "closedIds": closedIds,
       "pinned": decoded("PinnedTabsStore.tabs"),
       "favorites": d.stringArray(forKey: "VoiceInputView.aiFavorites") ?? [],
       "favoriteCounts": d.dictionary(forKey: "VoiceInputView.aiFavoriteCounts") ?? [:],
@@ -345,6 +353,7 @@ final class ConfigSyncPush: NSObject {
       "filterMachineId": d.string(forKey: "BlinkTabFilterMachineId") ?? "",
       "autoReconnect": (d.object(forKey: "BlinkAutoReconnect") as? Bool) ?? true,
       "workMode": true,
+      "origin": "ios",
       "updatedAt": Date().timeIntervalSince1970,
     ]
     return try? JSONSerialization.data(withJSONObject: root)
@@ -379,5 +388,244 @@ final class ConfigSyncPush: NSObject {
     }
     conn.start(queue: .global(qos: .utility))
     DispatchQueue.global().asyncAfter(deadline: .now() + 10) { conn.cancel() }   // 兜底超时
+  }
+}
+
+// MARK: - 双向同步的拉取端：鸿蒙 → Mac 文件 → iOS
+//
+// 鸿蒙改配置后把同形状 JSON 推到各机器的 blink_config.json（origin=harmony）。
+// 这里两条路拿到它：回前台主动拉一次 + 前台期间常驻 watcher 盯 mtime（同鸿蒙端做法）。
+// 采纳 = 把 SeedConfig 映射回 UserDefaults 各 key，再发 didRestoreNotification，
+// 完整复用 iCloud 采纳链路（SpaceController 增量并 tab、墓碑删除、休息标记刷新）。
+
+final class ConfigSyncPull: NSObject {
+  static let shared = ConfigSyncPull()
+
+  /// 正在把远端配置写进 UserDefaults——CloudConfigSync.localChanged 据此不回推文件。
+  static var applying = false
+
+  private static let kStamp = "ConfigSyncPull.stamp"   // 已采纳的 updatedAt
+
+  private var started = false
+  private var pullBusy = false
+  private var watcher: NWConnection?
+  private var watchBuf = Data()
+  private var lastWatchMtime = ""
+  private var retryScheduled = false
+
+  static func start() { shared._start() }
+
+  private func _start() {
+    guard !started else { return }
+    started = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(activated),
+      name: UIApplication.didBecomeActiveNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(deactivated),
+      name: UIApplication.didEnterBackgroundNotification, object: nil)
+    activated()
+  }
+
+  @objc private func activated() {
+    pullNow()
+    ensureWatcher()
+  }
+
+  @objc private func deactivated() {
+    watcher?.cancel()
+    watcher = nil
+  }
+
+  /// 第一台配了 blinkd 的机器（两端取同一台，视图一致）。
+  private func firstEndpoint() -> (host: String, port: Int, token: String)? {
+    guard let mdata = UserDefaults.standard.data(forKey: "BlinkMachineStore.machines"),
+          let machines = (try? JSONSerialization.jsonObject(with: mdata)) as? [[String: Any]] else { return nil }
+    for m in machines {
+      if let host = m["blinkdHost"] as? String, !host.isEmpty,
+         let token = m["blinkdToken"] as? String, !token.isEmpty {
+        return (host, (m["blinkdPort"] as? Int) ?? 7777, token)
+      }
+    }
+    return nil
+  }
+
+  // MARK: 拉取 + 采纳
+
+  func pullNow() {
+    guard !pullBusy, let ep = firstEndpoint() else { return }
+    pullBusy = true
+    BlinkdExecOnce.run(host: ep.host, port: ep.port, token: ep.token,
+                       script: "cat ~/.blink/sync/blink_config.json 2>/dev/null | base64",
+                       timeout: 15) { [weak self] result in
+      guard let self else { return }
+      self.pullBusy = false
+      guard case .success(let raw) = result else { return }
+      // base64 输出躲开 PTY 的 \r 噪音，收端把非 b64 字符全滤掉再解
+      let b64 = raw.filter { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "/" || $0 == "=" }
+      guard b64.count > 16, let data = Data(base64Encoded: b64),
+            let cfg = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+      DispatchQueue.main.async { self.adopt(cfg) }
+    }
+  }
+
+  private func adopt(_ cfg: [String: Any]) {
+    // 自己（或别的 iOS 设备）写的文件不采纳——iOS 之间走 iCloud，别绕道 Mac 文件回声。
+    guard (cfg["origin"] as? String) == "harmony" else { return }
+    let stamp = (cfg["updatedAt"] as? Double) ?? 0
+    let d = UserDefaults.standard
+    guard stamp > d.double(forKey: Self.kStamp) else { return }
+    guard let machines = cfg["machines"] as? [[String: Any]], !machines.isEmpty else { return }
+
+    ConfigSyncPull.applying = true
+    defer {
+      ConfigSyncPull.applying = false
+      d.set(stamp, forKey: Self.kStamp)
+      NSLog("[ConfigSyncPull] 采纳鸿蒙配置 updatedAt=%.0f machines=%d tabs=%d",
+            stamp, machines.count, ((cfg["tabs"] as? [Any])?.count ?? 0))
+      NotificationCenter.default.post(name: CloudConfigSync.didRestoreNotification, object: nil)
+    }
+
+    func setJSON(_ obj: Any, forKey key: String) {
+      if let data = try? JSONSerialization.data(withJSONObject: obj) { d.set(data, forKey: key) }
+    }
+
+    setJSON(machines, forKey: "BlinkMachineStore.machines")
+
+    // workDirs：同步文件不带头像（体积），按 id 把本地 iconImageData 保回去，别把头像冲掉
+    if let dirs = cfg["workDirs"] as? [[String: Any]] {
+      var localIcons: [String: Any] = [:]
+      if let ld = d.data(forKey: "BlinkWorkDirStore.workDirs"),
+         let locals = (try? JSONSerialization.jsonObject(with: ld)) as? [[String: Any]] {
+        for l in locals {
+          if let id = l["id"] as? String, let icon = l["iconImageData"] { localIcons[id] = icon }
+        }
+      }
+      var merged: [[String: Any]] = []
+      for var w in dirs {
+        w.removeValue(forKey: "hasIcon")
+        if let id = w["id"] as? String, let icon = localIcons[id] { w["iconImageData"] = icon }
+        merged.append(w)
+      }
+      setJSON(merged, forKey: "BlinkWorkDirStore.workDirs")
+    }
+
+    if let people = cfg["people"] as? [String] { setJSON(people, forKey: "BlinkPeopleStore.names") }
+    if let presets = cfg["presets"] as? [Any] { setJSON(presets, forKey: "BlinkSessionPresetStore.presets") }
+    if let pinned = cfg["pinned"] as? [Any] { setJSON(pinned, forKey: "PinnedTabsStore.tabs") }
+
+    if let fav = cfg["favorites"] as? [String] { d.set(fav, forKey: "VoiceInputView.aiFavorites") }
+    if let counts = cfg["favoriteCounts"] as? [String: Any] { d.set(counts, forKey: "VoiceInputView.aiFavoriteCounts") }
+    // 学习类大头可能被发端瘦身成空（帧上限），空的不覆盖本地积累
+    if let hist = cfg["history"] as? [String], !hist.isEmpty { d.set(hist, forKey: "VoiceInputView.aiHistory") }
+    if let corr = cfg["corrections"] as? [[String]], !corr.isEmpty { d.set(corr, forKey: "VoiceInputView.aiCorrections") }
+    if let terms = cfg["terms"] as? [String: Any], !terms.isEmpty { d.set(terms, forKey: "VoiceInputView.aiTerms") }
+
+    if let voice = cfg["voice"] as? [String: Any] {
+      if let key = voice["apiKey"] as? String, !key.isEmpty { d.set(key, forKey: "VoiceInputView.aiAPIKey") }
+      if let model = voice["model"] as? String, !model.isEmpty { d.set(model, forKey: "VoiceInputView.aiModel") }
+      if let base = voice["baseURL"] as? String, !base.isEmpty { d.set(base, forKey: "VoiceInputView.aiBaseURL") }
+      if let en = voice["enabled"] as? Bool { d.set(en, forKey: "VoiceInputView.aiEnabled") }
+      if let db = voice["debounce"] as? Double { d.set(db, forKey: "VoiceInputView.aiDebounce") }
+    }
+    if let locale = cfg["locale"] as? String, !locale.isEmpty { d.set(locale, forKey: "VoiceInputView.localeIdentifier") }
+    if let resting = cfg["resting"] as? [String] { d.set(resting, forKey: "TabRestStore.resting") }
+    if let filter = cfg["filterMachineId"] as? String { d.set(filter, forKey: "BlinkTabFilterMachineId") }
+    if let ar = cfg["autoReconnect"] as? Bool { d.set(ar, forKey: "BlinkAutoReconnect") }
+
+    // tabs → TabStateStore.syncState（TabState 编码形状），之后 didRestoreNotification
+    // 里 SpaceController 走现成的「增量并新 tab + 墓碑删除 + 不切当前 tab」逻辑。
+    let tabs = (cfg["tabs"] as? [[String: Any]]) ?? []
+    let closedIds = ((cfg["closedIds"] as? [String]) ?? []).filter { UUID(uuidString: $0) != nil }
+    var entries: [[String: Any]] = []
+    for t in tabs {
+      guard let id = t["id"] as? String, UUID(uuidString: id) != nil else { continue }
+      var e: [String: Any] = ["id": id]
+      if let v = t["machineId"] as? String, !v.isEmpty { e["machineId"] = v }
+      if let v = t["workDirId"] as? String, !v.isEmpty { e["workDirId"] = v }
+      if let v = t["tmuxSession"] as? String, !v.isEmpty { e["tmuxSession"] = v }
+      if let v = t["useTmux"] as? Bool { e["useTmux"] = v }
+      entries.append(e)
+    }
+    if !entries.isEmpty || !closedIds.isEmpty {
+      var state: [String: Any] = ["version": 1, "tabs": entries, "updatedAt": stamp, "closedIds": closedIds]
+      if let cur = cfg["currentId"] as? String, UUID(uuidString: cur) != nil { state["currentId"] = cur }
+      setJSON(state, forKey: TabStateStore.kSyncKey)
+    }
+  }
+
+  // MARK: 常驻 watcher（同鸿蒙端：Mac 上跑 stat 小循环，mtime 变了吐一行）
+
+  private func ensureWatcher() {
+    guard watcher == nil, let ep = firstEndpoint(),
+          let port = NWEndpoint.Port(rawValue: UInt16(clamping: ep.port)) else { return }
+    let conn = NWConnection(host: NWEndpoint.Host(ep.host), port: port, using: .tcp)
+    watcher = conn
+    watchBuf = Data()
+    let script = "last=\"\"; while true; do cur=$(stat -f %m ~/.blink/sync/blink_config.json 2>/dev/null); "
+      + "if [ \"$cur\" != \"$last\" ]; then last=\"$cur\"; echo \"CFGCHANGED:$cur\"; fi; sleep 2; done"
+    func frame(_ type: UInt8, _ payload: Data) -> Data {
+      var out = Data([type])
+      out.append(UInt8((payload.count >> 8) & 0xff))
+      out.append(UInt8(payload.count & 0xff))
+      out.append(payload)
+      return out
+    }
+    func receiveLoop() {
+      conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 14) { [weak self] data, _, complete, err in
+        guard let self, self.watcher === conn else { conn.cancel(); return }
+        if let data { self.watchBuf.append(data) }
+        self.drainWatchLines()
+        if err != nil || complete {
+          self.watcherDied(conn)
+          return
+        }
+        receiveLoop()
+      }
+    }
+    conn.stateUpdateHandler = { [weak self] st in
+      switch st {
+      case .ready:
+        var out = frame(0x01, Data(ep.token.utf8))
+        out.append(frame(0x04, Data(script.utf8)))
+        conn.send(content: out, completion: .contentProcessed { _ in })
+        receiveLoop()
+      case .failed:
+        self?.watcherDied(conn)
+      default:
+        break
+      }
+    }
+    conn.start(queue: .main)
+  }
+
+  private func drainWatchLines() {
+    guard let s = String(data: watchBuf, encoding: .utf8) else { return }
+    var lines = s.components(separatedBy: "\n")
+    let tail = lines.removeLast()               // 尾巴可能是半行，留着
+    watchBuf = Data(tail.utf8)
+    for line in lines {
+      guard let r = line.range(of: "CFGCHANGED:") else { continue }
+      let mtime = String(line[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+      // 首行也触发：连上时文件可能已更新过，漏掉首行会丢那次变更；
+      // 多余的拉取由 origin/updatedAt 门槛挡住，无害。
+      if !mtime.isEmpty, mtime != lastWatchMtime {
+        lastWatchMtime = mtime
+        pullNow()
+      }
+    }
+  }
+
+  private func watcherDied(_ conn: NWConnection) {
+    guard watcher === conn else { return }
+    conn.cancel()
+    watcher = nil
+    guard !retryScheduled else { return }
+    retryScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+      guard let self else { return }
+      self.retryScheduled = false
+      if UIApplication.shared.applicationState == .active { self.ensureWatcher() }
+    }
   }
 }
