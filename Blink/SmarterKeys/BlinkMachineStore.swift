@@ -402,6 +402,122 @@ enum HostReachability {
     return "ssh -t \(m.user)@\(host) \"echo \(encoded) | base64 -d | bash\""
   }
 
+  /// 原生增量拉取(TranscriptFetcher 用):返回 (机器, 远端脚本)。
+  /// 脚本输出 @TSB64@<b64(META\tfile\ttotal\tfull + \n + 正文)>@TSB64E@;
+  /// 缓存命中只解析游标之后的新行,换文件/无缓存整拉最后 100 条。
+  func transcriptDeltaScript(forMachineId machineId: String?, workDirId: String?, baseName: String,
+                             cachedFile: String?, cachedLines: Int) -> (machine: BlinkMachine, script: String)? {
+    let arr = machines
+    let m0: BlinkMachine?
+    if let id = machineId, let found = arr.first(where: { $0.id == id }) {
+      m0 = found
+    } else {
+      m0 = currentMachine
+    }
+    guard let m = m0 else { return nil }
+
+    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path ?? "/Users/\(m.user)"
+    let cwdEncoded = workPath
+      .replacingOccurrences(of: "/", with: "-")
+      .replacingOccurrences(of: ".", with: "-")
+    let session = baseName.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "").lowercased()
+    let dirBasename = (workPath as NSString).lastPathComponent.lowercased()
+    let name: String
+    if session == dirBasename || session.hasPrefix("\(dirBasename)-") {
+      name = session
+    } else {
+      name = "\(dirBasename)-\(session)"
+    }
+    let safeFile = (cachedFile ?? "").filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." }
+    let cachedN = max(cachedLines, 0)
+
+    let script = """
+    export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
+    PROJ=~/.claude/projects
+    DIR=$PROJ/\(cwdEncoded)
+    pick_latest_by_mtime() {
+      while read f; do
+        [ -z "$f" ] && continue
+        printf '%d\\t%s\\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
+      done | sort -rn | head -1 | cut -f2-
+    }
+    TITLE='\(name)'
+    F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    if [ -z "$F" ]; then
+      F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
+    if [ -z "$F" ]; then
+      F=$(grep -rlF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+    fi
+    WARN=""
+    if [ -z "$F" ]; then
+      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
+      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同目录 mtime 最新 jsonl（可能是别 tab 的 session）"
+    fi
+    if [ -z "$F" ]; then
+      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
+      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同前缀目录 mtime 最新 jsonl"
+    fi
+    emit() { EB64=$(printf '%s' "$1" | base64 | tr -d '\\n'); printf '@TSB64@%s@TSB64E@\\n' "$EB64"; }
+    if [ -z "$F" ]; then
+      emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n没找到 %s 的会话记录（customTitle 未匹配）。在 cc 里跑一次 /title %s 命名后即可拉到。' "$TITLE" "$TITLE")"
+      exit 0
+    fi
+    BASE=$(basename "$F")
+    TOTAL=$(wc -l < "$F" | tr -d ' ')
+    START=1
+    if [ "$BASE" = "\(safeFile)" ] && [ \(cachedN) -le "$TOTAL" ]; then
+      START=$(( \(cachedN) + 1 ))
+    fi
+    FULL=0
+    [ "$START" -eq 1 ] && FULL=1
+    BODY=""
+    if [ "$START" -le "$TOTAL" ]; then
+    BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" '
+      [.[]
+        | select(.type=="user" or .type=="assistant")
+        | . as $d
+        | (if (.message.content | type) == "string" then
+             .message.content
+           else
+             [.message.content[]? | select(.type=="text") | .text] | join("\\n")
+           end) as $rawBody
+        | ($rawBody
+            | gsub("(?s)<system-reminder>.*?</system-reminder>"; "")
+            | gsub("(?s)<task-notification>.*?</task-notification>"; "")
+            | gsub("(?s)<local-command-stdout>.*?</local-command-stdout>"; "")
+            | gsub("(?s)<local-command-stderr>.*?</local-command-stderr>"; "")
+            | gsub("(?s)<command-name>.*?</command-name>"; "")
+            | gsub("(?s)<command-message>.*?</command-message>"; "")
+            | gsub("(?s)<command-args>.*?</command-args>"; "")
+            | gsub("(?s)<user-prompt-submit-hook>.*?</user-prompt-submit-hook>"; "")
+            | gsub("(?s)<bash-input>.*?</bash-input>"; "")
+            | gsub("(?s)<bash-stdout>.*?</bash-stdout>"; "")
+            | gsub("(?s)<bash-stderr>.*?</bash-stderr>"; "")
+            | sub("^\\\\s+"; "")
+            | sub("\\\\s+$"; "")
+          ) as $body
+        | select(($body | length) > 0)
+        | select($body != "Continue from where you left off."
+                 and $body != "No response requested."
+                 and ($body | test("^\\\\[Request interrupted by user[^\\\\]]*\\\\]") | not))
+        | {type: .type, body: $body}
+      ] |
+      (if $full == "1" then .[-100:] else . end) |
+      .[] |
+      (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
+    ')
+    fi
+    HEAD=""
+    if [ "$FULL" = "1" ]; then
+      [ -n "$WARN" ] && HEAD="$WARN\\n"
+      HEAD="$HEAD=== $F ===\\n"
+    fi
+    emit "$(printf 'META\\t%s\\t%s\\t%s\\n' "$BASE" "$TOTAL" "$FULL"; printf "$HEAD"; printf '%s' "$BODY")"
+    """
+    return (m, script)
+  }
+
   static func resolveHost(for m: BlinkMachine) -> (host: String, source: String) {
     let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
     let host2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
@@ -1474,83 +1590,6 @@ final class WorkDirListViewController: UITableViewController {
   @objc private func addTapped() {
     let form = WorkDirFormViewController(editing: nil)
     navigationController?.pushViewController(form, animated: true)
-  }
-}
-
-final class PeopleListViewController: UITableViewController {
-  init() { super.init(style: .insetGrouped) }
-  required init?(coder: NSCoder) { fatalError() }
-
-  override func viewDidLoad() {
-    super.viewDidLoad()
-    title = "员工头像"
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .add, target: self, action: #selector(addTapped))
-  }
-
-  override func viewWillAppear(_ animated: Bool) {
-    super.viewWillAppear(animated)
-    tableView.reloadData()
-  }
-
-  override func numberOfSections(in tv: UITableView) -> Int { 1 }
-  override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
-    BlinkPeopleStore.shared.knownNames.count
-  }
-  override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
-    "助手在 PATROL 巡检报告里就用这里的头像。点员工换一张 DiceBear。"
-  }
-  override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-    let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-    let name = BlinkPeopleStore.shared.knownNames[ip.row]
-    cell.textLabel?.text = name
-    if let img = BlinkPeopleStore.shared.iconSync(for: name, size: 72) {
-      cell.imageView?.image = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 36, height: 36))
-    } else {
-      cell.imageView?.image = UIImage(systemName: "person.crop.circle.dashed")
-      cell.imageView?.tintColor = .tertiaryLabel
-      // 异步取一次默认 DiceBear，下次进来就有了
-      BlinkPeopleStore.shared.iconAsync(for: name, size: 72) { [weak tv] _ in
-        tv?.reloadData()
-      }
-    }
-    cell.accessoryType = .disclosureIndicator
-    return cell
-  }
-
-  override func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
-    tv.deselectRow(at: ip, animated: true)
-    let name = BlinkPeopleStore.shared.knownNames[ip.row]
-    let picker = AvatarPickerViewController()
-    picker.title = "选 \(name) 的头像"
-    picker.onPick = { [weak self] data in
-      BlinkPeopleStore.shared.setIcon(data, for: name, style: AvatarPickerViewController.lastPickedStyle)
-      self?.tableView.reloadData()
-    }
-    navigationController?.pushViewController(picker, animated: true)
-  }
-
-  override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
-    if editingStyle == .delete {
-      let name = BlinkPeopleStore.shared.knownNames[ip.row]
-      BlinkPeopleStore.shared.removeName(name)
-      tv.deleteRows(at: [ip], with: .automatic)
-    }
-  }
-
-  @objc private func addTapped() {
-    let alert = UIAlertController(title: "添加员工", message: "输入员工名（小写英文，如 dave）", preferredStyle: .alert)
-    alert.addTextField { tf in
-      tf.placeholder = "name"
-      tf.autocapitalizationType = .none
-    }
-    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
-      let name = alert.textFields?.first?.text ?? ""
-      BlinkPeopleStore.shared.addName(name)
-      self?.tableView.reloadData()
-    })
-    present(alert, animated: true)
   }
 }
 

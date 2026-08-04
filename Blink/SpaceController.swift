@@ -1438,10 +1438,59 @@ extension SpaceController {
   }
 
   @objc func dumpTranscriptForCurrentShell() {
-    // 先刷新页面（重 attach tmux），等 view 切换完再真正 dump，让 hterm 拿到最新一帧
-    _reloadCurrentShell { [weak self] in
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-        self?._doDumpTranscript()
+    // 原生对话记录页:秒显本地缓存 → 后台只拉 jsonl 新增行(不开浏览器、不开 scratch 终端)
+    guard let term = currentTerm(),
+          let p = term.mcpParams,
+          let machineId = p.machineId, !machineId.isEmpty,
+          let baseName = p.tmuxSession, !baseName.isEmpty else {
+      _doDumpTranscript()   // 老式非 tmux tab 兜底走旧链路
+      return
+    }
+    let key = TranscriptStore.key(machineId: machineId, baseName: baseName)
+    let cached = TranscriptStore.load(key: key)
+    let label = _transcriptTabLabel(forCurrentTerm: term)
+    // Claude 侧头像/名字和 tab 同一逻辑:workDir 配的头像 + 目录名(没配就用会话名)
+    let wd = p.workDirId.flatMap { BlinkWorkDirStore.shared.workDir(forId: $0) }
+    let wdName = (wd?.name.isEmpty == false ? wd!.name : baseName)
+    let vc = TranscriptViewController(text: cached?.body ?? "", pageTitle: label, refreshing: true,
+                                      claudeAvatar: wd?.iconImage, claudeName: wdName)
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .fullScreen
+    present(nav, animated: true)
+
+    TranscriptFetcher.shared.fetch(machineId: machineId, workDirId: p.workDirId, baseName: baseName,
+                                   cachedFile: cached?.file, cachedLines: cached?.lines ?? 0) { [weak vc] result in
+      DispatchQueue.main.async {
+        guard let vc else { return }
+        switch result {
+        case .success(let d):
+          if d.file == "NOTFOUND" {
+            // 没找到 session:提示怎么修,不写缓存
+            vc.update(text: cached?.body.isEmpty == false ? (cached!.body + "\n\n" + d.body) : d.body)
+            return
+          }
+          var body: String
+          if d.isFull || cached == nil {
+            body = d.body
+          } else if d.body.isEmpty {
+            body = cached!.body
+          } else {
+            body = cached!.body + "\n\n" + d.body
+          }
+          body = TranscriptStore.trim(body)
+          TranscriptStore.save(key: key, TranscriptCache(file: d.file, lines: d.lines, body: body))
+          if d.isFull || !d.body.isEmpty || cached?.body.isEmpty != false {
+            vc.update(text: body)
+          } else {
+            vc.finishRefresh()   // 没新消息:缓存已在屏上,只收掉转圈
+          }
+        case .failure(let e):
+          if cached?.body.isEmpty != false {
+            vc.update(text: "[拉取失败] \(e.localizedDescription)")
+          } else {
+            vc.finishRefresh()
+          }
+        }
       }
     }
   }
@@ -2777,11 +2826,22 @@ extension SpaceController {
 
 final class TranscriptViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
   private let webView: WKWebView
-  private let bodyText: String
+  private var bodyText: String
+  private let pageTitle: String
+  private var refreshing: Bool
+  private var claudeAvatarURI = ""
+  private var userAvatarURI = ""
+  private var claudeName = ""
+  private let spinner = UIActivityIndicatorView(style: .medium)
   private var didFinishInitialLoad = false
 
-  init(text: String) {
+  init(text: String, pageTitle: String = "对话记录", refreshing: Bool = false,
+       claudeAvatar: UIImage? = nil, claudeName: String = "") {
     self.bodyText = text
+    self.pageTitle = pageTitle
+    self.refreshing = refreshing
+    self.claudeAvatarURI = Self.avatarDataURI(claudeAvatar)
+    self.claudeName = claudeName
     let config = WKWebViewConfiguration()
     config.userContentController = WKUserContentController()
     // 允许 <video> 内联播放（否则 mp4 在 iPhone 上不显示）
@@ -2790,6 +2850,10 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     self.webView = WKWebView(frame: .zero, configuration: config)
     super.init(nibName: nil, bundle: nil)
     webView.configuration.userContentController.add(self, name: "copy")
+  }
+
+  convenience init(text: String) {
+    self.init(text: text, pageTitle: "对话记录", refreshing: false)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
@@ -2800,16 +2864,35 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = .systemBackground
-    title = "Transcript"
-    navigationItem.leftBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .done, target: self, action: #selector(closeTapped))
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .action, target: self, action: #selector(shareTapped))
+    // 卡片流(方案 D):浅灰底,和页面 HTML 同底色
+    let termBg = UIColor(red: 0xf4/255.0, green: 0xf5/255.0, blue: 0xf7/255.0, alpha: 1)
+    overrideUserInterfaceStyle = .light
+    view.backgroundColor = termBg
+    // navbar 只显示名字;右侧无按钮(转圈除外);左侧系统返回箭头
+    title = claudeName.isEmpty ? pageTitle : claudeName
+    let navAp = UINavigationBarAppearance()
+    navAp.configureWithOpaqueBackground()
+    navAp.backgroundColor = termBg
+    navAp.shadowColor = UIColor(red: 0xe2/255.0, green: 0xe4/255.0, blue: 0xe8/255.0, alpha: 1)
+    navigationItem.standardAppearance = navAp
+    navigationItem.scrollEdgeAppearance = navAp
+    let back = UIBarButtonItem(
+      image: UIImage(systemName: "chevron.backward",
+                     withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)),
+      style: .plain, target: self, action: #selector(closeTapped))
+    navigationItem.leftBarButtonItem = back
+    // 右侧不放任何 barButtonItem(iOS 26 会给 item 画胶囊底);转圈浮在内容右上角
+    spinner.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(spinner)
+    NSLayoutConstraint.activate([
+      spinner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+      spinner.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+    ])
+    if refreshing { spinner.startAnimating() }
 
     webView.isOpaque = false
-    webView.backgroundColor = .systemBackground
-    webView.scrollView.backgroundColor = .systemBackground
+    webView.backgroundColor = termBg
+    webView.scrollView.backgroundColor = termBg
     webView.navigationDelegate = self
     webView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(webView)
@@ -2820,11 +2903,76 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
     ])
 
-    webView.loadHTMLString(Self.htmlFor(transcript: bodyText), baseURL: nil)
+    view.bringSubviewToFront(spinner)
+
+    // 底部悬浮返回按钮:长记录翻到底不用回顶部关页
+    var backCfg = UIButton.Configuration.filled()
+    backCfg.image = UIImage(systemName: "chevron.backward",
+                            withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+    backCfg.title = "返回"
+    backCfg.imagePadding = 5
+    backCfg.baseBackgroundColor = .white
+    backCfg.baseForegroundColor = UIColor(red: 0x1a/255.0, green: 0x73/255.0, blue: 0xe8/255.0, alpha: 1)
+    backCfg.cornerStyle = .capsule
+    backCfg.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 18, bottom: 9, trailing: 18)
+    let bottomBack = UIButton(configuration: backCfg)
+    bottomBack.layer.shadowColor = UIColor.black.cgColor
+    bottomBack.layer.shadowOpacity = 0.14
+    bottomBack.layer.shadowRadius = 10
+    bottomBack.layer.shadowOffset = CGSize(width: 0, height: 3)
+    bottomBack.layer.borderWidth = 1
+    bottomBack.layer.borderColor = UIColor(red: 0xe2/255.0, green: 0xe4/255.0, blue: 0xe8/255.0, alpha: 1).cgColor
+    bottomBack.layer.cornerRadius = 19
+    bottomBack.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+    bottomBack.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(bottomBack)
+    NSLayoutConstraint.activate([
+      bottomBack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+      bottomBack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+    ])
+
+    renderCurrent()
   }
 
-  static func htmlFor(transcript: String) -> String {
+  private static func avatarDataURI(_ img: UIImage?) -> String {
+    guard let img else { return "" }
+    let side: CGFloat = 60
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+    let scaled = renderer.image { _ in
+      img.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+    }
+    guard let data = scaled.pngData() else { return "" }
+    return "data:image/png;base64,\(data.base64EncodedString())"
+  }
+
+  private func renderCurrent() {
+    let initial = bodyText.isEmpty && refreshing ? "⏳ 正在拉取最新对话…" : bodyText
+    webView.loadHTMLString(Self.htmlFor(transcript: initial,
+                                        claudeAvatar: claudeAvatarURI,
+                                        userAvatar: userAvatarURI,
+                                        claudeName: claudeName), baseURL: nil)
+  }
+
+  /// 增量拉回来后整页换内容(HTML 自带滚到底逻辑)
+  func update(text: String) {
+    bodyText = text
+    finishRefresh()
+    renderCurrent()
+  }
+
+  /// 没新内容/失败但缓存已在屏上:只收掉转圈
+  func finishRefresh() {
+    refreshing = false
+    spinner.stopAnimating()
+  }
+
+  /// avatar 参数是 data:image/png;base64,… URI;空串走 emoji 兜底。claudeName 空串显示 CLAUDE
+  static func htmlFor(transcript: String, claudeAvatar: String = "", userAvatar: String = "",
+                      claudeName: String = "") -> String {
     let payloadB64 = Data(transcript.utf8).base64EncodedString()
+    let claudeAvatarJS = claudeAvatar
+    let userAvatarJS = userAvatar
+    let claudeNameJS = claudeName.filter { $0 != "\"" && $0 != "\\" && $0 != "<" && $0 != ">" }
     return #"""
     <!DOCTYPE html>
     <html>
@@ -2832,83 +2980,106 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
     <style>
+    /* Claude 卡片流(方案 D):浅灰底,Claude 回复通栏白卡片,user 右侧蓝胶囊 */
     body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-           padding: 16px 16px 40px; line-height: 1.55; color: #1d1d1f; background: #fff;
-           font-size: 15px; word-wrap: break-word; }
-    h1, h2, h3 { font-weight: 600; margin: 1em 0 0.5em; }
-    h1 { font-size: 1.4em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
-    .msg-head { display: flex; align-items: center; justify-content: space-between;
-                margin: 1.8em 0 0.5em; padding-bottom: 4px; border-bottom: 1px solid #d2d2d7; }
-    .role { font-weight: 600; font-size: 1.05em; }
-    .role-user { color: #007aff; }
-    .role-claude { color: #34c759; }
-    .copy-btn { font: 12px -apple-system, sans-serif; color: #007aff; background: transparent;
-                border: 1px solid #007aff; border-radius: 5px; padding: 3px 10px; cursor: pointer;
+           padding: 14px 14px 40px; line-height: 1.6; color: #1a1d21; background: #f4f5f7;
+           font-size: 14px; word-wrap: break-word; }
+    h1, h2, h3 { font-weight: 600; margin: 1em 0 0.5em; color: #1a1d21; }
+    h1 { font-size: 1.3em; } h2 { font-size: 1.18em; } h3 { font-size: 1.08em; }
+    .msg-block { margin: 14px 0; display: flex; gap: 8px; align-items: flex-start; }
+    .ava { width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+           display: flex; align-items: center; justify-content: center; margin-top: 2px;
+           -webkit-user-select: none; user-select: none; }
+    .ava-claude { background: linear-gradient(135deg, #3fdc97, #2ea9e8); color: #fff;
+                  font-size: 14px; font-weight: 700; }
+    .ava-user { background: #4a5568; color: #fff; font-size: 12px; font-weight: 600; }
+    .ava.has-img { background: #e2e4e8; overflow: hidden; }
+    .ava-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+    .mb-claude .card { flex: 1 1 auto; min-width: 0; background: #fff; border: 1px solid #e2e4e8;
+                       border-radius: 5px 14px 14px 14px; overflow: hidden;
+                       box-shadow: 0 1px 3px rgba(20,30,40,0.05); }
+    .mb-claude .msg-head { padding: 7px 14px; background: #fafbfc; border-bottom: 1px solid #eef0f3;
+                           margin: 0; }
+    .mb-claude .msg-body { padding: 10px 14px 12px; }
+    .msg-block.mb-user { flex-direction: row-reverse; }
+    .mb-user .card { max-width: 84%; background: #dce8ff; color: #1a3a6b;
+                     border-radius: 16px 5px 16px 16px; padding: 8px 13px; }
+    .mb-user .card .msg-body { margin: 0; }
+    .mb-user .msg-body p:first-child { margin-top: 0; }
+    .mb-user .msg-body p:last-child { margin-bottom: 0; }
+    .mb-claude .msg-body > p:first-child { margin-top: 0; }
+    .msg-head { display: flex; align-items: center; justify-content: space-between; }
+    .role { font-weight: 600; font-size: 11px; letter-spacing: 0.1em; }
+    .role-user { color: #1a73e8; }
+    .role-claude { color: #7a828c; }
+    .copy-btn { font: 12px -apple-system, sans-serif; color: #1a73e8; background: transparent;
+                border: 1px solid #c8d7f5; border-radius: 6px; padding: 3px 10px; cursor: pointer;
                 -webkit-tap-highlight-color: transparent; }
-    .copy-btn:active { background: rgba(0,122,255,0.15); }
-    .copy-btn.copied { color: #34c759; border-color: #34c759; }
+    .copy-btn:active { background: rgba(26,115,232,0.1); }
+    .copy-btn.copied { color: #1e9e63; border-color: #b4e3cd; }
     .head-btns { display: flex; gap: 6px; flex: 0 0 auto; }
-    .sel-btn { font: 12px -apple-system, sans-serif; color: #8e8e93; background: transparent;
-               border: 1px solid #c7c7cc; border-radius: 5px; padding: 3px 10px; cursor: pointer;
+    .sel-btn { font: 12px -apple-system, sans-serif; color: #7a828c; background: transparent;
+               border: 1px solid #d9dde3; border-radius: 6px; padding: 3px 10px; cursor: pointer;
                -webkit-tap-highlight-color: transparent; }
-    .sel-btn:active { background: rgba(142,142,147,0.15); }
+    .sel-btn:active { background: rgba(122,130,140,0.12); }
     /* 选择复制整页 */
-    #selpage { position: fixed; inset: 0; background: #f7f7f8; z-index: 10000;
+    #selpage { position: fixed; inset: 0; background: #f4f5f7; z-index: 10000;
                display: none; flex-direction: column; }
     #selpage.show { display: flex; }
     .sel-top { display: flex; align-items: center; gap: 8px; background: #fff; flex: 0 0 auto;
-               padding: max(12px, env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid #d2d2d7; }
-    .sel-title { font-weight: 600; font-size: 16px; flex: 1 1 auto; }
-    .sel-top button { font: 14px -apple-system, sans-serif; color: #007aff; background: transparent;
+               padding: max(12px, env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid #e2e4e8; }
+    .sel-title { font-weight: 600; font-size: 16px; flex: 1 1 auto; color: #1a1d21; }
+    .sel-top button { font: 14px -apple-system, sans-serif; color: #1a73e8; background: transparent;
                       border: none; padding: 6px 4px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     .sel-list { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 12px 12px; }
-    .sel-card { position: relative; border: 1.5px solid #d2d2d7; border-radius: 10px; background: #fff;
+    .sel-card { position: relative; border: 1.5px solid #e2e4e8; border-radius: 12px; background: #fff;
                 margin: 8px 0; padding: 12px 12px 12px 42px; cursor: pointer; overflow-x: auto; }
-    .sel-card.on { border-color: #007aff; background: rgba(0,122,255,0.06); }
+    .sel-card.on { border-color: #1a73e8; background: rgba(26,115,232,0.05); }
     .sel-card .chk { position: absolute; left: 12px; top: 12px; width: 20px; height: 20px;
-                     border-radius: 11px; border: 1.5px solid #c7c7cc; box-sizing: border-box; }
-    .sel-card.on .chk { background: #007aff; border-color: #007aff; }
+                     border-radius: 11px; border: 1.5px solid #c8ccd2; box-sizing: border-box; }
+    .sel-card.on .chk { background: #1a73e8; border-color: #1a73e8; }
     .sel-card.on .chk::after { content: '✓'; color: #fff; font-size: 13px; line-height: 20px;
                                display: block; text-align: center; }
     .sel-card > .msg-body, .sel-card > p:first-of-type, .sel-card > pre:first-child { margin-top: 0; }
-    .sel-bottom { flex: 0 0 auto; background: #fff; border-top: 1px solid #d2d2d7;
+    .sel-bottom { flex: 0 0 auto; background: #fff; border-top: 1px solid #e2e4e8;
                   padding: 10px 14px max(12px, env(safe-area-inset-bottom)); }
-    .sel-copy { width: 100%; font: 600 16px -apple-system, sans-serif; color: #fff; background: #007aff;
-                border: none; border-radius: 10px; padding: 12px; cursor: pointer;
+    .sel-copy { width: 100%; font: 600 16px -apple-system, sans-serif; color: #fff; background: #1a73e8;
+                border: none; border-radius: 12px; padding: 12px; cursor: pointer;
                 -webkit-tap-highlight-color: transparent; }
-    .sel-copy:disabled { background: #c7c7cc; }
+    .sel-copy:disabled { background: #c8ccd2; }
     .sel-toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
                  background: rgba(0,0,0,0.82); color: #fff; padding: 8px 16px; border-radius: 18px;
                  font-size: 14px; opacity: 0; transition: opacity 0.2s; z-index: 10001; pointer-events: none; }
     .sel-toast.show { opacity: 1; }
-    .msg-body { margin-bottom: 0.5em; }
-    .meta { color: #86868b; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
-    pre { background: #f5f5f7; padding: 12px; border-radius: 8px; overflow-x: auto;
-          font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.45;
+    .msg-body { margin-bottom: 0; }
+    .meta { color: #9aa1aa; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+            margin: 10px 2px; }
+    pre { background: #14181d; color: #c9d4de; padding: 12px; border-radius: 10px; overflow-x: auto;
+          font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45;
           margin: 0.6em 0; }
-    code { background: #f0f0f3; padding: 2px 5px; border-radius: 4px;
-           font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
-    pre code { background: none; padding: 0; }
+    code { background: #eef0f3; padding: 2px 5px; border-radius: 4px;
+           font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; color: #1a1d21; }
+    pre code { background: none; padding: 0; color: #7ee2ad; }
     .code-wrap { position: relative; }
     .code-wrap pre { cursor: pointer; padding-top: 30px; }
-    .code-copy { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #6e6e73;
-                 background: rgba(120,120,128,0.14); padding: 2px 8px; border-radius: 6px;
+    .code-copy { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #8b98a5;
+                 background: rgba(139,152,165,0.18); padding: 2px 8px; border-radius: 6px;
                  pointer-events: none; z-index: 2; }
-    .code-wrap.copied .code-copy { color: #34c759; background: rgba(52,199,89,0.16); }
+    .code-wrap.copied .code-copy { color: #3fdc97; background: rgba(63,220,151,0.2); }
     table { border-collapse: collapse; margin: 0.8em 0; display: block; overflow-x: auto;
             font-size: 0.92em; }
-    th, td { border: 1px solid #d2d2d7; padding: 6px 10px; text-align: left; }
-    th { background: #f5f5f7; font-weight: 600; }
+    th, td { border: 1px solid #e2e4e8; padding: 6px 10px; text-align: left; }
+    th { background: #fafbfc; font-weight: 600; }
     ul, ol { padding-left: 1.5em; margin: 0.5em 0; }
     li { margin: 0.2em 0; }
-    a { color: #007aff; text-decoration: none; }
-    blockquote { border-left: 3px solid #d2d2d7; padding-left: 12px; margin: 0.6em 0;
-                 color: #515154; }
-    hr { border: none; border-top: 1px solid #d2d2d7; margin: 1.5em 0; }
+    a { color: #1a73e8; text-decoration: none; }
+    blockquote { border-left: 3px solid #e2e4e8; padding-left: 12px; margin: 0.6em 0;
+                 color: #5f6670; }
+    hr { border: none; border-top: 1px solid #e2e4e8; margin: 1.5em 0; }
     p { margin: 0.5em 0; }
     img.md-img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; cursor: zoom-in; display: block; }
     video.md-video { width: 100%; max-width: 100%; min-height: 180px; border-radius: 8px; margin: 0.5em 0 0; display: block; background: #000; }
-    a.md-video-link { display: inline-block; font-size: 13px; color: #007aff; margin: 0.2em 0 0.7em; text-decoration: none; }
+    a.md-video-link { display: inline-block; font-size: 13px; color: #1a73e8; margin: 0.2em 0 0.7em; text-decoration: none; }
     #lightbox { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
                 background: rgba(0,0,0,0.94); display: none; align-items: center;
                 justify-content: center; z-index: 9999; touch-action: none; }
@@ -2920,29 +3091,6 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
                       right: 16px; width: 40px; height: 40px; border-radius: 20px;
                       background: rgba(255,255,255,0.18); color: #fff; border: none;
                       font-size: 20px; line-height: 40px; text-align: center; padding: 0; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #000; color: #f2f2f7; }
-      h1, h2, h3 { color: #f2f2f7; }
-      .msg-head { border-bottom-color: #38383a; }
-      .copy-btn { color: #0a84ff; border-color: #0a84ff; }
-      .copy-btn.copied { color: #30d158; border-color: #30d158; }
-      .sel-btn { color: #98989d; border-color: #48484a; }
-      #selpage { background: #000; }
-      .sel-top, .sel-bottom { background: #1c1c1e; border-color: #38383a; }
-      .sel-card { background: #1c1c1e; border-color: #38383a; }
-      .sel-card.on { border-color: #0a84ff; background: rgba(10,132,255,0.12); }
-      .sel-card .chk { border-color: #48484a; }
-      .sel-card.on .chk { background: #0a84ff; border-color: #0a84ff; }
-      pre, code { background: #1c1c1e; }
-      th, td { border-color: #38383a; }
-      th { background: #1c1c1e; }
-      blockquote { border-left-color: #38383a; color: #98989d; }
-      hr { border-top-color: #38383a; }
-      .meta { color: #98989d; }
-      a { color: #0a84ff; }
-      .role-user { color: #0a84ff; }
-      .role-claude { color: #30d158; }
-    }
     </style>
     </head>
     <body>
@@ -3118,8 +3266,9 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
         // role marker: 把 role 块（直到下一个 role/===）整体包成 msg-block
         if (/^[▶◆]/.test(line)) {
           const isUser = /^▶/.test(line);
-          const roleLabel = isUser ? '你' : 'Claude';
+          const roleLabel = isUser ? 'YOU' : (CLAUDE_NAME || 'CLAUDE');
           const roleClass = isUser ? 'role-user' : 'role-claude';
+          const blockClass = isUser ? 'mb-user' : 'mb-claude';
           i++;
           const bodyLines = [];
           while (i < lines.length && !/^[▶◆]/.test(lines[i]) && !/^=== /.test(lines[i])) {
@@ -3129,15 +3278,24 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
           while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop();
           const rawForCopy = bodyLines.join('\n');
           const bodyHtml = renderBlocks(rawForCopy);
-          html += '<div class="msg-block">' +
+          // user 胶囊不带任何按钮;Claude 卡片头只留一个「复制」;两边都带圆头像
+          const headHtml = isUser ? '' :
             '<div class="msg-head">' +
               '<span class="role ' + roleClass + '">' + roleLabel + '</span>' +
               '<span class="head-btns">' +
-                '<button class="sel-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="openSelect(this)">选择复制</button>' +
                 '<button class="copy-btn" data-content="' + utf8B64(rawForCopy) + '" onclick="copyMsg(this)">复制</button>' +
               '</span>' +
+            '</div>';
+          const avaHtml = isUser
+            ? (AVA_USER ? '<div class="ava has-img"><img class="ava-img" src="' + AVA_USER + '"></div>'
+                        : '<div class="ava ava-user">我</div>')
+            : (AVA_CLAUDE ? '<div class="ava has-img"><img class="ava-img" src="' + AVA_CLAUDE + '"></div>'
+                          : '<div class="ava ava-claude">' +
+                            (CLAUDE_NAME ? CLAUDE_NAME.charAt(0).toUpperCase() : 'C') + '</div>');
+          html += '<div class="msg-block ' + blockClass + '">' + avaHtml +
+            '<div class="card">' + headHtml +
+              '<div class="msg-body">' + bodyHtml + '</div>' +
             '</div>' +
-            '<div class="msg-body">' + bodyHtml + '</div>' +
           '</div>';
           continue;
         }
@@ -3364,16 +3522,49 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
       showSelToast('已复制 ' + parts.length + ' 块');
       setTimeout(closeSelect, 450);
     }
-    document.getElementById('content').innerHTML = renderBlocks(decodeB64("\#(payloadB64)"));
+    var AVA_CLAUDE = "\#(claudeAvatarJS)";
+    var AVA_USER = "\#(userAvatarJS)";
+    var CLAUDE_NAME = "\#(claudeNameJS)";
+    // 尾部优先渲染:先只渲染最后 N 条消息立即显示(隐藏→定位到底→显示,不跳动),
+    // 更早的历史随后后台补渲染插到上面,滚动位置补偿保持不动
+    document.documentElement.style.opacity = '0';
     function scrollToBottom() { window.scrollTo(0, document.documentElement.scrollHeight); }
-    requestAnimationFrame(scrollToBottom);
+    var RAW = decodeB64("\#(payloadB64)");
+    function splitTail(raw, n) {
+      var lines = raw.split('\n');
+      var idxs = [];
+      for (var i = 0; i < lines.length; i++) { if (/^[▶◆]/.test(lines[i])) idxs.push(i); }
+      if (idxs.length <= n) return { head: '', tail: raw };
+      var cut = idxs[idxs.length - n];
+      return { head: lines.slice(0, cut).join('\n'), tail: lines.slice(cut).join('\n') };
+    }
+    var parts = splitTail(RAW, 12);
+    document.getElementById('content').innerHTML = renderBlocks(parts.tail);
+    scrollToBottom();
+    requestAnimationFrame(function() {
+      scrollToBottom();
+      document.documentElement.style.opacity = '1';
+    });
+    // 兜底:JS 异常/极端情况也要显示出来
+    setTimeout(function() { document.documentElement.style.opacity = '1'; }, 400);
+    if (parts.head) {
+      setTimeout(function() {
+        var div = document.createElement('div');
+        div.innerHTML = renderBlocks(parts.head);
+        var c = document.getElementById('content');
+        var before = document.documentElement.scrollHeight;
+        var y = window.scrollY;
+        while (div.lastChild) { c.insertBefore(div.lastChild, c.firstChild); }
+        var delta = document.documentElement.scrollHeight - before;
+        window.scrollTo(0, y + delta);
+      }, 80);
+    }
     window.addEventListener('load', scrollToBottom);
-    // 图片加载完会撑高文档，所有图加载完后再滚一次
+    // 图片加载完会撑高文档，加载完补滚保持贴底
     Array.from(document.images).forEach(img => {
       if (!img.complete) img.addEventListener('load', scrollToBottom, { once: true });
     });
     setTimeout(scrollToBottom, 300);
-    setTimeout(scrollToBottom, 1000);
     </script>
     </body>
     </html>

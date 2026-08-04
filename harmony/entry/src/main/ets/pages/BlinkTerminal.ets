@@ -107,7 +107,8 @@ struct BlinkTerminal {
   @State showBrowser: boolean = false;
   @State browserUrl: string = '';
   @State showTranscript: boolean = false;
-  @State transcriptText: string = '';
+  @State chatName: string = '';
+  @State chatRefreshing: boolean = false;
   // new-tab / machine-form scratch state
   @State ntMachineId: string = '';
   @State ntWorkDirId: string = '';
@@ -138,6 +139,14 @@ struct BlinkTerminal {
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
   private transcriptClient: BlinkdClient | null = null;
+  // 对话记录页(D 卡片流,与 iOS 一致):本地缓存 + 增量拉取
+  private chatWebCtl: webview.WebviewController = new webview.WebviewController();
+  private chatUrl: string = 'about:blank';
+  private chatSeq: number = 0;
+  private chatTabId: string = '';
+  private chatAvatarURI: string = '';
+  private chatBridge: ChatBridge = new ChatBridge();
+  private avatarB64Cache: Map<string, string> = new Map();
   private avatarCache: Map<string, image.PixelMap> = new Map();
 
   // ---- lifecycle ----
@@ -1079,9 +1088,72 @@ struct BlinkTerminal {
     }
   }
 
-  // ---- transcript dump (dock 🕐 / panel 📄) ----
+  // ---- 对话记录页:秒显缓存 → 后台只拉 jsonl 新增行(iOS 同一套) ----
 
   private dumpTranscript(): void {
+    this.openChatRecord();
+  }
+
+  private chatCachePath(tabId: string): string {
+    return this.filesDir() + '/transcript_' + tabId + '.json';
+  }
+
+  private loadChatCache(tabId: string): TranscriptCacheH | null {
+    try {
+      const txt: string = fs.readTextSync(this.chatCachePath(tabId));
+      const c: TranscriptCacheH = JSON.parse(txt) as TranscriptCacheH;
+      if (c.body === undefined || c.file === undefined) {
+        return null;
+      }
+      return c;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private saveChatCache(tabId: string, file: string, lines: number, body: string): void {
+    try {
+      let b: string = body;
+      if (b.length > 300000) {
+        // 从头裁到角色边界,保持消息完整
+        const tail: string = b.substring(b.length - 300000);
+        const i1: number = tail.indexOf('\n▶');
+        const i2: number = tail.indexOf('\n◆');
+        let cutAt: number = -1;
+        if (i1 >= 0 && i2 >= 0) {
+          cutAt = Math.min(i1, i2);
+        } else {
+          cutAt = Math.max(i1, i2);
+        }
+        b = cutAt >= 0 ? tail.substring(cutAt + 1) : tail;
+      }
+      const c: TranscriptCacheH = { file: file, lines: lines, body: b };
+      const f = fs.openSync(this.chatCachePath(tabId),
+        fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      fs.writeSync(f.fd, JSON.stringify(c));
+      fs.closeSync(f);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'chat cache save: %{public}s', `${e}`);
+    }
+  }
+
+  private async avatarDataURI(workDirId: string): Promise<string> {
+    const hit = this.avatarB64Cache.get(workDirId);
+    if (hit !== undefined) {
+      return hit;
+    }
+    try {
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const raw: Uint8Array = await ctx.resourceManager.getRawFileContent('avatars/' + workDirId + '.png');
+      const uri: string = 'data:image/png;base64,' + this.b64.encodeToStringSync(raw);
+      this.avatarB64Cache.set(workDirId, uri);
+      return uri;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  private async openChatRecord(): Promise<void> {
     const tab = this.store.tabById(this.activeTabId);
     if (tab === null) {
       return;
@@ -1092,29 +1164,146 @@ struct BlinkTerminal {
       this.toast('机器未配置 blinkd');
       return;
     }
-    this.transcriptText = '正在抓取终端内容…';
+    const w = this.store.workDirById(tab.workDirId);
+    this.chatName = (w !== null && w.name.length > 0) ? w.name : tab.tmuxSession;
+    this.chatAvatarURI = (w !== null && w.hasIcon === true) ? await this.avatarDataURI(w.id) : '';
+    this.chatTabId = tab.id;
+    this.chatBridge.onCopy = (t: string): void => {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, t);
+      pasteboard.getSystemPasteboard().setData(data).then(() => this.toast('已复制')).catch(() => {});
+    };
+    const cached = this.loadChatCache(tab.id);
+    this.chatRefreshing = true;
+    this.renderChat(cached !== null ? cached.body : '');
     this.showTranscript = true;
+    this.fetchChatDelta(tab, ep.blinkdHost,
+      ep.blinkdPort !== undefined ? ep.blinkdPort : 7777, ep.blinkdToken,
+      cached !== null ? cached.file : '', cached !== null ? cached.lines : 0);
+  }
+
+  // 生成 HTML 落到 filesDir,Web loadUrl(带 ?v= 防缓存);controller 未挂载时由
+  // onControllerAttached 兜底加载 chatUrl
+  private renderChat(body: string): void {
+    try {
+      const enc = new util.TextEncoder();
+      const payload: string = this.b64.encodeToStringSync(
+        enc.encodeInto(body.length > 0 ? body : '◆ Claude\n⏳ 正在拉取最新对话…'));
+      const html: string = buildChatHtml(payload, this.chatAvatarURI, this.chatName);
+      // 双文件轮换防 Web 缓存(file URL 带 ?query 在部分内核上解析不稳,不用)
+      this.chatSeq++;
+      const p: string = this.filesDir() + (this.chatSeq % 2 === 0 ? '/chat_a.html' : '/chat_b.html');
+      const f = fs.openSync(p, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      fs.writeSync(f.fd, html);
+      fs.closeSync(f);
+      this.chatUrl = 'file://' + p;
+      try {
+        this.chatWebCtl.loadUrl(this.chatUrl);
+      } catch (e) {
+        // Web 还没挂载:overlay 构建时 src 直接用 chatUrl,首帧自己会加载
+      }
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'chat render: %{public}s', `${e}`);
+    }
+  }
+
+  private fetchChatDelta(tab: TabModel, host: string, port: number, token: string,
+                          cachedFile: string, cachedLines: number): void {
+    let script = this.store.transcriptDeltaScriptForTab(tab, cachedFile, cachedLines);
+    if (script === null) {
+      this.chatRefreshing = false;
+      return;
+    }
+    const m = this.store.machineById(tab.machineId);
+    if (m !== null && m.transport !== 'blinkd') {
+      // ssh 机器:脚本经中转机 blinkd 再 ssh 过去跑
+      const sb64: string = this.b64.encodeToStringSync(new util.TextEncoder().encodeInto(script));
+      script = 'ssh ' + m.user + '@' + m.host + ' -- ' + BlinkStore.shq('echo ' + sb64 + ' | base64 -d | bash');
+    }
     let buf: string = '';
+    let done: boolean = false;
     const dec = util.TextDecoder.create('utf-8');
     const client = new BlinkdClient();
     this.transcriptClient = client;
+    const finish = (): void => {
+      if (done) {
+        return;
+      }
+      done = true;
+      client.close();
+      this.transcriptClient = null;
+      this.chatRefreshing = false;
+      this.handleChatPayload(tab.id, buf);
+    };
     client.onData = (bytes: Uint8Array) => {
       buf += dec.decodeToString(bytes, { stream: true });
+      if (buf.indexOf('@TSB64E@') >= 0) {
+        finish();
+      }
     };
     client.onState = (st: BlinkdState) => {
       if (st === 'closed' || st === 'error') {
-        this.transcriptText = buf.length > 0 ? buf : '(无内容)';
+        finish();
       }
     };
-    const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
-    // one-shot: blinkd runs `bash -c "<capture>"` then the connection ends
-    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols,
-      this.store.transcriptCommandForTab(tab));
-    setTimeout(() => {
-      this.transcriptText = buf.length > 0 ? buf : '(无内容)';
-      client.close();
+    client.connect(host, port, token, 24, 80, script);
+    setTimeout(finish, 20000);
+  }
+
+  private handleChatPayload(tabId: string, raw: string): void {
+    const i1: number = raw.indexOf('@TSB64@');
+    const i2: number = raw.indexOf('@TSB64E@');
+    if (i1 < 0 || i2 <= i1) {
+      const cachedOld = this.loadChatCache(tabId);
+      if (cachedOld === null || cachedOld.body.length === 0) {
+        this.renderChat('◆ Claude\n拉取失败,请稍后重试');
+      }
+      return;
+    }
+    const b64s: string = raw.substring(i1 + 7, i2).replace(new RegExp('[^A-Za-z0-9+/=]', 'g'), '');
+    let payload: string = '';
+    try {
+      const bytes: Uint8Array = this.b64.decodeSync(b64s);
+      payload = util.TextDecoder.create('utf-8').decodeToString(bytes);
+    } catch (e) {
+      return;
+    }
+    const nl: number = payload.indexOf('\n');
+    const metaLine: string = nl >= 0 ? payload.substring(0, nl) : payload;
+    const body: string = nl >= 0 ? payload.substring(nl + 1) : '';
+    const meta: string[] = metaLine.split('\t');
+    if (meta.length < 4 || meta[0] !== 'META') {
+      return;
+    }
+    const file: string = meta[1];
+    const lineCount: number = Number.parseInt(meta[2], 10) > 0 ? Number.parseInt(meta[2], 10) : 0;
+    const isFull: boolean = meta[3] === '1';
+    if (file === 'NOTFOUND') {
+      this.renderChat(body.length > 0 ? '◆ Claude\n' + body : '◆ Claude\n(无内容)');
+      return;
+    }
+    const cached = this.loadChatCache(tabId);
+    let merged: string;
+    if (isFull || cached === null) {
+      merged = body;
+    } else if (body.length === 0) {
+      merged = cached.body;
+    } else {
+      merged = cached.body + '\n\n' + body;
+    }
+    this.saveChatCache(tabId, file, lineCount, merged);
+    const hadCache: boolean = cached !== null && cached.body.length > 0;
+    if ((isFull || body.length > 0 || !hadCache) && this.chatTabId === tabId && this.showTranscript) {
+      this.renderChat(merged);
+    }
+  }
+
+  private closeChatRecord(): void {
+    this.showTranscript = false;
+    if (this.transcriptClient !== null) {
+      this.transcriptClient.close();
       this.transcriptClient = null;
-    }, 1600);
+    }
+    this.chatRefreshing = false;
   }
 
   // ===========================================================================
@@ -1345,7 +1534,6 @@ struct BlinkTerminal {
                 this.symPill($r('sys.symbol.arrow_clockwise'), () => this.reconnectActive())
                 this.symPill($r('sys.symbol.arrow_counterclockwise_clock'), () => { this.sheet = 'history'; })
                 Row().width(1).height(26).backgroundColor('#1FFFFFFF')
-                this.symPill($r('sys.symbol.doc_plaintext'), () => this.dumpTranscript())
                 this.symPill($r('sys.symbol.discover'), () => this.openBrowser())
                 this.symPill($r('sys.symbol.desktop'), () => { this.sheet = 'machinePicker'; })
                 this.symPill($r('sys.symbol.wand_and_stars'), () => { this.sheet = 'claude'; })
@@ -1365,7 +1553,22 @@ struct BlinkTerminal {
       .width('100%')
 
       if (this.toolsGroup === 0) {
-        this.voiceField()
+        Row({ space: 8 }) {
+          // 💬 显示模式切换:终端 ↔ 对话记录页(iOS 同位置)
+          Stack() {
+            SymbolGlyph($r('sys.symbol.message')).fontSize(18).fontColor(['#EBFFFFFF'])
+          }
+          .width(46).height(48).borderRadius(23)
+          .backgroundColor('#0BFFFFFF')
+          .border({ width: 1, color: '#24FFFFFF' })
+          .onClick(() => { this.dumpTranscript(); })
+
+          Column() {
+            this.voiceField()
+          }
+          .layoutWeight(1)
+        }
+        .width('100%')
       } else {
         this.keysRow2()
       }
@@ -2036,27 +2239,55 @@ struct BlinkTerminal {
     .padding({ top: this.topInset, bottom: this.botInset })
   }
 
-  // ---- transcript overlay ----
+  // ---- 对话记录页 overlay(D 卡片流,与 iOS 一致) ----
   @Builder
   transcriptOverlay() {
-    Column() {
-      Row() {
-        Text('终端内容').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF').layoutWeight(1)
-        Text('复制').fontSize(14).fontColor(TEAL).margin({ right: 16 }).onClick(() => this.copyTranscript())
-        Text('关闭').fontSize(14).fontColor('#0A84FF').onClick(() => { this.showTranscript = false; })
-      }.width('100%').height(48).padding({ left: 16, right: 16 })
-      Scroll() {
-        Text(this.transcriptText).fontSize(12).fontColor('#D4D4D4').fontFamily('monospace')
-          .width('100%').textAlign(TextAlign.Start).padding(12)
-      }.layoutWeight(1).width('100%').align(Alignment.TopStart)
-    }
-    .width('100%').height('100%').backgroundColor('#0C0C0E')
-    .padding({ top: this.topInset, bottom: this.botInset })
-  }
+    Stack({ alignContent: Alignment.BottomStart }) {
+      Column() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor(['#1A73E8'])
+            .onClick(() => { this.closeChatRecord(); })
+          Text(this.chatName).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#1A1D21')
+            .layoutWeight(1).textAlign(TextAlign.Center)
+          if (this.chatRefreshing) {
+            LoadingProgress().width(18).height(18).color('#9AA1AA')
+          } else {
+            Row().width(20)
+          }
+        }
+        .width('100%').height(46).padding({ left: 12, right: 12 })
+        .backgroundColor('#F4F5F7')
 
-  private copyTranscript(): void {
-    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.transcriptText);
-    pasteboard.getSystemPasteboard().setData(data).then(() => this.toast('已复制')).catch(() => {});
+        // src 直接指向生成好的 HTML 文件(openChatRecord 先 renderChat 再置 showTranscript,
+        // 构建时 chatUrl 一定就绪),避免 about:blank 初始导航把 loadUrl 顶掉的竞态
+        Web({ src: this.chatUrl, controller: this.chatWebCtl })
+          .layoutWeight(1).width('100%')
+          .backgroundColor('#F4F5F7')
+          .fileAccess(true)
+          .javaScriptProxy({
+            object: this.chatBridge,
+            name: 'blinkNative',
+            methodList: ['copy'],
+            controller: this.chatWebCtl,
+          })
+      }
+      .width('100%').height('100%')
+
+      // 左下角悬浮返回
+      Row({ space: 4 }) {
+        SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(14).fontColor(['#1A73E8'])
+        Text('返回').fontSize(14).fontColor('#1A73E8')
+      }
+      .padding({ left: 16, right: 18, top: 9, bottom: 9 })
+      .backgroundColor('#FFFFFF')
+      .borderRadius(19)
+      .border({ width: 1, color: '#E2E4E8' })
+      .shadow({ radius: 10, color: '#24000000', offsetX: 0, offsetY: 3 })
+      .margin({ left: 16, bottom: 12 })
+      .onClick(() => { this.closeChatRecord(); })
+    }
+    .width('100%').height('100%').backgroundColor('#F4F5F7')
+    .padding({ top: this.topInset, bottom: this.botInset })
   }
 
   private deleteMachine(m: Machine): void {
@@ -2084,4 +2315,150 @@ struct BlinkTerminal {
     }
     p.put(key, value).then((): Promise<void> => p.flush()).catch(() => {});
   }
+}
+
+// =============================================================================
+// 对话记录页支撑件(与 iOS TranscriptViewController 同一套体验)
+// =============================================================================
+
+// 每 tab 一份的本地缓存:file/lines 是 jsonl 游标,body 是 "▶ You/◆ Claude" 全文
+interface TranscriptCacheH {
+  file: string;
+  lines: number;
+  body: string;
+}
+
+// Web 里 JS 调 native 复制(javaScriptProxy 注入为 window.blinkNative)
+class ChatBridge {
+  onCopy: (t: string) => void = (_t: string): void => {};
+
+  copy(t: string): void {
+    this.onCopy(t);
+  }
+}
+
+// D 卡片流 HTML(iOS htmlFor 的移植):浅灰底,Claude 白卡片 + 名字 + 复制,
+// user 右侧蓝胶囊;尾部 12 条先渲染秒显,老历史后台补插;隐藏→滚到底→显示防跳动。
+function buildChatHtml(payloadB64: string, avatarURI: string, claudeName: string): string {
+  const safeName: string = claudeName.replace(new RegExp('["<>\\\\]', 'g'), '');
+  const p1: string = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">' +
+    '<style>' +
+    'body{font-family:-apple-system,"PingFang SC","HarmonyOS Sans SC",sans-serif;padding:14px 14px 40px;' +
+    'line-height:1.6;color:#1a1d21;background:#f4f5f7;font-size:14px;word-wrap:break-word;margin:0;}' +
+    'h1,h2,h3{font-weight:600;margin:1em 0 .5em;}h1{font-size:1.3em}h2{font-size:1.18em}h3{font-size:1.08em}' +
+    '.msg-block{margin:14px 0;display:flex;gap:8px;align-items:flex-start;}' +
+    '.ava{width:30px;height:30px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;' +
+    'justify-content:center;margin-top:2px;-webkit-user-select:none;user-select:none;}' +
+    '.ava-claude{background:linear-gradient(135deg,#3fdc97,#2ea9e8);color:#fff;font-size:14px;font-weight:700;}' +
+    '.ava-user{background:#4a5568;color:#fff;font-size:12px;font-weight:600;}' +
+    '.ava.has-img{background:#e2e4e8;overflow:hidden;}' +
+    '.ava-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;}' +
+    '.mb-claude .card{flex:1 1 auto;min-width:0;background:#fff;border:1px solid #e2e4e8;' +
+    'border-radius:5px 14px 14px 14px;overflow:hidden;box-shadow:0 1px 3px rgba(20,30,40,.05);}' +
+    '.mb-claude .msg-head{display:flex;align-items:center;justify-content:space-between;' +
+    'padding:7px 14px;background:#fafbfc;border-bottom:1px solid #eef0f3;}' +
+    '.mb-claude .msg-body{padding:10px 14px 12px;}' +
+    '.msg-block.mb-user{flex-direction:row-reverse;}' +
+    '.mb-user .card{max-width:84%;background:#dce8ff;color:#1a3a6b;' +
+    'border-radius:16px 5px 16px 16px;padding:8px 13px;}' +
+    '.msg-body p:first-child{margin-top:0}.msg-body p:last-child{margin-bottom:0}' +
+    '.role{font-weight:600;font-size:11px;letter-spacing:.1em;color:#7a828c;}' +
+    '.copy-btn{font-size:12px;color:#1a73e8;background:transparent;border:1px solid #c8d7f5;' +
+    'border-radius:6px;padding:3px 10px;}' +
+    '.copy-btn.copied{color:#1e9e63;border-color:#b4e3cd;}' +
+    '.meta{color:#9aa1aa;font-size:11px;font-family:monospace;margin:10px 2px;}' +
+    'pre{background:#14181d;color:#c9d4de;padding:12px;border-radius:10px;overflow-x:auto;' +
+    'font-family:monospace;font-size:12px;line-height:1.45;margin:.6em 0;}' +
+    'code{background:#eef0f3;padding:2px 5px;border-radius:4px;font-family:monospace;font-size:.9em;color:#1a1d21;}' +
+    'pre code{background:none;padding:0;color:#7ee2ad;}' +
+    'table{border-collapse:collapse;margin:.8em 0;display:block;overflow-x:auto;font-size:.92em;}' +
+    'th,td{border:1px solid #e2e4e8;padding:6px 10px;text-align:left;}th{background:#fafbfc;font-weight:600;}' +
+    'ul,ol{padding-left:1.5em;margin:.5em 0;}li{margin:.2em 0;}' +
+    'a{color:#1a73e8;text-decoration:none;}' +
+    'blockquote{border-left:3px solid #e2e4e8;padding-left:12px;margin:.6em 0;color:#5f6670;}' +
+    'hr{border:none;border-top:1px solid #e2e4e8;margin:1.5em 0;}p{margin:.5em 0;}' +
+    'img{max-width:100%;border-radius:8px;}' +
+    '</style></head><body><div id="content"></div><script>' +
+    'function escapeHTML(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}' +
+    'function decodeB64(b){var bin=atob(b);var a=new Uint8Array(bin.length);' +
+    'for(var i=0;i<bin.length;i++){a[i]=bin.charCodeAt(i);}return new TextDecoder("utf-8").decode(a);}' +
+    'function utf8B64(s){return btoa(unescape(encodeURIComponent(s)));}' +
+    'function inline(s){s=escapeHTML(s);' +
+    's=s.replace(/`([^`\\n]+)`/g,"<code>$1</code>");' +
+    's=s.replace(/\\*\\*([^*\\n]+)\\*\\*/g,"<strong>$1</strong>");' +
+    's=s.replace(/(https?:\\/\\/[^\\s<>"\']+)/g,\'<a href="$1">$1</a>\');' +
+    'return s;}' +
+    'function copyMsg(btn){try{var t=decodeB64(btn.getAttribute("data-content"));' +
+    'if(window.blinkNative&&window.blinkNative.copy){window.blinkNative.copy(t);}' +
+    'btn.textContent="已复制";btn.classList.add("copied");' +
+    'setTimeout(function(){btn.textContent="复制";btn.classList.remove("copied");},1200);}catch(e){}}' +
+    'function renderBlocks(text){var lines=text.split("\\n");var html="";var i=0;' +
+    'while(i<lines.length){var line=lines[i];' +
+    'if(/^[▶◆]/.test(line)){var isUser=/^▶/.test(line);i++;var body=[];' +
+    'while(i<lines.length&&!/^[▶◆]/.test(lines[i])&&!/^=== /.test(lines[i])){body.push(lines[i]);i++;}' +
+    'while(body.length&&body[body.length-1].trim()===""){body.pop();}' +
+    'var raw=body.join("\\n");var inner=renderBlocks(raw);' +
+    'var head=isUser?"":(\'<div class="msg-head"><span class="role">\'+(CLAUDE_NAME||"CLAUDE")+"</span>"+' +
+    '\'<button class="copy-btn" data-content="\'+utf8B64(raw)+\'" onclick="copyMsg(this)">复制</button></div>\');' +
+    'var ava=isUser?\'<div class="ava ava-user">我</div>\'' +
+    ':(AVA_CLAUDE?\'<div class="ava has-img"><img class="ava-img" src="\'+AVA_CLAUDE+\'"></div>\'' +
+    ':\'<div class="ava ava-claude">\'+(CLAUDE_NAME?CLAUDE_NAME.charAt(0).toUpperCase():"C")+"</div>");' +
+    'html+=\'<div class="msg-block \'+(isUser?"mb-user":"mb-claude")+\'">\'+ava+\'<div class="card">\'+head+' +
+    '\'<div class="msg-body">\'+inner+"</div></div></div>";continue;}' +
+    'if(/^```/.test(line)){var code=[];i++;' +
+    'while(i<lines.length&&!/^```/.test(lines[i])){code.push(lines[i]);i++;}i++;' +
+    'html+="<pre><code>"+escapeHTML(code.join("\\n"))+"</code></pre>";continue;}' +
+    'if(/^=== /.test(line)){html+=\'<div class="meta">\'+escapeHTML(line)+"</div>";i++;continue;}' +
+    'var h=line.match(/^(#{1,6})\\s+(.+)$/);' +
+    'if(h){var lv=h[1].length;html+="<h"+lv+">"+inline(h[2])+"</h"+lv+">";i++;continue;}' +
+    'if(/^\\|.*\\|\\s*$/.test(line)&&i+1<lines.length&&/^\\|[\\s\\-:|]+\\|\\s*$/.test(lines[i+1])){' +
+    'var hc=line.split("|").slice(1,-1);i+=2;var rows=[];' +
+    'while(i<lines.length&&/^\\|.*\\|\\s*$/.test(lines[i])){rows.push(lines[i].split("|").slice(1,-1));i++;}' +
+    'var t="<table><thead><tr>";for(var a=0;a<hc.length;a++){t+="<th>"+inline(hc[a].trim())+"</th>";}' +
+    't+="</tr></thead><tbody>";for(var r=0;r<rows.length;r++){t+="<tr>";' +
+    'for(var c=0;c<rows[r].length;c++){t+="<td>"+inline(rows[r][c].trim())+"</td>";}t+="</tr>";}' +
+    'html+=t+"</tbody></table>";continue;}' +
+    'if(/^\\s*[-*]\\s+/.test(line)||/^\\s*\\d+\\.\\s+/.test(line)){' +
+    'var ordered=/^\\s*\\d+\\.\\s+/.test(line);var items=[];' +
+    'while(i<lines.length&&(/^\\s*[-*]\\s+/.test(lines[i])||/^\\s*\\d+\\.\\s+/.test(lines[i]))){' +
+    'var mm=lines[i].match(/^\\s*(?:[-*]|\\d+\\.)\\s+(.*)$/);items.push(mm?mm[1]:lines[i]);i++;}' +
+    'html+=(ordered?"<ol>":"<ul>");for(var k=0;k<items.length;k++){html+="<li>"+inline(items[k])+"</li>";}' +
+    'html+=(ordered?"</ol>":"</ul>");continue;}' +
+    'if(/^>\\s+/.test(line)){var q=[];' +
+    'while(i<lines.length&&/^>\\s+/.test(lines[i])){q.push(lines[i].replace(/^>\\s+/,""));i++;}' +
+    'html+="<blockquote>"+inline(q.join(" "))+"</blockquote>";continue;}' +
+    'if(line.trim()===""){i++;continue;}' +
+    'var para=line;i++;' +
+    'while(i<lines.length&&lines[i].trim()!==""&&' +
+    '!/^(```|▶|◆|=== |#{1,6}\\s|\\s*[-*]\\s|\\s*\\d+\\.\\s|>\\s|\\|.*\\|\\s*$)/.test(lines[i])){para+=" "+lines[i];i++;}' +
+    'html+="<p>"+inline(para)+"</p>";}' +
+    'return html;}' +
+    'var RAW=decodeB64("';
+  const p2: string = '");var AVA_CLAUDE="';
+  const p3: string = '";var CLAUDE_NAME="';
+  const p4: string = '";' +
+    'document.documentElement.style.opacity="0";' +
+    'function reveal(){document.documentElement.style.opacity="1";}' +
+    'setTimeout(reveal,400);' +
+    'function scrollToBottom(){window.scrollTo(0,document.documentElement.scrollHeight);}' +
+    'function splitTail(raw,n){var lines=raw.split("\\n");var idxs=[];' +
+    'for(var i=0;i<lines.length;i++){if(/^[▶◆]/.test(lines[i])){idxs.push(i);}}' +
+    'if(idxs.length<=n){return {head:"",tail:raw};}' +
+    'var cut=idxs[idxs.length-n];' +
+    'return {head:lines.slice(0,cut).join("\\n"),tail:lines.slice(cut).join("\\n")};}' +
+    'try{' +
+    'var parts=splitTail(RAW,12);' +
+    'document.getElementById("content").innerHTML=renderBlocks(parts.tail);' +
+    'scrollToBottom();' +
+    'requestAnimationFrame(function(){scrollToBottom();reveal();});' +
+    'if(parts.head){setTimeout(function(){var div=document.createElement("div");' +
+    'div.innerHTML=renderBlocks(parts.head);var c=document.getElementById("content");' +
+    'var before=document.documentElement.scrollHeight;var y=window.scrollY;' +
+    'while(div.lastChild){c.insertBefore(div.lastChild,c.firstChild);}' +
+    'var delta=document.documentElement.scrollHeight-before;window.scrollTo(0,y+delta);},80);}' +
+    'setTimeout(scrollToBottom,300);' +
+    '}catch(e){reveal();document.getElementById("content").textContent="渲染失败: "+e.message;}' +
+    '</script></body></html>';
+  return p1 + payloadB64 + p2 + avatarURI + p3 + safeName + p4;
 }

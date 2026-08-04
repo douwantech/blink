@@ -8,6 +8,7 @@
 import UIKit
 import Combine
 import AVFoundation
+import Network
 import SSH
 import BlinkConfig
 import BlinkFiles
@@ -450,6 +451,234 @@ final class LineStreamWriter: BlinkFiles.Writer {
   }
 }
 
+// MARK: - 聊天历史本地缓存
+
+/// 落盘在 Documents/assistant_chat_cache.json：打开聊天页先秒显这份，
+/// 再拿 file+lines 游标去远端只拉 jsonl 新增的行
+struct AssistantChatCache: Codable {
+  struct Pair: Codable {
+    let r: String  // "user" / "assistant"
+    let t: String
+  }
+  var file: String   // 对应的远端 jsonl basename
+  var lines: Int     // 已消费到的行号（游标）
+  var pairs: [Pair]
+
+  private static let maxPairs = 200
+  private static var url: URL {
+    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("assistant_chat_cache.json")
+  }
+
+  static func load() -> AssistantChatCache? {
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    return try? JSONDecoder().decode(AssistantChatCache.self, from: data)
+  }
+
+  func save() {
+    var copy = self
+    if copy.pairs.count > Self.maxPairs {
+      copy.pairs.removeFirst(copy.pairs.count - Self.maxPairs)
+    }
+    if let data = try? JSONEncoder().encode(copy) {
+      try? data.write(to: Self.url, options: .atomic)
+    }
+  }
+
+  var tuplePairs: [(role: String, text: String)] {
+    pairs.map { (role: $0.r, text: $0.t) }
+  }
+}
+
+// MARK: - blinkd 一次性 exec(原生 TCP,拿 stdout)
+
+/// 对 blinkd 机器直接跑脚本收输出:0x01 auth + 0x04 exec,daemon 把 PTY 原始字节写回,进程退出连接关闭。
+/// 输出里用 @TSB64@…@TSB64E@ 标记捞 payload,PTY 的 \r 噪音不影响。
+enum BlinkdExecOnce {
+  static func run(host: String, port: Int, token: String, script: String,
+                  timeout: TimeInterval = 25,
+                  completion: @escaping (Result<String, Error>) -> Void) {
+    guard port > 0, port <= 65535, let p = NWEndpoint.Port(rawValue: UInt16(port)) else {
+      completion(.failure(NSError(domain: "BlinkdExec", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "端口不合法: \(port)"])))
+      return
+    }
+    let conn = NWConnection(host: NWEndpoint.Host(host), port: p, using: .tcp)
+    let queue = DispatchQueue(label: "blinkd-exec-once")
+    var buf = Data()
+    var done = false
+    func finish(_ r: Result<String, Error>) {
+      guard !done else { return }
+      done = true
+      conn.cancel()
+      completion(r)
+    }
+    func frame(_ type: UInt8, _ payload: Data) -> Data {
+      var d = Data([type])
+      d.append(UInt8((payload.count >> 8) & 0xff))
+      d.append(UInt8(payload.count & 0xff))
+      d.append(payload)
+      return d
+    }
+    func receiveLoop() {
+      conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, complete, err in
+        if let data { buf.append(data) }
+        let s = String(decoding: buf, as: UTF8.self)
+        if s.contains("@TSB64E@") { finish(.success(s)); return }
+        if let err {
+          if buf.isEmpty { finish(.failure(err)) } else { finish(.success(s)) }
+          return
+        }
+        if complete { finish(.success(s)); return }
+        receiveLoop()
+      }
+    }
+    conn.stateUpdateHandler = { st in
+      switch st {
+      case .ready:
+        var out = frame(0x01, Data(token.utf8))
+        out.append(frame(0x04, Data(script.utf8)))
+        conn.send(content: out, completion: .contentProcessed { _ in })
+        receiveLoop()
+      case .failed(let e):
+        finish(.failure(e))
+      default:
+        break
+      }
+    }
+    queue.asyncAfter(deadline: .now() + timeout) {
+      finish(.success(String(decoding: buf, as: UTF8.self)))
+    }
+    conn.start(queue: queue)
+  }
+}
+
+// MARK: - 对话记录:本地缓存 + 增量抓取
+
+/// 每个 tab(machineId+session)一份缓存,秒显 + 只拉 jsonl 新增行
+struct TranscriptCache: Codable {
+  var file: String   // 远端 jsonl basename
+  var lines: Int     // 已消费到的行号(游标)
+  var body: String   // "▶ You/◆ Claude" 格式全文
+}
+
+enum TranscriptStore {
+  private static var dir: URL {
+    let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("TranscriptCache", isDirectory: true)
+    try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return root
+  }
+
+  static func key(machineId: String, baseName: String) -> String {
+    "\(machineId)-\(baseName)".map { c -> Character in
+      (c.isLetter || c.isNumber || c == "-" || c == "_") ? c : "_"
+    }.map(String.init).joined()
+  }
+
+  private static func url(_ key: String) -> URL {
+    dir.appendingPathComponent("\(key).json")
+  }
+
+  static func load(key: String) -> TranscriptCache? {
+    guard let data = try? Data(contentsOf: url(key)) else { return nil }
+    return try? JSONDecoder().decode(TranscriptCache.self, from: data)
+  }
+
+  static func save(key: String, _ cache: TranscriptCache) {
+    if let data = try? JSONEncoder().encode(cache) {
+      try? data.write(to: url(key), options: .atomic)
+    }
+  }
+
+  /// 正文超 30 万字符就从头裁,裁到角色边界(▶/◆ 行首)保持消息完整
+  static func trim(_ body: String) -> String {
+    let cap = 300_000
+    guard body.count > cap else { return body }
+    let tail = String(body.suffix(cap))
+    if let r = tail.range(of: "\n▶") ?? tail.range(of: "\n◆") {
+      return String(tail[tail.index(after: r.lowerBound)...])
+    }
+    return tail
+  }
+}
+
+struct TranscriptDelta {
+  let file: String
+  let lines: Int
+  let body: String
+  let isFull: Bool
+}
+
+final class TranscriptFetcher {
+  static let shared = TranscriptFetcher()
+  enum FetchError: LocalizedError {
+    case noMachine
+    case badPayload(String)
+    var errorDescription: String? {
+      switch self {
+      case .noMachine: return "找不到机器配置"
+      case .badPayload(let raw): return "回包解析失败: \(String(raw.suffix(160)))"
+      }
+    }
+  }
+
+  func fetch(machineId: String?, workDirId: String?, baseName: String,
+             cachedFile: String?, cachedLines: Int,
+             completion: @escaping (Result<TranscriptDelta, Error>) -> Void) {
+    DispatchQueue.main.async {
+      guard let built = BlinkMachineStore.shared.transcriptDeltaScript(
+        forMachineId: machineId, workDirId: workDirId, baseName: baseName,
+        cachedFile: cachedFile, cachedLines: cachedLines) else {
+        completion(.failure(FetchError.noMachine))
+        return
+      }
+      if let cfg = built.machine.blinkdConfig {
+        BlinkdExecOnce.run(host: cfg.host, port: cfg.port, token: cfg.token, script: built.script) { r in
+          switch r {
+          case .success(let raw): completion(Self.parse(raw: raw))
+          case .failure(let e): completion(.failure(e))
+          }
+        }
+      } else {
+        let m = built.machine
+        Task {
+          do {
+            let raw = try await BlinkAssistantBackend.shared.execRemote(script: built.script, machine: m)
+            completion(Self.parse(raw: raw))
+          } catch {
+            completion(.failure(error))
+          }
+        }
+      }
+    }
+  }
+
+  private static func parse(raw: String) -> Result<TranscriptDelta, Error> {
+    guard let r1 = raw.range(of: "@TSB64@"),
+          let r2 = raw.range(of: "@TSB64E@", range: r1.upperBound..<raw.endIndex) else {
+      return .failure(FetchError.badPayload(raw))
+    }
+    let b64 = String(raw[r1.upperBound..<r2.lowerBound]).filter {
+      $0.isLetter || $0.isNumber || $0 == "+" || $0 == "/" || $0 == "="
+    }
+    guard let data = Data(base64Encoded: b64),
+          let payload = String(data: data, encoding: .utf8) else {
+      return .failure(FetchError.badPayload(raw))
+    }
+    // 第一行 META\tfile\ttotal\tfull,其余为正文
+    let parts = payload.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+    let meta = parts[0].split(separator: "\t")
+    guard meta.count >= 4, meta[0] == "META" else {
+      return .failure(FetchError.badPayload(payload))
+    }
+    return .success(TranscriptDelta(file: String(meta[1]),
+                                    lines: Int(meta[2]) ?? 0,
+                                    body: parts.count > 1 ? String(parts[1]) : "",
+                                    isFull: meta[3] == "1"))
+  }
+}
+
 // MARK: - 真后端：ssh exec → cc --print
 
 final class BlinkAssistantBackend {
@@ -753,15 +982,35 @@ final class BlinkAssistantBackend {
     return Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
   }
 
-  /// 读 jsonl 把过往 user/assistant 文本对话回填成气泡（过滤掉 tool_use / system reminder）
-  func loadHistory() async throws -> [BlinkAssistantMessage] {
+  /// 历史增量拉取结果：file/lines 是新的缓存游标，pairs 是 (role, text) 原始对
+  struct HistoryDelta {
+    let file: String        // 远端最新 jsonl 的 basename
+    let lines: Int          // 该文件当前总行数（下次的游标）
+    let pairs: [(role: String, text: String)]
+    let isFull: Bool        // true = 换文件/缓存失效，pairs 是整份（最后 50 条）；false = 只含新增
+  }
+
+  /// 增量读 jsonl：缓存命中时只解析游标之后的新行；换文件或文件变短则整拉最后 50 条
+  func loadHistoryDelta(cachedFile: String?, cachedLines: Int) async throws -> HistoryDelta? {
+    // basename 只会是 uuid.jsonl，防御性过滤下引号/空白就够
+    let safeFile = (cachedFile ?? "").filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." }
     let script = """
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
     PROJ=\(remoteProjectDir)
     [ -d "$PROJ" ] || exit 0
     LATEST=$(ls -t "$PROJ"/*.jsonl 2>/dev/null | head -1)
     [ -n "$LATEST" ] || exit 0
-    jq -s -r '
+    BASE=$(basename "$LATEST")
+    TOTAL=$(wc -l < "$LATEST" | tr -d ' ')
+    START=1
+    if [ "$BASE" = "\(safeFile)" ] && [ \(max(cachedLines, 0)) -le "$TOTAL" ]; then
+      START=$(( \(max(cachedLines, 0)) + 1 ))
+    fi
+    FULL=0
+    [ "$START" -eq 1 ] && FULL=1
+    printf 'META\\t%s\\t%s\\t%s\\n' "$BASE" "$TOTAL" "$FULL"
+    [ "$START" -le "$TOTAL" ] || exit 0
+    sed -n "${START},${TOTAL}p" "$LATEST" | jq -s -r --arg full "$FULL" '
       [.[]
         | select(.type=="user" or .type=="assistant")
         | (if (.message.content | type) == "string" then
@@ -777,20 +1026,40 @@ final class BlinkAssistantBackend {
         | select(($clean | length) > 0)
         | {role: (if .type=="user" then "user" else "assistant" end), text: $clean}
       ] |
-      .[-50:] |
+      (if $full == "1" then .[-50:] else . end) |
       .[] |
       (.role + "\\t" + (.text | gsub("\\n"; "\\\\n")))
-    ' "$LATEST"
+    '
     """
     let out = try await execRemote(script: script)
+    var file = ""
+    var lines = 0
+    var isFull = true
+    var pairs: [(role: String, text: String)] = []
+    for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
+      let parts = line.split(separator: "\t", maxSplits: 3)
+      if parts.first == "META", parts.count >= 4 {
+        file = String(parts[1])
+        lines = Int(parts[2]) ?? 0
+        isFull = (parts[3] == "1")
+        continue
+      }
+      guard parts.count >= 2 else { continue }
+      let text = line.split(separator: "\t", maxSplits: 1)[1]
+        .replacingOccurrences(of: "\\n", with: "\n")
+      pairs.append((role: String(parts[0]), text: text))
+    }
+    guard !file.isEmpty else { return nil }  // 远端还没有会话文件
+    return HistoryDelta(file: file, lines: lines, pairs: pairs, isFull: isFull)
+  }
+
+  /// (role, text) 对 → 气泡：assistant 里的 <<<SUMMARY>>> 拆成 思考段 + 总结段
+  static func messages(fromPairs pairs: [(role: String, text: String)]) -> [BlinkAssistantMessage] {
     var result: [BlinkAssistantMessage] = []
     let marker = "<<<SUMMARY>>>"
-    for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
-      let parts = line.split(separator: "\t", maxSplits: 1)
-      guard parts.count == 2 else { continue }
-      let role: BlinkAssistantMessage.Role = (parts[0] == "user") ? .user : .assistant
-      let text = String(parts[1]).replacingOccurrences(of: "\\n", with: "\n")
-      // assistant 历史里如果有 <<<SUMMARY>>> marker，按 marker 拆成 思考段 + 总结段 两条
+    for pair in pairs {
+      let role: BlinkAssistantMessage.Role = (pair.role == "user") ? .user : .assistant
+      let text = pair.text
       if role == .assistant, text.contains(marker) {
         let split = text.components(separatedBy: marker)
         let thinking = split.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -817,6 +1086,11 @@ final class BlinkAssistantBackend {
     guard let m = await MainActor.run(body: { BlinkMachineStore.shared.currentMachine }) else {
       throw BlinkAssistantError.noMachine
     }
+    return try await execRemote(script: script, machine: m)
+  }
+
+  /// SSH exec 到指定机器(transcript 原生拉取等跨机场景用)
+  func execRemote(script: String, machine m: BlinkMachine) async throws -> String {
     let resolvedHost = await MainActor.run { BlinkMachineStore.bestHost(for: m) }
     let user = m.user
 
@@ -932,6 +1206,38 @@ final class BlinkAssistantBackend {
 // MARK: - Cell
 
 /// 巡检员工行：整行可点（点了让助手给这位员工拍板），按下时灰色高亮
+// MARK: - 终端暗黑风主题（方案 C）
+
+/// 聊天页配色跟 Blink 终端同一套:黑底 + 等宽字体,助手蓝竖线、用户绿竖线
+enum AssistantTermStyle {
+  static let bg      = UIColor(red: 0x0b/255.0, green: 0x0c/255.0, blue: 0x0e/255.0, alpha: 1)  // 页面底,同鸿蒙/iOS 终端
+  static let barBg   = UIColor(red: 0x0f/255.0, green: 0x11/255.0, blue: 0x14/255.0, alpha: 1)  // 输入条
+  static let field   = UIColor(red: 0x16/255.0, green: 0x19/255.0, blue: 0x1d/255.0, alpha: 1)  // 输入框/卡片
+  static let line    = UIColor(red: 0x1c/255.0, green: 0x21/255.0, blue: 0x28/255.0, alpha: 1)  // 分隔线
+  static let fg      = UIColor(red: 0xd4/255.0, green: 0xda/255.0, blue: 0xe0/255.0, alpha: 1)  // 主文字
+  static let dim     = UIColor(red: 0x6b/255.0, green: 0x76/255.0, blue: 0x83/255.0, alpha: 1)  // 次要文字
+  static let aiBlue  = UIColor(red: 0x4e/255.0, green: 0xa8/255.0, blue: 0xff/255.0, alpha: 1)  // assistant 竖线
+  static let meGreen = UIColor(red: 0x3f/255.0, green: 0xdc/255.0, blue: 0x97/255.0, alpha: 1)  // user 竖线
+
+  static func mono(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+    .monospacedSystemFont(ofSize: size, weight: weight)
+  }
+
+  /// 角色小标题行(ASSISTANT / YOU)+ 正文,拼成一个 attributedText
+  static func withRoleHeader(_ role: String, color: UIColor, body: NSAttributedString) -> NSAttributedString {
+    let ps = NSMutableParagraphStyle()
+    ps.paragraphSpacing = 4
+    let m = NSMutableAttributedString(string: role + "\n", attributes: [
+      .font: mono(10.5, weight: .semibold),
+      .foregroundColor: color,
+      .kern: 1.4,
+      .paragraphStyle: ps,
+    ])
+    m.append(body)
+    return m
+  }
+}
+
 private final class PatrolRowControl: UIControl {
   override var isHighlighted: Bool {
     didSet { backgroundColor = isHighlighted ? UIColor.systemFill.withAlphaComponent(0.5) : .clear }
@@ -942,6 +1248,7 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
   static let reuseId = "AsstBubble"
 
   private let bubble = UIView()
+  private let stripe = UIView()  // 左侧角色竖线:assistant 蓝 / user 绿
   private let label = UILabel()
   private let dotsContainer = UIStackView()
   private let dot1 = UIView()
@@ -968,20 +1275,23 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     contentView.backgroundColor = .clear
 
     bubble.translatesAutoresizingMaskIntoConstraints = false
-    bubble.layer.cornerRadius = 18
-    bubble.layer.cornerCurve = .continuous
-    bubble.layer.masksToBounds = false  // 让阴影能露出来
+    bubble.layer.cornerRadius = 0
+    bubble.layer.masksToBounds = false
     contentView.addSubview(bubble)
+
+    stripe.translatesAutoresizingMaskIntoConstraints = false
+    stripe.layer.cornerRadius = 1.5
+    bubble.addSubview(stripe)
 
     label.translatesAutoresizingMaskIntoConstraints = false
     label.numberOfLines = 0
-    label.font = .systemFont(ofSize: 15)
+    label.font = AssistantTermStyle.mono(13)
     bubble.addSubview(label)
 
     // 三跳点（弹跳 loading，跟文字 inline）
     [dot1, dot2, dot3].forEach { d in
       d.translatesAutoresizingMaskIntoConstraints = false
-      d.backgroundColor = .secondaryLabel
+      d.backgroundColor = AssistantTermStyle.dim
       d.layer.cornerRadius = 4
       d.widthAnchor.constraint(equalToConstant: 7).isActive = true
       d.heightAnchor.constraint(equalToConstant: 7).isActive = true
@@ -1010,9 +1320,14 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     decisionStackBottomConstraint = decisionStack.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: 0)
 
     NSLayoutConstraint.activate([
-      bubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-      bubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
-      bubble.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.82),
+      bubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
+      bubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+      bubble.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 1.0),
+
+      stripe.leadingAnchor.constraint(equalTo: bubble.leadingAnchor),
+      stripe.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 2),
+      stripe.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -2),
+      stripe.widthAnchor.constraint(equalToConstant: 3),
 
       labelTopConstraint,
       label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 14),
@@ -1071,49 +1386,59 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
       labelTopConstraint.constant = 11
       labelBottomConstraint.constant = -11
       stopDots()
-      // 只有 assistant 气泡走 markdown 渲染；user/system 保持纯文本
+      // 终端风:全部左对齐,角色小标题 + 等宽正文;assistant 走 markdown 渲染
       if msg.role == .assistant {
-        // 思考中前缀 💭，总结结句前缀 ✅；历史/无角色不加
-        let iconPrefix: String
+        // 思考段降级成暗色小字,总结段标题带 ✓
+        let header: String
+        let bodyColor: UIColor
+        let bodySize: CGFloat
         switch msg.turnRole {
-        case .intermediate: iconPrefix = "💭  "
-        case .final:        iconPrefix = "✅  "
-        case .none:         iconPrefix = ""
+        case .intermediate:
+          header = "ASSISTANT · THINKING"; bodyColor = AssistantTermStyle.dim; bodySize = 12
+        case .final:
+          header = "ASSISTANT · ✓"; bodyColor = AssistantTermStyle.fg; bodySize = 13
+        case .none:
+          header = "ASSISTANT"; bodyColor = AssistantTermStyle.fg; bodySize = 13
         }
-        // iMessage 灰气泡：跟随深色模式（.label 自动黑/白）
-        label.attributedText = AssistantMarkdown.render(iconPrefix + msg.text, baseFont: .systemFont(ofSize: 15), textColor: .label)
+        let body = AssistantMarkdown.render(msg.text,
+                                            baseFont: AssistantTermStyle.mono(bodySize),
+                                            textColor: bodyColor)
+        label.attributedText = AssistantTermStyle.withRoleHeader(header, color: AssistantTermStyle.aiBlue, body: body)
+      } else if isUser {
+        let body = NSAttributedString(string: msg.text, attributes: [
+          .font: AssistantTermStyle.mono(13),
+          .foregroundColor: AssistantTermStyle.fg,
+        ])
+        label.attributedText = AssistantTermStyle.withRoleHeader("YOU", color: AssistantTermStyle.meGreen, body: body)
       } else {
         label.attributedText = nil
         label.text = msg.text
       }
     }
 
-    if msg.role != .assistant || msg.isLoading {
-      label.textColor = isUser ? .white : .label
-      label.font = isSystem ? .italicSystemFont(ofSize: 13) : .systemFont(ofSize: 15)
+    if isSystem || msg.isLoading {
+      label.textColor = AssistantTermStyle.dim
+      label.font = AssistantTermStyle.mono(11.5)
     }
 
     // 去掉阴影
     bubble.layer.shadowOpacity = 0
+    bubble.backgroundColor = .clear
 
     if isSystem {
-      bubble.backgroundColor = UIColor.tertiarySystemBackground
-      label.textColor = .secondaryLabel
+      stripe.isHidden = true
       leadingConstraint.isActive = true
       trailingConstraint.isActive = true
       leadingConstraint.constant = 36
       trailingConstraint.constant = -36
-    } else if isUser {
-      bubble.backgroundColor = .systemBlue
-      leadingConstraint.isActive = false
-      trailingConstraint.isActive = true
-      trailingConstraint.constant = -14
     } else {
-      // assistant：iMessage 接收方灰（systemGray5 自适应深浅色：#E5E5EA / #2C2C2E）
-      bubble.backgroundColor = .systemGray5
+      // user / assistant 都通栏左对齐,靠竖线颜色区分角色
+      stripe.isHidden = false
+      stripe.backgroundColor = isUser ? AssistantTermStyle.meGreen : AssistantTermStyle.aiBlue
       leadingConstraint.isActive = true
-      trailingConstraint.isActive = false
+      trailingConstraint.isActive = true
       leadingConstraint.constant = 14
+      trailingConstraint.constant = -14
     }
 
     // 决策卡片：在文字下面追加员工 header + 选项按钮
@@ -1121,9 +1446,10 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     if let decision = msg.decision, !msg.isLoading {
       // 如果 cleanText 为空（DECISION 自带 question），用 decision.question 当 label 文本
       if msg.text.isEmpty {
-        label.attributedText = AssistantMarkdown.render("❓  " + decision.question,
-                                                          baseFont: .systemFont(ofSize: 15),
-                                                          textColor: .label)
+        let body = AssistantMarkdown.render("❓  " + decision.question,
+                                            baseFont: AssistantTermStyle.mono(13),
+                                            textColor: AssistantTermStyle.fg)
+        label.attributedText = AssistantTermStyle.withRoleHeader("ASSISTANT", color: AssistantTermStyle.aiBlue, body: body)
       }
       decisionStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
@@ -1150,8 +1476,8 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
         cfg.cornerStyle = .medium
         cfg.titleAlignment = .leading
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
-        cfg.background.backgroundColor = .systemBackground
-        cfg.baseForegroundColor = (option.isAlways == true) ? .systemPurple : .systemBlue
+        cfg.background.backgroundColor = AssistantTermStyle.field
+        cfg.baseForegroundColor = (option.isAlways == true) ? .systemPurple : AssistantTermStyle.aiBlue
         btn.configuration = cfg
         btn.contentHorizontalAlignment = .leading
         btn.tag = decision.options.firstIndex(of: option) ?? 0
@@ -1230,7 +1556,7 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
                                   items: [BlinkAssistantPatrol.Item]) -> UIView {
     let card = UIView()
     card.translatesAutoresizingMaskIntoConstraints = false
-    card.backgroundColor = .systemBackground
+    card.backgroundColor = AssistantTermStyle.field
     card.layer.cornerRadius = 14
     card.layer.cornerCurve = .continuous
     card.clipsToBounds = true
@@ -1594,7 +1920,15 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = .systemGroupedBackground
+    // 终端暗黑风(方案 C):永远深色,黑底跟终端页一致
+    overrideUserInterfaceStyle = .dark
+    view.backgroundColor = AssistantTermStyle.bg
+    let navAp = UINavigationBarAppearance()
+    navAp.configureWithOpaqueBackground()
+    navAp.backgroundColor = AssistantTermStyle.bg
+    navAp.shadowColor = AssistantTermStyle.line
+    navigationItem.standardAppearance = navAp
+    navigationItem.scrollEdgeAppearance = navAp
 
     setupNavTitle()
     navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -1693,10 +2027,11 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     titleStack.alignment = .center
     titleStack.spacing = 1
     let title = UILabel()
-    title.text = "助手"
-    title.font = .systemFont(ofSize: 17, weight: .semibold)
-    statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-    statusLabel.textColor = .systemGreen
+    title.text = "● cc-assistant"
+    title.font = AssistantTermStyle.mono(14, weight: .semibold)
+    title.textColor = AssistantTermStyle.fg
+    statusLabel.font = AssistantTermStyle.mono(10, weight: .medium)
+    statusLabel.textColor = AssistantTermStyle.meGreen
     titleStack.addArrangedSubview(title)
     titleStack.addArrangedSubview(statusLabel)
     navigationItem.titleView = titleStack
@@ -1704,14 +2039,14 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
 
   private func setupEmptyState() {
     emptyStateView.translatesAutoresizingMaskIntoConstraints = false
-    let icon = UIImageView(image: UIImage(systemName: "sparkles"))
-    icon.tintColor = .systemPurple
+    let icon = UIImageView(image: UIImage(systemName: "terminal"))
+    icon.tintColor = AssistantTermStyle.meGreen
     icon.contentMode = .scaleAspectFit
     icon.translatesAutoresizingMaskIntoConstraints = false
     let label = UILabel()
     label.text = "随便聊点什么\n问「状态」就能看所有 tab 的进度"
-    label.font = .systemFont(ofSize: 15)
-    label.textColor = .secondaryLabel
+    label.font = AssistantTermStyle.mono(13)
+    label.textColor = AssistantTermStyle.dim
     label.textAlignment = .center
     label.numberOfLines = 0
     label.translatesAutoresizingMaskIntoConstraints = false
@@ -1750,7 +2085,7 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     let hasText = !textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     sendButton.isEnabled = hasText && !isSending
     UIView.animate(withDuration: 0.15) {
-      self.sendButton.tintColor = self.sendButton.isEnabled ? .systemBlue : UIColor.systemGray3
+      self.sendButton.alpha = self.sendButton.isEnabled ? 1.0 : 0.35
     }
   }
 
@@ -1787,34 +2122,36 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     let content = inputBar.contentView
 
     // 顶部 hairline
+    inputBar.contentView.backgroundColor = AssistantTermStyle.barBg
     inputBarSeparator.translatesAutoresizingMaskIntoConstraints = false
-    inputBarSeparator.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
+    inputBarSeparator.backgroundColor = AssistantTermStyle.line
     content.addSubview(inputBarSeparator)
 
     textView.translatesAutoresizingMaskIntoConstraints = false
-    textView.font = .systemFont(ofSize: 15)
-    textView.backgroundColor = .systemBackground
-    textView.layer.cornerRadius = 18
+    textView.font = AssistantTermStyle.mono(14)
+    textView.textColor = AssistantTermStyle.fg
+    textView.backgroundColor = AssistantTermStyle.field
+    textView.layer.cornerRadius = 8
     textView.layer.cornerCurve = .continuous
-    textView.layer.borderWidth = 0.5
-    textView.layer.borderColor = UIColor.separator.withAlphaComponent(0.5).cgColor
+    textView.layer.borderWidth = 1
+    textView.layer.borderColor = AssistantTermStyle.line.cgColor
     textView.textContainerInset = UIEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
     textView.isScrollEnabled = false
     textView.delegate = self
     textView.returnKeyType = .send
     content.addSubview(textView)
 
-    placeholderLabel.text = "跟助手说话…"
-    placeholderLabel.font = .systemFont(ofSize: 15)
-    placeholderLabel.textColor = .placeholderText
+    placeholderLabel.text = "❯ 输入命令或消息…"
+    placeholderLabel.font = AssistantTermStyle.mono(14)
+    placeholderLabel.textColor = AssistantTermStyle.dim
     placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
     textView.addSubview(placeholderLabel)
 
     // 实心圆背景 + 白色箭头
     var cfg = UIButton.Configuration.filled()
     cfg.image = UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
-    cfg.baseBackgroundColor = .systemBlue
-    cfg.baseForegroundColor = .white
+    cfg.baseBackgroundColor = AssistantTermStyle.meGreen
+    cfg.baseForegroundColor = UIColor(red: 0x06/255.0, green: 0x28/255.0, blue: 0x1a/255.0, alpha: 1)
     cfg.cornerStyle = .capsule
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
     sendButton.configuration = cfg
@@ -1831,7 +2168,7 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
 
     var atCfg = UIButton.Configuration.plain()
     atCfg.image = UIImage(systemName: "at", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
-    atCfg.baseForegroundColor = .systemBlue
+    atCfg.baseForegroundColor = AssistantTermStyle.aiBlue
     atCfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
     atButton.configuration = atCfg
     atButton.translatesAutoresizingMaskIntoConstraints = false
@@ -1899,19 +2236,52 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
   // MARK: messages
 
   private func loadHistory() async {
-    do {
-      let hist = try await BlinkAssistantBackend.shared.loadHistory()
-      messages = hist
-      if hist.isEmpty {
-        messages.append(BlinkAssistantMessage(role: .system, text: "Hi，我是 Blink 助手（cc on cc）。问我「状态」可以看所有 tab 的进度，问「让 X tab 做 Y」我会帮你发命令。破坏性操作我会先确认。"))
-      }
+    // 1) 本地缓存秒显，进来就像聊天 App 一样直接有历史
+    var cache = AssistantChatCache.load()
+    if let c = cache, !c.pairs.isEmpty {
+      messages = BlinkAssistantBackend.messages(fromPairs: c.tuplePairs)
       tableView.reloadData()
       scrollToBottom(animated: false)
       refreshEmptyState()
+    }
+    // 2) 后台增量：只拉 jsonl 游标之后的新行；换文件/缓存失效才整拉最后 50 条
+    do {
+      guard let delta = try await BlinkAssistantBackend.shared.loadHistoryDelta(
+        cachedFile: cache?.file, cachedLines: cache?.lines ?? 0) else {
+        // 远端还没有会话文件
+        if messages.isEmpty {
+          messages.append(BlinkAssistantMessage(role: .system, text: "Hi，我是 Blink 助手（cc on cc）。问我「状态」可以看所有 tab 的进度，问「让 X tab 做 Y」我会帮你发命令。破坏性操作我会先确认。"))
+          tableView.reloadData()
+          refreshEmptyState()
+        }
+        return
+      }
+      let newPairs = delta.pairs.map { AssistantChatCache.Pair(r: $0.role, t: $0.text) }
+      if delta.isFull || cache == nil {
+        cache = AssistantChatCache(file: delta.file, lines: delta.lines, pairs: newPairs)
+      } else {
+        cache!.file = delta.file
+        cache!.lines = delta.lines
+        cache!.pairs += newPairs
+      }
+      cache!.save()
+      // 有新内容、或者刚才没缓存可显时才重刷 UI
+      if !delta.pairs.isEmpty || messages.isEmpty {
+        messages = BlinkAssistantBackend.messages(fromPairs: cache!.tuplePairs)
+        if messages.isEmpty {
+          messages.append(BlinkAssistantMessage(role: .system, text: "Hi，我是 Blink 助手（cc on cc）。问我「状态」可以看所有 tab 的进度，问「让 X tab 做 Y」我会帮你发命令。破坏性操作我会先确认。"))
+        }
+        tableView.reloadData()
+        scrollToBottom(animated: false)
+        refreshEmptyState()
+      }
     } catch {
-      messages.append(BlinkAssistantMessage(role: .system, text: "历史加载失败：\(error.localizedDescription)"))
-      tableView.reloadData()
-      refreshEmptyState()
+      // 拉增量失败但缓存已经在显示 → 不打扰；完全没内容才提示
+      if messages.isEmpty {
+        messages.append(BlinkAssistantMessage(role: .system, text: "历史加载失败：\(error.localizedDescription)"))
+        tableView.reloadData()
+        refreshEmptyState()
+      }
     }
   }
 
@@ -2050,7 +2420,7 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
     var cfg = UIButton.Configuration.plain()
     let imgName = isAsrRecording ? "mic.fill" : "mic"
     cfg.image = UIImage(systemName: imgName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular))
-    cfg.baseForegroundColor = isAsrRecording ? .systemRed : .systemBlue
+    cfg.baseForegroundColor = isAsrRecording ? .systemRed : AssistantTermStyle.aiBlue
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
     micButton.configuration = cfg
   }

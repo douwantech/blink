@@ -508,6 +508,106 @@ export class BlinkStore {
     return "'" + s.replace(new RegExp("'", 'g'), "'\\''") + "'";
   }
 
+  // 对话记录页原生增量拉取脚本(与 iOS transcriptDeltaScript 同一份 shell):
+  // 输出 @TSB64@<b64(META\tfile\ttotal\tfull + \n + 正文)>@TSB64E@;
+  // 缓存命中只解析游标之后的新行,换文件/无缓存整拉最后 100 条。
+  transcriptDeltaScriptForTab(t: TabModel, cachedFile: string, cachedLines: number): string | null {
+    const m = this.machineById(t.machineId);
+    if (m === null) {
+      return null;
+    }
+    const w = this.workDirById(t.workDirId);
+    const path: string = (w !== null && w.path.length > 0) ? w.path : '/Users/' + m.user;
+    const cwdEncoded: string = path.replace(new RegExp('/', 'g'), '-').replace(new RegExp('[.]', 'g'), '-');
+    const title: string = BlinkStore.titleFor(path, t.tmuxSession, m.user);
+    const safeFile: string = cachedFile.replace(new RegExp('[^A-Za-z0-9.-]', 'g'), '');
+    const n: number = cachedLines > 0 ? cachedLines : 0;
+    const lines: string[] = [
+      'export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH',
+      'PROJ=~/.claude/projects',
+      'DIR=$PROJ/' + cwdEncoded,
+      'pick_latest_by_mtime() {',
+      '  while read f; do',
+      '    [ -z "$f" ] && continue',
+      "    printf '%d\\t%s\\n' \"$(stat -f %m \"$f\" 2>/dev/null || stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"",
+      '  done | sort -rn | head -1 | cut -f2-',
+      '}',
+      "TITLE='" + title + "'",
+      'F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)',
+      'if [ -z "$F" ]; then',
+      '  F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)',
+      'fi',
+      'if [ -z "$F" ]; then',
+      "  F=$(grep -rlF \"\\\"customTitle\\\":\\\"$TITLE\\\"\" \"$PROJ\" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)",
+      'fi',
+      'WARN=""',
+      'if [ -z "$F" ]; then',
+      '  F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)',
+      '  [ -n "$F" ] && WARN="⚠️ customTitle $TITLE 未匹配，回退到同目录最新 jsonl"',
+      'fi',
+      'if [ -z "$F" ]; then',
+      '  F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)',
+      '  [ -n "$F" ] && WARN="⚠️ customTitle $TITLE 未匹配，回退到同前缀目录最新 jsonl"',
+      'fi',
+      "emit() { EB64=$(printf '%s' \"$1\" | base64 | tr -d '\\n'); printf '@TSB64@%s@TSB64E@\\n' \"$EB64\"; }",
+      'if [ -z "$F" ]; then',
+      "  emit \"$(printf 'META\\tNOTFOUND\\t0\\t1\\n没找到 %s 的会话记录（customTitle 未匹配）。在 cc 里跑一次 /title %s 即可。' \"$TITLE\" \"$TITLE\")\"",
+      '  exit 0',
+      'fi',
+      'BASE=$(basename "$F")',
+      "TOTAL=$(wc -l < \"$F\" | tr -d ' ')",
+      'START=1',
+      'if [ "$BASE" = "' + safeFile + '" ] && [ ' + n + ' -le "$TOTAL" ]; then',
+      '  START=$(( ' + n + ' + 1 ))',
+      'fi',
+      'FULL=0',
+      '[ "$START" -eq 1 ] && FULL=1',
+      'BODY=""',
+      'if [ "$START" -le "$TOTAL" ]; then',
+      'BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" \'',
+      '  [.[]',
+      '    | select(.type=="user" or .type=="assistant")',
+      '    | (if (.message.content | type) == "string" then',
+      '         .message.content',
+      '       else',
+      '         [.message.content[]? | select(.type=="text") | .text] | join("\\n")',
+      '       end) as $rawBody',
+      '    | ($rawBody',
+      '        | gsub("(?s)<system-reminder>.*?</system-reminder>"; "")',
+      '        | gsub("(?s)<task-notification>.*?</task-notification>"; "")',
+      '        | gsub("(?s)<local-command-stdout>.*?</local-command-stdout>"; "")',
+      '        | gsub("(?s)<local-command-stderr>.*?</local-command-stderr>"; "")',
+      '        | gsub("(?s)<command-name>.*?</command-name>"; "")',
+      '        | gsub("(?s)<command-message>.*?</command-message>"; "")',
+      '        | gsub("(?s)<command-args>.*?</command-args>"; "")',
+      '        | gsub("(?s)<user-prompt-submit-hook>.*?</user-prompt-submit-hook>"; "")',
+      '        | gsub("(?s)<bash-input>.*?</bash-input>"; "")',
+      '        | gsub("(?s)<bash-stdout>.*?</bash-stdout>"; "")',
+      '        | gsub("(?s)<bash-stderr>.*?</bash-stderr>"; "")',
+      '        | sub("^\\\\s+"; "")',
+      '        | sub("\\\\s+$"; "")',
+      '      ) as $body',
+      '    | select(($body | length) > 0)',
+      '    | select($body != "Continue from where you left off."',
+      '             and $body != "No response requested."',
+      '             and ($body | test("^\\\\[Request interrupted by user[^\\\\]]*\\\\]") | not))',
+      '    | {type: .type, body: $body}',
+      '  ] |',
+      '  (if $full == "1" then .[-100:] else . end) |',
+      '  .[] |',
+      '  (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""',
+      "')",
+      'fi',
+      'HEAD=""',
+      'if [ "$FULL" = "1" ]; then',
+      '  [ -n "$WARN" ] && HEAD="$WARN\\n"',
+      '  HEAD="$HEAD=== $F ===\\n"',
+      'fi',
+      "emit \"$(printf 'META\\t%s\\t%s\\t%s\\n' \"$BASE\" \"$TOTAL\" \"$FULL\"; printf \"$HEAD\"; printf '%s' \"$BODY\")\"",
+    ];
+    return lines.join('\n');
+  }
+
   static newId(): string {
     // UUID v4-ish from Math.random (config ids only, not crypto)
     let out: string = '';

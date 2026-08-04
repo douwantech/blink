@@ -45,6 +45,7 @@ final class VoiceInputView: UIView {
   private let toolsStack = UIStackView()
   private let keysRow2Stack = UIStackView()   // 键盘分组第二行：占语音条的槽位
   private let groupSeg = UISegmentedControl(items: ["功能", "键盘"])
+  private let modeButton = UIButton(type: .system)   // 切换显示模式:终端 ↔ 对话记录页
   private weak var lastTappedPill: UIButton?
 
   // 输入条
@@ -175,6 +176,17 @@ final class VoiceInputView: UIView {
     groupSeg.addTarget(self, action: #selector(toolsGroupChanged), for: .valueChanged)
     groupSeg.translatesAutoresizingMaskIntoConstraints = false
     addSubview(groupSeg)
+    modeButton.backgroundColor = UIColor.white.withAlphaComponent(0.045)
+    modeButton.layer.cornerRadius = 23
+    modeButton.layer.borderWidth = 1
+    modeButton.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+    modeButton.tintColor = UIColor.white.withAlphaComponent(0.92)
+    modeButton.setImage(UIImage(systemName: "text.bubble",
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)),
+                        for: .normal)
+    modeButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
+    modeButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(modeButton)
     toolsScroll.showsHorizontalScrollIndicator = false
     toolsScroll.showsVerticalScrollIndicator = false
     toolsScroll.isPagingEnabled = true   // 工具行整页翻，不做自由滚
@@ -296,6 +308,12 @@ final class VoiceInputView: UIView {
       groupSeg.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
       groupSeg.heightAnchor.constraint(equalToConstant: 34),
 
+      // 💬 显示模式切换:钉在语音条左边
+      modeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      modeButton.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
+      modeButton.widthAnchor.constraint(equalToConstant: 46),
+      modeButton.heightAnchor.constraint(equalTo: fieldContainer.heightAnchor),
+
       toolsStack.topAnchor.constraint(equalTo: toolsScroll.topAnchor),
       toolsStack.bottomAnchor.constraint(equalTo: toolsScroll.bottomAnchor),
       toolsStack.leadingAnchor.constraint(equalTo: toolsScroll.leadingAnchor, constant: 6),
@@ -314,7 +332,7 @@ final class VoiceInputView: UIView {
       composeToggle.trailingAnchor.constraint(equalTo: composeBar.trailingAnchor),
       composeToggle.centerYAnchor.constraint(equalTo: composeBar.centerYAnchor),
 
-      fieldContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      fieldContainer.leadingAnchor.constraint(equalTo: modeButton.trailingAnchor, constant: 8),
       fieldContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
       fieldContainer.topAnchor.constraint(equalTo: toolsScroll.bottomAnchor, constant: 8),
       fieldHeightConstraint,
@@ -368,7 +386,6 @@ final class VoiceInputView: UIView {
     Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
     nil,
-    Tool(act: "transcript", symbol: "doc.text", text: nil, warn: false),
     Tool(act: "browser", symbol: "globe", text: nil, warn: false),
     Tool(act: "desktop", symbol: "display", text: nil, warn: false),
   ]
@@ -410,6 +427,7 @@ final class VoiceInputView: UIView {
     let kb = groupSeg.selectedSegmentIndex == 1
     if kb, isRecording { finishRecording(cancelled: true) }
     fieldContainer.isHidden = kb
+    modeButton.isHidden = kb   // 键盘分组第二行占满整行,一起藏
     keysRow2Stack.isHidden = !kb
   }
 
@@ -1076,7 +1094,6 @@ final class VoiceInputView: UIView {
 
   @objc private func transcriptTapped() {
     delegate?.voiceInputDidRequestDumpTranscript(self)
-    showToast("拉 transcript 中…")
   }
 
   @objc private func favoritesQuickTapped() { presentQuickPicker(mode: .favorites) }
@@ -2146,7 +2163,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [3, 2, 1, 3, 2][section]
+    [3, 1, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -2176,10 +2193,6 @@ final class VoiceSettingsViewController: UITableViewController {
     case (1, 0):
       cell.textLabel?.text = "工作目录"
       cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
-      cell.accessoryType = .disclosureIndicator
-    case (1, 1):
-      cell.textLabel?.text = "员工头像"
-      cell.detailTextLabel?.text = "\(BlinkPeopleStore.shared.knownNames.count) 人"
       cell.accessoryType = .disclosureIndicator
     case (2, 0):
       cell.textLabel?.text = "识别语言"
@@ -2225,8 +2238,6 @@ final class VoiceSettingsViewController: UITableViewController {
     case (1, 0):
       let list = WorkDirListViewController()
       navigationController?.pushViewController(list, animated: true)
-    case (1, 1):
-      navigationController?.pushViewController(PeopleListViewController(), animated: true)
     case (2, 0):
       let picker = LanguagePickerViewController()
       picker.voiceView = voiceView
