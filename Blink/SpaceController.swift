@@ -665,8 +665,8 @@ class SpaceController: UIViewController {
       _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     }
     _sortTabsByMachineAndDir()
-    _ensureAssistantTabFirst()
-        
+    _hideAssistantTabs()
+
     self.view.addSubview(_bottomTapAreaView)
 
     // 浮动竖条已移除：语音/浏览器/远程桌面等入口全在底部常驻 dock 工具行
@@ -806,7 +806,7 @@ Please go to your subscriptions and cancel one of them!
         _viewportsController.setViewControllers([term], direction: .forward, animated: false)
       }
       _sortTabsByMachineAndDir()
-      _ensureAssistantTabFirst()
+      _hideAssistantTabs()
       return
     }
     _appendNewSyncedTabs()
@@ -849,6 +849,9 @@ Please go to your subscriptions and cancel one of them!
       // 空白 shell（无机器/目录/会话）不追加
       guard entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil else { continue }
       if closed.contains(entry.id) { continue }   // 已被墓碑标记的别再加回来
+      // 助手 tab 暂时下线：别的设备（老版本）推来的也不收
+      if entry.tmuxSession == BlinkWorkDirStore.assistantTmuxSession
+          || entry.workDirId == BlinkWorkDirStore.assistantWorkDirId { continue }
       let s = sig(entry.machineId, entry.workDirId, entry.tmuxSession)
       if seen.contains(s) { continue }
       seen.insert(s)
@@ -2530,6 +2533,20 @@ extension SpaceController: BlinkTabBarDelegate {
   public func tabBarDidRequestAssistant() {
     // 旧入口保留兼容：跟 _ensureAssistantTabFirst 一样的逻辑
     _ensureAssistantTabFirst(switchTo: true)
+  }
+
+  /// （助手暂时下线）把启动恢复/云同步带回来的助手终端 tab 从 UI 移除。
+  /// 只动本机 UI 和持久化列表，远端 blink-assistant tmux session 不杀，恢复入口时还能接上。
+  /// 要恢复助手：把 viewDidLoad / _cloudConfigDidRestore 里的本调用换回 _ensureAssistantTabFirst()。
+  fileprivate func _hideAssistantTabs() {
+    let session = BlinkWorkDirStore.assistantTmuxSession
+    let wdId = BlinkWorkDirStore.assistantWorkDirId
+    let victims = Set(_viewportsKeys.filter { key in
+      let p = (SessionRegistry.shared[key] as TermController).mcpParams
+      return p?.tmuxSession == session || p?.workDirId == wdId
+    })
+    guard !victims.isEmpty else { return }
+    _removeKeys(victims)
   }
 
   /// 启动时调；保证助手终端 tab 一定存在且排在 _viewportsKeys[0]

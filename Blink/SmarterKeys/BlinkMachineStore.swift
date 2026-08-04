@@ -1264,13 +1264,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
                         image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestRestPanel()
     }
-    let chat = UIAction(title: "助手对话", image: UIImage(systemName: "sparkles")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestAssistantChat()
-    }
+    // 「助手对话」入口暂时下线（要恢复：加回 sparkles UIAction → tabBarDidRequestAssistantChat）
     let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestSettings()
     }
-    menuButton.menu = UIMenu(children: [newTab, filter, rest, chat, settings])
+    menuButton.menu = UIMenu(children: [newTab, filter, rest, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
