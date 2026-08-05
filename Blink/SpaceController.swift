@@ -2522,6 +2522,43 @@ extension SpaceController: BlinkTabBarDelegate {
     present(nav, animated: true)
   }
 
+  public func tabBarDidRequestTeamStatus() {
+    // 员工=tab 标题冒号前那截（workDir 名），项目=冒号后（session 后缀），跟 tab 栏同一套规则
+    var items: [TeamStatusTab] = []
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      guard let p = term.mcpParams, let mid = p.machineId,
+            let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) else { continue }
+      if p.workDirId == BlinkWorkDirStore.assistantWorkDirId { continue }
+      let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
+      let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name
+        : ((p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : "tab")
+      var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
+      if let lastDash = sessionPart.lastIndex(of: "-") {
+        sessionPart = String(sessionPart[sessionPart.index(after: lastDash)...])
+      }
+      if sessionPart == dirPart { sessionPart = "" }
+      let title = BlinkMachineStore.ccTitle(machine: m, workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+      items.append(TeamStatusTab(
+        tabKey: key, machineId: mid, machineName: m.displayName,
+        employee: dirPart, project: sessionPart.isEmpty ? dirPart : sessionPart,
+        outerSession: "cc-\(title)", avatar: workDir?.iconImage,
+        resting: TabRestStore.shared.isResting(key.uuidString)))
+    }
+    let vc = TeamStatusViewController(tabs: items)
+    vc.onOpenTab = { [weak self] key in
+      guard let self, let idx = self._viewportsKeys.firstIndex(of: key) else { return }
+      self._moveToShell(idx: idx, animated: false)
+    }
+    vc.onToggleRest = { [weak self] key, resting in
+      TabRestStore.shared.setResting(resting, key: key.uuidString)
+      self?._reloadTabBar()
+    }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .fullScreen
+    present(nav, animated: true)
+  }
+
   public func tabBarDidRequestAssistantChat() {
     // 顶栏 sparkles 入口：打开气泡 chat UI（独立 modal，不是终端 tab）
     let chat = BlinkAssistantChatViewController()

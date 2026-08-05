@@ -180,21 +180,8 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
 
-    // 算 TITLE = customTitle，跟 transcriptCommand 保持一致：
-    // 默认 <basename(workPath)>-<session>；session 已是 basename 或 basename- 开头则不再 prepend。
-    // workPath 缺省时 basename 退化到 machine.user。
-    let dirBasename: String
-    if let wp = workPath, !wp.isEmpty {
-      dirBasename = (wp as NSString).lastPathComponent.lowercased()
-    } else {
-      dirBasename = m.user.lowercased()
-    }
-    let title: String
-    if session == dirBasename || session.hasPrefix("\(dirBasename)-") {
-      title = session
-    } else {
-      title = "\(dirBasename)-\(session)"
-    }
+    // TITLE = customTitle，算法抽在 ccTitle（团队状态页探测也用它对号）
+    let title = Self.ccTitle(machine: m, workDirId: workDirId, tmuxSession: tmuxSession)
     // 每个 tab 的外层 tmux session 名固定 cc-<TITLE>，跟 jsonl customTitle 一一对应——
     // 助手 cc 可以 `tmux send-keys -t cc-<TITLE>` 直接往任意 tab 注入。
     let outerSession = "cc-\(title)"
@@ -603,6 +590,23 @@ enum HostReachability {
     if let s = tmuxSession, !s.isEmpty { return s }
     if let wid = workDirId, !wid.isEmpty { return "blink-\(wid.prefix(8))" }
     return "blink"
+  }
+
+  /// TITLE = customTitle（外层 tmux session 名为 cc-<TITLE>）。
+  /// 规则跟 sshCommand / transcriptCommand 一致：默认 <basename(workPath)>-<session>；
+  /// session 已是 basename 或 basename- 开头则不再 prepend；workPath 缺省退化到 machine.user。
+  static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
+    var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
+    session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
+    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+    let dirBasename: String
+    if let wp = workPath, !wp.isEmpty {
+      dirBasename = (wp as NSString).lastPathComponent.lowercased()
+    } else {
+      dirBasename = m.user.lowercased()
+    }
+    if session == dirBasename || session.hasPrefix("\(dirBasename)-") { return session }
+    return "\(dirBasename)-\(session)"
   }
 
   @objc func machineExists(forId machineId: String?) -> Bool {
@@ -1039,6 +1043,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestAssistantChat()
   /// 顶栏 🌙 按钮 → 弹出「员工在岗/休息」管理列表
   func tabBarDidRequestRestPanel()
+  /// ⋯ 菜单「团队状态」→ 打开团队状态页（谁在忙哪个项目/等拍板/休息）
+  func tabBarDidRequestTeamStatus()
 }
 
 // MARK: - 手动「休息」标记（「只显示工作中」过滤用）
@@ -1260,6 +1266,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
                           image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestMachineFilter()
     }
+    let team = UIAction(title: "团队状态", image: UIImage(systemName: "person.2")) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestTeamStatus()
+    }
     let rest = UIAction(title: restingCount > 0 ? "在岗 / 休息 · \(restingCount) 人休息中" : "在岗 / 休息",
                         image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestRestPanel()
@@ -1268,7 +1277,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestSettings()
     }
-    menuButton.menu = UIMenu(children: [newTab, filter, rest, settings])
+    menuButton.menu = UIMenu(children: [newTab, filter, team, rest, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {

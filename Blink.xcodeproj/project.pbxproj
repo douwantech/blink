@@ -394,6 +394,7 @@
 		D2A5221E230D279B0010AC04 /* SmarterTermInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */; };
 		D2A52227231304FF0010AC04 /* UIGestureRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52226231304FE0010AC04 /* UIGestureRecognizer.swift */; };
 		D2A52297230D279B0010BC01 /* BlinkAssistantChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */; };
+		D2A52297230D279B0010BC11 /* TeamStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC12 /* TeamStatusView.swift */; };
 		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
 		D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */; };
 		D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000012 /* RemoteShell.swift */; };
@@ -1166,6 +1167,7 @@
 		D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmarterTermInput.swift; sourceTree = "<group>"; };
 		D2A52226231304FE0010AC04 /* UIGestureRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIGestureRecognizer.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkAssistantChat.swift; sourceTree = "<group>"; };
+		D2A52297230D279B0010BC12 /* TeamStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamStatusView.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskCore.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000012 /* RemoteShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteShell.swift; sourceTree = "<group>"; };
@@ -2235,6 +2237,7 @@
 				D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */,
 				D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */,
 				D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */,
+				D2A52297230D279B0010BC12 /* TeamStatusView.swift */,
 				D2A52297230D279B0010CC02 /* CloudConfigSync.swift */,
 				D2B1F8DC23265A0600634D67 /* CommandsHUDView.swift */,
 				D2B1F8DE23265A4700634D67 /* CommandControl.swift */,
@@ -3600,6 +3603,7 @@
 				D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */,
 				D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */,
 				D2A52297230D279B0010BC01 /* BlinkAssistantChat.swift in Sources */,
+				D2A52297230D279B0010BC11 /* TeamStatusView.swift in Sources */,
 				D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */,
 				D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */,
 				D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */,
