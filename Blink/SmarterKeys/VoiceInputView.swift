@@ -381,7 +381,7 @@ final class VoiceInputView: UIView {
   private let funcTools: [Tool?] = [
     Tool(act: "fav", symbol: "star", text: nil, warn: false),
     Tool(act: "img", symbol: "photo", text: nil, warn: false),
-    Tool(act: "esc", symbol: "stop.fill", text: nil, warn: false),
+    Tool(act: "esc", symbol: nil, text: "Esc", warn: false),
     Tool(act: "paste", symbol: "doc.on.clipboard", text: nil, warn: false),
     Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
@@ -472,7 +472,7 @@ final class VoiceInputView: UIView {
       b.setTitle(txt, for: .normal)
       b.setTitleColor(color, for: .normal)
       b.titleLabel?.font = txt.count > 1
-        ? .systemFont(ofSize: 14, weight: .regular)
+        ? .systemFont(ofSize: 16, weight: .regular)
         : .systemFont(ofSize: 17, weight: .regular)
     }
     b.translatesAutoresizingMaskIntoConstraints = false
@@ -625,12 +625,17 @@ final class VoiceInputView: UIView {
     switch mode {
     case .review:
       let v = (inputTextView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !v.isEmpty else { return }
+      // 输入框为空点发送 = 发一个回车（空按 Enter）
+      guard !v.isEmpty else { delegate?.voiceInputDidRequestSendReturn(self); return }
       commitText(v)
       exitReview()
     case .voice:
-      // 语音模式点发送＝若在 latched 录音则结束，否则无操作
-      if isRecording && isLatched { finishRecording(cancelled: false) }
+      // latched 录音中点发送＝结束并整理；空闲（输入框为空）点发送＝发一个回车
+      if isRecording {
+        if isLatched { finishRecording(cancelled: false) }
+      } else {
+        delegate?.voiceInputDidRequestSendReturn(self)
+      }
     }
   }
 
@@ -642,6 +647,13 @@ final class VoiceInputView: UIView {
     lastAsrRaw = nil
     lastPolished = nil
     delegate?.voiceInput(self, didCommitText: text)
+    // 发送按钮：正常文本在单回车之后再补一个回车，确保 claude 真正提交（第一个
+    // 回车常被括号粘贴吞进内容里没提交）。/rewind /compact 走 pillTapped 直连
+    // didCommitText 只发单回车，不经过这里，弹菜单不受影响。
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      guard let self else { return }
+      self.delegate?.voiceInputDidRequestSendReturn(self)
+    }
   }
 
   @objc private func discardReview() {

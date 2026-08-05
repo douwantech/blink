@@ -1106,6 +1106,14 @@ struct BlinkTerminal {
       return;
     }
     this.sendLine(t);
+    // 发送按钮：正常文本在单回车之后再补一个回车，确保提交（第一个回车常被括号
+    // 粘贴吞进内容里没提交）。/rewind /compact 走 sendLine 单回车不经过这里。
+    setTimeout(() => {
+      const c = this.activeClient();
+      if (c !== null) {
+        c.sendInput('\r');
+      }
+    }, 400);
     this.store.history.push(t);
     if (this.store.history.length > 40) {
       this.store.history.shift();
@@ -1633,7 +1641,7 @@ struct BlinkTerminal {
   @Builder
   dockPill(glyph: string, action: () => void) {
     Stack() {
-      Text(glyph).fontSize(19).fontColor('#E8E8E8')
+      Text(glyph).fontSize(16).fontColor('#E8E8E8')
     }
     .width(54).height(44).borderRadius(15)
     .backgroundColor('#0FFFFFFF')
@@ -1690,7 +1698,7 @@ struct BlinkTerminal {
                 // transcript/browser/desktop；✨(Claude 命令) 是鸿蒙特有，放最后。
                 this.symPill($r('sys.symbol.star'), () => { this.sheet = 'favorites'; })
                 this.symPill($r('sys.symbol.picture'), () => this.pickAndUploadImage())
-                this.dockPill('■', () => this.sendKey([0x1b]))
+                this.dockPill('Esc', () => this.sendKey([0x1b]))
                 this.symPill($r('sys.symbol.text_clipboard'), () => this.pasteClipboard())
                 this.symPill($r('sys.symbol.arrow_clockwise'), () => this.reconnectActive())
                 this.symPill($r('sys.symbol.arrow_counterclockwise_clock'), () => { this.sheet = 'history'; })
@@ -1784,6 +1792,12 @@ struct BlinkTerminal {
       .onClick(() => {
         if (this.fieldMode === 'review') {
           this.sendReview();
+        } else if (this.fieldMode === 'idle') {
+          // 输入框为空点发送 = 发一个回车（空按 Enter）
+          const c = this.activeClient();
+          if (c !== null) {
+            c.sendInput('\r');
+          }
         }
       })
     }
