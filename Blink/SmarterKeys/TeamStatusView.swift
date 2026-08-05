@@ -253,6 +253,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   /// 每台机器一条 ssh：列出所有 cc-* session 的 前台进程 / 距上次活动秒数 / 屏幕最后一行，
   /// 末尾附带 ~/.blink/org.md 的 role 表。
+  /// 「在做什么」两级抓取：优先取转录里最后一个 `📋 <当前任务>` 行（员工 CLAUDE.md
+  /// 规范 footer，一句话任务摘要）；没有再回退到"滤壳后的最后一行内容"。
+  /// 壳 = claude TUI 底部状态栏（⏵⏵ auto mode / shift+tab / bypass permissions）、
+  /// 输入框（❯ ╭ ╰ │）、分隔线 ─、自定义 statusline（👾 名片行 / CTX ▰▱ 用量条）、
+  /// ---📁/🌿 footer 行、"new task? /clear" 提示。✻ spinner 的 (esc to interrupt) 行
+  /// 滤掉，但 `· Working… (5m · ↓ 13k tokens)` 计时行保留——它就是干活实况。
   private static let probeScript = """
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
   now=$(date +%s)
@@ -260,7 +266,16 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
     act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
     idle=$(( now - ${act:-0} ))
-    line=$(tmux capture-pane -p -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//' -e '/^$/d' | grep -E '[[:alnum:]]' | tail -1 | cut -c1-160)
+    cap=$(tmux capture-pane -p -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    line=$(printf '%s\n' "$cap" | grep -E '^[[:space:]]*📋' | tail -1 | sed -E 's/^[[:space:]]*📋[[:space:]]*//' | cut -c1-160)
+    if [ -z "$line" ]; then
+      line=$(printf '%s\n' "$cap" | grep -E '[[:alnum:]]' \\
+        | grep -vE 'shift\\+tab to cycle|\\? for shortcuts|bypass permissions|esc to interrupt\\)|new task\\? /clear' \\
+        | grep -vE '^[[:space:]]*(⏵|⧉|❯|╭|╰|│|✻|✽|👾|─)' \\
+        | grep -vE '▰|▱' \\
+        | grep -vE '^[[:space:]]*(---)?📁|^[[:space:]]*🌿|^[[:space:]]*📋' \\
+        | tail -1 | cut -c1-160)
+    fi
     printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$idle" "$line"
   done
   echo '===ORG==='
@@ -275,10 +290,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     Task { [weak self] in
       var bySession: [String: (pc: String, idle: Int, line: String)] = [:]
       var roles: [String: String] = [:]
-      var okCount = 0
+      var reached: Set<String> = []
       for m in machines {
         guard let out = try? await BlinkAssistantBackend.shared.execRemote(script: Self.probeScript, machine: m) else { continue }
-        okCount += 1
+        reached.insert(m.id)
         var inOrg = false
         for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
           let lineStr = String(raw)
@@ -300,9 +315,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       }
       let sessions = bySession
       let roleTable = roles
-      let reached = okCount
+      let reachedIds = reached
       await MainActor.run { [weak self] in
-        self?.applyProbe(sessions: sessions, roles: roleTable, machinesReached: reached, machinesTotal: machines.count)
+        self?.applyProbe(sessions: sessions, roles: roleTable, reachedMachines: reachedIds, machinesTotal: machines.count)
       }
     }
   }
@@ -310,13 +325,20 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private static let shellNames: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
 
   private func applyProbe(sessions: [String: (pc: String, idle: Int, line: String)],
-                          roles: [String: String], machinesReached: Int, machinesTotal: Int) {
+                          roles: [String: String], reachedMachines: Set<String>, machinesTotal: Int) {
     roleMap = roles
     for gi in groups.indices {
       groups[gi].role = roles[groups[gi].employee.lowercased()]
       for ri in groups[gi].rows.indices {
-        let key = tabs.first { $0.tabKey == groups[gi].rows[ri].tabKey }?.outerSession ?? ""
-        guard let s = sessions[key] else {
+        guard let tab = tabs.first(where: { $0.tabKey == groups[gi].rows[ri].tabKey }) else { continue }
+        // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」
+        guard reachedMachines.contains(tab.machineId) else {
+          groups[gi].rows[ri].status = .idle
+          groups[gi].rows[ri].desc = "机器探测不到（不在同一网络?）"
+          groups[gi].rows[ri].probed = true
+          continue
+        }
+        guard let s = sessions[tab.outerSession] else {
           groups[gi].rows[ri].status = .idle
           groups[gi].rows[ri].desc = "会话未启动"
           groups[gi].rows[ri].probed = true
@@ -338,9 +360,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
     let f = DateFormatter()
     f.dateFormat = "HH:mm"
-    subtitleLabel.text = machinesReached == machinesTotal
+    subtitleLabel.text = reachedMachines.count == machinesTotal
       ? "更新 \(f.string(from: Date())) · \(machinesTotal) 台机器"
-      : "更新 \(f.string(from: Date())) · \(machinesReached)/\(machinesTotal) 台机器可达"
+      : "更新 \(f.string(from: Date())) · \(reachedMachines.count)/\(machinesTotal) 台机器可达"
     updateStats()
     tableView.reloadData()
     tableView.refreshControl?.endRefreshing()
