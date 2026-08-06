@@ -35,6 +35,7 @@ final class CloudConfigSync: NSObject {
     "BlinkSessionPresetStore.presets",
     "TabStateStore.syncState",   // 终端 tab 列表跨设备同步
     "TabRestStore.resting",      // 「休息」😴 标记跨设备同步（否则各设备各藏各的，tab 列表看着不一致）
+    "TeamStatus.summaryCache",   // 团队状态页的 GLM 总结缓存：换设备/重装不用重新总结
     // 人员
     "BlinkPeopleStore.avatars",
     "BlinkPeopleStore.styles",
