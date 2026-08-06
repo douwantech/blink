@@ -796,11 +796,25 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       pill.apply(st)
 
       projStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-      for r in g.rows {
+      // 在岗的排前面（按紧急度），休息的沉底；组内保持原顺序
+      let ordered = g.rows.enumerated().sorted { a, b in
+        if a.element.resting != b.element.resting { return !a.element.resting }
+        if a.element.status.rawValue != b.element.status.rawValue {
+          return a.element.status.rawValue < b.element.status.rawValue
+        }
+        return a.offset < b.offset
+      }.map(\.element)
+      for r in ordered {
         let line = UIView()
-        line.backgroundColor = (st == .wait && !r.resting) ? TeamWorkStatus.wait.color.withAlphaComponent(0.08) : panel2
         line.layer.cornerRadius = 9
-        if r.resting { line.alpha = 0.5 }
+        if r.resting {
+          // 休息：压到近黑 + 紫字，跟在岗行拉开对比
+          line.backgroundColor = UIColor.white.withAlphaComponent(0.02)
+          line.alpha = 0.55
+        } else {
+          // 在岗：按自己的状态上彩色底（橙=等你 绿=干活 灰=空闲）
+          line.backgroundColor = r.status.color.withAlphaComponent(0.13)
+        }
         let pn = UILabel()
         pn.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
         pn.textColor = r.resting ? TeamWorkStatus.rest.color : .white
@@ -809,7 +823,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         pn.setContentCompressionResistancePriority(.required, for: .horizontal)
         let pd = UILabel()
         pd.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        pd.textColor = sub
+        pd.textColor = r.resting ? TeamWorkStatus.rest.color.withAlphaComponent(0.75)
+                                 : UIColor.white.withAlphaComponent(0.72)
         pd.text = r.resting ? "休息中" : (r.probed ? r.desc : "探测中…")
         pd.lineBreakMode = .byTruncatingTail
         let h = UIStackView(arrangedSubviews: [pn, pd])
@@ -894,8 +909,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
     fileprivate func configure(entry: (group: Group, row: ProjectRow), status: TeamWorkStatus, panel: UIColor, sub: UIColor) {
       let (g, r) = entry
-      card.backgroundColor = status == .wait
-        ? TeamWorkStatus.wait.color.withAlphaComponent(0.08) : panel
+      card.backgroundColor = status == .rest
+        ? UIColor.white.withAlphaComponent(0.02)
+        : status.color.withAlphaComponent(0.13)
       card.alpha = status == .rest ? 0.55 : 1
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
       nameLabel.text = g.employee
