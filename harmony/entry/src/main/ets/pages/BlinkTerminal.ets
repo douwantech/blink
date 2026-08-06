@@ -1885,7 +1885,7 @@ struct BlinkTerminal {
         // 各输入框自己弹出。
         .priorityGesture(
           PanGesture({ distance: 12 })
-            .onActionStart(() => { this.panMode = ''; this.lastPanY = 0; })
+            .onActionStart(() => { this.panMode = ''; this.lastPanY = 0; this.webCtl.runJavaScript('term_wheel_reset()'); })
             .onActionUpdate((e: GestureEvent) => this.onTermPan(e))
             .onActionEnd((e: GestureEvent) => { if (this.panMode === 'h') { this.onHSwipe(e); } }),
         )

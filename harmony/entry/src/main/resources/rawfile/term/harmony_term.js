@@ -186,18 +186,26 @@ function term_scrollBottom() { if (activeId && terms[activeId]) { terms[activeId
 //    mouse on) scroll its OWN history (copy-mode). btn 64 = wheel-up, 65 = wheel-down.
 //  • Plain shell (primary screen): dispatch a real wheel event so hterm scrolls its
 //    scrollback buffer.
+var _wheelAccum = 0;
+function term_wheel_reset() { _wheelAccum = 0; }
 function term_wheel(dyPx) {
   var t = activeId ? terms[activeId] : null;
   if (!t || !t.scrollPort_ || !t.scrollPort_.screen_) { return; }
   var onAlt = (typeof t.isPrimaryScreen === 'function') && !t.isPrimaryScreen();
   var ch = (t.scrollPort_.characterSize && t.scrollPort_.characterSize.height) || 16;
-  var lines = Math.max(1, Math.round(Math.abs(dyPx) / ch));
   if (onAlt) {
     // hterm's io is NOT wired to blinkd (harmony captures keys in ArkTS, not hterm),
     // so t.io.sendString would go nowhere. Hand the wheel to ArkTS to send the SGR
     // mouse bytes over the blinkd connection instead. btn 64 = up (older), 65 = down.
-    var btn = dyPx > 0 ? 64 : 65;
-    _post('wheel', { btn: btn, lines: lines });
+    // 跟手：累积像素位移，够一整行(ch)才发一个滚轮 —— 手指移动一行高＝滚一行，
+    // 不过冲。旧代码每次 update 都 Math.max(1) 强发≥1行，一次拖动几十次 update
+    // 就把滚动放大几倍，表现为「滑动不跟手、飞得比手指快」。
+    _wheelAccum += dyPx;
+    var lines = (_wheelAccum / ch) | 0;   // 向零取整（负数也对）
+    if (lines === 0) { return; }
+    _wheelAccum -= lines * ch;
+    var btn = lines > 0 ? 64 : 65;
+    _post('wheel', { btn: btn, lines: Math.abs(lines) });
   } else {
     // Plain shell: hterm owns the scrollback, so dispatch a real wheel locally.
     var el = t.scrollPort_.screen_;
