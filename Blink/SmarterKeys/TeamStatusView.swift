@@ -567,10 +567,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let key: UUID?
     if byEmployee {
       let g = employeeSections[indexPath.section].items[indexPath.row]
+      guard g.status != .rest else { return }   // 全休息的员工卡:点了不跳 tab(用胶囊叫回来)
       let active = g.rows.filter { !$0.resting }
-      key = ((active.first { $0.status == .wait } ?? active.first) ?? g.rows.first)?.tabKey
+      key = (active.first { $0.status == .wait } ?? active.first)?.tabKey
     } else {
-      key = projectSections[indexPath.section].items[indexPath.row].row.tabKey
+      let e = projectSections[indexPath.section].items[indexPath.row]
+      guard memberStatus(e) != .rest else { return }   // 休息中的成员行同样不跳
+      key = e.row.tabKey
     }
     guard let k = key else { return }
     dismiss(animated: true) { [onOpenTab] in onOpenTab?(k) }
@@ -735,6 +738,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       machineLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
       machineLabel.textColor = UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1)
       pill.addTarget(self, action: #selector(pillTapped), for: .touchUpInside)
+      // 胶囊尺寸只由内容决定;不设的话 row1 分配余量时会把胶囊拉宽(有角色标签的卡尤其明显)
+      pill.setContentHuggingPriority(.required, for: .horizontal)
+      pill.setContentCompressionResistancePriority(.required, for: .horizontal)
 
       let nameRow = UIStackView(arrangedSubviews: [nameLabel, roleChip, UIView()])
       nameRow.axis = .horizontal
