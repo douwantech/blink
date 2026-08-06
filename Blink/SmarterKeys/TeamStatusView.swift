@@ -553,6 +553,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
       cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
       cell.onPillTap = { [weak self] in self?.toggleRest(group: g) }
+      cell.onRowTap = { [weak self] key in self?.jumpToTab(key) }
       return cell
     } else {
       let e = projectSections[indexPath.section].items[indexPath.row]
@@ -576,7 +577,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       key = e.row.tabKey
     }
     guard let k = key else { return }
-    dismiss(animated: true) { [onOpenTab] in onOpenTab?(k) }
+    jumpToTab(k)
+  }
+
+  private func jumpToTab(_ key: UUID) {
+    dismiss(animated: true) { [onOpenTab] in onOpenTab?(key) }
   }
 
   // MARK: - 内部小控件
@@ -707,6 +712,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   final class EmployeeCardCell: UITableViewCell {
     var onPillTap: (() -> Void)?
+    var onRowTap: ((UUID) -> Void)?
+    private var rowKeyByTag: [Int: UUID] = [:]   // 只记在岗行;休息行点击被手势吞掉不跳
     private let card = UIView()
     private let avatarView = UIImageView()
     private let nameLabel = UILabel()
@@ -780,6 +787,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
     @objc private func pillTapped() { onPillTap?() }
 
+    @objc private func rowTapped(_ gr: UITapGestureRecognizer) {
+      guard let v = gr.view, let key = rowKeyByTag[v.tag] else { return }   // 休息行:无 key,原地吞掉
+      onRowTap?(key)
+    }
+
     fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor) {
       card.backgroundColor = panel
       let st = g.status
@@ -810,9 +822,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         }
         return a.offset < b.offset
       }.map(\.element)
-      for r in ordered {
+      rowKeyByTag.removeAll()
+      for (i, r) in ordered.enumerated() {
         let line = UIView()
         line.layer.cornerRadius = 9
+        line.tag = i
+        line.isUserInteractionEnabled = true
+        line.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(rowTapped(_:))))
+        if !r.resting { rowKeyByTag[i] = r.tabKey }
         if r.resting {
           // 休息：压到近黑 + 紫字，跟在岗行拉开对比
           line.backgroundColor = UIColor.white.withAlphaComponent(0.02)
