@@ -320,54 +320,77 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     return s
   }
 
+  /// 并行探测：每台机器各自一个 Task + 20s 硬超时，谁先回来先刷谁的行。
+  /// 串行会被一台挂起的 ssh（Tailscale 节点离线时 TCP 黑洞）卡住整页「探测中」。
+  private var probeGeneration = 0
+  private var pendingMachines: Set<String> = []
+  private var probeMachinesTotal = 0
+  private var probeReachedCount = 0
+
   private func probe() {
     let machineIds = Array(Set(tabs.map(\.machineId)))
     let machines = machineIds.compactMap { id in
       BlinkMachineStore.shared.machines.first { $0.id == id }
     }
-    Task { [weak self] in
-      var bySession: [String: (pc: String, idle: Int, line: String)] = [:]
-      var roles: [String: String] = [:]
-      var reached: Set<String> = []
-      var errors: [String: String] = [:]   // machineId → 失败原因
-      for m in machines {
-        let out: String
+    probeGeneration += 1
+    let gen = probeGeneration
+    pendingMachines = Set(machines.map(\.id))
+    probeMachinesTotal = machines.count
+    probeReachedCount = 0
+    subtitleLabel.text = "正在探测 \(machines.count) 台机器…"
+    for m in machines {
+      Task { [weak self] in
+        var sessions: [String: (pc: String, idle: Int, line: String)] = [:]
+        var roles: [String: String] = [:]
+        var failure: String?
         do {
-          out = try await Self.exec(script: Self.probeScript, machine: m)
-        } catch {
-          errors[m.id] = "\(error.localizedDescription)"
-          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
-          continue
-        }
-        reached.insert(m.id)
-        Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
-        var inOrg = false
-        for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-          let lineStr = String(raw)
-          if lineStr == "===ORG===" { inOrg = true; continue }
-          if inOrg {
-            // | **tom** | CTO |
-            let parts = lineStr.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-            if parts.count >= 2 {
-              let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
-              if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
-            }
-          } else {
-            let f = lineStr.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
-            guard f.count >= 3 else { continue }
-            bySession[String(f[0])] = (pc: String(f[1]), idle: Int(f[2]) ?? 0,
-                                       line: f.count >= 4 ? String(f[3]) : "")
+          let out = try await Self.withTimeout(20) {
+            try await Self.exec(script: Self.probeScript, machine: m)
           }
+          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
+          var inOrg = false
+          for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            let lineStr = String(raw)
+            if lineStr == "===ORG===" { inOrg = true; continue }
+            if inOrg {
+              // | **tom** | CTO |
+              let parts = lineStr.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+              if parts.count >= 2 {
+                let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
+                if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
+              }
+            } else {
+              let f = lineStr.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
+              guard f.count >= 3 else { continue }
+              sessions[String(f[0])] = (pc: String(f[1]), idle: Int(f[2]) ?? 0,
+                                        line: f.count >= 4 ? String(f[3]) : "")
+            }
+          }
+        } catch {
+          failure = error.localizedDescription
+          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
+        }
+        let s = sessions, r = roles, f = failure
+        await MainActor.run { [weak self] in
+          self?.applyMachine(machineId: m.id, sessions: s, roles: r, failure: f, gen: gen)
         }
       }
-      let sessions = bySession
-      let roleTable = roles
-      let reachedIds = reached
-      let errorTable = errors
-      await MainActor.run { [weak self] in
-        self?.applyProbe(sessions: sessions, roles: roleTable, reachedMachines: reachedIds,
-                         errors: errorTable, machinesTotal: machines.count)
+    }
+  }
+
+  /// 单个 op 的硬超时；超时后原任务可能还在后台跑完（execRemote 不可取消），结果直接丢弃
+  private static func withTimeout<T: Sendable>(_ seconds: Double,
+                                               _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask { try await op() }
+      group.addTask {
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        throw NSError(domain: "TeamStatusProbe", code: 8,
+                      userInfo: [NSLocalizedDescriptionKey: "连接超时(\(Int(seconds))s)"])
       }
+      let r = try await group.next()!
+      group.cancelAll()
+      return r
     }
   }
 
@@ -389,19 +412,23 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   private static let shellNames: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
 
-  private func applyProbe(sessions: [String: (pc: String, idle: Int, line: String)],
-                          roles: [String: String], reachedMachines: Set<String>,
-                          errors: [String: String], machinesTotal: Int) {
-    roleMap = roles
+  /// 单台机器结果落地：只动这台机器的行，别台照旧（可能还在探测中）
+  private func applyMachine(machineId: String, sessions: [String: (pc: String, idle: Int, line: String)],
+                            roles: [String: String], failure: String?, gen: Int) {
+    guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
+    pendingMachines.remove(machineId)
+    if failure == nil { probeReachedCount += 1 }
+    if !roles.isEmpty { roleMap.merge(roles) { _, new in new } }
+
     for gi in groups.indices {
-      groups[gi].role = roles[groups[gi].employee.lowercased()]
+      if groups[gi].role == nil { groups[gi].role = roleMap[groups[gi].employee.lowercased()] }
+      guard groups[gi].machineId == machineId else { continue }
       for ri in groups[gi].rows.indices {
         guard let tab = tabs.first(where: { $0.tabKey == groups[gi].rows[ri].tabKey }) else { continue }
         // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」；带上具体报错好排查
-        guard reachedMachines.contains(tab.machineId) else {
+        if let err = failure {
           groups[gi].rows[ri].status = .idle
-          let err = errors[tab.machineId].map { String($0.prefix(90)) } ?? "不在同一网络?"
-          groups[gi].rows[ri].desc = "探测失败: \(err)"
+          groups[gi].rows[ri].desc = "探测失败: \(String(err.prefix(90)))"
           groups[gi].rows[ri].probed = true
           continue
         }
@@ -425,14 +452,19 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         groups[gi].rows[ri].probed = true
       }
     }
+
     let f = DateFormatter()
     f.dateFormat = "HH:mm"
-    subtitleLabel.text = reachedMachines.count == machinesTotal
-      ? "更新 \(f.string(from: Date())) · \(machinesTotal) 台机器"
-      : "更新 \(f.string(from: Date())) · \(reachedMachines.count)/\(machinesTotal) 台机器可达"
+    if pendingMachines.isEmpty {
+      subtitleLabel.text = probeReachedCount == probeMachinesTotal
+        ? "更新 \(f.string(from: Date())) · \(probeMachinesTotal) 台机器"
+        : "更新 \(f.string(from: Date())) · \(probeReachedCount)/\(probeMachinesTotal) 台机器可达"
+      tableView.refreshControl?.endRefreshing()
+    } else {
+      subtitleLabel.text = "已回 \(probeMachinesTotal - pendingMachines.count)/\(probeMachinesTotal) 台，其余探测中…"
+    }
     updateStats()
     tableView.reloadData()
-    tableView.refreshControl?.endRefreshing()
   }
 
   // MARK: 休息切换
