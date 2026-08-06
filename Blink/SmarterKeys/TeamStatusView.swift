@@ -84,9 +84,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var status: TeamWorkStatus   // 探测前默认 .idle
     var probed = false
     var resting = false          // 休息按 tab（员工×项目）粒度，来自 TabRestStore
+    var summary: TeamSummary?    // GLM 总结：在做/等你/上次（没回来前先显示最后一行）
     /// 行的展示状态：休息优先，其余用探测结果
     var effective: TeamWorkStatus { resting ? .rest : status }
   }
+  fileprivate struct TeamSummary { let doing: String; let waiting: String; let last: String }
   fileprivate struct Group {
     let employee: String
     let machineId: String
@@ -274,16 +276,16 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
     idle=$(( now - ${act:-0} ))
     cap=$(tmux capture-pane -p -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//')
-    line=$(printf '%s\n' "$cap" | grep -E '^[[:space:]]*📋' | tail -1 | sed -E 's/^[[:space:]]*📋[[:space:]]*//' | cut -c1-160)
-    if [ -z "$line" ]; then
-      line=$(printf '%s\n' "$cap" | grep -E '[[:alnum:]]' \\
+    content=$(printf '%s\n' "$cap" | grep -E '[[:alnum:]]' \\
         | grep -vE 'shift\\+tab to cycle|\\? for shortcuts|bypass permissions|esc to interrupt\\)|new task\\? /clear' \\
         | grep -vE '^[[:space:]]*(⏵|⧉|❯|╭|╰|│|✻|✽|👾|─)' \\
-        | grep -vE '▰|▱' \\
-        | grep -vE '^[[:space:]]*(---)?📁|^[[:space:]]*🌿|^[[:space:]]*📋' \\
-        | tail -1 | cut -c1-160)
+        | grep -vE '▰|▱')
+    line=$(printf '%s\n' "$cap" | grep -E '^[[:space:]]*📋' | tail -1 | sed -E 's/^[[:space:]]*📋[[:space:]]*//' | cut -c1-160)
+    if [ -z "$line" ]; then
+      line=$(printf '%s\n' "$content" | grep -vE '^[[:space:]]*(---)?📁|^[[:space:]]*🌿|^[[:space:]]*📋' | tail -1 | cut -c1-160)
     fi
-    printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$idle" "$line"
+    tb64=$(printf '%s\n' "$content" | tail -60 | tail -c 3500 | base64 | tr -d '\n')
+    printf '%s\t%s\t%s\t%s\t%s\n' "$s" "$pc" "$idle" "$line" "$tb64"
   done
   echo '===ORG==='
   grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true
@@ -340,7 +342,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     subtitleLabel.text = "正在探测 \(machines.count) 台机器…"
     for m in machines {
       Task { [weak self] in
-        var sessions: [String: (pc: String, idle: Int, line: String)] = [:]
+        var sessions: [String: (pc: String, idle: Int, line: String, tail: String)] = [:]
         var roles: [String: String] = [:]
         var failure: String?
         do {
@@ -360,10 +362,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                 if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
               }
             } else {
-              let f = lineStr.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
+              let f = lineStr.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
               guard f.count >= 3 else { continue }
+              var tail = ""
+              if f.count >= 5, let d = Data(base64Encoded: String(f[4])),
+                 let t = String(data: d, encoding: .utf8) { tail = t }
               sessions[String(f[0])] = (pc: String(f[1]), idle: Int(f[2]) ?? 0,
-                                        line: f.count >= 4 ? String(f[3]) : "")
+                                        line: f.count >= 4 ? String(f[3]) : "", tail: tail)
             }
           }
         } catch {
@@ -394,6 +399,92 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
+  // MARK: GLM 总结（在做/等你/上次）
+
+  /// 同一段尾部内容只总结一次（跨刷新复用）
+  private static var summaryCache: [String: TeamSummary] = [:]
+
+  /// 复用语音清理的 GLM 配置（key/model/endpoint 都在 AITextPolisher）
+  private func summarize(tabKey: UUID, session: String, tail: String, gen: Int) {
+    let cacheKey = "\(session)|\(tail.hashValue)"
+    if let hit = Self.summaryCache[cacheKey] {
+      applySummary(tabKey: tabKey, hit, gen: gen)
+      return
+    }
+    let apiKey = AITextPolisher.shared.apiKey
+    guard !apiKey.isEmpty, let url = URL(string: AITextPolisher.shared.baseURL) else { return }
+    let system = """
+    你是终端里 Claude Code 员工会话的状态总结器。输入是会话屏幕最近的输出（已滤掉界面元素）。
+    只输出严格 JSON（不要 markdown 代码块），格式：
+    {"doing":"现在正在做的事","waiting":"正在等用户拍板/回复的具体事项，没有则空字符串","last":"最近一件已完成的事，没有则空字符串"}
+    每个字段中文、不超过 22 字、口语直白、能让老板一眼看懂。分不清就把最后一段话概括进 doing。
+    """
+    let payload: [String: Any] = [
+      "model": AITextPolisher.shared.model,
+      "messages": [
+        ["role": "system", "content": system],
+        ["role": "user", "content": String(tail.suffix(3500))],
+      ],
+      "temperature": 0.2,
+      "stream": false,
+    ]
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    req.timeoutInterval = 20
+    req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+      guard let data,
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let choices = obj["choices"] as? [[String: Any]],
+            let content = (choices.first?["message"] as? [String: Any])?["content"] as? String else { return }
+      var text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+      if text.hasPrefix("```") {
+        text = text.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+      guard let jd = text.data(using: .utf8),
+            let j = try? JSONSerialization.jsonObject(with: jd) as? [String: String] else { return }
+      let sm = TeamSummary(doing: j["doing"] ?? "", waiting: j["waiting"] ?? "", last: j["last"] ?? "")
+      guard !(sm.doing.isEmpty && sm.waiting.isEmpty && sm.last.isEmpty) else { return }
+      DispatchQueue.main.async {
+        Self.summaryCache[cacheKey] = sm
+        self?.applySummary(tabKey: tabKey, sm, gen: gen)
+      }
+    }.resume()
+  }
+
+  private func applySummary(tabKey: UUID, _ sm: TeamSummary, gen: Int) {
+    guard gen == probeGeneration else { return }
+    for gi in groups.indices {
+      for ri in groups[gi].rows.indices where groups[gi].rows[ri].tabKey == tabKey {
+        groups[gi].rows[ri].summary = sm
+      }
+    }
+    tableView.reloadData()
+  }
+
+  /// 「等你 xx / 在做 xx / 上次 xx」的富文本（等你排最前、橙色；上次灰字）
+  fileprivate static func summaryAttributed(_ sm: TeamSummary) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    let font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let boldFont = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+    func append(_ tag: String, _ body: String, tagColor: UIColor, bodyColor: UIColor, bold: Bool = false) {
+      guard !body.isEmpty else { return }
+      if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: [.font: font])) }
+      out.append(NSAttributedString(string: tag + " ", attributes: [.font: boldFont, .foregroundColor: tagColor]))
+      out.append(NSAttributedString(string: body, attributes: [.font: bold ? boldFont : font, .foregroundColor: bodyColor]))
+    }
+    let wait = TeamWorkStatus.wait.color
+    append("等你", sm.waiting, tagColor: wait, bodyColor: wait, bold: true)
+    append("在做", sm.doing, tagColor: UIColor.white.withAlphaComponent(0.45),
+           bodyColor: UIColor.white.withAlphaComponent(0.85))
+    append("上次", sm.last, tagColor: UIColor.white.withAlphaComponent(0.3),
+           bodyColor: UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1))
+    return out
+  }
+
   /// 探测日志落 Documents/teamstatus.log，真机排查用（afc 可拉）
   private static func log(_ s: String) {
     let f = DateFormatter()
@@ -413,7 +504,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private static let shellNames: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
 
   /// 单台机器结果落地：只动这台机器的行，别台照旧（可能还在探测中）
-  private func applyMachine(machineId: String, sessions: [String: (pc: String, idle: Int, line: String)],
+  private func applyMachine(machineId: String, sessions: [String: (pc: String, idle: Int, line: String, tail: String)],
                             roles: [String: String], failure: String?, gen: Int) {
     guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
     pendingMachines.remove(machineId)
@@ -450,6 +541,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         groups[gi].rows[ri].desc = st == .idle && Self.shellNames.contains(s.pc)
           ? "掉到 shell，点进去看报错" : s.line
         groups[gi].rows[ri].probed = true
+        // claude 活着且没休息的行,后台让 GLM 总结「在做/等你/上次」(同尾部内容有缓存)
+        if st != .idle, !groups[gi].rows[ri].resting, !s.tail.isEmpty {
+          summarize(tabKey: tab.tabKey, session: tab.outerSession, tail: s.tail, gen: gen)
+        }
       }
     }
 
@@ -868,9 +963,16 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         pn.setContentCompressionResistancePriority(.required, for: .horizontal)
         let pd = UILabel()
         pd.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pd.numberOfLines = 0
         pd.textColor = r.resting ? TeamWorkStatus.rest.color.withAlphaComponent(0.75)
                                  : UIColor.white.withAlphaComponent(0.72)
-        pd.text = r.resting ? "休息中" : (r.probed ? r.desc : "探测中…")
+        if r.resting {
+          pd.text = "休息中"
+        } else if let sm = r.summary {
+          pd.attributedText = TeamStatusViewController.summaryAttributed(sm)
+        } else {
+          pd.text = r.probed ? r.desc : "探测中…"
+        }
         pd.lineBreakMode = .byTruncatingTail
         let sw = UIButton(type: .system)
         sw.tag = i
@@ -971,7 +1073,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       roleChip.text = g.role
       roleChip.isHidden = (g.role ?? "").isEmpty
       descLabel.textColor = sub
-      descLabel.text = status == .rest ? "休息中" : (r.probed ? r.desc : "探测中…")
+      descLabel.numberOfLines = 0
+      if status == .rest {
+        descLabel.text = "休息中"
+      } else if let sm = r.summary {
+        descLabel.attributedText = TeamStatusViewController.summaryAttributed(sm)
+      } else {
+        descLabel.text = r.probed ? r.desc : "探测中…"
+      }
       dot.backgroundColor = status.color
     }
   }
