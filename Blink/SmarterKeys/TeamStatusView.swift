@@ -275,7 +275,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
     act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
     idle=$(( now - ${act:-0} ))
-    cap=$(tmux capture-pane -p -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//')
+    cap=$(tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//')
     content=$(printf '%s\n' "$cap" | grep -E '[[:alnum:]]' \\
         | grep -vE 'shift\\+tab to cycle|\\? for shortcuts|bypass permissions|esc to interrupt\\)|new task\\? /clear' \\
         | grep -vE '^[[:space:]]*(⏵|⧉|❯|╭|╰|│|✻|✽|👾|─)' \\
@@ -284,7 +284,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     if [ -z "$line" ]; then
       line=$(printf '%s\n' "$content" | grep -vE '^[[:space:]]*(---)?📁|^[[:space:]]*🌿|^[[:space:]]*📋' | tail -1 | cut -c1-160)
     fi
-    tb64=$(printf '%s\n' "$content" | tail -60 | tail -c 3500 | base64 | tr -d '\n')
+    tb64=$(printf '%s\n' "$content" | tail -120 | tail -c 6000 | base64 | tr -d '\n')
     printf '%s\t%s\t%s\t%s\t%s\n' "$s" "$pc" "$idle" "$line" "$tb64"
   done
   echo '===ORG==='
@@ -416,8 +416,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let system = """
     你是终端里 Claude Code 员工会话的状态总结器。输入是会话屏幕最近的输出（已滤掉界面元素）。
     只输出严格 JSON（不要 markdown 代码块），格式：
-    {"doing":"现在正在做的事","waiting":"正在等用户拍板/回复的具体事项，没有则空字符串","last":"最近一件已完成的事，没有则空字符串"}
-    每个字段中文、不超过 22 字、口语直白、能让老板一眼看懂。分不清就把最后一段话概括进 doing。
+    {"doing":"现在正在做的事","waiting":"正在等用户拍板/回复的具体事项，没有则空字符串","last":"当前任务开始之前、已经完成的上一件事，没有则空字符串"}
+    注意：last 必须是和 doing 不同的另一件事（更早完成的那件）；输出里看不到更早的任务就把 last 留空，
+    绝不要把当前任务换个说法填进 last。每个字段中文、不超过 22 字、口语直白、能让老板一眼看懂。
+    分不清就把最后一段话概括进 doing。
     """
     let payload: [String: Any] = [
       "model": AITextPolisher.shared.model,
@@ -446,7 +448,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       }
       guard let jd = text.data(using: .utf8),
             let j = try? JSONSerialization.jsonObject(with: jd) as? [String: String] else { return }
-      let sm = TeamSummary(doing: j["doing"] ?? "", waiting: j["waiting"] ?? "", last: j["last"] ?? "")
+      var last = j["last"] ?? ""
+      let doing = j["doing"] ?? ""
+      // 模型偷懒把当前任务复述进 last 时直接丢掉——上次必须是另一件事
+      if !last.isEmpty, !doing.isEmpty,
+         last == doing || last.contains(doing) || doing.contains(last) { last = "" }
+      let sm = TeamSummary(doing: doing, waiting: j["waiting"] ?? "", last: last)
       guard !(sm.doing.isEmpty && sm.waiting.isEmpty && sm.last.isEmpty) else { return }
       DispatchQueue.main.async {
         Self.summaryCache[cacheKey] = sm
