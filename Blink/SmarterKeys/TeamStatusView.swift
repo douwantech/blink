@@ -259,9 +259,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   /// 输入框（❯ ╭ ╰ │）、分隔线 ─、自定义 statusline（👾 名片行 / CTX ▰▱ 用量条）、
   /// ---📁/🌿 footer 行、"new task? /clear" 提示。✻ spinner 的 (esc to interrupt) 行
   /// 滤掉，但 `· Working… (5m · ↓ 13k tokens)` 计时行保留——它就是干活实况。
+  /// 输出整体 base64 包在 @TSB64@…@TSB64E@ 里（跟 transcriptDeltaScript 同款）：
+  /// blinkd 走 PTY 会混进 \r 和回显噪音，裸文本没法按行解析，两种 transport 统一按标记捞。
   private static let probeScript = """
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
   now=$(date +%s)
+  BODY=$(
   tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
     pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
     act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
@@ -280,7 +283,38 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   done
   echo '===ORG==='
   grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true
+  )
+  EB64=$(printf '%s' "$BODY" | base64 | tr -d '\\n')
+  printf '@TSB64@%s@TSB64E@\n' "$EB64"
   """
+
+  /// 按机器 transport 执行探测脚本：blinkd 机器走 BlinkdExecOnce（远程登录关着也通），
+  /// 其余走 ssh execRemote；两边都从 @TSB64@ 标记里解 base64 拿干净输出。
+  private static func exec(script: String, machine m: BlinkMachine) async throws -> String {
+    let raw: String
+    if let cfg = m.blinkdConfig {
+      raw = try await withCheckedThrowingContinuation { cont in
+        BlinkdExecOnce.run(host: cfg.host, port: cfg.port, token: cfg.token, script: script) { r in
+          cont.resume(with: r)
+        }
+      }
+    } else {
+      raw = try await BlinkAssistantBackend.shared.execRemote(script: script, machine: m)
+    }
+    guard let r1 = raw.range(of: "@TSB64@"),
+          let r2 = raw.range(of: "@TSB64E@", range: r1.upperBound..<raw.endIndex) else {
+      throw NSError(domain: "TeamStatusProbe", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "回包无标记: …\(String(raw.suffix(80)))"])
+    }
+    let b64 = String(raw[r1.upperBound..<r2.lowerBound]).filter {
+      $0.isLetter || $0.isNumber || $0 == "+" || $0 == "/" || $0 == "="
+    }
+    guard let data = Data(base64Encoded: b64), let s = String(data: data, encoding: .utf8) else {
+      throw NSError(domain: "TeamStatusProbe", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "payload base64 解码失败"])
+    }
+    return s
+  }
 
   private func probe() {
     let machineIds = Array(Set(tabs.map(\.machineId)))
@@ -295,14 +329,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       for m in machines {
         let out: String
         do {
-          out = try await BlinkAssistantBackend.shared.execRemote(script: Self.probeScript, machine: m)
+          out = try await Self.exec(script: Self.probeScript, machine: m)
         } catch {
-          errors[m.id] = "\(error)"
-          Self.log("probe \(m.displayName)(\(BlinkMachineStore.bestHost(for: m))) 失败: \(error)")
+          errors[m.id] = "\(error.localizedDescription)"
+          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
           continue
         }
         reached.insert(m.id)
-        Self.log("probe \(m.displayName) OK, \(out.count) bytes")
+        Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
         var inOrg = false
         for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
           let lineStr = String(raw)
