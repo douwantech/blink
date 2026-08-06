@@ -190,7 +190,7 @@ final class VoiceInputView: UIView {
     modeButton.translatesAutoresizingMaskIntoConstraints = false
     addSubview(modeButton)
     teamButton.backgroundColor = UIColor.white.withAlphaComponent(0.045)
-    teamButton.layer.cornerRadius = 23
+    teamButton.layer.cornerRadius = 17   // 上排高 34,取半高圆角
     teamButton.layer.borderWidth = 1
     teamButton.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
     teamButton.tintColor = UIColor.white.withAlphaComponent(0.92)
@@ -317,17 +317,18 @@ final class VoiceInputView: UIView {
       toolsScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
       toolsScroll.heightAnchor.constraint(equalToConstant: 42),
 
-      groupSeg.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      groupSeg.leadingAnchor.constraint(equalTo: teamButton.trailingAnchor, constant: 8),
       groupSeg.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
       groupSeg.heightAnchor.constraint(equalToConstant: 34),
 
-      // 语音条左边两个钉子:最左 👥 团队状态,右边 💬 显示模式切换
+      // 👥 团队状态:钉在上排 功能/键盘 分组的左边,跟下排 💬 上下对称
       teamButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
-      teamButton.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
+      teamButton.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
       teamButton.widthAnchor.constraint(equalToConstant: 46),
-      teamButton.heightAnchor.constraint(equalTo: fieldContainer.heightAnchor),
+      teamButton.heightAnchor.constraint(equalToConstant: 34),
 
-      modeButton.leadingAnchor.constraint(equalTo: teamButton.trailingAnchor, constant: 8),
+      // 💬 显示模式切换:钉在语音条左边
+      modeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
       modeButton.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
       modeButton.widthAnchor.constraint(equalToConstant: 46),
       modeButton.heightAnchor.constraint(equalTo: fieldContainer.heightAnchor),
@@ -449,8 +450,7 @@ final class VoiceInputView: UIView {
     if kb, isRecording { finishRecording(cancelled: true) }
     fieldContainer.isHidden = kb
     modeButton.isHidden = kb   // 键盘分组第二行占满整行,一起藏
-    teamButton.isHidden = kb
-    keysRow2Stack.isHidden = !kb
+    keysRow2Stack.isHidden = !kb   // 团队按钮在上排,键盘分组下也留着
   }
 
   private func makeSeparator() -> UIView {
