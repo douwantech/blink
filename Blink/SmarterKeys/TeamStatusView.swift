@@ -446,7 +446,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   /// 复用语音清理的 GLM 配置（key/model/endpoint 都在 AITextPolisher）
   private func summarize(tabKey: UUID, session: String, tail: String, gen: Int) {
-    let cacheKey = "\(session)|\(Self.stableHash(tail))"
+    // v 前缀=总结样式版本:提示词改了就升版,否则持久化的旧措辞永远刷不掉
+    let cacheKey = "v2|\(session)|\(Self.stableHash(tail))"
     if let hit = Self.summaryCache[cacheKey] {
       applySummary(tabKey: tabKey, hit, gen: gen)
       return
@@ -457,7 +458,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     你是终端里 Claude Code 员工会话的状态总结器。输入是会话屏幕最近的输出（已滤掉界面元素）。
     只输出严格 JSON（不要 markdown 代码块），格式：
     {"doing":"现在正在做的事","waiting":"正在等用户拍板/回复的具体事项，没有则空字符串","last":"当前任务开始之前、已经完成的上一件事，没有则空字符串"}
-    doing/last 尽量用「功能名」开头再跟动作，例：「员工状态面板」优化详情中、「刷新自愈」已完成。
+    硬性格式要求：doing 和 last 必须以书名号包住的功能/任务名开头（2~8 字），后面紧跟进展动作，
+    不允许没有书名号的裸句子。例：「员工状态面板」优化详情中 / 「会员gating」分配任务给开发 /
+    「刷新自愈」已完成 / 「语音延迟」分析优化方案中。waiting 直接写等的事，不用书名号。
     注意：last 必须是和 doing 不同的另一件事（更早完成的那件）；输出里看不到更早的任务就把 last 留空，
     绝不要把当前任务换个说法填进 last。每个字段中文、不超过 22 字、口语直白、能让老板一眼看懂。
     分不清就把最后一段话概括进 doing。
