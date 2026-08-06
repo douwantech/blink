@@ -83,6 +83,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var desc: String
     var status: TeamWorkStatus   // 探测前默认 .idle
     var probed = false
+    var resting = false          // 休息按 tab（员工×项目）粒度，来自 TabRestStore
+    /// 行的展示状态：休息优先，其余用探测结果
+    var effective: TeamWorkStatus { resting ? .rest : status }
   }
   fileprivate struct Group {
     let employee: String
@@ -91,11 +94,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let avatar: UIImage?
     var role: String?
     var rows: [ProjectRow]
-    var resting: Bool
-    /// 员工整体状态：休息优先，其次取各 tab 里最紧急的一档
+    var resting: Bool   // 全部项目都休息才 true（部分休息的人留在在岗段，行内分别显示）
+    /// 员工整体状态：只看没休息的项目行，取最紧急一档；全休息 → .rest
     var status: TeamWorkStatus {
-      if resting { return .rest }
-      return rows.map(\.status).min(by: { $0.rawValue < $1.rawValue }) ?? .idle
+      let active = rows.filter { !$0.resting }
+      if active.isEmpty { return .rest }
+      return active.map(\.status).min(by: { $0.rawValue < $1.rawValue }) ?? .idle
     }
   }
 
@@ -230,7 +234,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let old = statusFor(tabKey: t.tabKey)
       map[k]?.rows.append(ProjectRow(tabKey: t.tabKey, project: t.project,
                                      desc: old?.desc ?? "", status: old?.status ?? .idle,
-                                     probed: old?.probed ?? false))
+                                     probed: old?.probed ?? false, resting: t.resting))
       if !t.resting { map[k]?.resting = false }   // 全部 tab 都休息才算员工休息
     }
     groups = order.compactMap { map[$0] }
@@ -437,6 +441,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let toRest = !g.resting
     for gi in groups.indices where groups[gi].employee == g.employee && groups[gi].machineId == g.machineId {
       groups[gi].resting = toRest
+      for ri in groups[gi].rows.indices { groups[gi].rows[ri].resting = toRest }
     }
     for ti in tabs.indices where tabs[ti].machineId == g.machineId && tabs[ti].employee == g.employee {
       tabs[ti].resting = toRest
@@ -477,7 +482,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }.map { ($0, map[$0] ?? []) }
   }
   private func memberStatus(_ e: MemberEntry) -> TeamWorkStatus {
-    e.group.resting ? .rest : e.row.status
+    e.row.effective
   }
 
   // MARK: UITableView
@@ -530,7 +535,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let key: UUID?
     if byEmployee {
       let g = employeeSections[indexPath.section].items[indexPath.row]
-      key = (g.rows.first { $0.status == .wait } ?? g.rows.first)?.tabKey
+      let active = g.rows.filter { !$0.resting }
+      key = ((active.first { $0.status == .wait } ?? active.first) ?? g.rows.first)?.tabKey
     } else {
       key = projectSections[indexPath.section].items[indexPath.row].row.tabKey
     }
@@ -751,24 +757,28 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       nameLabel.text = g.employee
       roleChip.text = g.role
       roleChip.isHidden = (g.role ?? "").isEmpty
-      machineLabel.text = "\(g.machineName) · \(g.rows.count) 个会话"
+      let restCount = g.rows.filter(\.resting).count
+      machineLabel.text = restCount > 0 && restCount < g.rows.count
+        ? "\(g.machineName) · \(g.rows.count - restCount) 在岗 · \(restCount) 休息"
+        : "\(g.machineName) · \(g.rows.count) 个会话"
       pill.apply(st)
 
       projStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
       for r in g.rows {
         let line = UIView()
-        line.backgroundColor = st == .wait ? TeamWorkStatus.wait.color.withAlphaComponent(0.08) : panel2
+        line.backgroundColor = (st == .wait && !r.resting) ? TeamWorkStatus.wait.color.withAlphaComponent(0.08) : panel2
         line.layer.cornerRadius = 9
+        if r.resting { line.alpha = 0.5 }
         let pn = UILabel()
         pn.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
-        pn.textColor = .white
+        pn.textColor = r.resting ? TeamWorkStatus.rest.color : .white
         pn.text = r.project
         pn.setContentHuggingPriority(.required, for: .horizontal)
         pn.setContentCompressionResistancePriority(.required, for: .horizontal)
         let pd = UILabel()
         pd.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         pd.textColor = sub
-        pd.text = r.probed ? r.desc : "探测中…"
+        pd.text = r.resting ? "休息中" : (r.probed ? r.desc : "探测中…")
         pd.lineBreakMode = .byTruncatingTail
         let h = UIStackView(arrangedSubviews: [pn, pd])
         h.axis = .horizontal
