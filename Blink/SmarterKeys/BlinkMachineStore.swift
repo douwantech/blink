@@ -1266,9 +1266,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
                           image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestMachineFilter()
     }
-    let team = UIAction(title: "团队状态", image: UIImage(systemName: "person.2")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestTeamStatus()
-    }
+    // 「团队状态」入口挪到了语音条最左的 person.2 按钮（VoiceInputView.teamButton）
     let rest = UIAction(title: restingCount > 0 ? "在岗 / 休息 · \(restingCount) 人休息中" : "在岗 / 休息",
                         image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestRestPanel()
@@ -1277,7 +1275,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestSettings()
     }
-    menuButton.menu = UIMenu(children: [newTab, filter, team, rest, settings])
+    menuButton.menu = UIMenu(children: [newTab, filter, rest, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {

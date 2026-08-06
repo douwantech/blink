@@ -21,6 +21,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
   func voiceInputDidRequestReloadTab(_ view: VoiceInputView)
   func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView)
+  func voiceInputDidRequestTeamStatus(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
@@ -46,6 +47,7 @@ final class VoiceInputView: UIView {
   private let keysRow2Stack = UIStackView()   // 键盘分组第二行：占语音条的槽位
   private let groupSeg = UISegmentedControl(items: ["功能", "键盘"])
   private let modeButton = UIButton(type: .system)   // 切换显示模式:终端 ↔ 对话记录页
+  private let teamButton = UIButton(type: .system)   // 团队状态页入口:钉在语音条最左
   private weak var lastTappedPill: UIButton?
 
   // 输入条
@@ -187,6 +189,17 @@ final class VoiceInputView: UIView {
     modeButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
     modeButton.translatesAutoresizingMaskIntoConstraints = false
     addSubview(modeButton)
+    teamButton.backgroundColor = UIColor.white.withAlphaComponent(0.045)
+    teamButton.layer.cornerRadius = 23
+    teamButton.layer.borderWidth = 1
+    teamButton.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+    teamButton.tintColor = UIColor.white.withAlphaComponent(0.92)
+    teamButton.setImage(UIImage(systemName: "person.2",
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)),
+                        for: .normal)
+    teamButton.addTarget(self, action: #selector(teamTapped), for: .touchUpInside)
+    teamButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(teamButton)
     toolsScroll.showsHorizontalScrollIndicator = false
     toolsScroll.showsVerticalScrollIndicator = false
     toolsScroll.isPagingEnabled = true   // 工具行整页翻，不做自由滚
@@ -308,8 +321,13 @@ final class VoiceInputView: UIView {
       groupSeg.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
       groupSeg.heightAnchor.constraint(equalToConstant: 34),
 
-      // 💬 显示模式切换:钉在语音条左边
-      modeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      // 语音条左边两个钉子:最左 👥 团队状态,右边 💬 显示模式切换
+      teamButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      teamButton.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
+      teamButton.widthAnchor.constraint(equalToConstant: 46),
+      teamButton.heightAnchor.constraint(equalTo: fieldContainer.heightAnchor),
+
+      modeButton.leadingAnchor.constraint(equalTo: teamButton.trailingAnchor, constant: 8),
       modeButton.centerYAnchor.constraint(equalTo: fieldContainer.centerYAnchor),
       modeButton.widthAnchor.constraint(equalToConstant: 46),
       modeButton.heightAnchor.constraint(equalTo: fieldContainer.heightAnchor),
@@ -431,6 +449,7 @@ final class VoiceInputView: UIView {
     if kb, isRecording { finishRecording(cancelled: true) }
     fieldContainer.isHidden = kb
     modeButton.isHidden = kb   // 键盘分组第二行占满整行,一起藏
+    teamButton.isHidden = kb
     keysRow2Stack.isHidden = !kb
   }
 
@@ -1124,6 +1143,11 @@ final class VoiceInputView: UIView {
 
   @objc private func transcriptTapped() {
     delegate?.voiceInputDidRequestDumpTranscript(self)
+  }
+
+  @objc private func teamTapped() {
+    if isRecording { finishRecording(cancelled: true) }
+    delegate?.voiceInputDidRequestTeamStatus(self)
   }
 
   @objc private func favoritesQuickTapped() { presentQuickPicker(mode: .favorites) }
