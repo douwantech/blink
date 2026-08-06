@@ -1106,6 +1106,14 @@ struct BlinkTerminal {
       return;
     }
     this.sendLine(t);
+    // 发送按钮：正常文本在单回车之后再补一个回车，确保提交（第一个回车常被括号
+    // 粘贴吞进内容里没提交）。/rewind /compact 走 sendLine 单回车不经过这里。
+    setTimeout(() => {
+      const c = this.activeClient();
+      if (c !== null) {
+        c.sendInput('\r');
+      }
+    }, 400);
     this.store.history.push(t);
     if (this.store.history.length > 40) {
       this.store.history.shift();
@@ -1633,7 +1641,7 @@ struct BlinkTerminal {
   @Builder
   dockPill(glyph: string, action: () => void) {
     Stack() {
-      Text(glyph).fontSize(19).fontColor('#E8E8E8')
+      Text(glyph).fontSize(16).fontColor('#E8E8E8')
     }
     .width(54).height(44).borderRadius(15)
     .backgroundColor('#0FFFFFFF')
@@ -1646,6 +1654,18 @@ struct BlinkTerminal {
   symPill(res: Resource, action: () => void) {
     Stack() {
       SymbolGlyph(res).fontSize(21).fontColor(['#E8E8E8'])
+    }
+    .width(54).height(44).borderRadius(15)
+    .backgroundColor('#0FFFFFFF')
+    .border({ width: 1, color: '#24FFFFFF' })
+    .onClick(action)
+  }
+
+  // 自定义矢量图标版药丸（media 里的 SVG，描边色已烘焙成 #E8E8E8）
+  @Builder
+  imgPill(res: Resource, action: () => void) {
+    Stack() {
+      Image(res).width(22).height(22).objectFit(ImageFit.Contain).draggable(false)
     }
     .width(54).height(44).borderRadius(15)
     .backgroundColor('#0FFFFFFF')
@@ -1678,7 +1698,7 @@ struct BlinkTerminal {
                 // transcript/browser/desktop；✨(Claude 命令) 是鸿蒙特有，放最后。
                 this.symPill($r('sys.symbol.star'), () => { this.sheet = 'favorites'; })
                 this.symPill($r('sys.symbol.picture'), () => this.pickAndUploadImage())
-                this.dockPill('■', () => this.sendKey([0x1b]))
+                this.dockPill('Esc', () => this.sendKey([0x1b]))
                 this.symPill($r('sys.symbol.text_clipboard'), () => this.pasteClipboard())
                 this.symPill($r('sys.symbol.arrow_clockwise'), () => this.reconnectActive())
                 this.symPill($r('sys.symbol.arrow_counterclockwise_clock'), () => { this.sheet = 'history'; })
@@ -1688,10 +1708,10 @@ struct BlinkTerminal {
                 this.symPill($r('sys.symbol.wand_and_stars'), () => { this.sheet = 'claude'; })
               } else {
                 // iOS keyToolsRow1：只有四个方向键
-                this.dockPill('↑', () => this.sendKey([0x1b, 0x5b, 0x41]))
-                this.dockPill('↓', () => this.sendKey([0x1b, 0x5b, 0x42]))
-                this.dockPill('←', () => this.sendKey([0x1b, 0x5b, 0x44]))
-                this.dockPill('→', () => this.sendKey([0x1b, 0x5b, 0x43]))
+                this.imgPill($r('app.media.tool_up'), () => this.sendKey([0x1b, 0x5b, 0x41]))
+                this.imgPill($r('app.media.tool_down'), () => this.sendKey([0x1b, 0x5b, 0x42]))
+                this.imgPill($r('app.media.tool_left'), () => this.sendKey([0x1b, 0x5b, 0x44]))
+                this.imgPill($r('app.media.tool_right'), () => this.sendKey([0x1b, 0x5b, 0x43]))
               }
             }
           }
@@ -1731,9 +1751,12 @@ struct BlinkTerminal {
   @Builder
   keysRow2() {
     Row({ space: 9 }) {
-      this.dockPill('⏎', () => this.sendKey([0x0d]))
-      this.dockPill('⇤', () => this.sendKey([0x1b, 0x5b, 0x5a]))
-      this.symPill($r('sys.symbol.delete_left'), () => this.sendKey([0x15]))
+      // Claude 斜杠命令（自定义 Lucide 图标）：走 sendLine（发文本→停一拍→单回车）
+      this.imgPill($r('app.media.tool_rewind'), () => this.sendLine('/rewind'))
+      this.imgPill($r('app.media.tool_compact'), () => this.sendLine('/compact'))
+      this.imgPill($r('app.media.tool_return'), () => this.sendKey([0x0d]))
+      this.imgPill($r('app.media.tool_mode'), () => this.sendKey([0x1b, 0x5b, 0x5a]))
+      this.imgPill($r('app.media.tool_clear'), () => this.sendKey([0x15]))
     }
     .width('100%').height(48)
   }
@@ -1769,6 +1792,12 @@ struct BlinkTerminal {
       .onClick(() => {
         if (this.fieldMode === 'review') {
           this.sendReview();
+        } else if (this.fieldMode === 'idle') {
+          // 输入框为空点发送 = 发一个回车（空按 Enter）
+          const c = this.activeClient();
+          if (c !== null) {
+            c.sendInput('\r');
+          }
         }
       })
     }

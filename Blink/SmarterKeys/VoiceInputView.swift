@@ -381,7 +381,7 @@ final class VoiceInputView: UIView {
   private let funcTools: [Tool?] = [
     Tool(act: "fav", symbol: "star", text: nil, warn: false),
     Tool(act: "img", symbol: "photo", text: nil, warn: false),
-    Tool(act: "esc", symbol: "stop.fill", text: nil, warn: false),
+    Tool(act: "esc", symbol: nil, text: "Esc", warn: false),
     Tool(act: "paste", symbol: "doc.on.clipboard", text: nil, warn: false),
     Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
@@ -392,15 +392,18 @@ final class VoiceInputView: UIView {
 
   // 键盘分组：两行铺开（键盘模式不需要语音条，第二行借用它的位置）
   private let keyToolsRow1: [Tool?] = [
-    Tool(act: "up", symbol: "arrow.up", text: nil, warn: false),
-    Tool(act: "down", symbol: "arrow.down", text: nil, warn: false),
-    Tool(act: "left", symbol: "arrow.left", text: nil, warn: false),
-    Tool(act: "right", symbol: "arrow.right", text: nil, warn: false),
+    Tool(act: "up", symbol: "asset:tool_up", text: nil, warn: false),
+    Tool(act: "down", symbol: "asset:tool_down", text: nil, warn: false),
+    Tool(act: "left", symbol: "asset:tool_left", text: nil, warn: false),
+    Tool(act: "right", symbol: "asset:tool_right", text: nil, warn: false),
   ]
   private let keyToolsRow2: [Tool?] = [
-    Tool(act: "return", symbol: "return", text: nil, warn: false),
-    Tool(act: "shifttab", symbol: nil, text: "⇤", warn: false),
-    Tool(act: "clear", symbol: "delete.left", text: nil, warn: false),
+    // Claude 斜杠命令（自定义 Lucide 图标）：走 didCommitText（发文本→停一拍→单回车）
+    Tool(act: "rewind", symbol: "asset:tool_rewind", text: nil, warn: false),
+    Tool(act: "compact", symbol: "asset:tool_compact", text: nil, warn: false),
+    Tool(act: "return", symbol: "asset:tool_return", text: nil, warn: false),
+    Tool(act: "shifttab", symbol: "asset:tool_mode", text: nil, warn: false),
+    Tool(act: "clear", symbol: "asset:tool_clear", text: nil, warn: false),
   ]
 
   private func fill(_ stack: UIStackView, with tools: [Tool?]) {
@@ -450,13 +453,26 @@ final class VoiceInputView: UIView {
     b.layer.borderColor = (t.warn ? Self.warnRed.withAlphaComponent(0.32) : UIColor.white.withAlphaComponent(0.14)).cgColor
     b.tintColor = color
     if let sym = t.symbol {
-      let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-      b.setImage(UIImage(systemName: sym, withConfiguration: cfg), for: .normal)
+      if sym.hasPrefix("asset:") {
+        // 自定义矢量图标（资源目录里的 SVG，模板着色跟随 tintColor）
+        let name = String(sym.dropFirst("asset:".count))
+        if let base = UIImage(named: name) {
+          let pt: CGFloat = 22   // 键盘组全部改用 Lucide 图标，统一 22pt
+          let sz = CGSize(width: pt, height: pt)
+          let scaled = UIGraphicsImageRenderer(size: sz).image { _ in
+            base.draw(in: CGRect(origin: .zero, size: sz))
+          }.withRenderingMode(.alwaysTemplate)
+          b.setImage(scaled, for: .normal)
+        }
+      } else {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        b.setImage(UIImage(systemName: sym, withConfiguration: cfg), for: .normal)
+      }
     } else if let txt = t.text {
       b.setTitle(txt, for: .normal)
       b.setTitleColor(color, for: .normal)
       b.titleLabel?.font = txt.count > 1
-        ? .systemFont(ofSize: 14, weight: .regular)
+        ? .systemFont(ofSize: 16, weight: .regular)
         : .systemFont(ofSize: 17, weight: .regular)
     }
     b.translatesAutoresizingMaskIntoConstraints = false
@@ -493,6 +509,8 @@ final class VoiceInputView: UIView {
     case "shifttab": delegate?.voiceInputDidRequestSendShiftTab(self)
     case "tab": delegate?.voiceInputDidRequestSendTab(self)
     case "esc": delegate?.voiceInputDidRequestSendEsc(self)
+    case "rewind": delegate?.voiceInput(self, didCommitText: "/rewind")
+    case "compact": delegate?.voiceInput(self, didCommitText: "/compact")
     case "clear": delegate?.voiceInputDidRequestClearLine(self)
     default: break
     }
@@ -607,12 +625,17 @@ final class VoiceInputView: UIView {
     switch mode {
     case .review:
       let v = (inputTextView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !v.isEmpty else { return }
+      // 输入框为空点发送 = 发一个回车（空按 Enter）
+      guard !v.isEmpty else { delegate?.voiceInputDidRequestSendReturn(self); return }
       commitText(v)
       exitReview()
     case .voice:
-      // 语音模式点发送＝若在 latched 录音则结束，否则无操作
-      if isRecording && isLatched { finishRecording(cancelled: false) }
+      // latched 录音中点发送＝结束并整理；空闲（输入框为空）点发送＝发一个回车
+      if isRecording {
+        if isLatched { finishRecording(cancelled: false) }
+      } else {
+        delegate?.voiceInputDidRequestSendReturn(self)
+      }
     }
   }
 
@@ -624,6 +647,13 @@ final class VoiceInputView: UIView {
     lastAsrRaw = nil
     lastPolished = nil
     delegate?.voiceInput(self, didCommitText: text)
+    // 发送按钮：正常文本在单回车之后再补一个回车，确保 claude 真正提交（第一个
+    // 回车常被括号粘贴吞进内容里没提交）。/rewind /compact 走 pillTapped 直连
+    // didCommitText 只发单回车，不经过这里，弹菜单不受影响。
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      guard let self else { return }
+      self.delegate?.voiceInputDidRequestSendReturn(self)
+    }
   }
 
   @objc private func discardReview() {
