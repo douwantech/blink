@@ -66,7 +66,7 @@ enum TeamWorkStatus: Int {
     case .wait: return "卡在你这里，点进去回"
     case .work: return "不用管，让他们跑"
     case .idle: return "活干完了，可以派新活"
-    case .rest: return "点胶囊叫回来"
+    case .rest: return "拨行尾月亮开关叫回来"
     }
   }
 }
@@ -469,6 +469,21 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   // MARK: 休息切换
 
+  /// 单行（员工×项目）切换：只动这一个 tab 的休息状态
+  private func toggleRest(tabKey: UUID, toRest: Bool) {
+    for gi in groups.indices {
+      for ri in groups[gi].rows.indices where groups[gi].rows[ri].tabKey == tabKey {
+        groups[gi].rows[ri].resting = toRest
+        groups[gi].resting = groups[gi].rows.allSatisfy(\.resting)
+      }
+    }
+    if let ti = tabs.firstIndex(where: { $0.tabKey == tabKey }) { tabs[ti].resting = toRest }
+    onToggleRest?(tabKey, toRest)
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    updateStats()
+    tableView.reloadData()
+  }
+
   private func toggleRest(group g: Group) {
     let toRest = !g.resting
     for gi in groups.indices where groups[gi].employee == g.employee && groups[gi].machineId == g.machineId {
@@ -552,8 +567,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let g = employeeSections[indexPath.section].items[indexPath.row]
       let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
       cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
-      cell.onPillTap = { [weak self] in self?.toggleRest(group: g) }
       cell.onRowTap = { [weak self] key in self?.jumpToTab(key) }
+      cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
       return cell
     } else {
       let e = projectSections[indexPath.section].items[indexPath.row]
@@ -713,7 +728,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   final class EmployeeCardCell: UITableViewCell {
     var onPillTap: (() -> Void)?
     var onRowTap: ((UUID) -> Void)?
-    private var rowKeyByTag: [Int: UUID] = [:]   // 只记在岗行;休息行点击被手势吞掉不跳
+    var onRowToggle: ((UUID, Bool) -> Void)?     // (tabKey, 切到休息?) 行尾月亮开关
+    private var rowInfoByTag: [Int: (key: UUID, resting: Bool)] = [:]
     private let card = UIView()
     private let avatarView = UIImageView()
     private let nameLabel = UILabel()
@@ -744,7 +760,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       roleChip.clipsToBounds = true
       machineLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
       machineLabel.textColor = UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1)
-      pill.addTarget(self, action: #selector(pillTapped), for: .touchUpInside)
+      // 胶囊改纯状态显示;切换粒度在每一行的月亮开关上,不再整人总切
+      pill.isUserInteractionEnabled = false
       // 胶囊尺寸只由内容决定;不设的话 row1 分配余量时会把胶囊拉宽(有角色标签的卡尤其明显)
       pill.setContentHuggingPriority(.required, for: .horizontal)
       pill.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -788,8 +805,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     @objc private func pillTapped() { onPillTap?() }
 
     @objc private func rowTapped(_ gr: UITapGestureRecognizer) {
-      guard let v = gr.view, let key = rowKeyByTag[v.tag] else { return }   // 休息行:无 key,原地吞掉
-      onRowTap?(key)
+      guard let v = gr.view, let info = rowInfoByTag[v.tag], !info.resting else { return }   // 休息行原地吞掉
+      onRowTap?(info.key)
+    }
+
+    @objc private func rowToggleTapped(_ b: UIButton) {
+      guard let info = rowInfoByTag[b.tag] else { return }
+      onRowToggle?(info.key, !info.resting)
     }
 
     fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor) {
@@ -822,14 +844,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         }
         return a.offset < b.offset
       }.map(\.element)
-      rowKeyByTag.removeAll()
+      rowInfoByTag.removeAll()
       for (i, r) in ordered.enumerated() {
         let line = UIView()
         line.layer.cornerRadius = 9
         line.tag = i
         line.isUserInteractionEnabled = true
         line.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(rowTapped(_:))))
-        if !r.resting { rowKeyByTag[i] = r.tabKey }
+        rowInfoByTag[i] = (r.tabKey, r.resting)
         if r.resting {
           // 休息：压到近黑 + 紫字，跟在岗行拉开对比
           line.backgroundColor = UIColor.white.withAlphaComponent(0.02)
@@ -850,10 +872,18 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                                  : UIColor.white.withAlphaComponent(0.72)
         pd.text = r.resting ? "休息中" : (r.probed ? r.desc : "探测中…")
         pd.lineBreakMode = .byTruncatingTail
-        let h = UIStackView(arrangedSubviews: [pn, pd])
+        let sw = UIButton(type: .system)
+        sw.tag = i
+        sw.setImage(UIImage(systemName: r.resting ? "moon.zzz.fill" : "moon",
+          withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)), for: .normal)
+        sw.tintColor = r.resting ? TeamWorkStatus.rest.color : UIColor.white.withAlphaComponent(0.4)
+        sw.addTarget(self, action: #selector(rowToggleTapped(_:)), for: .touchUpInside)
+        sw.setContentHuggingPriority(.required, for: .horizontal)
+        sw.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let h = UIStackView(arrangedSubviews: [pn, pd, sw])
         h.axis = .horizontal
         h.spacing = 8
-        h.alignment = .firstBaseline
+        h.alignment = .center
         h.translatesAutoresizingMaskIntoConstraints = false
         line.addSubview(h)
         NSLayoutConstraint.activate([
