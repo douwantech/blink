@@ -291,9 +291,18 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       var bySession: [String: (pc: String, idle: Int, line: String)] = [:]
       var roles: [String: String] = [:]
       var reached: Set<String> = []
+      var errors: [String: String] = [:]   // machineId → 失败原因
       for m in machines {
-        guard let out = try? await BlinkAssistantBackend.shared.execRemote(script: Self.probeScript, machine: m) else { continue }
+        let out: String
+        do {
+          out = try await BlinkAssistantBackend.shared.execRemote(script: Self.probeScript, machine: m)
+        } catch {
+          errors[m.id] = "\(error)"
+          Self.log("probe \(m.displayName)(\(BlinkMachineStore.bestHost(for: m))) 失败: \(error)")
+          continue
+        }
         reached.insert(m.id)
+        Self.log("probe \(m.displayName) OK, \(out.count) bytes")
         var inOrg = false
         for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
           let lineStr = String(raw)
@@ -316,25 +325,45 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let sessions = bySession
       let roleTable = roles
       let reachedIds = reached
+      let errorTable = errors
       await MainActor.run { [weak self] in
-        self?.applyProbe(sessions: sessions, roles: roleTable, reachedMachines: reachedIds, machinesTotal: machines.count)
+        self?.applyProbe(sessions: sessions, roles: roleTable, reachedMachines: reachedIds,
+                         errors: errorTable, machinesTotal: machines.count)
       }
+    }
+  }
+
+  /// 探测日志落 Documents/teamstatus.log，真机排查用（afc 可拉）
+  private static func log(_ s: String) {
+    let f = DateFormatter()
+    f.dateFormat = "MM-dd HH:mm:ss"
+    let line = "[\(f.string(from: Date()))] \(s)\n"
+    guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+    let url = dir.appendingPathComponent("teamstatus.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+      h.seekToEndOfFile()
+      h.write(Data(line.utf8))
+      try? h.close()
+    } else {
+      try? Data(line.utf8).write(to: url)
     }
   }
 
   private static let shellNames: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
 
   private func applyProbe(sessions: [String: (pc: String, idle: Int, line: String)],
-                          roles: [String: String], reachedMachines: Set<String>, machinesTotal: Int) {
+                          roles: [String: String], reachedMachines: Set<String>,
+                          errors: [String: String], machinesTotal: Int) {
     roleMap = roles
     for gi in groups.indices {
       groups[gi].role = roles[groups[gi].employee.lowercased()]
       for ri in groups[gi].rows.indices {
         guard let tab = tabs.first(where: { $0.tabKey == groups[gi].rows[ri].tabKey }) else { continue }
-        // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」
+        // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」；带上具体报错好排查
         guard reachedMachines.contains(tab.machineId) else {
           groups[gi].rows[ri].status = .idle
-          groups[gi].rows[ri].desc = "机器探测不到（不在同一网络?）"
+          let err = errors[tab.machineId].map { String($0.prefix(90)) } ?? "不在同一网络?"
+          groups[gi].rows[ri].desc = "探测失败: \(err)"
           groups[gi].rows[ri].probed = true
           continue
         }
