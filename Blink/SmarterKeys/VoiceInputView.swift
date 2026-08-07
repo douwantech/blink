@@ -709,8 +709,9 @@ final class VoiceInputView: UIView {
       }
     case .ended:
       holdActive = false
-      if !recCancelled, CACurrentMediaTime() - holdStartTime < 0.35 {
-        // 只是点了一下：不当录音，弹手动输入
+      if !recCancelled, CACurrentMediaTime() - holdStartTime < 0.6 {
+        // 只是点了一下：不当录音，弹手动输入。窗口 0.6s——0.35s 太紧,
+        // 手指稍慢就被误判成按住录音,输入框很难点出来;真说话不会短于 0.6s
         finishRecording(cancelled: true, silent: true)
         openManualInput()
       } else {
