@@ -2644,30 +2644,8 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 
   public func tabBarDidRequestRestPanel() {
-    var items: [RestPanelViewController.Item] = []
-    for key in _viewportsKeys {
-      let term: TermController = SessionRegistry.shared[key]
-      let title = term.meta.tabTitle ?? "标签"
-      let mid = term.mcpParams?.machineId
-      let machine = mid.flatMap { id in
-        BlinkMachineStore.shared.machines.first { $0.id == id }?.displayName
-      } ?? ""
-      let resting = TabRestStore.shared.isResting(key.uuidString)
-      items.append(.init(key: key, title: title, machine: machine, resting: resting))
-    }
-
-    let panel = RestPanelViewController(items: items) { [weak self] key, nowResting in
-      guard let self = self else { return }
-      TabRestStore.shared.setResting(nowResting, key: key.uuidString)
-      self._reloadTabBar()
-    }
-    let nav = UINavigationController(rootViewController: panel)
-    nav.modalPresentationStyle = .pageSheet
-    if let sheet = nav.sheetPresentationController {
-      sheet.detents = [.medium(), .large()]
-      sheet.prefersGrabberVisible = true
-    }
-    present(nav, animated: true)
+    // 旧的「员工在岗/休息」列表已并入团队状态页（每行行尾就是月亮开关），入口统一开新页。
+    tabBarDidRequestTeamStatus()
   }
 
   public func tabBarDidRequestMachineFilter() {

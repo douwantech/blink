@@ -1089,10 +1089,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   }
 }
 
-// MARK: - 员工在岗/休息管理面板
+// MARK: - 员工在岗/休息管理面板（已退役）
 
-/// 顶栏 🌙 按钮弹出的列表：每行一个员工(tab)，开关切换在岗/休息。
-/// 开＝在岗（标签栏显示），关＝休息（标签栏隐藏）。休息中的员工也能在这里随时改回在岗。
+/// 已退役：所有入口（⋯ 菜单、Mac 侧栏 🌙）改开团队状态页 TeamStatusViewController，
+/// 那里每个项目行行尾就是休息开关。类保留以便需要轻量 sheet 时恢复。
 final class RestPanelViewController: UITableViewController {
   struct Item {
     let key: UUID
@@ -1266,9 +1266,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
                           image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestMachineFilter()
     }
-    // 「团队状态」入口挪到了语音条最左的 person.2 按钮（VoiceInputView.teamButton）
-    let rest = UIAction(title: restingCount > 0 ? "在岗 / 休息 · \(restingCount) 人休息中" : "在岗 / 休息",
-                        image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
+    // 旧「在岗/休息」列表已并入团队状态页；这条入口现在直接开员工状态页（行尾月亮即开关）
+    let rest = UIAction(title: restingCount > 0 ? "员工状态 · \(restingCount) 人休息中" : "员工状态",
+                        image: UIImage(systemName: "person.2")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestRestPanel()
     }
     // 「助手对话」入口暂时下线（要恢复：加回 sparkles UIAction → tabBarDidRequestAssistantChat）

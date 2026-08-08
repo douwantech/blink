@@ -239,8 +239,8 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     newButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.4).cgColor
     newButton.addTarget(self, action: #selector(newTapped), for: .touchUpInside)
 
-    // 🌙 按钮：弹出「员工在岗/休息」管理列表。Mac 三栏隐藏了顶栏（🌙 原本长在那），
-    // 没这个入口的话，dock 😴 标休息的 tab 会从侧栏消失且再也改不回在岗。样式对齐顶栏那颗。
+    // 🌙 按钮：打开团队状态页（旧「员工在岗/休息」列表已并入，行尾月亮即开关）。
+    // Mac 三栏隐藏了顶栏，没这个入口的话，dock 😴 标休息的 tab 会从侧栏消失且再也改不回在岗。
     var restCfg = UIButton.Configuration.plain()
     restCfg.image = UIImage(systemName: "moon.zzz.fill")
     restCfg.imagePadding = 3
