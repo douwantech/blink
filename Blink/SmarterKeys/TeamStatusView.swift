@@ -176,15 +176,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.addGestureRecognizer(swipeL)
     tableView.addGestureRecognizer(swipeR)
     view.addSubview(tableView)
-    NSLayoutConstraint.activate([
-      tableView.topAnchor.constraint(equalTo: view.topAnchor),
-      tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-      tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-      tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-    ])
 
-    // 表头：统计条 + 视图切换 + 更新时间
-    let header = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 132))
+    // 固定表头（挂在 view 上而不是 tableHeaderView）：统计条 + 视图切换 + 更新时间。
+    // 切视图的推入动画只加在 tableView.layer 上，表头因此纹丝不动。
+    let header = UIView()
+    header.backgroundColor = bg
+    header.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(header)
     let stats = UIStackView(arrangedSubviews: statTiles)
     stats.axis = .horizontal
     stats.distribution = .fillEqually
@@ -209,6 +207,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     header.addSubview(subtitleLabel)
 
     NSLayoutConstraint.activate([
+      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      header.heightAnchor.constraint(equalToConstant: 132),
+
       stats.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
       stats.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
       stats.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
@@ -219,8 +222,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       subtitleLabel.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 8),
       subtitleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
       subtitleLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+
+      tableView.topAnchor.constraint(equalTo: header.bottomAnchor),
+      tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
     ])
-    tableView.tableHeaderView = header
   }
 
   @objc private func closeTapped() { dismiss(animated: true) }
@@ -783,7 +790,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let g = employeeSections[indexPath.section].items[indexPath.row]
       let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
       cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
-      cell.onRowTap = { [weak self] key in self?.jumpToTab(key) }
+      cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
       cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
       return cell
     case .project:
@@ -800,31 +807,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
-  func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
-    tv.deselectRow(at: indexPath, animated: true)
-    let key: UUID?
-    switch mode {
-    case .employee:
-      let g = employeeSections[indexPath.section].items[indexPath.row]
-      guard g.status != .rest else { return }   // 全休息的员工卡:点了不跳 tab(用胶囊叫回来)
-      let active = g.rows.filter { !$0.resting }
-      key = (active.first { $0.status == .wait } ?? active.first)?.tabKey
-    case .project:
-      let e = projectSections[indexPath.section].items[indexPath.row]
-      guard memberStatus(e) != .rest else { return }   // 休息中的成员行同样不跳
-      key = e.row.tabKey
-    case .machine:
-      let e = machineSections[indexPath.section].items[indexPath.row]
-      guard !e.row.resting else { return }   // 休息行点了不跳，用行尾开关叫回来
-      key = e.row.tabKey
-    }
-    guard let k = key else { return }
-    jumpToTab(k)
-  }
-
-  private func jumpToTab(_ key: UUID) {
-    dismiss(animated: true) { [onOpenTab] in onOpenTab?(key) }
-  }
+  // 点击跳 tab 已去掉：页面纯看状态 + 拨休息开关，不再响应行选中。
+  // 要恢复：实现 didSelectRowAt → dismiss 后 onOpenTab?(key)。
 
   // MARK: - 内部小控件
 
