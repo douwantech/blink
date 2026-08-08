@@ -108,7 +108,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private var tabs: [TeamStatusTab]
   private var groups: [Group] = []
   private var roleMap: [String: String] = [:]
-  private var byEmployee = true   // segmented：按员工 / 按项目
+  /// segmented：按员工（状态分段卡片）/ 按项目（项目分段成员行）/ 按机器（旧在岗休息面板形态，行尾开关）
+  private enum ViewMode: Int { case employee = 0, project, machine }
+  private var mode: ViewMode = .employee
 
   private let bg = UIColor(red: 0.043, green: 0.047, blue: 0.055, alpha: 1)      // #0b0c0e
   private let panel = UIColor(red: 0.078, green: 0.086, blue: 0.106, alpha: 1)   // #14161b
@@ -117,7 +119,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   private let tableView = UITableView(frame: .zero, style: .grouped)
   private let statTiles: [StatTile]
-  private let segmented = UISegmentedControl(items: ["按员工", "按项目"])
+  private let segmented = UISegmentedControl(items: ["按员工", "按项目", "按机器"])
   private let subtitleLabel = UILabel()
 
   init(tabs: [TeamStatusTab]) {
@@ -160,6 +162,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.translatesAutoresizingMaskIntoConstraints = false
     tableView.register(EmployeeCardCell.self, forCellReuseIdentifier: "emp")
     tableView.register(MemberRowCell.self, forCellReuseIdentifier: "mem")
+    tableView.register(MachineRowCell.self, forCellReuseIdentifier: "mch")
     let rc = UIRefreshControl()
     rc.tintColor = sub
     rc.addTarget(self, action: #selector(refreshTapped), for: .valueChanged)
@@ -214,7 +217,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   @objc private func closeTapped() { dismiss(animated: true) }
   @objc private func segChanged() {
-    byEmployee = segmented.selectedSegmentIndex == 0
+    mode = ViewMode(rawValue: segmented.selectedSegmentIndex) ?? .employee
     tableView.reloadData()
   }
   @objc private func refreshTapped() { probe() }
@@ -688,27 +691,59 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     e.row.effective
   }
 
+  /// 按机器：机器分 section，行=tab（员工×项目），在岗排前休息沉底（旧在岗/休息面板并入这里）
+  private var machineSections: [(machine: String, items: [MemberEntry])] {
+    var order: [String] = []
+    var map: [String: [MemberEntry]] = [:]
+    for g in groups {
+      if map[g.machineName] == nil { order.append(g.machineName); map[g.machineName] = [] }
+      for r in g.rows { map[g.machineName]?.append(MemberEntry(group: g, row: r)) }
+    }
+    for k in map.keys {
+      map[k]?.sort {
+        if $0.row.resting != $1.row.resting { return !$0.row.resting }
+        return $0.row.effective.rawValue < $1.row.effective.rawValue
+      }
+    }
+    return order.map { ($0, map[$0] ?? []) }
+  }
+
   // MARK: UITableView
 
   func numberOfSections(in tableView: UITableView) -> Int {
-    byEmployee ? employeeSections.count : projectSections.count
+    switch mode {
+    case .employee: return employeeSections.count
+    case .project:  return projectSections.count
+    case .machine:  return machineSections.count
+    }
   }
 
   func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    byEmployee ? employeeSections[section].items.count : projectSections[section].items.count
+    switch mode {
+    case .employee: return employeeSections[section].items.count
+    case .project:  return projectSections[section].items.count
+    case .machine:  return machineSections[section].items.count
+    }
   }
 
   func tableView(_ tv: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-    if byEmployee {
+    switch mode {
+    case .employee:
       let s = employeeSections[section]
       return SectionHeader(symbol: s.status.symbol, color: s.status.color,
                            title: s.status.sectionTitle, hint: s.status.sectionHint)
-    } else {
+    case .project:
       let s = projectSections[section]
       let waitCount = s.items.filter { memberStatus($0) == .wait }.count
       let hint = waitCount > 0 ? "\(s.items.count) 人 · \(waitCount) 个等你" : "\(s.items.count) 人"
       return SectionHeader(symbol: "folder", color: UIColor.white.withAlphaComponent(0.75),
                            title: s.project, hint: hint)
+    case .machine:
+      let s = machineSections[section]
+      let restCount = s.items.filter { $0.row.resting }.count
+      let hint = restCount > 0 ? "\(s.items.count) 个 tab · \(restCount) 休息" : "\(s.items.count) 个 tab"
+      return SectionHeader(symbol: "desktopcomputer", color: UIColor.white.withAlphaComponent(0.75),
+                           title: s.machine, hint: hint)
     }
   }
 
@@ -719,17 +754,24 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   }
 
   func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-    if byEmployee {
+    switch mode {
+    case .employee:
       let g = employeeSections[indexPath.section].items[indexPath.row]
       let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
       cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
       cell.onRowTap = { [weak self] key in self?.jumpToTab(key) }
       cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
       return cell
-    } else {
+    case .project:
       let e = projectSections[indexPath.section].items[indexPath.row]
       let cell = tv.dequeueReusableCell(withIdentifier: "mem", for: indexPath) as! MemberRowCell
       cell.configure(entry: (e.group, e.row), status: memberStatus(e), panel: panel, sub: sub)
+      return cell
+    case .machine:
+      let e = machineSections[indexPath.section].items[indexPath.row]
+      let cell = tv.dequeueReusableCell(withIdentifier: "mch", for: indexPath) as! MachineRowCell
+      cell.configure(entry: (e.group, e.row), status: memberStatus(e), panel: panel, sub: sub)
+      cell.onToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
       return cell
     }
   }
@@ -737,14 +779,19 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: true)
     let key: UUID?
-    if byEmployee {
+    switch mode {
+    case .employee:
       let g = employeeSections[indexPath.section].items[indexPath.row]
       guard g.status != .rest else { return }   // 全休息的员工卡:点了不跳 tab(用胶囊叫回来)
       let active = g.rows.filter { !$0.resting }
       key = (active.first { $0.status == .wait } ?? active.first)?.tabKey
-    } else {
+    case .project:
       let e = projectSections[indexPath.section].items[indexPath.row]
       guard memberStatus(e) != .rest else { return }   // 休息中的成员行同样不跳
+      key = e.row.tabKey
+    case .machine:
+      let e = machineSections[indexPath.section].items[indexPath.row]
+      guard !e.row.resting else { return }   // 休息行点了不跳，用行尾开关叫回来
       key = e.row.tabKey
     }
     guard let k = key else { return }
@@ -1143,6 +1190,102 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         descLabel.text = r.probed ? r.desc : "探测中…"
       }
       dot.backgroundColor = status.color
+    }
+  }
+
+  // MARK: 机器视图行 cell（旧「员工在岗/休息」面板并入：行尾 UISwitch，开=在岗）
+
+  final class MachineRowCell: UITableViewCell {
+    var onToggle: ((UUID, Bool) -> Void)?   // (tabKey, 切换后是否休息)
+    private let card = UIView()
+    private let avatarView = UIImageView()
+    private let nameLabel = UILabel()
+    private let projectChip = PaddedLabel()
+    private let descLabel = UILabel()
+    private let toggle = UISwitch()
+    private var tabKey: UUID?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+      super.init(style: style, reuseIdentifier: reuseIdentifier)
+      backgroundColor = .clear
+      selectionStyle = .none
+      card.layer.cornerRadius = 10
+      card.translatesAutoresizingMaskIntoConstraints = false
+      contentView.addSubview(card)
+
+      avatarView.layer.cornerRadius = 12
+      avatarView.clipsToBounds = true
+      avatarView.contentMode = .scaleAspectFill
+      nameLabel.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
+      nameLabel.textColor = .white
+      projectChip.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
+      projectChip.textColor = UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1)
+      projectChip.backgroundColor = UIColor.white.withAlphaComponent(0.07)
+      projectChip.layer.cornerRadius = 6
+      projectChip.clipsToBounds = true
+      descLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+      descLabel.lineBreakMode = .byTruncatingTail
+      toggle.onTintColor = UIColor(red: 0.30, green: 0.78, blue: 0.47, alpha: 1)
+      toggle.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+      toggle.addTarget(self, action: #selector(toggleChanged), for: .valueChanged)
+      toggle.setContentHuggingPriority(.required, for: .horizontal)
+      toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+      let nameRow = UIStackView(arrangedSubviews: [nameLabel, projectChip, UIView()])
+      nameRow.axis = .horizontal
+      nameRow.spacing = 5
+      nameRow.alignment = .center
+      let mid = UIStackView(arrangedSubviews: [nameRow, descLabel])
+      mid.axis = .vertical
+      mid.spacing = 1
+      let row = UIStackView(arrangedSubviews: [avatarView, mid, toggle])
+      row.axis = .horizontal
+      row.spacing = 8
+      row.alignment = .center
+      row.translatesAutoresizingMaskIntoConstraints = false
+      card.addSubview(row)
+
+      NSLayoutConstraint.activate([
+        card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 3),
+        card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -3),
+        card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+        card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+        avatarView.widthAnchor.constraint(equalToConstant: 24),
+        avatarView.heightAnchor.constraint(equalToConstant: 24),
+        row.topAnchor.constraint(equalTo: card.topAnchor, constant: 7),
+        row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -7),
+        row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 9),
+        row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+      ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func toggleChanged() {
+      guard let k = tabKey else { return }
+      onToggle?(k, !toggle.isOn)   // 开=在岗，关=休息
+    }
+
+    fileprivate func configure(entry: (group: Group, row: ProjectRow), status: TeamWorkStatus, panel: UIColor, sub: UIColor) {
+      let (g, r) = entry
+      tabKey = r.tabKey
+      // 开关要保持全亮可点，休息态只压暗文字/底色，不动整卡 alpha
+      card.backgroundColor = status == .rest
+        ? UIColor.white.withAlphaComponent(0.02)
+        : status.color.withAlphaComponent(0.13)
+      avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
+      avatarView.alpha = status == .rest ? 0.45 : 1
+      nameLabel.textColor = status == .rest ? UIColor.white.withAlphaComponent(0.45) : .white
+      nameLabel.text = g.employee
+      projectChip.text = r.project
+      descLabel.numberOfLines = 1
+      if status == .rest {
+        descLabel.textColor = TeamWorkStatus.rest.color.withAlphaComponent(0.8)
+        descLabel.text = "休息中 · 打开开关叫回来"
+      } else {
+        descLabel.textColor = status.color
+        descLabel.text = status.label
+      }
+      toggle.setOn(!r.resting, animated: false)
     }
   }
 
