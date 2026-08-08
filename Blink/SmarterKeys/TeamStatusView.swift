@@ -167,6 +167,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     rc.tintColor = sub
     rc.addTarget(self, action: #selector(refreshTapped), for: .valueChanged)
     tableView.refreshControl = rc
+
+    // 列表上左右横扫 = 切换 按员工/按项目/按机器（表格只吃竖向滚动，横扫是空闲手势）
+    let swipeL = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+    swipeL.direction = .left
+    let swipeR = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+    swipeR.direction = .right
+    tableView.addGestureRecognizer(swipeL)
+    tableView.addGestureRecognizer(swipeR)
     view.addSubview(tableView)
     NSLayoutConstraint.activate([
       tableView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -219,6 +227,22 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   @objc private func segChanged() {
     mode = ViewMode(rawValue: segmented.selectedSegmentIndex) ?? .employee
     tableView.reloadData()
+  }
+
+  /// 左滑=下一个视图，右滑=上一个；带同方向推入动画，segmented 跟着走
+  @objc private func swiped(_ g: UISwipeGestureRecognizer) {
+    let step = g.direction == .left ? 1 : -1
+    guard let next = ViewMode(rawValue: mode.rawValue + step) else { return }   // 两端到头不循环
+    mode = next
+    segmented.selectedSegmentIndex = next.rawValue
+    let t = CATransition()
+    t.type = .push
+    t.subtype = g.direction == .left ? .fromRight : .fromLeft
+    t.duration = 0.22
+    t.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    tableView.layer.add(t, forKey: "modeSwipe")
+    tableView.reloadData()
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
   }
   @objc private func refreshTapped() { probe() }
 
