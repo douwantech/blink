@@ -428,6 +428,15 @@ class SpaceController: UIViewController {
 
   // dock 🖥️ 钮：打开内嵌 RustDesk 远程桌面页（核心库直连，不切 App）
   @objc func _openRemoteDesktop() {
+    guard RustDeskCore.isAvailable else {
+      let alert = UIAlertController(
+        title: "远程桌面不可用",
+        message: "本次构建没有链接 RustDesk 核心库（liblibrustdesk.a）。长按此按钮可改走独立 RustDesk App。",
+        preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "确定", style: .default))
+      present(alert, animated: true)
+      return
+    }
     guard let m = _rustdeskMachine(), let rid = m.rustdeskId else { return }
     // 传 SSH 通道(同一台机器的 host/user),供"双击识别窗口并缩放"用
     let host = BlinkMachineStore.bestHost(for: m)

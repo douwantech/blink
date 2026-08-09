@@ -69,7 +69,11 @@ typedef void (*mosh_state_callback) (const void *context, const void *buffer, si
 #import "BlinkMenu.h"
 #import "GeoManager.h"
 #import "mosh/moshiosbridge.h"
+// 只有链接了 liblibrustdesk.a 的构建才引入真声明（BLINK_HAS_RUSTDESK 来自
+// developer_setup.xcconfig 的 BLINK_RUSTDESK_C_FLAG）；没库时 RustDeskStub.swift 提供同名 no-op。
+#ifdef BLINK_HAS_RUSTDESK
 #include "RustDesk/rustdesk_native.h"
+#endif
 
 
 #endif /* Blink_bridge_h */

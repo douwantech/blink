@@ -397,6 +397,7 @@
 		D2A52297230D279B0010BC11 /* TeamStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC12 /* TeamStatusView.swift */; };
 		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
 		D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */; };
+		D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */; };
 		D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000012 /* RemoteShell.swift */; };
 		D2AB5DE5C0DE000000000013 /* WindowAtQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */; };
 		D2AB5DE5C0DE000000000003 /* RemoteDesktopViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */; };
@@ -1170,6 +1171,7 @@
 		D2A52297230D279B0010BC12 /* TeamStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamStatusView.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskCore.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskStub.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000012 /* RemoteShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteShell.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowAtQuery.swift; sourceTree = "<group>"; };
 		D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDesktopViewController.swift; sourceTree = "<group>"; };
@@ -2210,6 +2212,7 @@
 			children = (
 				D2AB5DE5C0DE000000000005 /* rustdesk_native.h */,
 				D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */,
+				D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */,
 				D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */,
 				D2AB5DE5C0DE000000000012 /* RemoteShell.swift */,
 				D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */,
@@ -3606,6 +3609,7 @@
 				D2A52297230D279B0010BC11 /* TeamStatusView.swift in Sources */,
 				D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */,
 				D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */,
+				D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */,
 				D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */,
 				D2AB5DE5C0DE000000000013 /* WindowAtQuery.swift in Sources */,
 				D2AB5DE5C0DE000000000003 /* RemoteDesktopViewController.swift in Sources */,
@@ -5379,6 +5383,7 @@
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
 					"$(inherited)",
+					"$(BLINK_RUSTDESK_C_FLAG)",
 				);
 				INFOPLIST_FILE = Blink/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Blink Shell";
@@ -5391,8 +5396,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
-					/Users/apple/Codes/rustdesk-src/target/aarch64-apple-ios/release,
-					"/Users/apple/Codes/vcpkg/installed/arm64-ios/lib",
+					"$(BLINK_RUSTDESK_LIB_SEARCH)",
 				);
 				MARKETING_VERSION = 18.7.0;
 				NEW_SETTING = "";
@@ -5400,11 +5404,7 @@
 				OTHER_LDFLAGS = (
 					"-ObjC",
 					"$(BLINK_OTHER_LDFLAGS)",
-					"/Users/apple/Codes/rustdesk-src/target/aarch64-apple-ios/release/liblibrustdesk.a",
-					"-laom",
-					"-lvpx",
-					"-lyuv",
-					"-lopus",
+					"$(BLINK_RUSTDESK_LDFLAGS)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID)";
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.aitools.talkcode.stg;
@@ -5415,6 +5415,7 @@
 				STRIP_SWIFT_SYMBOLS = NO;
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(BLINK_RUSTDESK_SWIFT_FLAG)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Blink/Blink-bridge.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				TARGETED_DEVICE_FAMILY = "1,2,6";
@@ -5434,7 +5435,7 @@
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 659T9VUN97;
 				ENABLE_BITCODE = NO;
-				GCC_PREPROCESSOR_DEFINITIONS = "";
+				GCC_PREPROCESSOR_DEFINITIONS = "$(BLINK_RUSTDESK_C_FLAG)";
 				INFOPLIST_FILE = Blink/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Blink Shell";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -5446,8 +5447,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
-					/Users/apple/Codes/rustdesk-src/target/aarch64-apple-ios/release,
-					"/Users/apple/Codes/vcpkg/installed/arm64-ios/lib",
+					"$(BLINK_RUSTDESK_LIB_SEARCH)",
 				);
 				MARKETING_VERSION = 18.7.0;
 				NEW_SETTING = "";
@@ -5455,11 +5455,7 @@
 				OTHER_LDFLAGS = (
 					"-ObjC",
 					"$(BLINK_OTHER_LDFLAGS)",
-					"/Users/apple/Codes/rustdesk-src/target/aarch64-apple-ios/release/liblibrustdesk.a",
-					"-laom",
-					"-lvpx",
-					"-lyuv",
-					"-lopus",
+					"$(BLINK_RUSTDESK_LDFLAGS)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID)";
 				PRODUCT_NAME = Blink;
@@ -5468,6 +5464,7 @@
 				STRIP_SWIFT_SYMBOLS = NO;
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(BLINK_RUSTDESK_SWIFT_FLAG)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Blink/Blink-bridge.h";
 				TARGETED_DEVICE_FAMILY = "1,2,6";
 			};
