@@ -406,9 +406,9 @@ final class VoiceInputView: UIView {
     Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
     nil,
+    Tool(act: "rest", symbol: "moon.zzz", text: nil, warn: false),   // 当前 tab 在岗⇄休息
     Tool(act: "browser", symbol: "globe", text: nil, warn: false),
     Tool(act: "desktop", symbol: "display", text: nil, warn: false),
-    Tool(act: "rest", symbol: "moon.zzz", text: nil, warn: false),   // 当前 tab 在岗⇄休息
   ]
 
   // 键盘分组：两行铺开（键盘模式不需要语音条，第二行借用它的位置）
