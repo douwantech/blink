@@ -22,6 +22,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestReloadTab(_ view: VoiceInputView)
   func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView)
   func voiceInputDidRequestTeamStatus(_ view: VoiceInputView)
+  func voiceInputDidRequestToggleRest(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
@@ -407,6 +408,7 @@ final class VoiceInputView: UIView {
     nil,
     Tool(act: "browser", symbol: "globe", text: nil, warn: false),
     Tool(act: "desktop", symbol: "display", text: nil, warn: false),
+    Tool(act: "rest", symbol: "moon.zzz", text: nil, warn: false),   // 当前 tab 在岗⇄休息
   ]
 
   // 键盘分组：两行铺开（键盘模式不需要语音条，第二行借用它的位置）
@@ -520,6 +522,7 @@ final class VoiceInputView: UIView {
     case "transcript": transcriptTapped()
     case "browser": delegate?.voiceInputDidRequestOpenBrowser(self)
     case "desktop": delegate?.voiceInputDidRequestOpenDesktop(self)
+    case "rest": delegate?.voiceInputDidRequestToggleRest(self)
     case "up": delegate?.voiceInput(self, didRequestSendArrow: .up)
     case "down": delegate?.voiceInput(self, didRequestSendArrow: .down)
     case "left": delegate?.voiceInput(self, didRequestSendArrow: .left)

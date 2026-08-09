@@ -1739,6 +1739,9 @@ extension SpaceController {
     return TabRestStore.shared.isResting(key.uuidString)
   }
 
+  /// 语音条「功能」组的 🌙 pill：切当前 tab 在岗⇄休息（复用 dock 😴 逻辑）
+  public func toggleRestCurrentTab() { _toggleRestForCurrentTab() }
+
   /// dock 😴 钮：把当前 tab 标记 / 取消标记「休息」。
   /// 若「只显示工作中」开着且刚标为休息，立刻跳到下一个「工作中」tab，让这个 tab 被过滤隐藏。
   @objc private func _toggleRestForCurrentTab() {
