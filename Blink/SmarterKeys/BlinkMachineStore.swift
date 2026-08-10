@@ -314,6 +314,14 @@ enum HostReachability {
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
     PROJ=~/.claude/projects
     DIR=$PROJ/\(cwdEncoded)
+    # 正文全靠 jq 生成；缺 jq 时若不拦，页面只剩 WARN+文件头两行，像"读不到"
+    if ! command -v jq >/dev/null 2>&1; then
+      MSG="⚠️ 这台机器没装 jq，转录没法解析。ssh 上去装一下：brew install jq"
+      B64=$(printf '%s' "$MSG" | base64 | tr -d '\\n')
+      printf '\\033]52;c;%s\\a' "$B64"
+      echo READY
+      exit 1
+    fi
     pick_latest_by_mtime() {
       while read f; do
         [ -z "$f" ] && continue
@@ -386,7 +394,7 @@ enum HostReachability {
       .[-100:] |
       .[] |
       (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
-    ' "$F")
+    ' "$F" 2>&1)
     B64=$(printf '%s' "$BODY" | base64 | tr -d '\\n')
     printf '\\033]52;c;%s\\a' "$B64"
     echo READY
@@ -457,6 +465,11 @@ enum HostReachability {
       [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同前缀目录 mtime 最新 jsonl"
     fi
     emit() { EB64=$(printf '%s' "$1" | base64 | tr -d '\\n'); printf '@TSB64@%s@TSB64E@\\n' "$EB64"; }
+    # 正文全靠 jq；缺 jq 时明说，不然页面只剩 WARN+文件头像"读不到"
+    if ! command -v jq >/dev/null 2>&1; then
+      emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n⚠️ 这台机器没装 jq，转录没法解析。ssh 上去装一下：brew install jq')"
+      exit 0
+    fi
     if [ -z "$F" ]; then
       emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n没找到 %s 的会话记录（customTitle 未匹配）。在 cc 里跑一次 /title %s 命名后即可拉到。' "$TITLE" "$TITLE")"
       exit 0
@@ -504,7 +517,10 @@ enum HostReachability {
       (if $full == "1" then .[-100:] else . end) |
       .[] |
       (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
-    ')
+    ' 2>&1)
+    fi
+    if [ "$FULL" = "1" ] && [ -z "$BODY" ]; then
+      BODY="（这个 session 里没有可显示的对话内容——可能是全新会话，或内容全是命令输出被过滤了）"
     fi
     HEAD=""
     if [ "$FULL" = "1" ]; then
