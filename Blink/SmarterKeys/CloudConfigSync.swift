@@ -491,22 +491,47 @@ final class ConfigSyncPull: NSObject {
       if let data = try? JSONSerialization.data(withJSONObject: obj) { d.set(data, forKey: key) }
     }
 
-    setJSON(machines, forKey: "BlinkMachineStore.machines")
+    // machines：按 id 并集合并，绝不让对端的整份快照删掉本地机器
+    // （2026-08-10 鸿蒙旧快照把新加的 Jun 机器整个冲掉的事故）。机器删除只在 iOS 上做。
+    var mergedMachines = machines
+    if let ld = d.data(forKey: "BlinkMachineStore.machines"),
+       let locals = (try? JSONSerialization.jsonObject(with: ld)) as? [[String: Any]] {
+      let incomingIds = Set(machines.compactMap { $0["id"] as? String })
+      for l in locals {
+        if let id = l["id"] as? String, !incomingIds.contains(id) {
+          mergedMachines.append(l)
+          NSLog("[ConfigSyncPull] 对端快照缺机器 %@，本地保留不删", id)
+        }
+      }
+    }
+    setJSON(mergedMachines, forKey: "BlinkMachineStore.machines")
 
-    // workDirs：同步文件不带头像（体积），按 id 把本地 iconImageData 保回去，别把头像冲掉
+    // workDirs：同步文件不带头像（体积），按 id 把本地 iconImageData 保回去，别把头像冲掉；
+    // 同时跟 machines 一样并集合并，对端快照缺的目录本地保留
     if let dirs = cfg["workDirs"] as? [[String: Any]] {
       var localIcons: [String: Any] = [:]
+      var localById: [String: [String: Any]] = [:]
       if let ld = d.data(forKey: "BlinkWorkDirStore.workDirs"),
          let locals = (try? JSONSerialization.jsonObject(with: ld)) as? [[String: Any]] {
         for l in locals {
-          if let id = l["id"] as? String, let icon = l["iconImageData"] { localIcons[id] = icon }
+          guard let id = l["id"] as? String else { continue }
+          localById[id] = l
+          if let icon = l["iconImageData"] { localIcons[id] = icon }
         }
       }
       var merged: [[String: Any]] = []
+      var seen = Set<String>()
       for var w in dirs {
         w.removeValue(forKey: "hasIcon")
-        if let id = w["id"] as? String, let icon = localIcons[id] { w["iconImageData"] = icon }
+        if let id = w["id"] as? String {
+          seen.insert(id)
+          if let icon = localIcons[id] { w["iconImageData"] = icon }
+        }
         merged.append(w)
+      }
+      for (id, l) in localById where !seen.contains(id) {
+        merged.append(l)
+        NSLog("[ConfigSyncPull] 对端快照缺工作目录 %@，本地保留不删", id)
       }
       setJSON(merged, forKey: "BlinkWorkDirStore.workDirs")
     }

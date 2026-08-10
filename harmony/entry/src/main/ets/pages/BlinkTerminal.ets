@@ -138,6 +138,12 @@ struct BlinkTerminal {
   private lastWatchTry: number = 0;
   private cfgPushDirty: boolean = false;   // 本地配置改了、还没推到 Mac
   private cfgPushTimer: number = -1;       // 3s 合并窗口
+  // 防止启动期把旧快照当新配置推出去干掉 iOS 的新改动（2026-08-10 事故）：
+  // ① 首次成功拉取（或确认文件不存在）之前一律不推；
+  // ② 推送 stamp 用「本地真实改动时刻」而不是推送时刻，老数据别抢新 stamp；
+  // ③ 远端文件 updatedAt 更新时推送脚本原地放弃（见 pushSyncConfig 的 python3 比对）。
+  private cfgPulledOnce: boolean = false;
+  private cfgDataStamp: number = 0;        // 最后一次本地配置改动的 epoch 秒
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -426,6 +432,7 @@ struct BlinkTerminal {
   // 本地配置变了（store save* 落盘触发）：3s 合并窗口后推送
   private notifyCfgChanged(): void {
     this.cfgPushDirty = true;
+    this.cfgDataStamp = Date.now() / 1000;
     if (this.cfgPushTimer >= 0) {
       return;
     }
@@ -442,8 +449,15 @@ struct BlinkTerminal {
     if (!this.cfgPushDirty || !this.storeReady || this.tsState !== 'Running') {
       return;
     }
+    if (!this.cfgPulledOnce) {
+      // 还没见过远端文件（启动早期）就不许推——启动期 store 落盘会误标 dirty，
+      // 把本机旧快照推出去会盖掉 iOS 上更新的机器/工作目录配置。dirty 保留，
+      // poll 的 Running 分支在首次拉取完成后会补推。
+      return;
+    }
     this.cfgPushDirty = false;
-    const stamp: number = Date.now() / 1000;
+    // stamp 用真实改动时刻：本机数据比远端旧时，脚本端比对后放弃写入
+    const stamp: number = this.cfgDataStamp > 0 ? this.cfgDataStamp : Date.now() / 1000;
     const enc = new util.TextEncoder();
     let b64: string = this.b64.encodeToStringSync(enc.encodeInto(JSON.stringify(this.store.exportSync(stamp, false))));
     if (b64.length > 60000) {
@@ -453,8 +467,13 @@ struct BlinkTerminal {
     if (b64.length === 0 || b64.length > 60000) {
       return;
     }
+    // 远端文件 updatedAt 比要写的新 → rm 放弃；python3 出任何岔子（无文件/坏 json/没装）→ 照写
+    const guard: string = 'python3 -c "import json,os;s=os.path.expanduser(\'~/.blink/sync/\');' +
+      'cur=json.load(open(s+\'blink_config.json\')).get(\'updatedAt\',0);' +
+      'new=json.load(open(s+\'.cfg.tmp\')).get(\'updatedAt\',0);exit(0 if cur>new else 1)"';
     const script: string = "mkdir -p ~/.blink/sync && printf '%s' '" + b64 +
-      "' | openssl base64 -d -A > ~/.blink/sync/.cfg.tmp && mv ~/.blink/sync/.cfg.tmp ~/.blink/sync/blink_config.json";
+      "' | openssl base64 -d -A > ~/.blink/sync/.cfg.tmp && if " + guard +
+      "; then rm -f ~/.blink/sync/.cfg.tmp; else mv ~/.blink/sync/.cfg.tmp ~/.blink/sync/blink_config.json; fi";
     let sent: number = 0;
     for (let i = 0; i < this.store.machines.length; i++) {
       const ep = this.store.blinkdEndpoint(this.store.machines[i]);
@@ -516,8 +535,10 @@ struct BlinkTerminal {
     // base64 输出躲开 PTY 对换行/控制字节的加工，收端反解。
     // 结束以连接关闭（cat 跑完进程退出）为准；15s 只是兜底——冷启动时
     // tailscale 握手可能要好几秒，5s 固定窗曾把迟到的数据整个丢掉。
+    // 文件不存在时给非 base64 字符的标记（@ 会被 b64 过滤剔掉，但 raw buf 里查得到），
+    // 让 finishCfgPull 能区分「文件没有（可以放心推）」和「连接失败（不能推）」
     client.connect(host, port, token, 24, 80,
-      'cat ~/.blink/sync/blink_config.json 2>/dev/null | base64');
+      '[ -f ~/.blink/sync/blink_config.json ] && cat ~/.blink/sync/blink_config.json | base64 || printf @NOFILE@');
     setTimeout(() => {
       this.finishCfgPull(buf);
       client.close();
@@ -590,11 +611,16 @@ struct BlinkTerminal {
       return;
     }
     this.cfgPullBusy = false;
+    if (buf.indexOf('@NOFILE@') >= 0) {
+      // 远端确认没有配置文件：首推安全，放开推送闸门
+      this.cfgPulledOnce = true;
+      return;
+    }
     const b64: string = buf.replace(new RegExp('[^A-Za-z0-9+/=]', 'g'), '');
     hilog.info(DOMAIN, TAG, 'cfg pull got %{public}d raw / %{public}d b64', buf.length, b64.length);
     if (b64.length < 16) {
       // 空结果多半是冷启动抢跑：status 文件还是旧 Running、tun 其实没起来，
-      // TCP 连不上。15s 后再试，别让 5 分钟节流把首次同步堵死。
+      // TCP 连不上。15s 后再试，别让 5 分钟节流把首次同步堵死。推送闸门保持关闭。
       this.lastCfgPull = Date.now() - 285000;
       return;
     }
@@ -602,6 +628,7 @@ struct BlinkTerminal {
       const bytes: Uint8Array = this.b64.decodeSync(b64);
       const dec = util.TextDecoder.create('utf-8');
       const cfg: SeedConfig = JSON.parse(dec.decodeToString(bytes)) as SeedConfig;
+      this.cfgPulledOnce = true;   // 拿到过远端真实内容（不管采不采纳），推送闸门放开
       if (cfg.origin === 'harmony') {
         return;   // 自己写的文件，别回声采纳
       }
