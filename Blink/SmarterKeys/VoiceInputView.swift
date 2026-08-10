@@ -2560,6 +2560,25 @@ final class FloatingTextInputPanel: UIView, UITextViewDelegate {
   private var textHeightC: NSLayoutConstraint!
   var onSend: ((String) -> Void)?
 
+  // 未发送的命令草稿：每次输入即存 UserDefaults，App 被杀/重启也不丢，
+  // 只有真正点发送才清掉。重开浮动打字条会自动把草稿填回来。
+  private static let draftKey = "blink.composer.draft"
+  private func saveDraft() {
+    let t = textView.text ?? ""
+    if t.isEmpty {
+      UserDefaults.standard.removeObject(forKey: Self.draftKey)
+    } else {
+      UserDefaults.standard.set(t, forKey: Self.draftKey)
+    }
+  }
+  private func restoreDraft() {
+    let draft = UserDefaults.standard.string(forKey: Self.draftKey) ?? ""
+    guard !draft.isEmpty else { return }
+    textView.text = draft
+    textViewDidChange(textView)   // 更新 placeholder 隐藏 + 输入条高度
+    textView.selectedRange = NSRange(location: (draft as NSString).length, length: 0) // 光标移到末尾
+  }
+
   @discardableResult
   static func present(in window: UIWindow, onSend: @escaping (String) -> Void) -> FloatingTextInputPanel {
     let p = FloatingTextInputPanel(frame: .zero)
@@ -2572,6 +2591,8 @@ final class FloatingTextInputPanel: UIView, UITextViewDelegate {
       p.trailingAnchor.constraint(equalTo: window.trailingAnchor),
       p.bottomAnchor.constraint(equalTo: window.bottomAnchor),
     ])
+    p.layoutIfNeeded()   // 先出布局，restoreDraft 里算高度才能拿到 textView 宽度
+    p.restoreDraft()     // 把上次没发出去的草稿填回来
     p.alpha = 0
     UIView.animate(withDuration: 0.15) { p.alpha = 1 }
     p.textView.becomeFirstResponder()
@@ -2654,6 +2675,7 @@ final class FloatingTextInputPanel: UIView, UITextViewDelegate {
     let v = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !v.isEmpty else { dismissPanel(); return }
     onSend?(v)
+    UserDefaults.standard.removeObject(forKey: Self.draftKey)   // 只有真正发送才清掉草稿
     dismissPanel()
   }
 
@@ -2672,6 +2694,7 @@ final class FloatingTextInputPanel: UIView, UITextViewDelegate {
 
   func textViewDidChange(_ tv: UITextView) {
     placeholder.isHidden = !tv.text.isEmpty
+    saveDraft()   // 每次输入即存草稿，重启不丢
     let h = min(max(tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude)).height, 40), 120)
     if textHeightC.constant != h {
       textHeightC.constant = h
