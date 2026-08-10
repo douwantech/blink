@@ -1459,7 +1459,13 @@ extension SpaceController {
       return
     }
     let key = TranscriptStore.key(machineId: machineId, baseName: baseName)
-    let cached = TranscriptStore.load(key: key)
+    // 缓存里连一条真对话都没有（早期 jq 失败只存下 WARN+文件头）→ 当没缓存，
+    // 强制 FULL 整拉一次自愈；不然增量路径永远"没新行"，坏缓存一直霸屏。
+    let cached: TranscriptCache? = {
+      guard let c = TranscriptStore.load(key: key) else { return nil }
+      let hasDialogue = c.body.contains("▶ You") || c.body.contains("◆ Claude")
+      return hasDialogue ? c : nil
+    }()
     let label = _transcriptTabLabel(forCurrentTerm: term)
     // Claude 侧头像/名字和 tab 同一逻辑:workDir 配的头像 + 目录名(没配就用会话名)
     let wd = p.workDirId.flatMap { BlinkWorkDirStore.shared.workDir(forId: $0) }
