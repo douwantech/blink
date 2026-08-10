@@ -21,6 +21,8 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestCloseTab(_ view: VoiceInputView)
   func voiceInputDidRequestReloadTab(_ view: VoiceInputView)
   func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView)
+  func voiceInputDidRequestTeamStatus(_ view: VoiceInputView)
+  func voiceInputDidRequestToggleRest(_ view: VoiceInputView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
@@ -46,6 +48,7 @@ final class VoiceInputView: UIView {
   private let keysRow2Stack = UIStackView()   // 键盘分组第二行：占语音条的槽位
   private let groupSeg = UISegmentedControl(items: ["功能", "键盘"])
   private let modeButton = UIButton(type: .system)   // 切换显示模式:终端 ↔ 对话记录页
+  private let teamButton = UIButton(type: .system)   // 团队状态页入口:钉在语音条最左
   private weak var lastTappedPill: UIButton?
 
   // 输入条
@@ -187,6 +190,17 @@ final class VoiceInputView: UIView {
     modeButton.addTarget(self, action: #selector(transcriptTapped), for: .touchUpInside)
     modeButton.translatesAutoresizingMaskIntoConstraints = false
     addSubview(modeButton)
+    teamButton.backgroundColor = UIColor.white.withAlphaComponent(0.045)
+    teamButton.layer.cornerRadius = 17   // 上排高 34,取半高圆角
+    teamButton.layer.borderWidth = 1
+    teamButton.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+    teamButton.tintColor = UIColor.white.withAlphaComponent(0.92)
+    teamButton.setImage(UIImage(systemName: "person.2",
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)),
+                        for: .normal)
+    teamButton.addTarget(self, action: #selector(teamTapped), for: .touchUpInside)
+    teamButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(teamButton)
     toolsScroll.showsHorizontalScrollIndicator = false
     toolsScroll.showsVerticalScrollIndicator = false
     toolsScroll.isPagingEnabled = true   // 工具行整页翻，不做自由滚
@@ -304,9 +318,15 @@ final class VoiceInputView: UIView {
       toolsScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
       toolsScroll.heightAnchor.constraint(equalToConstant: 42),
 
-      groupSeg.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      groupSeg.leadingAnchor.constraint(equalTo: teamButton.trailingAnchor, constant: 8),
       groupSeg.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
       groupSeg.heightAnchor.constraint(equalToConstant: 34),
+
+      // 👥 团队状态:钉在上排 功能/键盘 分组的左边,跟下排 💬 上下对称
+      teamButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      teamButton.centerYAnchor.constraint(equalTo: toolsScroll.centerYAnchor),
+      teamButton.widthAnchor.constraint(equalToConstant: 46),
+      teamButton.heightAnchor.constraint(equalToConstant: 34),
 
       // 💬 显示模式切换:钉在语音条左边
       modeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
@@ -386,6 +406,7 @@ final class VoiceInputView: UIView {
     Tool(act: "refresh", symbol: "arrow.clockwise", text: nil, warn: false),
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
     nil,
+    Tool(act: "rest", symbol: "moon.zzz", text: nil, warn: false),   // 当前 tab 在岗⇄休息
     Tool(act: "browser", symbol: "globe", text: nil, warn: false),
     Tool(act: "desktop", symbol: "display", text: nil, warn: false),
   ]
@@ -431,7 +452,7 @@ final class VoiceInputView: UIView {
     if kb, isRecording { finishRecording(cancelled: true) }
     fieldContainer.isHidden = kb
     modeButton.isHidden = kb   // 键盘分组第二行占满整行,一起藏
-    keysRow2Stack.isHidden = !kb
+    keysRow2Stack.isHidden = !kb   // 团队按钮在上排,键盘分组下也留着
   }
 
   private func makeSeparator() -> UIView {
@@ -501,6 +522,7 @@ final class VoiceInputView: UIView {
     case "transcript": transcriptTapped()
     case "browser": delegate?.voiceInputDidRequestOpenBrowser(self)
     case "desktop": delegate?.voiceInputDidRequestOpenDesktop(self)
+    case "rest": delegate?.voiceInputDidRequestToggleRest(self)
     case "up": delegate?.voiceInput(self, didRequestSendArrow: .up)
     case "down": delegate?.voiceInput(self, didRequestSendArrow: .down)
     case "left": delegate?.voiceInput(self, didRequestSendArrow: .left)
@@ -690,8 +712,9 @@ final class VoiceInputView: UIView {
       }
     case .ended:
       holdActive = false
-      if !recCancelled, CACurrentMediaTime() - holdStartTime < 0.35 {
-        // 只是点了一下：不当录音，弹手动输入
+      if !recCancelled, CACurrentMediaTime() - holdStartTime < 0.6 {
+        // 只是点了一下：不当录音，弹手动输入。窗口 0.6s——0.35s 太紧,
+        // 手指稍慢就被误判成按住录音,输入框很难点出来;真说话不会短于 0.6s
         finishRecording(cancelled: true, silent: true)
         openManualInput()
       } else {
@@ -1124,6 +1147,11 @@ final class VoiceInputView: UIView {
 
   @objc private func transcriptTapped() {
     delegate?.voiceInputDidRequestDumpTranscript(self)
+  }
+
+  @objc private func teamTapped() {
+    if isRecording { finishRecording(cancelled: true) }
+    delegate?.voiceInputDidRequestTeamStatus(self)
   }
 
   @objc private func favoritesQuickTapped() { presentQuickPicker(mode: .favorites) }

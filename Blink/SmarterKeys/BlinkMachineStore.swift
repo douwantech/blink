@@ -180,21 +180,8 @@ enum HostReachability {
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
 
-    // 算 TITLE = customTitle，跟 transcriptCommand 保持一致：
-    // 默认 <basename(workPath)>-<session>；session 已是 basename 或 basename- 开头则不再 prepend。
-    // workPath 缺省时 basename 退化到 machine.user。
-    let dirBasename: String
-    if let wp = workPath, !wp.isEmpty {
-      dirBasename = (wp as NSString).lastPathComponent.lowercased()
-    } else {
-      dirBasename = m.user.lowercased()
-    }
-    let title: String
-    if session == dirBasename || session.hasPrefix("\(dirBasename)-") {
-      title = session
-    } else {
-      title = "\(dirBasename)-\(session)"
-    }
+    // TITLE = customTitle，算法抽在 ccTitle（团队状态页探测也用它对号）
+    let title = Self.ccTitle(machine: m, workDirId: workDirId, tmuxSession: tmuxSession)
     // 每个 tab 的外层 tmux session 名固定 cc-<TITLE>，跟 jsonl customTitle 一一对应——
     // 助手 cc 可以 `tmux send-keys -t cc-<TITLE>` 直接往任意 tab 注入。
     let outerSession = "cc-\(title)"
@@ -322,11 +309,23 @@ enum HostReachability {
     } else {
       name = "\(dirBasename)-\(session)"
     }
+    // 备选标题：有人手动 /title 时常只给会话短名（不带目录前缀）
+    let altName: String = name == session
+      ? (session.hasPrefix("\(dirBasename)-") ? String(session.dropFirst(dirBasename.count + 1)) : session)
+      : session
 
     let remoteScript = """
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
     PROJ=~/.claude/projects
     DIR=$PROJ/\(cwdEncoded)
+    # 正文全靠 jq 生成；缺 jq 时若不拦，页面只剩 WARN+文件头两行，像"读不到"
+    if ! command -v jq >/dev/null 2>&1; then
+      MSG="⚠️ 这台机器没装 jq，转录没法解析。ssh 上去装一下：brew install jq"
+      B64=$(printf '%s' "$MSG" | base64 | tr -d '\\n')
+      printf '\\033]52;c;%s\\a' "$B64"
+      echo READY
+      exit 1
+    fi
     pick_latest_by_mtime() {
       while read f; do
         [ -z "$f" ] && continue
@@ -337,30 +336,52 @@ enum HostReachability {
     # 所有 cc session 的 jsonl 都堆在同一个项目目录下，单纯 "mtime 最新" 会拉到别 tab 刚活跃过的 session。
     # 所以以 customTitle 精确匹配为主：sshCommand 在新建 cc 时会自动 /rename <TITLE>，cc 把 TITLE 写入 jsonl。
     TITLE='\(name)'
-    # Step 1: 同目录 customTitle 精确匹配（取 mtime 最新，防同 TITLE 多份残留）
-    F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    ALT='\(altName)'
+    # Step 1: 同目录 customTitle 匹配（-i 容忍大小写；取 mtime 最新，防同 TITLE 多份残留）
+    F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    # Step 1.5: 备选短名（手动 /title 时常不带目录前缀）
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
     # Step 2: 同前缀目录（cc 实际 cwd 比配的 workDir 深一层）
     if [ -z "$F" ]; then
-      F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+      F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
     fi
     # Step 3: 全局兜底（cc 启动时 cwd 跟 workDir 不一致）
     if [ -z "$F" ]; then
-      F=$(grep -rlF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+      F=$(grep -rilF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
     fi
-    # Step 4: customTitle 还没写入（cc 刚建、/rename 没生效）才退回同目录 mtime 最新
     WARN=""
+    # Step 4: customTitle 没写入 → 抓这个 tab 的 tmux 屏幕内容反查 jsonl（只读、精确到本 tab）
+    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "cc-$TITLE" 2>/dev/null; then
+      SNIPS=$(tmux capture-pane -p -t "cc-$TITLE" -S -600 2>/dev/null \\
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \\
+        | awk 'length($0)>=28 && $0 ~ /[[:alnum:]]/ && $0 !~ /["\\\\|]/ && $0 !~ /──|▰|▱|⏵|CTX |👾|📋|🌿|blink-boot|已退出|command not found|[Nn]o such file|esc to interrupt|auto mode|shift.tab/' | tail -16 | sed '1!G;h;$!d')
+      while IFS= read -r sn; do
+        [ -z "$sn" ] && continue
+        # 必须唯一命中一份 jsonl 才算（通用文案可能出现在多个会话里，宁可不猜）
+        MS=$(grep -lF -- "$sn" "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | sort -u)
+        MN=$(printf '%s\\n' "$MS" | grep -c .)
+        if [ "$MN" = "1" ]; then
+          F="$MS"
+          WARN="ℹ️ 已按当前屏幕内容定位 session；建议在这个 cc 里跑一次 /title $TITLE 固定住"
+          break
+        fi
+      done < <(printf '%s\\n' "$SNIPS")
+    fi
+    # Step 5: 目录里只有一份 jsonl 才敢当兜底；多份宁可明说，也不乱猜别 tab 的
     if [ -z "$F" ]; then
-      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
-      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同目录 mtime 最新 jsonl（可能是别 tab 的 session）"
+      CANDS=$(ls "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | sort -u)
+      N=$(printf '%s\\n' "$CANDS" | grep -c .)
+      if [ "$N" = "1" ]; then
+        F="$CANDS"
+        WARN="⚠️  customTitle '$TITLE' 未匹配；目录里只有这一份 jsonl，按唯一候选显示"
+      fi
     fi
     if [ -z "$F" ]; then
-      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
-      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同前缀目录 mtime 最新 jsonl"
-    fi
-    if [ -z "$F" ]; then
+      TITLES=$(grep -h -o '"customTitle":"[^"]*"' "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | cut -d'"' -f4 | sort -u | tr '\\n' ' ')
       HINT=$(ls "$PROJ" 2>/dev/null | head -20 | tr '\\n' ' ')
-      MATCHES=$(grep -rlE '"customTitle"' "$PROJ" --include='*.jsonl' 2>/dev/null | head -5 | xargs -I{} sh -c 'jq -r ".customTitle // empty" {} 2>/dev/null | head -1' | sort -u | tr '\\n' ',' )
-      MSG="NOT_FOUND customTitle='\(name)' in $DIR (含全局/前缀/最近 fallback 都没匹配)\\n\\n要让历史能拉到，二选一：\\n  A) cc 里跑一次 \\\"/title \(name)\\\" 给 session 命名（推荐，命过一次就稳）\\n  B) 把 Blink 的 workDir 改成 cc 真实启动目录（cd 完哪里就配哪里）\\n\\n候选项目目录: $HINT\\n附近已有 customTitle: $MATCHES"
+      MSG="没法确定是哪个 session：customTitle '$TITLE' 没匹配上，目录里有多份 jsonl，不乱猜别 tab 的。\\n\\n修复（推荐）：到这个 tab 的 cc 里跑一次 /title $TITLE ，命名后永久生效。\\n\\n目录已有 customTitle: ${TITLES:-（都没命名）}\\n项目目录: $DIR\\n候选项目目录: $HINT"
       B64=$(printf '%s' "$MSG" | base64 | tr -d '\\n')
       printf '\\033]52;c;%s\\a' "$B64"
       echo READY
@@ -399,7 +420,7 @@ enum HostReachability {
       .[-100:] |
       .[] |
       (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
-    ' "$F")
+    ' "$F" 2>&1)
     B64=$(printf '%s' "$BODY" | base64 | tr -d '\\n')
     printf '\\033]52;c;%s\\a' "$B64"
     echo READY
@@ -439,6 +460,9 @@ enum HostReachability {
     } else {
       name = "\(dirBasename)-\(session)"
     }
+    let altName: String = name == session
+      ? (session.hasPrefix("\(dirBasename)-") ? String(session.dropFirst(dirBasename.count + 1)) : session)
+      : session
     let safeFile = (cachedFile ?? "").filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." }
     let cachedN = max(cachedLines, 0)
 
@@ -453,25 +477,53 @@ enum HostReachability {
       done | sort -rn | head -1 | cut -f2-
     }
     TITLE='\(name)'
-    F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
-    if [ -z "$F" ]; then
-      F=$(grep -lF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    ALT='\(altName)'
+    F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
     fi
     if [ -z "$F" ]; then
-      F=$(grep -rlF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+      F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
+    if [ -z "$F" ]; then
+      F=$(grep -rilF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
     fi
     WARN=""
-    if [ -z "$F" ]; then
-      F=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
-      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同目录 mtime 最新 jsonl（可能是别 tab 的 session）"
+    # customTitle 没写入 → 抓这个 tab 的 tmux 屏幕内容反查 jsonl（只读、精确到本 tab）
+    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "cc-$TITLE" 2>/dev/null; then
+      SNIPS=$(tmux capture-pane -p -t "cc-$TITLE" -S -600 2>/dev/null \\
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \\
+        | awk 'length($0)>=28 && $0 ~ /[[:alnum:]]/ && $0 !~ /["\\\\|]/ && $0 !~ /──|▰|▱|⏵|CTX |👾|📋|🌿|blink-boot|已退出|command not found|[Nn]o such file|esc to interrupt|auto mode|shift.tab/' | tail -16 | sed '1!G;h;$!d')
+      while IFS= read -r sn; do
+        [ -z "$sn" ] && continue
+        # 必须唯一命中一份 jsonl 才算（通用文案可能出现在多个会话里，宁可不猜）
+        MS=$(grep -lF -- "$sn" "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | sort -u)
+        MN=$(printf '%s\\n' "$MS" | grep -c .)
+        if [ "$MN" = "1" ]; then
+          F="$MS"
+          WARN="ℹ️ 已按当前屏幕内容定位 session；建议在这个 cc 里跑一次 /title $TITLE 固定住"
+          break
+        fi
+      done < <(printf '%s\\n' "$SNIPS")
     fi
+    # 目录里只有一份 jsonl 才敢当兜底；多份宁可明说，也不乱猜别 tab 的
     if [ -z "$F" ]; then
-      F=$(ls -t "$DIR"*/*.jsonl 2>/dev/null | head -1)
-      [ -n "$F" ] && WARN="⚠️  customTitle '$TITLE' 未匹配，回退到同前缀目录 mtime 最新 jsonl"
+      CANDS=$(ls "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | sort -u)
+      N=$(printf '%s\\n' "$CANDS" | grep -c .)
+      if [ "$N" = "1" ]; then
+        F="$CANDS"
+        WARN="⚠️  customTitle '$TITLE' 未匹配；目录里只有这一份 jsonl，按唯一候选显示"
+      fi
     fi
     emit() { EB64=$(printf '%s' "$1" | base64 | tr -d '\\n'); printf '@TSB64@%s@TSB64E@\\n' "$EB64"; }
+    # 正文全靠 jq；缺 jq 时明说，不然页面只剩 WARN+文件头像"读不到"
+    if ! command -v jq >/dev/null 2>&1; then
+      emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n⚠️ 这台机器没装 jq，转录没法解析。ssh 上去装一下：brew install jq')"
+      exit 0
+    fi
     if [ -z "$F" ]; then
-      emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n没找到 %s 的会话记录（customTitle 未匹配）。在 cc 里跑一次 /title %s 命名后即可拉到。' "$TITLE" "$TITLE")"
+      TITLES=$(grep -h -o '"customTitle":"[^"]*"' "$DIR"/*.jsonl "$DIR"*/*.jsonl 2>/dev/null | cut -d'"' -f4 | sort -u | tr '\\n' ' ')
+      emit "$(printf 'META\\tNOTFOUND\\t0\\t1\\n没法确定是哪个 session：customTitle %s 没匹配上，目录里有多份 jsonl，不乱猜别 tab 的。\\n\\n修复：到这个 tab 的 cc 里跑一次 /title %s ，命名后永久生效。\\n目录已有 customTitle: %s' "$TITLE" "$TITLE" "${TITLES:-（都没命名）}")"
       exit 0
     fi
     BASE=$(basename "$F")
@@ -517,7 +569,10 @@ enum HostReachability {
       (if $full == "1" then .[-100:] else . end) |
       .[] |
       (if .type == "user" then "▶ You" else "◆ Claude" end), .body, ""
-    ')
+    ' 2>&1)
+    fi
+    if [ "$FULL" = "1" ] && [ -z "$BODY" ]; then
+      BODY="（这个 session 里没有可显示的对话内容——可能是全新会话，或内容全是命令输出被过滤了）"
     fi
     HEAD=""
     if [ "$FULL" = "1" ]; then
@@ -603,6 +658,23 @@ enum HostReachability {
     if let s = tmuxSession, !s.isEmpty { return s }
     if let wid = workDirId, !wid.isEmpty { return "blink-\(wid.prefix(8))" }
     return "blink"
+  }
+
+  /// TITLE = customTitle（外层 tmux session 名为 cc-<TITLE>）。
+  /// 规则跟 sshCommand / transcriptCommand 一致：默认 <basename(workPath)>-<session>；
+  /// session 已是 basename 或 basename- 开头则不再 prepend；workPath 缺省退化到 machine.user。
+  static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
+    var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
+    session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
+    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+    let dirBasename: String
+    if let wp = workPath, !wp.isEmpty {
+      dirBasename = (wp as NSString).lastPathComponent.lowercased()
+    } else {
+      dirBasename = m.user.lowercased()
+    }
+    if session == dirBasename || session.hasPrefix("\(dirBasename)-") { return session }
+    return "\(dirBasename)-\(session)"
   }
 
   @objc func machineExists(forId machineId: String?) -> Bool {
@@ -1039,6 +1111,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestAssistantChat()
   /// 顶栏 🌙 按钮 → 弹出「员工在岗/休息」管理列表
   func tabBarDidRequestRestPanel()
+  /// ⋯ 菜单「团队状态」→ 打开团队状态页（谁在忙哪个项目/等拍板/休息）
+  func tabBarDidRequestTeamStatus()
 }
 
 // MARK: - 手动「休息」标记（「只显示工作中」过滤用）
@@ -1083,10 +1157,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   }
 }
 
-// MARK: - 员工在岗/休息管理面板
+// MARK: - 员工在岗/休息管理面板（已退役）
 
-/// 顶栏 🌙 按钮弹出的列表：每行一个员工(tab)，开关切换在岗/休息。
-/// 开＝在岗（标签栏显示），关＝休息（标签栏隐藏）。休息中的员工也能在这里随时改回在岗。
+/// 已退役：所有入口（⋯ 菜单、Mac 侧栏 🌙）改开团队状态页 TeamStatusViewController，
+/// 那里每个项目行行尾就是休息开关。类保留以便需要轻量 sheet 时恢复。
 final class RestPanelViewController: UITableViewController {
   struct Item {
     let key: UUID
@@ -1260,8 +1334,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
                           image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestMachineFilter()
     }
-    let rest = UIAction(title: restingCount > 0 ? "在岗 / 休息 · \(restingCount) 人休息中" : "在岗 / 休息",
-                        image: UIImage(systemName: "moon.zzz.fill")) { [weak self] _ in
+    // 旧「在岗/休息」列表已并入团队状态页；这条入口现在直接开员工状态页（行尾月亮即开关）
+    let rest = UIAction(title: restingCount > 0 ? "员工状态 · \(restingCount) 人休息中" : "员工状态",
+                        image: UIImage(systemName: "person.2")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestRestPanel()
     }
     // 「助手对话」入口暂时下线（要恢复：加回 sparkles UIAction → tabBarDidRequestAssistantChat）

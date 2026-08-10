@@ -43,3 +43,15 @@ BLINK_APP_FONT = JetBrains Mono
 // ssh/ios_system 靠 dlsym(RTLD_MAIN_ONLY) 找 blink_ssh_main 等符号,
 // Debug Dylib 开启时符号搬进 Blink.debug.dylib → ssh: command not found。全局关掉。
 ENABLE_DEBUG_DYLIB = NO
+
+// ===== RustDesk 远程桌面（可选依赖）=====
+// 没有 liblibrustdesk.a 的机器保持四项留空即可正常编译运行（远程桌面功能禁用）。
+// 有库的机器照下面格式填（参考 rustdesk-src iOS 交叉编译产物 + vcpkg arm64-ios 的 aom/vpx/yuv/opus）：
+// BLINK_RUSTDESK_LDFLAGS = /path/to/liblibrustdesk.a -laom -lvpx -lyuv -lopus
+// BLINK_RUSTDESK_LIB_SEARCH = /path/to/vcpkg/installed/arm64-ios/lib
+// BLINK_RUSTDESK_SWIFT_FLAG = BLINK_HAS_RUSTDESK
+// BLINK_RUSTDESK_C_FLAG = BLINK_HAS_RUSTDESK=1
+BLINK_RUSTDESK_LDFLAGS =
+BLINK_RUSTDESK_LIB_SEARCH =
+BLINK_RUSTDESK_SWIFT_FLAG =
+BLINK_RUSTDESK_C_FLAG =

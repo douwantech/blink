@@ -428,6 +428,15 @@ class SpaceController: UIViewController {
 
   // dock 🖥️ 钮：打开内嵌 RustDesk 远程桌面页（核心库直连，不切 App）
   @objc func _openRemoteDesktop() {
+    guard RustDeskCore.isAvailable else {
+      let alert = UIAlertController(
+        title: "远程桌面不可用",
+        message: "本次构建没有链接 RustDesk 核心库（liblibrustdesk.a）。长按此按钮可改走独立 RustDesk App。",
+        preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "确定", style: .default))
+      present(alert, animated: true)
+      return
+    }
     guard let m = _rustdeskMachine(), let rid = m.rustdeskId else { return }
     // 传 SSH 通道(同一台机器的 host/user),供"双击识别窗口并缩放"用
     let host = BlinkMachineStore.bestHost(for: m)
@@ -1450,7 +1459,13 @@ extension SpaceController {
       return
     }
     let key = TranscriptStore.key(machineId: machineId, baseName: baseName)
-    let cached = TranscriptStore.load(key: key)
+    // 缓存里连一条真对话都没有（早期 jq 失败只存下 WARN+文件头）→ 当没缓存，
+    // 强制 FULL 整拉一次自愈；不然增量路径永远"没新行"，坏缓存一直霸屏。
+    let cached: TranscriptCache? = {
+      guard let c = TranscriptStore.load(key: key) else { return nil }
+      let hasDialogue = c.body.contains("▶ You") || c.body.contains("◆ Claude")
+      return hasDialogue ? c : nil
+    }()
     let label = _transcriptTabLabel(forCurrentTerm: term)
     // Claude 侧头像/名字和 tab 同一逻辑:workDir 配的头像 + 目录名(没配就用会话名)
     let wd = p.workDirId.flatMap { BlinkWorkDirStore.shared.workDir(forId: $0) }
@@ -1738,6 +1753,9 @@ extension SpaceController {
     if key == _currentKey { return false }          // 当前 tab 永不隐藏
     return TabRestStore.shared.isResting(key.uuidString)
   }
+
+  /// 语音条「功能」组的 🌙 pill：切当前 tab 在岗⇄休息（复用 dock 😴 逻辑）
+  public func toggleRestCurrentTab() { _toggleRestForCurrentTab() }
 
   /// dock 😴 钮：把当前 tab 标记 / 取消标记「休息」。
   /// 若「只显示工作中」开着且刚标为休息，立刻跳到下一个「工作中」tab，让这个 tab 被过滤隐藏。
@@ -2522,6 +2540,43 @@ extension SpaceController: BlinkTabBarDelegate {
     present(nav, animated: true)
   }
 
+  public func tabBarDidRequestTeamStatus() {
+    // 员工=tab 标题冒号前那截（workDir 名），项目=冒号后（session 后缀），跟 tab 栏同一套规则
+    var items: [TeamStatusTab] = []
+    for key in _viewportsKeys {
+      let term: TermController = SessionRegistry.shared[key]
+      guard let p = term.mcpParams, let mid = p.machineId,
+            let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) else { continue }
+      if p.workDirId == BlinkWorkDirStore.assistantWorkDirId { continue }
+      let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
+      let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name
+        : ((p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : "tab")
+      var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
+      if let lastDash = sessionPart.lastIndex(of: "-") {
+        sessionPart = String(sessionPart[sessionPart.index(after: lastDash)...])
+      }
+      if sessionPart == dirPart { sessionPart = "" }
+      let title = BlinkMachineStore.ccTitle(machine: m, workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+      items.append(TeamStatusTab(
+        tabKey: key, machineId: mid, machineName: m.displayName,
+        employee: dirPart, project: sessionPart.isEmpty ? dirPart : sessionPart,
+        outerSession: "cc-\(title)", avatar: workDir?.iconImage,
+        resting: TabRestStore.shared.isResting(key.uuidString)))
+    }
+    let vc = TeamStatusViewController(tabs: items)
+    vc.onOpenTab = { [weak self] key in
+      guard let self, let idx = self._viewportsKeys.firstIndex(of: key) else { return }
+      self._moveToShell(idx: idx, animated: false)
+    }
+    vc.onToggleRest = { [weak self] key, resting in
+      TabRestStore.shared.setResting(resting, key: key.uuidString)
+      self?._reloadTabBar()
+    }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .fullScreen
+    present(nav, animated: true)
+  }
+
   public func tabBarDidRequestAssistantChat() {
     // 顶栏 sparkles 入口：打开气泡 chat UI（独立 modal，不是终端 tab）
     let chat = BlinkAssistantChatViewController()
@@ -2607,30 +2662,8 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 
   public func tabBarDidRequestRestPanel() {
-    var items: [RestPanelViewController.Item] = []
-    for key in _viewportsKeys {
-      let term: TermController = SessionRegistry.shared[key]
-      let title = term.meta.tabTitle ?? "标签"
-      let mid = term.mcpParams?.machineId
-      let machine = mid.flatMap { id in
-        BlinkMachineStore.shared.machines.first { $0.id == id }?.displayName
-      } ?? ""
-      let resting = TabRestStore.shared.isResting(key.uuidString)
-      items.append(.init(key: key, title: title, machine: machine, resting: resting))
-    }
-
-    let panel = RestPanelViewController(items: items) { [weak self] key, nowResting in
-      guard let self = self else { return }
-      TabRestStore.shared.setResting(nowResting, key: key.uuidString)
-      self._reloadTabBar()
-    }
-    let nav = UINavigationController(rootViewController: panel)
-    nav.modalPresentationStyle = .pageSheet
-    if let sheet = nav.sheetPresentationController {
-      sheet.detents = [.medium(), .large()]
-      sheet.prefersGrabberVisible = true
-    }
-    present(nav, animated: true)
+    // 旧的「员工在岗/休息」列表已并入团队状态页（每行行尾就是月亮开关），入口统一开新页。
+    tabBarDidRequestTeamStatus()
   }
 
   public func tabBarDidRequestMachineFilter() {

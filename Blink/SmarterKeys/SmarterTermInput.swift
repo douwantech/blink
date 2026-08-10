@@ -757,6 +757,14 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.dumpTranscriptForCurrentShell()
   }
 
+  func voiceInputDidRequestTeamStatus(_ view: VoiceInputView) {
+    spaceController?.tabBarDidRequestTeamStatus()
+  }
+
+  func voiceInputDidRequestToggleRest(_ view: VoiceInputView) {
+    spaceController?.toggleRestCurrentTab()
+  }
+
   func voiceInputDidRequestOpenBrowser(_ view: VoiceInputView) {
     spaceController?._openPinnedBrowser()
   }

@@ -6,6 +6,15 @@ import UIKit
 final class RustDeskCore {
   static let shared = RustDeskCore()
 
+  /// 本次构建是否链接了真的 RustDesk 核心库（见 RustDeskStub.swift 顶部说明）
+  static var isAvailable: Bool {
+    #if BLINK_HAS_RUSTDESK
+    return true
+    #else
+    return false
+    #endif
+  }
+
   /// kind: 0=JSON 事件 1=RGBA 帧(n1=display) 2=Texture 3=流关闭 4=错误
   typealias EventHandler = (_ kind: Int32, _ s: String?, _ n1: Int64, _ n2: Int64) -> Void
 
