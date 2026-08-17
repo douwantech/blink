@@ -192,7 +192,12 @@ enum HostReachability {
     // 用 find 替代 glob 避开 zsh nomatch；不用 exec 以兼容 cc 是 alias 的情形。
     let resumeOrNew: (String) -> String = { cdTarget in
       // inner 被外层 `$SHELL -ic '...'` 单引号包裹，里面只能用双引号；TITLE 由 Swift 端预先算好。
-      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+      // rename 注入不再盲等固定秒数：新建 tab 进新目录时 claude 会先弹「信任此文件夹」，
+      // 加上 MCP 加载慢，盲发的 /rename 会被弹窗/加载屏吃掉。改成轮询 capture-pane：
+      // 见到 trust 弹窗先回车放行，见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，
+      // 20s 兜底。_snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
+      // （claude 都带 --dangerously-skip-permissions：多数情况下 trust 弹窗被自动跳过，轮询是双保险。）
+      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -666,10 +671,20 @@ enum HostReachability {
   static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
     var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
-    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+    let wd = BlinkWorkDirStore.shared.workDir(forId: workDirId)
+    let workPath = wd?.path
     let dirBasename: String
-    if let wp = workPath, !wp.isEmpty {
-      dirBasename = (wp as NSString).lastPathComponent.lowercased()
+    // 优先用工作目录的「显示名」（跟 tab 标签一致，比如 juncandy），显示名缺省再退回路径 basename。
+    // tmux/session 名不能带空格/引号，统一小写并把空白→连字符、去掉引号。
+    let sanitize: (String) -> String = {
+      $0.lowercased()
+        .replacingOccurrences(of: "\"", with: "")
+        .replacingOccurrences(of: " ", with: "-")
+    }
+    if let nm = wd?.name, !nm.isEmpty {
+      dirBasename = sanitize(nm)
+    } else if let wp = workPath, !wp.isEmpty {
+      dirBasename = sanitize((wp as NSString).lastPathComponent)
     } else {
       dirBasename = m.user.lowercased()
     }
