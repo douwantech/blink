@@ -6,6 +6,24 @@ struct TabEntry: Codable, Equatable {
   var workDirId: String?
   var tmuxSession: String?
   var useTmux: Bool?
+  /// 工作目录的名字/路径快照。跨设备只传 workDirId，对端 workDirs 里没有这条（各设备
+  /// 整份数组互相覆盖时很容易丢）就反查不到名字，tab 标题会退化成只剩会话名 ——
+  /// 冗余这两个字段做兜底。老数据没有这俩字段 → decode 成 nil。
+  var workDirName: String?
+  var workDirPath: String?
+  /// 用户手动改的标题。非空就直接用它当 tab 名，压过一切自动推导 ——
+  /// 自动推导依赖本机能不能反查到 workDirId，改名不该受这个牵连。跟着 tab 一起同步到别的设备。
+  var customTitle: String?
+}
+
+/// 一个 tab 的显示信息快照（本机 state 优先，缺的用 iCloud 同步值补）。
+/// 空串表示没有，调用方 `?? ""` 链起来即可。
+struct TabDisplaySnapshot {
+  var workDirName = ""
+  var workDirPath = ""
+  var customTitle = ""
+
+  var isEmpty: Bool { workDirName.isEmpty && workDirPath.isEmpty && customTitle.isEmpty }
 }
 
 struct TabState: Codable {
@@ -181,6 +199,33 @@ final class TabStateStore {
     guard let data = UserDefaults.standard.data(forKey: Self.kSyncKey),
           let synced = try? JSONDecoder().decode(TabState.self, from: data) else { return [] }
     return synced.tabs
+  }
+
+  /// tab id → 显示信息快照：本机 state 优先，缺的字段用 iCloud 同步值补。
+  /// 云端刚追加、还没回写本机 state 的 tab 也能拿到名字，标题不会先闪一下只剩会话名。
+  func displaySnapshots() -> [UUID: TabDisplaySnapshot] {
+    var out: [UUID: TabDisplaySnapshot] = [:]
+    func put(_ t: TabEntry) {
+      var s = out[t.id] ?? TabDisplaySnapshot()
+      // 非空字段覆盖，空的保留已有值（本机 state 后放，所以本机赢）
+      if let v = t.workDirName, !v.isEmpty { s.workDirName = v }
+      if let v = t.workDirPath, !v.isEmpty { s.workDirPath = v }
+      if let v = t.customTitle, !v.isEmpty { s.customTitle = v }
+      guard !s.isEmpty else { return }
+      out[t.id] = s
+    }
+    syncedTabs().forEach(put)
+    state.tabs.forEach(put)
+    return out
+  }
+
+  /// 改某个 tab 的手动标题（传 nil / 空串清掉，恢复自动推导）。
+  func setCustomTitle(_ title: String?, for id: UUID) {
+    let t = (title?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 }
+    update { st in
+      guard let i = st.tabs.firstIndex(where: { $0.id == id }) else { return }
+      st.tabs[i].customTitle = t
+    }
   }
 
   /// 只读 iCloud 同步来的完整状态（含墓碑 closedIds），不改本地 state。

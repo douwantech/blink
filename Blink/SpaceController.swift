@@ -68,6 +68,9 @@ class SpaceController: UIViewController {
     }
   }
 
+  /// 已经异步拉过员工头像的名字，避免每次刷新 tab 栏都重发一遍请求（离线时尤其）。
+  fileprivate var _avatarFetchAsked = Set<String>()
+
   private var _currentKey: UUID? = nil {
     didSet {
       guard oldValue != _currentKey else { return }
@@ -82,14 +85,24 @@ class SpaceController: UIViewController {
   }
 
   private func _persistTabsToStore() {
+    // 本机 workDirs 里查不到 workDirId 时（多半是别的设备同步来的 tab），沿用 store 里
+    // 已有的名字/路径快照 —— 否则这台一回写就把对端填好的名字抹成 nil 再推上云。
+    let prior = TabStateStore.shared.displaySnapshots()
     let entries: [TabEntry] = _viewportsKeys.map { key in
       let term: TermController = SessionRegistry.shared[key]
       let p = term.mcpParams
+      let wd = BlinkWorkDirStore.shared.workDir(forId: p?.workDirId)
+      let wdName = wd?.name ?? "", wdPath = wd?.path ?? ""
+      let snap = prior[key]
       return TabEntry(id: key,
                       machineId: p?.machineId,
                       workDirId: p?.workDirId,
                       tmuxSession: p?.tmuxSession,
-                      useTmux: p?.useTmux)
+                      useTmux: p?.useTmux,
+                      workDirName: wdName.isEmpty ? snap?.workDirName : wdName,
+                      workDirPath: wdPath.isEmpty ? snap?.workDirPath : wdPath,
+                      // 手动标题只由改名入口写，这里一律沿用，别被重建 entry 抹掉
+                      customTitle: snap?.customTitle)
     }
     TabStateStore.shared.update { state in
       state.tabs = entries
@@ -1830,6 +1843,8 @@ extension SpaceController {
       }
     }
     let curIndex = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? -1
+    // 手动改的标题优先；没有才自动推导，本机 workDirs 反查不到时用 tab 自带快照兜底（见 TabEntry）
+    let tabSnapshots = TabStateStore.shared.displaySnapshots()
     for (idx, key) in _viewportsKeys.enumerated() {
       let term: TermController = SessionRegistry.shared[key]
       let title: String
@@ -1857,8 +1872,36 @@ extension SpaceController {
           }
           continue
         }
+        let snap = tabSnapshots[key]
+        // 手动改过名字的就用它，不再自动推导 —— 推导依赖本机能不能反查到 workDirId，
+        // 用户手改的标题不该被这个牵连。
+        if let custom = snap?.customTitle, !custom.isEmpty {
+          term.meta.tabTitle = custom
+          title = custom
+          let mid = term.mcpParams?.machineId
+          if let f = filterId, mid != f { continue }
+          if _hiddenByWorkMode(key) { continue }
+          // 查员工头像的名字优先用目录名快照；用户自己起的标题就取冒号前那段
+          let person = snap?.workDirName.isEmpty == false
+            ? snap!.workDirName : String(custom.split(separator: ":").first ?? "")
+          titles.append(title)
+          icons.append(_tabIcon(forWorkDirId: p.workDirId, personName: person, size: 26))
+          unread.append(term.meta.hasUnread)
+          tags.append(idx)
+          if _macLayoutEnabled {
+            _appendSidebarRow(key: key, workDirId: p.workDirId, tmuxSession: p.tmuxSession,
+                              snapshot: snap, personName: person,
+                              subs: &sidebarSubs, icons: &sidebarIcons)
+          }
+          continue
+        }
         let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
-        let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name : ""
+        // 名字优先本机 workDir，其次 tab 自带快照；都没名字就退到路径末段，
+        // 实在没有才留空（标题退化成只剩会话名）。
+        let dirName = workDir?.name ?? snap?.workDirName ?? ""
+        let dirPath = workDir?.path ?? snap?.workDirPath ?? ""
+        let dirPart = !dirName.isEmpty ? dirName
+          : (dirPath.isEmpty ? "" : (dirPath as NSString).lastPathComponent)
         var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
         if !dirPart.isEmpty && !sessionPart.isEmpty {
           if let lastDash = sessionPart.lastIndex(of: "-") {
@@ -1886,22 +1929,16 @@ extension SpaceController {
       if let f = filterId, mid != f { continue }
       if _hiddenByWorkMode(key) { continue }   // 「只显示工作中」：藏掉标了休息(😴)的 tab
       titles.append(title)
-      // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
-      var icon: UIImage? = nil
-      if let wid = term.mcpParams?.workDirId,
-         let img = BlinkWorkDirStore.shared.workDir(forId: wid)?.iconImage {
-        icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
-      }
-      icons.append(icon)
+      // 目录名（含快照兜底）就是员工名；退化到只剩会话名时取标题冒号前那段
+      let person = tabSnapshots[key]?.workDirName.isEmpty == false
+        ? tabSnapshots[key]!.workDirName : String(title.split(separator: ":").first ?? "")
+      icons.append(_tabIcon(forWorkDirId: term.mcpParams?.workDirId, personName: person, size: 26))
       unread.append(term.meta.hasUnread)
       tags.append(idx)
       if _macLayoutEnabled {
-        let wd = BlinkWorkDirStore.shared.workDir(forId: term.mcpParams?.workDirId)
-        sidebarSubs.append(wd?.path ?? BlinkMachineStore.effectiveTmuxSessionName(
-          workDirId: term.mcpParams?.workDirId, tmuxSession: term.mcpParams?.tmuxSession))
-        sidebarIcons.append(wd?.iconImage.map {
-          AvatarRenderer.roundedThumbnail(from: $0, size: CGSize(width: 32, height: 32))
-        } ?? nil)
+        _appendSidebarRow(key: key, workDirId: term.mcpParams?.workDirId,
+                          tmuxSession: term.mcpParams?.tmuxSession, snapshot: tabSnapshots[key],
+                          personName: person, subs: &sidebarSubs, icons: &sidebarIcons)
       }
     }
     let chipTitle: String
@@ -2648,6 +2685,66 @@ extension SpaceController: BlinkTabBarDelegate {
     }
   }
 
+  /// tab / 侧栏行的头像。
+  /// 本机有这条 workDir 就用它配的图；查不到（别的设备建的目录）就按名字回退到员工头像 ——
+  /// 目录名就是员工名，员工头像是单独一份按名字索引的数据，跨设备同步，所以两台看到的是同一张。
+  /// 员工头像没缓存时异步拉一次再刷新，同一个名字只发一次请求。
+  fileprivate func _tabIcon(forWorkDirId wid: String?, personName: String, size: CGFloat) -> UIImage? {
+    let box = CGSize(width: size, height: size)
+    if let img = BlinkWorkDirStore.shared.workDir(forId: wid)?.iconImage {
+      return AvatarRenderer.roundedThumbnail(from: img, size: box)
+    }
+    let person = personName.trimmingCharacters(in: .whitespaces).lowercased()
+    guard !person.isEmpty else { return nil }
+    if let img = BlinkPeopleStore.shared.iconSync(for: person) {
+      return AvatarRenderer.roundedThumbnail(from: img, size: box)
+    }
+    if !_avatarFetchAsked.contains(person) {
+      _avatarFetchAsked.insert(person)
+      BlinkPeopleStore.shared.iconAsync(for: person) { [weak self] img in
+        guard img != nil else { return }
+        self?._reloadTabBar()
+      }
+    }
+    return nil
+  }
+
+  /// Mac 三栏侧栏的一行：副标题优先工作目录路径，本机查不到就用 tab 自带的路径快照，
+  /// 再没有才退回会话名。
+  fileprivate func _appendSidebarRow(key: UUID, workDirId: String?, tmuxSession: String?,
+                                     snapshot: TabDisplaySnapshot?, personName: String,
+                                     subs: inout [String], icons: inout [UIImage?]) {
+    let wd = BlinkWorkDirStore.shared.workDir(forId: workDirId)
+    let subPath = wd?.path ?? snapshot?.workDirPath ?? ""
+    subs.append(subPath.isEmpty
+      ? BlinkMachineStore.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
+      : subPath)
+    icons.append(_tabIcon(forWorkDirId: workDirId, personName: personName, size: 32))
+  }
+
+  /// 给 tab 改名。留空即清掉手动标题，回到自动推导。改完跟着 tab 一起同步到别的设备。
+  public func tabBarDidRequestRename(index: Int) {
+    guard _viewportsKeys.indices.contains(index) else { return }
+    let key = _viewportsKeys[index]
+    let current = TabStateStore.shared.displaySnapshots()[key]?.customTitle ?? ""
+    let term: TermController = SessionRegistry.shared[key]
+    let alert = UIAlertController(title: "标签名",
+                                  message: "留空恢复自动命名", preferredStyle: .alert)
+    alert.addTextField { tf in
+      tf.text = current
+      tf.placeholder = term.meta.tabTitle ?? ""
+      tf.clearButtonMode = .whileEditing
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self, weak alert] _ in
+      // 先落一次 tab 列表：store 里没有这条 entry 的话标题写不进去
+      self?._persistTabsToStore()
+      TabStateStore.shared.setCustomTitle(alert?.textFields?.first?.text, for: key)
+      self?._reloadTabBar()
+    })
+    present(alert, animated: true)
+  }
+
   public func tabBarDidRequestClose(index: Int) {
     guard _viewportsKeys.indices.contains(index) else { return }
     let key = _viewportsKeys[index]
@@ -2798,6 +2895,7 @@ extension SpaceController {
     // 键盘会直接失灵）。_moveToShell 完成后自带 _attachInputToCurrentTerm。
     sidebar.onSelect = { [weak self] tag in self?._moveToShell(idx: tag) }
     sidebar.onClose = { [weak self] tag in self?.tabBarDidRequestClose(index: tag) }
+    sidebar.onRename = { [weak self] tag in self?.tabBarDidRequestRename(index: tag) }
     sidebar.onNewSession = { [weak self] in self?.tabBarDidRequestNew() }
     // Mac 顶栏是隐藏的，🌙 面板只能从侧栏进；没它的话 dock 😴 标的休息 tab 改不回在岗。
     sidebar.onRestPanel = { [weak self] in self?.tabBarDidRequestRestPanel() }

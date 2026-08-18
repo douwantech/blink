@@ -39,7 +39,8 @@ final class CloudConfigSync: NSObject {
     // 人员
     "BlinkPeopleStore.avatars",
     "BlinkPeopleStore.styles",
-    "BlinkPeopleStore.names",
+    "BlinkPeopleStore.names",    // 老格式名单：老版本设备 / 鸿蒙端还认它，继续同步
+    "BlinkPeopleStore.people",   // 新格式名单（带墓碑），删除靠它传播
     // 语音 AI
     "VoiceInputView.localeIdentifier",
     "VoiceInputView.aiAPIKey",
@@ -64,6 +65,31 @@ final class CloudConfigSync: NSObject {
 
   /// 单值体积上限：iCloud KV 总配额 1MB，给单值留余量。
   private let perValueLimit = 900_000
+
+  /// 需要按 id 逐条合并、不能整份覆盖的 key。
+  /// 整份覆盖的毛病：A 加了一条推上云，B 也加了一条推上云，就把 A 那条整块盖没了。
+  static let machinesKey = "BlinkMachineStore.machines"
+  static let workDirsKey = "BlinkWorkDirStore.workDirs"
+  static let presetsKey = "BlinkSessionPresetStore.presets"
+  static let peopleKey = "BlinkPeopleStore.people"        // 新格式，带墓碑
+  static let peopleNamesKey = "BlinkPeopleStore.names"    // 老格式 [String]，只能取并集
+  private let mergeKeys: Set<String> = [machinesKey, workDirsKey, presetsKey, peopleKey, peopleNamesKey]
+
+  /// 把 remote 合并进本地当前值，返回合并结果。
+  /// 返回 nil 表示「无需变更」（结果和本地一样、或 remote 解析不出来）—— 调用方据此跳过写入，
+  /// 免得每次都写一遍 UserDefaults 触发 didChange → 又排一次 push 的死循环。
+  private func mergedValue(forKey key: String, remote: Any?) -> Data? {
+    let local = defaults.data(forKey: key)
+    let rd = remote as? Data
+    switch key {
+    case Self.machinesKey:    return SyncMerge.mergedData(BlinkMachine.self, local: local, remote: rd)
+    case Self.workDirsKey:    return SyncMerge.mergedData(BlinkWorkDir.self, local: local, remote: rd)
+    case Self.presetsKey:     return SyncMerge.mergedData(BlinkSessionPreset.self, local: local, remote: rd)
+    case Self.peopleKey:      return SyncMerge.mergedData(BlinkPerson.self, local: local, remote: rd)
+    case Self.peopleNamesKey: return SyncMerge.mergedStringList(local: local, remote: rd)
+    default: return nil
+    }
+  }
 
   private let kv = NSUbiquitousKeyValueStore.default
   private let defaults = UserDefaults.standard
@@ -134,6 +160,13 @@ final class CloudConfigSync: NSObject {
     var dirty = false
     for key in keys {
       guard persisted.contains(key) else { continue }
+      // 可合并的 key：推之前先把云端已有的条目并进本地，推合并结果 ——
+      // 否则这次推送会把别的设备新增的条目整块盖掉。
+      if mergeKeys.contains(key), let m = mergedValue(forKey: key, remote: kv.object(forKey: key)) {
+        applyingRemote = true
+        defaults.set(m, forKey: key)
+        applyingRemote = false
+      }
       guard let value = defaults.object(forKey: key) else { continue }
       if let size = plistSize(value), size > perValueLimit {
         NSLog("[CloudConfigSync] 跳过过大 key=%@ (%d bytes)，超 iCloud KV 单值上限", key, size)
@@ -167,6 +200,14 @@ final class CloudConfigSync: NSObject {
     var changed = false
     for key in keysToApply {
       if let value = kv.object(forKey: key) {
+        // 可合并的 key 走按 id 合并，别拿云端整份盖掉本地新增的条目
+        if mergeKeys.contains(key) {
+          if let m = mergedValue(forKey: key, remote: value) {
+            defaults.set(m, forKey: key)
+            changed = true
+          }
+          continue
+        }
         defaults.set(value, forKey: key)
         changed = true
       }
@@ -288,6 +329,7 @@ final class ConfigSyncPush: NSObject {
     guard let mdata = UserDefaults.standard.data(forKey: "BlinkMachineStore.machines"),
           let machines = (try? JSONSerialization.jsonObject(with: mdata)) as? [[String: Any]] else { return }
     for m in machines {
+      guard m["deletedAt"] == nil else { continue }   // 已删机器（墓碑）别再往上推配置
       guard let host = m["blinkdHost"] as? String, !host.isEmpty,
             let token = m["blinkdToken"] as? String, !token.isEmpty else { continue }
       Self.send(host: host, port: UInt16(m["blinkdPort"] as? Int ?? 7777), token: token, script: script)
@@ -302,8 +344,13 @@ final class ConfigSyncPush: NSObject {
             let obj = try? JSONSerialization.jsonObject(with: data) else { return [] }
       return (obj as? [Any]) ?? []
     }
+    /// 墓碑不推给鸿蒙：那端不认识 deletedAt，会把已删条目当成正常的显示出来。
+    /// 它整份接收，收到不含该条的列表就等于删除已经传过去了。
+    func decodedAlive(_ key: String) -> [Any] {
+      decoded(key).filter { ($0 as? [String: Any])?["deletedAt"] == nil }
+    }
     var workDirs: [[String: Any]] = []
-    for case var w as [String: Any] in decoded("BlinkWorkDirStore.workDirs") {
+    for case var w as [String: Any] in decodedAlive(CloudConfigSync.workDirsKey) {
       w["hasIcon"] = w["iconImageData"] != nil
       w.removeValue(forKey: "iconImageData")   // 头像不走这条通道（几十 KB 一张）
       workDirs.append(w)
@@ -324,15 +371,19 @@ final class ConfigSyncPush: NSObject {
           "workDirId": (t["workDirId"] as? String) ?? "",
           "tmuxSession": (t["tmuxSession"] as? String) ?? "new",
           "useTmux": (t["useTmux"] as? Bool) ?? true,
+          // 工作目录名字/路径快照：对端 workDirs 里没这条时靠它显示标题
+          "workDirName": (t["workDirName"] as? String) ?? "",
+          "workDirPath": (t["workDirPath"] as? String) ?? "",
         ])
       }
       currentId = (st["currentId"] as? String) ?? ""
     }
     let root: [String: Any] = [
-      "machines": decoded("BlinkMachineStore.machines"),
+      "machines": decodedAlive(CloudConfigSync.machinesKey),
       "workDirs": workDirs,
-      "people": decoded("BlinkPeopleStore.names"),
-      "presets": decoded("BlinkSessionPresetStore.presets"),
+      // 老 key 存的就是可见名单（墓碑只在新 key 里），直接推给鸿蒙即可
+      "people": decoded(CloudConfigSync.peopleNamesKey),
+      "presets": decodedAlive(CloudConfigSync.presetsKey),
       "tabs": tabs,
       "currentId": currentId,
       "closedIds": closedIds,
@@ -443,6 +494,7 @@ final class ConfigSyncPull: NSObject {
     guard let mdata = UserDefaults.standard.data(forKey: "BlinkMachineStore.machines"),
           let machines = (try? JSONSerialization.jsonObject(with: mdata)) as? [[String: Any]] else { return nil }
     for m in machines {
+      guard m["deletedAt"] == nil else { continue }   // 已删机器（墓碑）不算数
       if let host = m["blinkdHost"] as? String, !host.isEmpty,
          let token = m["blinkdToken"] as? String, !token.isEmpty {
         return (host, (m["blinkdPort"] as? Int) ?? 7777, token)
@@ -491,28 +543,41 @@ final class ConfigSyncPull: NSObject {
       if let data = try? JSONSerialization.data(withJSONObject: obj) { d.set(data, forKey: key) }
     }
 
-    setJSON(machines, forKey: "BlinkMachineStore.machines")
-
-    // workDirs：同步文件不带头像（体积），按 id 把本地 iconImageData 保回去，别把头像冲掉
-    if let dirs = cfg["workDirs"] as? [[String: Any]] {
-      var localIcons: [String: Any] = [:]
-      if let ld = d.data(forKey: "BlinkWorkDirStore.workDirs"),
-         let locals = (try? JSONSerialization.jsonObject(with: ld)) as? [[String: Any]] {
-        for l in locals {
-          if let id = l["id"] as? String, let icon = l["iconImageData"] { localIcons[id] = icon }
-        }
+    // machines / workDirs / presets：按 id 合并，不整份覆盖 —— 鸿蒙那端不带时间戳/墓碑，
+    // 整份写回会把本机新增的条目和删除墓碑一起冲掉。合并里同 id 取 updatedAt 更晚的一份
+    // （鸿蒙来的没有时间戳 → 视作 0，动过的本地那份赢），两边独有的条目都保住；
+    // 头像不走这条通道（体积），merge 里远端没带就沿用本地那张。
+    // 代价：鸿蒙那端的「删除」传不过来了（它不发墓碑，合并是并集）。反方向没问题。
+    func mergeIn<T: SyncMergeable>(_ type: T.Type, _ raw: [[String: Any]], key: String) {
+      guard let rd = try? JSONSerialization.data(withJSONObject: raw),
+            let remote = try? JSONDecoder().decode([T].self, from: rd) else { return }
+      let local = d.data(forKey: key).flatMap { try? JSONDecoder().decode([T].self, from: $0) } ?? []
+      if let out = try? JSONEncoder().encode(SyncMerge.merge(local: local, remote: remote)) {
+        d.set(out, forKey: key)
       }
-      var merged: [[String: Any]] = []
-      for var w in dirs {
-        w.removeValue(forKey: "hasIcon")
-        if let id = w["id"] as? String, let icon = localIcons[id] { w["iconImageData"] = icon }
-        merged.append(w)
-      }
-      setJSON(merged, forKey: "BlinkWorkDirStore.workDirs")
     }
 
-    if let people = cfg["people"] as? [String] { setJSON(people, forKey: "BlinkPeopleStore.names") }
-    if let presets = cfg["presets"] as? [Any] { setJSON(presets, forKey: "BlinkSessionPresetStore.presets") }
+    mergeIn(BlinkMachine.self, machines, key: CloudConfigSync.machinesKey)
+
+    if let dirs = cfg["workDirs"] as? [[String: Any]] {
+      let stripped = dirs.map { w -> [String: Any] in
+        var w = w
+        w.removeValue(forKey: "hasIcon")
+        return w
+      }
+      mergeIn(BlinkWorkDir.self, stripped, key: CloudConfigSync.workDirsKey)
+    }
+
+    // people：鸿蒙那端是纯名字数组，没时间戳没墓碑 —— 取并集，别整份盖掉本机名单。
+    // 已删的名字有新 key 的墓碑挡着，不会被并回来复活。
+    if let people = cfg["people"] as? [String],
+       let rd = try? JSONEncoder().encode(people),
+       let out = SyncMerge.mergedStringList(local: d.data(forKey: CloudConfigSync.peopleNamesKey), remote: rd) {
+      d.set(out, forKey: CloudConfigSync.peopleNamesKey)
+    }
+    if let presets = cfg["presets"] as? [[String: Any]] {
+      mergeIn(BlinkSessionPreset.self, presets, key: CloudConfigSync.presetsKey)
+    }
     if let pinned = cfg["pinned"] as? [Any] { setJSON(pinned, forKey: "PinnedTabsStore.tabs") }
 
     if let fav = cfg["favorites"] as? [String] { d.set(fav, forKey: "VoiceInputView.aiFavorites") }
@@ -546,6 +611,8 @@ final class ConfigSyncPull: NSObject {
       if let v = t["workDirId"] as? String, !v.isEmpty { e["workDirId"] = v }
       if let v = t["tmuxSession"] as? String, !v.isEmpty { e["tmuxSession"] = v }
       if let v = t["useTmux"] as? Bool { e["useTmux"] = v }
+      if let v = t["workDirName"] as? String, !v.isEmpty { e["workDirName"] = v }
+      if let v = t["workDirPath"] as? String, !v.isEmpty { e["workDirPath"] = v }
       entries.append(e)
     }
     if !entries.isEmpty || !closedIds.isEmpty {

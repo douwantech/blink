@@ -1,12 +1,116 @@
 import UIKit
 
-final class BlinkMachine: Codable {
+// MARK: - 跨设备逐条合并
+//
+// 这些列表（机器 / 工作目录 / 会话预设）在 iCloud 上是「一个值」，早先整份推、整份覆盖：
+// A 加一条推上去，B 也加一条推上去，就把 A 那条整块盖没了 —— 谁最后写谁赢，没有比对。
+// 改成按 id 逐条合并后，两边独有的条目都保住，同 id 取 updatedAt 更晚的那份。
+//
+// 删除必须留痕：一旦是「取并集」，「我这里没有这条」和「我删了这条」就分不出来了，
+// 对端会好心把它推回来复活。所以删除不抹记录，只打 deletedAt 墓碑，照样参与比对。
+
+/// 参与逐条合并的记录：带 id、修改时间、删除墓碑。
+protocol SyncMergeable: AnyObject, Codable {
+  var id: String { get }
+  var updatedAt: Double? { get set }
+  var deletedAt: Double? { get set }
+  /// 远端那份缺的大字段（头像之类不走同步通道的），从被它替换掉的本地那份搬过来。
+  func carryOverMissing(from local: Self)
+}
+
+extension SyncMergeable {
+  func carryOverMissing(from local: Self) {}
+}
+
+enum SyncMerge {
+  /// 墓碑保留 30 天：够所有设备同步到这次删除；再久就没意义，白占 iCloud 配额。
+  static let tombstoneTTL: Double = 30 * 24 * 3600
+
+  /// 丢掉过期墓碑（活条目一律保留）。
+  static func prune<T: SyncMergeable>(_ arr: [T]) -> [T] {
+    let cutoff = Date().timeIntervalSince1970 - tombstoneTTL
+    return arr.filter { $0.deletedAt == nil || ($0.deletedAt ?? 0) > cutoff }
+  }
+
+  /// 按 id 合并：同 id 取 updatedAt 更晚的一份（墓碑也参与，删除据此传播），
+  /// 时间戳相同或都没有 → 留本地那份，避免两台设备来回抖。
+  /// 没有时间戳的（老数据、register 的 seed 默认）算 0，永远输给真实改动过的那份。
+  static func merge<T: SyncMergeable>(local: [T], remote: [T]) -> [T] {
+    var out = local
+    var idx = Dictionary(local.enumerated().map { ($0.element.id, $0.offset) },
+                         uniquingKeysWith: { a, _ in a })
+    for r in remote {
+      guard let i = idx[r.id] else {
+        idx[r.id] = out.count
+        out.append(r)
+        continue
+      }
+      guard (r.updatedAt ?? 0) > (out[i].updatedAt ?? 0) else { continue }
+      r.carryOverMissing(from: out[i])
+      out[i] = r
+    }
+    return prune(out)
+  }
+
+  /// 从「可见列表」回写全量：列表里消失的 id 自动打墓碑，删除才传得到别的设备。
+  static func applyVisible<T: SyncMergeable>(_ visible: [T], to all: [T]) -> [T] {
+    let now = Date().timeIntervalSince1970
+    let kept = Set(visible.map { $0.id })
+    var out = visible
+    for e in all where !kept.contains(e.id) {
+      if e.deletedAt == nil {
+        e.deletedAt = now
+        e.updatedAt = now
+      }
+      out.append(e)
+    }
+    return prune(out)
+  }
+
+  /// 打删除墓碑（保留条目本身）。
+  static func markDeleted<T: SyncMergeable>(id: String, in all: [T]) -> [T] {
+    let now = Date().timeIntervalSince1970
+    for e in all where e.id == id && e.deletedAt == nil {
+      e.deletedAt = now
+      e.updatedAt = now
+    }
+    return prune(all)
+  }
+
+  /// 老格式的纯字符串名单（BlinkPeopleStore.names）：只能取并集 —— 没有 id 更没有时间戳，
+  /// 分不出「对面本来就没有」和「对面删了」。删除靠新 key（people）的墓碑传播。
+  static func mergedStringList(local: Data?, remote: Data?) -> Data? {
+    guard let rd = remote,
+          let r = try? JSONDecoder().decode([String].self, from: rd), !r.isEmpty else { return nil }
+    var out = local.flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+    let known = Set(out)
+    out.append(contentsOf: r.filter { !known.contains($0) })
+    guard let data = try? JSONEncoder().encode(out), data != local else { return nil }
+    return data
+  }
+
+  /// 合并两份 JSON。返回 nil 表示「无需变更」（结果与本地一致、或远端解析不出来）——
+  /// 调用方据此跳过写入，免得每次都写一遍 UserDefaults 触发 didChange 又排一次 push 的死循环。
+  static func mergedData<T: SyncMergeable>(_ type: T.Type, local: Data?, remote: Data?) -> Data? {
+    guard let rd = remote,
+          let remoteArr = try? JSONDecoder().decode([T].self, from: rd), !remoteArr.isEmpty else { return nil }
+    let localArr = local.flatMap { try? JSONDecoder().decode([T].self, from: $0) } ?? []
+    guard let out = try? JSONEncoder().encode(merge(local: localArr, remote: remoteArr)),
+          out != local else { return nil }
+    return out
+  }
+}
+
+final class BlinkMachine: Codable, SyncMergeable {
   let id: String
   var name: String
   var host: String
   var host2: String?
   var lanHost: String?
   var user: String
+  /// 跨设备逐条合并用，见 SyncMergeable。老数据没有 → nil 视作 0。
+  var updatedAt: Double?
+  var deletedAt: Double?
   // 连接方式:"ssh" / "blinkd";nil=默认(内置机器走 blinkd,其余走 ssh)。可选,向后兼容旧数据。
   var transport: String?
   // 走 blinkd 时的 daemon 连接信息(daemon 常是独立 tsnet 节点,和上面 host 不同)
@@ -133,7 +237,8 @@ enum HostReachability {
 
   private override init() { super.init() }
 
-  var machines: [BlinkMachine] {
+  /// 含墓碑的全量条目 —— 持久化 / 跨设备合并用。UI 一律用 machines（已过滤墓碑）。
+  var allMachineEntries: [BlinkMachine] {
     get {
       guard let data = UserDefaults.standard.data(forKey: kMachines),
             let arr = try? JSONDecoder().decode([BlinkMachine].self, from: data) else {
@@ -142,10 +247,15 @@ enum HostReachability {
       return arr
     }
     set {
-      if let data = try? JSONEncoder().encode(newValue) {
+      if let data = try? JSONEncoder().encode(SyncMerge.prune(newValue)) {
         UserDefaults.standard.set(data, forKey: kMachines)
       }
     }
+  }
+
+  var machines: [BlinkMachine] {
+    get { allMachineEntries.filter { $0.deletedAt == nil } }
+    set { allMachineEntries = SyncMerge.applyVisible(newValue, to: allMachineEntries) }
   }
 
   var currentMachine: BlinkMachine? { machines.first }
@@ -685,6 +795,8 @@ enum HostReachability {
   @objc var currentMachineId: String? { machines.first?.id }
 
   func addOrUpdate(_ machine: BlinkMachine) {
+    machine.updatedAt = Date().timeIntervalSince1970
+    machine.deletedAt = nil
     var arr = machines
     if let idx = arr.firstIndex(where: { $0.id == machine.id }) {
       arr[idx] = machine
@@ -695,7 +807,7 @@ enum HostReachability {
   }
 
   func delete(id: String) {
-    machines.removeAll { $0.id == id }
+    allMachineEntries = SyncMerge.markDeleted(id: id, in: allMachineEntries)
     var m = avatarMap; m.removeValue(forKey: id); avatarMap = m
   }
 
@@ -1104,6 +1216,7 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidSelect(index: Int)
   func tabBarDidRequestNew()
   func tabBarDidRequestClose(index: Int)
+  func tabBarDidRequestRename(index: Int)
   func tabBarDidRequestSettings()
   func tabBarDidRequestMachineFilter()
   func tabBarDidRequestAssistant()
@@ -1489,32 +1602,60 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidSelect(index: sender.tag)
   }
 
+  /// 长按 tab → 重命名 / 关闭。（早先长按是直接关闭，误触就没了；现在多一层选择。）
   @objc private func tabLongPressed(_ rec: UILongPressGestureRecognizer) {
     guard rec.state == .began, let btn = rec.view as? UIButton else { return }
-    delegate?.tabBarDidRequestClose(index: btn.tag)
+    let tag = btn.tag
+    let sheet = UIAlertController(title: btn.title(for: .normal), message: nil, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "重命名", style: .default) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestRename(index: tag)
+    })
+    sheet.addAction(UIAlertAction(title: "关闭", style: .destructive) { [weak self] _ in
+      self?.delegate?.tabBarDidRequestClose(index: tag)
+    })
+    sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let pop = sheet.popoverPresentationController {
+      pop.sourceView = btn
+      pop.sourceRect = btn.bounds
+    }
+    (delegate as? UIViewController)?.present(sheet, animated: true)
   }
 
 }
 
 // MARK: - WorkDir
 
-final class BlinkWorkDir: Codable {
+final class BlinkWorkDir: Codable, SyncMergeable {
   let id: String
   var name: String
   var path: String
   /// 选中头像的 PNG 字节（来自 DiceBear），离线可用
   var iconImageData: Data?
+  /// 最后修改时间（epoch 秒）。跨设备按 id 合并时，同 id 取更晚的一条。
+  /// 老数据 / register 的 seed 默认没有此字段 → nil 视作 0，永远输给真实改动过的那份。
+  var updatedAt: Double?
+  /// 删除墓碑：非 nil 即已删。删了还得留着条目，删除才能传播到别的设备 ——
+  /// 否则对端把它当「你没有的条目」整份推回来就复活了。对外的 workDirs 列表会过滤掉。
+  var deletedAt: Double?
 
-  init(id: String = UUID().uuidString, name: String = "", path: String, iconImageData: Data? = nil) {
+  init(id: String = UUID().uuidString, name: String = "", path: String, iconImageData: Data? = nil,
+       updatedAt: Double? = nil, deletedAt: Double? = nil) {
     self.id = id
     self.name = name
     self.path = path
     self.iconImageData = iconImageData
+    self.updatedAt = updatedAt
+    self.deletedAt = deletedAt
   }
 
   var iconImage: UIImage? {
     guard let d = iconImageData else { return nil }
     return UIImage(data: d)
+  }
+
+  /// 头像不走鸿蒙那条同步通道（几十 KB 一张），远端这份没带就保住本地的，别把头像冲没。
+  func carryOverMissing(from local: BlinkWorkDir) {
+    if iconImageData == nil { iconImageData = local.iconImageData }
   }
 
   var displayName: String {
@@ -1548,7 +1689,8 @@ final class BlinkWorkDir: Codable {
     }
   }
 
-  var workDirs: [BlinkWorkDir] {
+  /// 含墓碑的全量条目 —— 持久化 / 跨设备合并用。UI 一律用 workDirs（已过滤墓碑）。
+  var allEntries: [BlinkWorkDir] {
     get {
       guard let data = UserDefaults.standard.data(forKey: kKey),
             let arr = try? JSONDecoder().decode([BlinkWorkDir].self, from: data) else {
@@ -1557,10 +1699,15 @@ final class BlinkWorkDir: Codable {
       return arr
     }
     set {
-      if let data = try? JSONEncoder().encode(newValue) {
+      if let data = try? JSONEncoder().encode(SyncMerge.prune(newValue)) {
         UserDefaults.standard.set(data, forKey: kKey)
       }
     }
+  }
+
+  var workDirs: [BlinkWorkDir] {
+    get { allEntries.filter { $0.deletedAt == nil } }
+    set { allEntries = SyncMerge.applyVisible(newValue, to: allEntries) }
   }
 
   func workDir(forId id: String?) -> BlinkWorkDir? {
@@ -1569,6 +1716,8 @@ final class BlinkWorkDir: Codable {
   }
 
   func addOrUpdate(_ wd: BlinkWorkDir) {
+    wd.updatedAt = Date().timeIntervalSince1970
+    wd.deletedAt = nil
     var arr = workDirs
     if let idx = arr.firstIndex(where: { $0.id == wd.id }) {
       arr[idx] = wd
@@ -1579,14 +1728,15 @@ final class BlinkWorkDir: Codable {
   }
 
   func delete(id: String) {
-    workDirs.removeAll { $0.id == id }
+    allEntries = SyncMerge.markDeleted(id: id, in: allEntries)
   }
 
   @discardableResult
   func duplicate(id: String) -> BlinkWorkDir? {
     var arr = workDirs
     guard let src = arr.first(where: { $0.id == id }) else { return nil }
-    let copy = BlinkWorkDir(name: src.name.isEmpty ? "" : "\(src.name) 副本", path: src.path)
+    let copy = BlinkWorkDir(name: src.name.isEmpty ? "" : "\(src.name) 副本", path: src.path,
+                            updatedAt: Date().timeIntervalSince1970)
     if let idx = arr.firstIndex(where: { $0.id == id }) {
       arr.insert(copy, at: idx + 1)
     } else {
@@ -1795,17 +1945,23 @@ final class WorkDirFormViewController: UITableViewController, UITextFieldDelegat
   }
 }
 
-final class BlinkSessionPreset: Codable {
+final class BlinkSessionPreset: Codable, SyncMergeable {
   let id: String
   var machineId: String
   var workDirId: String?
   var baseName: String
+  /// 跨设备逐条合并用，见 SyncMergeable。老数据没有 → nil 视作 0。
+  var updatedAt: Double?
+  var deletedAt: Double?
 
-  init(id: String = UUID().uuidString, machineId: String, workDirId: String?, baseName: String) {
+  init(id: String = UUID().uuidString, machineId: String, workDirId: String?, baseName: String,
+       updatedAt: Double? = nil, deletedAt: Double? = nil) {
     self.id = id
     self.machineId = machineId
     self.workDirId = workDirId
     self.baseName = baseName
+    self.updatedAt = updatedAt
+    self.deletedAt = deletedAt
   }
 
   var sessionName: String {
@@ -1835,7 +1991,8 @@ final class BlinkSessionPreset: Codable {
 
   private override init() { super.init() }
 
-  var presets: [BlinkSessionPreset] {
+  /// 含墓碑的全量条目 —— 持久化 / 跨设备合并用。UI 一律用 presets（已过滤墓碑）。
+  var allEntries: [BlinkSessionPreset] {
     get {
       guard let data = UserDefaults.standard.data(forKey: kKey),
             let arr = try? JSONDecoder().decode([BlinkSessionPreset].self, from: data) else {
@@ -1844,10 +2001,15 @@ final class BlinkSessionPreset: Codable {
       return arr
     }
     set {
-      if let data = try? JSONEncoder().encode(newValue) {
+      if let data = try? JSONEncoder().encode(SyncMerge.prune(newValue)) {
         UserDefaults.standard.set(data, forKey: kKey)
       }
     }
+  }
+
+  var presets: [BlinkSessionPreset] {
+    get { allEntries.filter { $0.deletedAt == nil } }
+    set { allEntries = SyncMerge.applyVisible(newValue, to: allEntries) }
   }
 
   @discardableResult
@@ -1857,14 +2019,15 @@ final class BlinkSessionPreset: Codable {
     if let existing = arr.first(where: { $0.machineId == machineId && $0.workDirId == workDirId && $0.baseName == cleanBase }) {
       return existing
     }
-    let p = BlinkSessionPreset(machineId: machineId, workDirId: workDirId, baseName: cleanBase)
+    let p = BlinkSessionPreset(machineId: machineId, workDirId: workDirId, baseName: cleanBase,
+                               updatedAt: Date().timeIntervalSince1970)
     arr.append(p)
     presets = arr
     return p
   }
 
   func delete(id: String) {
-    presets.removeAll { $0.id == id }
+    allEntries = SyncMerge.markDeleted(id: id, in: allEntries)
   }
 }
 
@@ -2311,33 +2474,79 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
 }
 
 /// 员工头像 store：员工名 → PNG 数据。没自定义就 fallback 到 DiceBear 自动生成（seed = 员工名）
+/// 员工。id 就是员工名 —— 头像/风格本来就按名字索引，同名即同一个人，
+/// 跨设备也该合并成一条，不需要另造 UUID。
+final class BlinkPerson: Codable, SyncMergeable {
+  let id: String
+  var updatedAt: Double?
+  var deletedAt: Double?
+
+  init(id: String, updatedAt: Double? = nil, deletedAt: Double? = nil) {
+    self.id = id
+    self.updatedAt = updatedAt
+    self.deletedAt = deletedAt
+  }
+}
+
 @objc final class BlinkPeopleStore: NSObject {
   @objc static let shared = BlinkPeopleStore()
   private let kKey = "BlinkPeopleStore.avatars"   // [name: Data] base64-string
   private let kStyleKey = "BlinkPeopleStore.styles"  // [name: styleId]
-  private let kNamesKey = "BlinkPeopleStore.names"   // [String]，员工名单（手动维护）
+  // 名单存两份：新 key 是权威（带时间戳和删除墓碑，跨设备逐条合并），
+  // 老 key 是给老版本设备和鸿蒙端读的纯名字数组，写新 key 时顺手同步一份。
+  private let kNamesKey = "BlinkPeopleStore.names"     // [String]，老格式
+  private let kPeopleKey = "BlinkPeopleStore.people"   // [BlinkPerson]，含墓碑
   static let defaultStyle = "thumbs"
   static let defaultNames = ["tom", "candy", "bella", "apple", "jack", "dave", "adam", "alice"]
 
   private override init() {
     super.init()
+    // seed 只注册到老 key：register 的默认值没有时间戳，合并时算 0，
+    // 永远输给别的设备真正改过的名单 —— 全新安装不会拿这 8 个默认名去盖掉真实数据。
     if let data = try? JSONEncoder().encode(Self.defaultNames) {
       UserDefaults.standard.register(defaults: [kNamesKey: data])
     }
   }
 
-  var knownNames: [String] {
+  /// 含墓碑的全量条目。老 key 里独有的名字（老版本设备 / 鸿蒙推来的、以及 seed 默认）
+  /// 当作「无时间戳条目」并进来；已经有墓碑的名字不会被它带回来复活。
+  var allEntries: [BlinkPerson] {
     get {
-      guard let data = UserDefaults.standard.data(forKey: kNamesKey),
-            let arr = try? JSONDecoder().decode([String].self, from: data) else {
-        return Self.defaultNames
-      }
-      return arr
+      let d = UserDefaults.standard
+      var out = d.data(forKey: kPeopleKey)
+        .flatMap { try? JSONDecoder().decode([BlinkPerson].self, from: $0) } ?? []
+      let legacy = d.data(forKey: kNamesKey)
+        .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+      let known = Set(out.map { $0.id })   // 含墓碑，所以已删的名字挡得住
+      for n in legacy where !known.contains(n) { out.append(BlinkPerson(id: n)) }
+      return out
     }
     set {
-      if let data = try? JSONEncoder().encode(newValue) {
-        UserDefaults.standard.set(data, forKey: kNamesKey)
+      let all = SyncMerge.prune(newValue)
+      let d = UserDefaults.standard
+      if let data = try? JSONEncoder().encode(all) { d.set(data, forKey: kPeopleKey) }
+      // 老 key 同步写一份可见名单，老版本设备和鸿蒙那端还认这个
+      if let data = try? JSONEncoder().encode(all.filter { $0.deletedAt == nil }.map { $0.id }) {
+        d.set(data, forKey: kNamesKey)
       }
+    }
+  }
+
+  var knownNames: [String] {
+    get { allEntries.filter { $0.deletedAt == nil }.map { $0.id } }
+    set {
+      let now = Date().timeIntervalSince1970
+      let existing = Dictionary(allEntries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+      // 已有的条目原样留着（别把时间戳洗掉），删过又加回来的清掉墓碑，新名字打时间戳
+      let visible = newValue.map { n -> BlinkPerson in
+        guard let e = existing[n] else { return BlinkPerson(id: n, updatedAt: now) }
+        if e.deletedAt != nil {
+          e.deletedAt = nil
+          e.updatedAt = now
+        }
+        return e
+      }
+      allEntries = SyncMerge.applyVisible(visible, to: allEntries)
     }
   }
 
@@ -2350,7 +2559,7 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
 
   func removeName(_ name: String) {
     let n = name.lowercased()
-    knownNames = knownNames.filter { $0 != n }
+    allEntries = SyncMerge.markDeleted(id: n, in: allEntries)
     var m = avatarMap; m.removeValue(forKey: n); avatarMap = m
     var sm = styleMap; sm.removeValue(forKey: n); styleMap = sm
   }

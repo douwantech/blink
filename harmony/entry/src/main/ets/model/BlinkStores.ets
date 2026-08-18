@@ -57,6 +57,10 @@ export interface TabModel {
   workDirId: string;
   tmuxSession: string;
   useTmux: boolean;
+  // 工作目录名字/路径快照（iOS TabEntry 同名字段）。跨设备只传 workDirId，
+  // 本机 workDirs 里没有这条就反查不到名字 —— 靠这两个字段兜底。
+  workDirName?: string;
+  workDirPath?: string;
 }
 
 export interface SessionPreset {
@@ -408,7 +412,19 @@ export class BlinkStore {
   // sessionPart = last '-' segment of tmuxSession; dropped if equal to dir name.
   tabTitle(t: TabModel): string {
     const w = this.workDirById(t.workDirId);
-    const wn: string = w !== null ? w.name : '?';
+    // 本机 workDirs 里查不到（多半是别的设备同步来的 tab）就用 tab 自带的快照兜底：
+    // 名字 → 路径末段 → 最后才是 '?'。
+    let wn: string = w !== null ? w.name : '';
+    if (wn.length === 0 && t.workDirName !== undefined) {
+      wn = t.workDirName;
+    }
+    if (wn.length === 0 && t.workDirPath !== undefined && t.workDirPath.length > 0) {
+      const segs: string[] = t.workDirPath.split('/');
+      wn = segs[segs.length - 1];
+    }
+    if (wn.length === 0) {
+      wn = '?';
+    }
     let sp: string = t.tmuxSession;
     const idx: number = sp.lastIndexOf('-');
     if (idx >= 0) {

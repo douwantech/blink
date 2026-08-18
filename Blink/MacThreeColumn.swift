@@ -192,6 +192,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
 
   var onSelect: ((Int) -> Void)?
   var onClose: ((Int) -> Void)?
+  var onRename: ((Int) -> Void)?
   var onNewSession: (() -> Void)?
   var onRestPanel: (() -> Void)?
 
@@ -347,6 +348,23 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: false)
     onSelect?(items[indexPath.row].tag)
+  }
+
+  /// 右键（Mac）/ 长按行 → 重命名、关闭
+  func tableView(_ tv: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath,
+                 point: CGPoint) -> UIContextMenuConfiguration? {
+    guard items.indices.contains(indexPath.row) else { return nil }
+    let tag = items[indexPath.row].tag
+    return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+      UIMenu(children: [
+        UIAction(title: "重命名", image: UIImage(systemName: "pencil")) { [weak self] _ in
+          self?.onRename?(tag)
+        },
+        UIAction(title: "关闭", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in
+          self?.onClose?(tag)
+        },
+      ])
+    }
   }
 }
 
