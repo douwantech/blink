@@ -78,6 +78,7 @@ struct BlinkTerminal {
   // tailscale transport
   @State tsState: string = '';
   @State tsIP: string = '';
+  private lastTsNote: string = '';   // 上次写进终端的 tailscale 状态，去重防刷屏
   @State tsConnected: boolean = false;
   @State authKey: string = '';
   @State hostname: string = 'harmony';
@@ -268,6 +269,57 @@ struct BlinkTerminal {
     this.webCtl.runJavaScript(`term_write_b64('${tabId}','${b64}')`);
   }
 
+  // 往指定 tab 写一行连接状态（带颜色）。dedupe=true 时同一行不重复刷——
+  // attach 每 1.5s 轮询会重进，靠 conn.lastNote 挡掉刷屏。
+  private note(tabId: string, conn: SessionConn | null, s: string, dedupe: boolean): void {
+    if (dedupe && conn !== null && conn.lastNote === s) {
+      return;
+    }
+    if (conn !== null) {
+      conn.lastNote = s;
+    }
+    this.writeText(tabId, s + '\r\n');
+  }
+
+  // 把 onState 的 detail 收拾成一句人话。error 时 detail 是 BusinessError 的 JSON。
+  private briefReason(st: BlinkdState, detail: string): string {
+    if (st === 'error' && detail.length > 0 && detail.charAt(0) === '{') {
+      try {
+        const j = JSON.parse(detail) as Record<string, Object>;
+        const msg: string = j['message'] !== undefined ? (j['message'] as string) : '';
+        const code: number = j['code'] !== undefined ? (j['code'] as number) : -1;
+        if (msg.length > 0) {
+          return code >= 0 ? (msg + '（code ' + code + '）') : msg;
+        }
+      } catch (e) {
+      }
+    }
+    return detail;
+  }
+
+  // tailscale 后端状态变化时写一行到当前 tab（去重，只在状态真的变了时刷）。
+  private noteTsState(state: string): void {
+    let line: string = '';
+    if (state === 'Running') {
+      const ip: string = this.tsIP.length > 0 ? ('（' + this.tsIP + '）') : '';
+      line = '\u001b[32m✓ tailscale 已连接' + ip + '\u001b[0m';
+    } else if (state === 'Stopped') {
+      line = '\u001b[33m⚠ tailscale 已停止，正在重连…\u001b[0m';
+    } else if (state === 'NeedsLogin' || state === 'NoState') {
+      line = '\u001b[33m⚠ tailscale 需要登录，去设置里填 auth key\u001b[0m';
+    } else if (state === 'start failed') {
+      line = '\u001b[31m✗ tailscale 启动失败\u001b[0m';
+    } else {
+      // Starting / Restarting VPN / 其它：统一提示连接中
+      line = '\u001b[90m· tailscale ' + state + ' …\u001b[0m';
+    }
+    if (line === this.lastTsNote) {
+      return;
+    }
+    this.lastTsNote = line;
+    this.appendLocal(line);
+  }
+
   private writeBytes(tabId: string, bytes: Uint8Array): void {
     const b64: string = this.b64.encodeToStringSync(bytes);
     this.webCtl.runJavaScript(`term_write_b64('${tabId}','${b64}')`);
@@ -411,6 +463,9 @@ struct BlinkTerminal {
         this.tsState = state ? state : 'Starting';
         const ips = j['tailscaleIPs'] as string[];
         this.tsIP = (ips && ips.length > 0) ? ips[0] : '';
+        // tailscale 状态变化时写一行到终端：VPN 没通时 blinkd 不会 attach，
+        // 不提示的话用户根本不知道是卡在 VPN 还是卡在 blinkd。
+        this.noteTsState(this.tsState);
         if (state === 'Running' && this.activeTabId.length > 0) {
           this.attach(this.activeTabId, false);
         }
@@ -714,18 +769,22 @@ struct BlinkTerminal {
     if (tab === null) {
       return;
     }
+    const conn = this.pool.getOrCreate(tabId);
     const m = this.store.machineById(tab.machineId);
     const ep = this.store.blinkdEndpoint(m);
     if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+      // 没配 blinkd 端点：以前直接静默 return，终端一片空只剩光标闪。
+      this.note(tabId, conn, '\u001b[33m⚠ 这台机器没配 blinkd 端点，去设置里填 host / token\u001b[0m', true);
       return;
     }
-    const conn = this.pool.getOrCreate(tabId);
     if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
       return;
     }
     if (!force && Date.now() < conn.cooldownUntil) {
       return;
     }
+    const port0: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+    this.note(tabId, conn, '\u001b[90m[blink] 连接 ' + ep.blinkdHost + ':' + port0 + ' …\u001b[0m', false);
     conn.client.onData = (bytes: Uint8Array) => {
       this.writeBytes(tabId, bytes);
       if (tabId !== this.activeTabId && !conn.unread) {
@@ -749,25 +808,42 @@ struct BlinkTerminal {
       return;
     }
     // (refreshTabs at the end updates the strip's status dot)
+    // 状态行也写进终端，让用户看得到「连上没 / 为什么断 / 几秒后重连」——
+    // 以前这里只改 state + 刷小圆点，终端全程空白只剩光标闪。
     if (st === 'connecting') {
       conn.state = 'connecting';
     } else if (st === 'connected') {
       conn.state = 'connected';
       conn.connectedAt = Date.now();
       conn.everConnected = true;
+      this.note(tabId, conn, '\u001b[32m✓ 已连接\u001b[0m', false);
     } else if (st === 'closed' || st === 'error') {
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;
       conn.state = st;
+      let reason: string = this.briefReason(st, detail);
+      if (reason === '连接已关闭' || reason === '已连上 blinkd') {
+        reason = '';
+      }
+      const why: string = reason.length > 0 ? ('：' + reason) : '';
+      const verb: string = conn.everConnected ? '连接断开' : '连接失败';
       if (this.store.autoReconnect) {
         if (lasted > 10000) {
           conn.failCount = 0;
           conn.cooldownUntil = 0;
+          this.note(tabId, conn, '\u001b[33m⚠ ' + verb + why + '，正在重连…\u001b[0m', false);
         } else {
           conn.failCount++;
           const wait: number = Math.min(1500 * Math.pow(2, conn.failCount), 30000);
           conn.cooldownUntil = Date.now() + wait;
+          const secs: number = Math.round(wait / 1000);
+          this.note(tabId, conn,
+            '\u001b[33m⚠ ' + verb + why + '，' + secs + ' 秒后自动重连（第 ' + conn.failCount + ' 次）\u001b[0m',
+            false);
         }
+      } else {
+        this.note(tabId, conn,
+          '\u001b[33m⚠ ' + verb + why + '（自动重连已关，点刷新重连）\u001b[0m', false);
       }
     }
     this.refreshTabs();
