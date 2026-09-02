@@ -1908,8 +1908,11 @@ struct BlinkTerminal {
     .padding({ left: 8, right: 7 })
     .backgroundColor(this.fieldMode === 'recording' ? '#24FF3B30' : '#0BFFFFFF')
     .border({ width: 1, color: this.fieldMode === 'recording' ? '#66FF3B30' : '#24FFFFFF' })
+    // 阈值 280ms 太短：自然点一下常超 280ms → 被当长按去录音，单点很难开输入
+    // （跟 iOS 之前 0.35s 太紧同一个坑，iOS 已调到 0.6s）。放宽到 500ms：
+    // 轻点稳定弹输入面板，只有明确按住 ≥0.5s 才进录音。
     .gesture(GestureGroup(GestureMode.Exclusive,
-      LongPressGesture({ duration: 280 })
+      LongPressGesture({ duration: 500 })
         .onAction(() => { this.holdStart(); })
         .onActionEnd(() => { this.holdEnd(); })
         .onActionCancel(() => { this.holdEnd(); }),
