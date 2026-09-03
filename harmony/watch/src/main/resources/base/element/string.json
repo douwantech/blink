@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "watch_label", "value": "腕上助手" },
+    { "name": "perm_mic", "value": "语音下指令给标签" }
+  ]
+}

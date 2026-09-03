@@ -1,0 +1,9 @@
+{
+  "name": "watch",
+  "version": "1.0.0",
+  "description": "Blink 腕上助手 — 鸿蒙手表 wearable 模块",
+  "main": "",
+  "author": "",
+  "license": "BSD-3-Clause",
+  "dependencies": {}
+}
