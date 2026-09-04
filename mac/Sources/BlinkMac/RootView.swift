@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
@@ -49,6 +50,10 @@ struct TopBar: View {
             Spacer()
 
             IconButton(system: "person.2", iconSize: 17) { state.showTeam.toggle() }
+            IconButton(system: "arrow.up.left.and.arrow.down.right", iconSize: 15) {
+                // 切换最大化（zoom：铺满屏幕可视区 ↔ 还原）
+                (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.zoom(nil)
+            }
             IconButton(system: "arrow.clockwise", color: Theme.work, iconSize: 17) { state.reconnect() }
             IconButton(system: "gearshape", iconSize: 17) { state.showToast("打开设置") }
         }

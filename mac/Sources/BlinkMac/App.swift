@@ -43,6 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // 自测：验证 zoom 真的把窗口最大化
+        if ProcessInfo.processInfo.environment["BLINKD_ZOOM_TEST"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                let w = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
+                let before = w?.frame.size ?? .zero
+                let visible = w?.screen?.visibleFrame.size ?? .zero
+                w?.zoom(nil)
+                let after = w?.frame.size ?? .zero
+                FileHandle.standardError.write(Data("[zoom] before=\(before) after=\(after) screenVisible=\(visible)\n".utf8))
+            }
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
