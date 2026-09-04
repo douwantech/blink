@@ -69,11 +69,10 @@ final class RemoteBackend: TerminalBackend {
     private var client: BlinkdClient?
     var view: TerminalView { tv }
 
-    init(host: String, port: UInt16, token: String, dir: String) {
+    init(host: String, port: UInt16, token: String, title: String, dir: String) {
         self.host = host; self.port = port; self.token = token
-        let abs = expandDir(dir)
-        let quoted = "'" + abs.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        execCmd = "cd \(quoted) 2>/dev/null; exec ${SHELL:-/bin/zsh} -l"
+        // 真实的 tmux new-session -A -s cc-<TITLE> + claude --resume（复刻自 blink）
+        execCmd = BlinkdScript.tmuxClaude(title: title, workDir: expandDir(dir))
         tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(tv)
@@ -107,7 +106,7 @@ final class TerminalManager {
         case .local:
             b = LocalBackend(dir: session.dir)
         case .blinkd(let h, let p, let t):
-            b = RemoteBackend(host: h, port: p, token: t, dir: session.dir)
+            b = RemoteBackend(host: h, port: p, token: t, title: session.name, dir: session.dir)
         }
         backends[session.id] = b
         return b
