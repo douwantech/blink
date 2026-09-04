@@ -69,10 +69,9 @@ final class RemoteBackend: TerminalBackend {
     private var client: BlinkdClient?
     var view: TerminalView { tv }
 
-    init(host: String, port: UInt16, token: String, title: String, dir: String) {
+    init(host: String, port: UInt16, token: String, exec: String) {
         self.host = host; self.port = port; self.token = token
-        // 真实的 tmux new-session -A -s cc-<TITLE> + claude --resume（复刻自 blink）
-        execCmd = BlinkdScript.tmuxClaude(title: title, workDir: expandDir(dir))
+        execCmd = exec
         tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(tv)
@@ -106,7 +105,10 @@ final class TerminalManager {
         case .local:
             b = LocalBackend(dir: session.dir)
         case .blinkd(let h, let p, let t):
-            b = RemoteBackend(host: h, port: p, token: t, title: session.name, dir: session.dir)
+            // 枚举出来的真实会话 attach 它；否则按 title 新建 tmux+claude
+            let exec = session.tmuxName.map { BlinkdScript.attach($0) }
+                ?? BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
+            b = RemoteBackend(host: h, port: p, token: t, exec: exec)
         }
         backends[session.id] = b
         return b

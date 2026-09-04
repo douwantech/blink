@@ -20,28 +20,64 @@ final class AppState: ObservableObject {
     private var toastTask: Task<Void, Never>?
 
     init() {
-        // blinkd 远程配置从环境变量注入（里程碑 3 E2E：本地起 daemon 时设这三个）。
+        // blinkd 配置从环境变量注入。设了 BLINKD_TOKEN → 本机 MacBook Pro 走 blinkd，
+        // 枚举真实 tmux cc-* 会话；没设 → 本地示例数据（make run 直接可看）。
         let env = ProcessInfo.processInfo.environment
         let btoken = env["BLINKD_TOKEN"] ?? ""
         let bhost = env["BLINKD_HOST"] ?? "127.0.0.1"
         let bport = UInt16(env["BLINKD_PORT"] ?? "7777") ?? 7777
-        let studioTransport: Transport = btoken.isEmpty ? .local : .blinkd(host: bhost, port: bport, token: btoken)
 
-        machines = [
-            Machine(id: "mbp", name: "MacBook Pro", host: "jack@100.96.88.80", initials: "M", grad: Grad.blue, transport: .local),
-            Machine(id: "studio", name: "Mac Studio",
-                    host: btoken.isEmpty ? "jack@100.96.88.42" : "blinkd \(bhost):\(bport)",
-                    initials: "S", grad: Grad.amber, transport: studioTransport),
-        ]
-        sessions = AppState.sampleSessions()
         if btoken.isEmpty {
+            machines = [
+                Machine(id: "mbp", name: "MacBook Pro", host: "本地 shell", initials: "M", grad: Grad.blue, transport: .local),
+                Machine(id: "studio", name: "Mac Studio", host: "jack@100.96.88.42", initials: "S", grad: Grad.amber, transport: .local),
+            ]
+            sessions = AppState.sampleSessions()
             activeMachineID = "mbp"
             activeSessionID = "blink"
         } else {
-            // 配了 blinkd 就直接落到远程机器，启动即连（也方便 E2E）
-            activeMachineID = "studio"
-            activeSessionID = "talkai"
+            machines = [
+                Machine(id: "mbp", name: "MacBook Pro", host: "blinkd \(bhost):\(bport)", initials: "M",
+                        grad: Grad.blue, transport: .blinkd(host: bhost, port: bport, token: btoken)),
+            ]
+            sessions = [Session(id: "loading", machineID: "mbp", name: "连接中…", dir: "", initials: "··",
+                                grad: Grad.slate, status: .idle, lines: [], placeholder: true)]
+            activeMachineID = "mbp"
+            activeSessionID = "loading"
+            Task { @MainActor in await self.loadRealSessions(host: bhost, port: bport, token: btoken) }
         }
+    }
+
+    // MARK: 枚举真实会话
+
+    func loadRealSessions(host: String, port: UInt16, token: String) async {
+        let out = await BlinkdExec.run(host: host, port: port, token: token, command: BlinkdScript.listSessions())
+        let real = AppState.parseSessions(out)
+        guard !real.isEmpty else {
+            showToast("未枚举到 cc-* 会话（检查 blinkd host/token）")
+            return
+        }
+        sessions = real
+        activeSessionID = real[0].id
+    }
+
+    static func parseSessions(_ out: String) -> [Session] {
+        let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
+        var result: [Session] = []
+        // PTY 输出行尾是 \r\n（Swift 里是单个 grapheme），用 isNewline 才分得开
+        for line in out.split(whereSeparator: { $0.isNewline }) {
+            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let full = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard full.hasPrefix("cc-") else { continue }
+            let path = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+            let title = String(full.dropFirst(3))
+            let initials = String(title.replacingOccurrences(of: "-", with: "").prefix(2))
+            result.append(Session(id: full, machineID: "mbp", name: title,
+                                  dir: path.isEmpty ? "~" : path, initials: initials,
+                                  grad: grads[result.count % grads.count], status: .work,
+                                  lines: [], tmuxName: full))
+        }
+        return result
     }
 
     // MARK: Derived

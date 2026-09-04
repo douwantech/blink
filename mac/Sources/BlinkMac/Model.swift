@@ -79,6 +79,10 @@ struct Session: Identifiable {
     var status: WorkStatus
     var lines: [TermLine]
     var chat: [ChatBlock] = []
+    /// 真实的 tmux session 名（如 "cc-jack-talkai"）。设了就 attach 它，而不是新建。
+    var tmuxName: String? = nil
+    /// 枚举完成前的占位会话，不建终端后端。
+    var placeholder: Bool = false
 }
 
 struct TeamMember: Identifiable {

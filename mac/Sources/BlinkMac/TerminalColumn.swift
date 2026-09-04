@@ -64,9 +64,18 @@ struct TerminalColumn: View {
 
     // MARK: Terminal body — real SwiftTerm PTY
 
+    @ViewBuilder
     private var terminalBody: some View {
-        TerminalContainer()
-            .padding(.horizontal, 6).padding(.vertical, 6)
+        if state.activeSession.placeholder {
+            VStack(spacing: 12) {
+                ProgressView().controlSize(.large).tint(Theme.teal)
+                Text("正在枚举本机会话…").font(Theme.mono(12)).foregroundColor(Theme.sub)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TerminalContainer()
+                .padding(.horizontal, 6).padding(.vertical, 6)
+        }
     }
 
     // MARK: Chat body

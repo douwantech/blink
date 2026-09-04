@@ -21,6 +21,22 @@ struct BlinkMacApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 只读自测：枚举真实会话并打印后退出（不开窗、不 attach，用于 E2E）。
+        if ProcessInfo.processInfo.environment["BLINKD_ENUM_TEST"] != nil {
+            NSApp.setActivationPolicy(.prohibited)
+            let env = ProcessInfo.processInfo.environment
+            Task { @MainActor in
+                let out = await BlinkdExec.run(host: env["BLINKD_HOST"] ?? "127.0.0.1",
+                                               port: UInt16(env["BLINKD_PORT"] ?? "7777") ?? 7777,
+                                               token: env["BLINKD_TOKEN"] ?? "",
+                                               command: BlinkdScript.listSessions())
+                let real = AppState.parseSessions(out)
+                print("=== ENUM raw ===\n\(out)\n=== parsed \(real.count) sessions ===")
+                for s in real { print("id=\(s.id)  name=\(s.name)  dir=\(s.dir)") }
+                exit(0)
+            }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }

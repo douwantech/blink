@@ -112,6 +112,50 @@ final class BlinkdClient {
     }
 }
 
+/// 一次性 blinkd exec：连接 → auth → exec → 收集全部输出直到连接关闭，返回字符串。
+/// 用于枚举远端 `tmux list-sessions` 等只读命令（无 resize，不涉及帧序问题）。
+enum BlinkdExec {
+    static func run(host: String, port: UInt16, token: String, command: String, timeout: TimeInterval = 6) async -> String {
+        await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
+            let conn = NWConnection(host: NWEndpoint.Host(host),
+                                    port: NWEndpoint.Port(rawValue: port) ?? 7777, using: .tcp)
+            let lock = NSLock()
+            var buf = Data()
+            var finished = false
+            func finish() {
+                lock.lock(); let already = finished; finished = true; let out = buf; lock.unlock()
+                if already { return }
+                conn.cancel()
+                cont.resume(returning: String(decoding: out, as: UTF8.self))
+            }
+            func frame(_ type: UInt8, _ payload: [UInt8]) -> Data {
+                let n = UInt16(min(payload.count, 0xffff))
+                return Data([type, UInt8(n >> 8), UInt8(n & 0xff)] + payload)
+            }
+            conn.stateUpdateHandler = { st in
+                switch st {
+                case .ready:
+                    conn.send(content: frame(0x01, Array(token.utf8)), completion: .contentProcessed { _ in })
+                    conn.send(content: frame(0x04, Array(command.utf8)), completion: .contentProcessed { _ in })
+                case .failed, .cancelled:
+                    finish()
+                default:
+                    break
+                }
+            }
+            func recv() {
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, err in
+                    if let d = data, !d.isEmpty { lock.lock(); buf.append(d); lock.unlock() }
+                    if complete || err != nil { finish() } else { recv() }
+                }
+            }
+            conn.start(queue: .global())
+            recv()
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish() }
+        }
+    }
+}
+
 /// A SwiftTerm view whose keyboard input and resizes go to a blinkd connection.
 final class BlinkdTerminalView: TerminalView, TerminalViewDelegate {
     weak var client: BlinkdClient?
