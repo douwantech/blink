@@ -8,16 +8,25 @@ struct Avatar: View {
     var size: CGFloat = 30
     var corner: CGFloat = 9
     var fontSize: CGFloat = 12
+    var image: NSImage? = nil   // 真实头像（iOS Blink 配置的 workDir 图标）
 
     var body: some View {
-        RoundedRectangle(cornerRadius: corner, style: .continuous)
-            .fill(LinearGradient(colors: grad, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: size, height: size)
-            .overlay(
-                Text(text)
-                    .font(Theme.ui(fontSize, .bold))
-                    .foregroundColor(.white)
-            )
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(LinearGradient(colors: grad, startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: size, height: size)
+                .overlay(
+                    Text(text)
+                        .font(Theme.ui(fontSize, .bold))
+                        .foregroundColor(.white)
+                )
+        }
     }
 }
 

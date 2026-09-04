@@ -31,8 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                token: env["BLINKD_TOKEN"] ?? "",
                                                command: BlinkdScript.listSessions())
                 let real = AppState.parseSessions(out)
-                print("=== ENUM raw ===\n\(out)\n=== parsed \(real.count) sessions ===")
-                for s in real { print("id=\(s.id)  name=\(s.name)  dir=\(s.dir)") }
+                print("=== avatars configured for: \(BlinkAvatars.byOwner.keys.sorted()) ===")
+                print("=== parsed \(real.count) sessions ===")
+                for s in real {
+                    let has = BlinkAvatars.image(forOwner: s.owner) != nil
+                    print("name=\(s.name)  owner=\(s.owner)  avatar=\(has ? "✓真图" : "×色块")  dir=\(s.dir)")
+                }
                 exit(0)
             }
             return

@@ -83,6 +83,9 @@ struct Session: Identifiable {
     var tmuxName: String? = nil
     /// 枚举完成前的占位会话，不建终端后端。
     var placeholder: Bool = false
+
+    /// owner = 会话名第一段（jack-talkai → jack），用来对上 iOS 配的头像。
+    var owner: String { name.split(separator: "-").first.map(String.init) ?? name }
 }
 
 struct TeamMember: Identifiable {
