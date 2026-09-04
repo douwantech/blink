@@ -58,7 +58,7 @@ final class AppState: ObservableObject {
             return
         }
         sessions = real
-        activeSessionID = real[0].id
+        activeSessionID = ""   // 不自动 attach，等用户点选（避免误连别人的会话）
     }
 
     static func parseSessions(_ out: String) -> [Session] {
@@ -83,7 +83,11 @@ final class AppState: ObservableObject {
     // MARK: Derived
 
     var activeMachine: Machine { machines.first { $0.id == activeMachineID } ?? machines[0] }
-    var activeSession: Session { sessions.first { $0.id == activeSessionID } ?? sessions[0] }
+    var activeSession: Session {
+        sessions.first { $0.id == activeSessionID }
+            ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
+                       initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
+    }
     var sidebarSessions: [Session] { sessions.filter { $0.machineID == activeMachineID } }
 
     func count(_ s: WorkStatus) -> Int { sessions.filter { $0.status == s }.count }

@@ -68,8 +68,13 @@ struct TerminalColumn: View {
     private var terminalBody: some View {
         if state.activeSession.placeholder {
             VStack(spacing: 12) {
-                ProgressView().controlSize(.large).tint(Theme.teal)
-                Text("正在枚举本机会话…").font(Theme.mono(12)).foregroundColor(Theme.sub)
+                if state.activeSession.id == "loading" {
+                    ProgressView().controlSize(.large).tint(Theme.teal)
+                    Text("正在枚举本机会话…").font(Theme.mono(12)).foregroundColor(Theme.sub)
+                } else {
+                    Image(systemName: "sidebar.left").font(.system(size: 26)).foregroundColor(Theme.dim)
+                    Text("从左侧选择一个会话打开").font(Theme.ui(13)).foregroundColor(Theme.sub)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
