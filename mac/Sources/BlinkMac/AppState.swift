@@ -88,7 +88,10 @@ final class AppState: ObservableObject {
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
                        initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
     }
-    var sidebarSessions: [Session] { sessions.filter { $0.machineID == activeMachineID } }
+    var sidebarSessions: [Session] {
+        sessions.filter { $0.machineID == activeMachineID }
+            .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }   // 按项目排序
+    }
 
     func count(_ s: WorkStatus) -> Int { sessions.filter { $0.status == s }.count }
 

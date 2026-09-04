@@ -86,6 +86,11 @@ struct Session: Identifiable {
 
     /// owner = 会话名第一段（jack-talkai → jack），用来对上 iOS 配的头像。
     var owner: String { name.split(separator: "-").first.map(String.init) ?? name }
+    /// project = 第一段之后（jack-talkai → talkai），用于按项目排序。
+    var project: String {
+        let parts = name.split(separator: "-", maxSplits: 1)
+        return parts.count > 1 ? String(parts[1]) : name
+    }
 }
 
 struct TeamMember: Identifiable {
