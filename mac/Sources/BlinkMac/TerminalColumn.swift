@@ -3,8 +3,6 @@ import SwiftUI
 struct TerminalColumn: View {
     @EnvironmentObject var state: AppState
 
-    var hasText: Bool { !state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
     var body: some View {
         VStack(spacing: 0) {
             tabStrip
@@ -17,7 +15,6 @@ struct TerminalColumn: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             quickBar
-            composer
             statusBar
         }
         .background(Theme.term)
@@ -134,64 +131,7 @@ struct TerminalColumn: View {
             PillButton(label: "浏览器", system: "globe", tint: Theme.rest, bg: Color.white.opacity(0.05)) { state.showToast("打开内置浏览器") }
             Spacer()
         }
-        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 2)
-    }
-
-    // MARK: Composer
-
-    private var composer: some View {
-        ZStack(alignment: .top) {
-            if state.recording { recordingBubble.offset(y: -58) }
-            HStack(spacing: 10) {
-                Button { state.toggleRecording() } label: {
-                    Image(systemName: "mic")
-                        .font(.system(size: 18))
-                        .foregroundColor(state.recording ? Color(hex: 0xff5a5c) : Color.white.opacity(0.82))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-
-                TextField("输入命令，或点麦克风说话…", text: $state.draft)
-                    .textFieldStyle(.plain)
-                    .font(Theme.ui(16))
-                    .foregroundColor(Theme.fg)
-                    .onSubmit { state.send() }
-
-                Button { state.send() } label: {
-                    Image(systemName: "arrowshape.up.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(hasText ? Color(hex: 0x06110c) : Color.white.opacity(0.5))
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(hasText ? Theme.green : Color.white.opacity(0.10)))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 7)
-            .frame(height: 48)
-            .background(
-                RoundedRectangle(cornerRadius: 24).fill(Color.white.opacity(0.045))
-                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(hasText ? Theme.green.opacity(0.5) : Theme.hair2))
-            )
-        }
-        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 14)
-    }
-
-    private var recordingBubble: some View {
-        HStack(spacing: 10) {
-            Circle().fill(Color(hex: 0xff5a5c)).frame(width: 11, height: 11)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("正在听 · 帮我把这个改动…").font(Theme.ui(13)).foregroundColor(Color.white.opacity(0.94))
-                Text("本地识别 · 再点麦克风结束").font(Theme.mono(10)).foregroundColor(Theme.dim)
-            }
-            Spacer()
-            Text("本地实时").font(Theme.ui(10, .bold)).foregroundColor(Color(hex: 0x5ff2b3))
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color(hex: 0x5ff2b3).opacity(0.14)))
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(hex: 0x1b1d21))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.09))))
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 10)
     }
 
     // MARK: Status bar
