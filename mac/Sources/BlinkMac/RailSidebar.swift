@@ -136,6 +136,7 @@ struct SessionRow: View {
                         .frame(width: 3).padding(.vertical, 12)
                 }
             }
+            .contentShape(Rectangle())   // 整行(含空白/Spacer)都可点
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
