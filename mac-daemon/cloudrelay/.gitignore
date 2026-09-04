@@ -1,0 +1,6 @@
+/env/
+/cmd/
+/cloudrelay
+/cert/
+/s.domain.yaml
+/update_cert.py

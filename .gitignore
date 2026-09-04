@@ -80,3 +80,9 @@ harmony/build-profile.local.json5
 harmony/entry/src/main/resources/rawfile/seed_config.json
 harmony/entry/src/main/resources/rawfile/avatars/
 .hvigor/
+
+# 腕上助手 (watchOS) 构建产物
+/build-watch/
+/build-watch-sim/
+WatchAssistant/build/
+WatchAssistant/build-dev/

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		06A21A920D7D58B11C07136B /* Assistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC1133BD6EB44D86B15A8FF4 /* Assistant.swift */; };
 		0716B5721CFFAB9300268B5B /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 0716B52A1CFFAB9300268B5B /* AppDelegate.m */; };
 		0716B5741CFFAB9300268B5B /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 0716B52C1CFFAB9300268B5B /* LaunchScreen.storyboard */; };
 		0732F04D1D062B9A00AB5438 /* locales.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 0732F04A1D062B9A00AB5438 /* locales.bundle */; };
@@ -71,13 +72,19 @@
 		07FABC2225C9AFC500E1CC2C /* String+Extension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABC2125C9AFC400E1CC2C /* String+Extension.swift */; };
 		07FABC4825C9B08100E1CC2C /* BlinkFiles.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 07FABBAF25C9AECF00E1CC2C /* BlinkFiles.framework */; };
 		07FDDC5625C9B28200A40529 /* LibSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC425C1C04700385378 /* LibSSH.xcframework */; };
+		1A6B191BC3740BF8204C06CA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A291B358471DE7C8ACB30B26 /* Foundation.framework */; };
 		22FB5B4A34EF80EA1196F474 /* TabStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B056E91E4AE1256EB7F80A9 /* TabStateStore.swift */; };
-		A11CE0000000000000000001 /* MacThreeColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE0000000000000000002 /* MacThreeColumn.swift */; };
+		29E64DC0672D53959162EBF7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C4C926B5BAD06E54EF4D46 /* Models.swift */; };
+		79E125ECF9D48BB005AC568A /* Relay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B16BAE7AA2F9C29F185197 /* Relay.swift */; };
 		803B99D72582869200DC99C8 /* BKNotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99D62582869200DC99C8 /* BKNotificationsView.swift */; };
 		803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99E2258381B200DC99C8 /* SettingsHostingController.swift */; };
+		82FBA3A75A46B1C496F0F97F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3679639C3DEC6C82268AB1DE /* ContentView.swift */; };
 		85A34307200A837A009324F1 /* webfontloader.js in Resources */ = {isa = PBXBuildFile; fileRef = 85A34303200A837A009324F1 /* webfontloader.js */; };
 		85A34309200A8FAF009324F1 /* term.css in Resources */ = {isa = PBXBuildFile; fileRef = 85A34308200A8FAF009324F1 /* term.css */; };
+		8FAE0060B97A62A1B8DED08B /* Assistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB226D027CF392B11569CCFA /* Assistant.swift */; };
+		92692D9E8EF988DDACDA624A /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A291B358471DE7C8ACB30B26 /* Foundation.framework */; };
 		9827126B262E4BDB00F883FA /* BlinkFileProviderExtension.appex in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = 98271250262E4BDB00F883FA /* BlinkFileProviderExtension.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A11CE0000000000000000001 /* MacThreeColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11CE0000000000000000002 /* MacThreeColumn.swift */; };
 		B700AED81DD0F2C200100EBF /* CloudKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B700AED71DD0F2C200100EBF /* CloudKit.framework */; };
 		B75112CD1DE4A7B10040C693 /* BKiCloudConfigurationViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = B75112CC1DE4A7B10040C693 /* BKiCloudConfigurationViewController.m */; };
 		B752EE2B1DFEF19D00E305C8 /* BKUserConfigurationManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B752EE2A1DFEF19D00E305C8 /* BKUserConfigurationManager.m */; };
@@ -236,6 +243,7 @@
 		C9B2E0321D6B612400B89F69 /* BKFont.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E00C1D6B612300B89F69 /* BKFont.m */; };
 		C9B2E0341D6B612400B89F69 /* BKTheme.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E0101D6B612300B89F69 /* BKTheme.m */; };
 		C9B2E0351D6B612400B89F69 /* BKSettingsFileDownloader.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E0131D6B612300B89F69 /* BKSettingsFileDownloader.m */; };
+		CB6F1C136A326CC762A49709 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CE13F3977D4184683DBE5A1 /* Models.swift */; };
 		D2011CD726A6FF9F002E4E85 /* Alert.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2011CD626A6FF9F002E4E85 /* Alert.swift */; };
 		D2036B6323967F2F0013D2A3 /* BindingConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2036B6223967F2F0013D2A3 /* BindingConfigView.swift */; };
 		D20394AA29E6B30400FB337F /* Receipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20394A929E6B30400FB337F /* Receipt.swift */; };
@@ -396,11 +404,6 @@
 		D2A52297230D279B0010BC01 /* BlinkAssistantChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */; };
 		D2A52297230D279B0010BC11 /* TeamStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010BC12 /* TeamStatusView.swift */; };
 		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
-		D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */; };
-		D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */; };
-		D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000012 /* RemoteShell.swift */; };
-		D2AB5DE5C0DE000000000013 /* WindowAtQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */; };
-		D2AB5DE5C0DE000000000003 /* RemoteDesktopViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */; };
 		D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229A230D279B0010AC04 /* VoiceInputView.swift */; };
 		D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */; };
 		D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */; };
@@ -409,6 +412,11 @@
 		D2A80979270713D200CD0FAF /* FeatureFlags.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A80978270713D200CD0FAF /* FeatureFlags.swift */; };
 		D2A9B2F7272E6F26009FCBDE /* BlinkCode.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BDBFA3052728914F00C77798 /* BlinkCode.framework */; };
 		D2A9B2F8272E6F26009FCBDE /* BlinkCode.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BDBFA3052728914F00C77798 /* BlinkCode.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */; };
+		D2AB5DE5C0DE000000000003 /* RemoteDesktopViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */; };
+		D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */; };
+		D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000012 /* RemoteShell.swift */; };
+		D2AB5DE5C0DE000000000013 /* WindowAtQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */; };
 		D2AB611E23AB5ACD00BE6585 /* UIApplication+Version.m in Sources */ = {isa = PBXBuildFile; fileRef = D2AB611D23AB5ACD00BE6585 /* UIApplication+Version.m */; };
 		D2AB612023AB5AE000BE6585 /* UIApplication+Version.h in Sources */ = {isa = PBXBuildFile; fileRef = D2AB611F23AB5AE000BE6585 /* UIApplication+Version.h */; };
 		D2AC6749220303D900177BC5 /* openurl.m in Sources */ = {isa = PBXBuildFile; fileRef = D2AC6742220303D900177BC5 /* openurl.m */; };
@@ -489,6 +497,7 @@
 		D2F330DA20A7127B0074ADD7 /* open.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D920A7127B0074ADD7 /* open.m */; };
 		D2FBEC0B27CF505D00FD974A /* browse.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2FBEC0727CF505D00FD974A /* browse.swift */; };
 		D2FCB4DD2339F9DB00A88108 /* UIScrollView+Paging.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2FCB4DC2339F9DB00A88108 /* UIScrollView+Paging.swift */; };
+		DD862B052A85AFB79893C37F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F07EF1B8C769092E5B2DF71 /* ContentView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -848,15 +857,22 @@
 		07FABC1325C9AF8F00E1CC2C /* LocalFilesTests.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LocalFilesTests.swift; sourceTree = "<group>"; };
 		07FABC1425C9AF8F00E1CC2C /* CopyFilesTests.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CopyFilesTests.swift; sourceTree = "<group>"; };
 		07FABC2125C9AFC400E1CC2C /* String+Extension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "String+Extension.swift"; sourceTree = "<group>"; };
+		1F07EF1B8C769092E5B2DF71 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = WatchAssistant/Sources/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		3679639C3DEC6C82268AB1DE /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = WatchAssistant/Sources/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		3CE13F3977D4184683DBE5A1 /* Models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Models.swift; path = WatchAssistant/Sources/Models.swift; sourceTree = SOURCE_ROOT; };
 		7B056E91E4AE1256EB7F80A9 /* TabStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabStateStore.swift; sourceTree = "<group>"; };
-		A11CE0000000000000000002 /* MacThreeColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThreeColumn.swift; sourceTree = "<group>"; };
 		803B99D62582869200DC99C8 /* BKNotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BKNotificationsView.swift; sourceTree = "<group>"; };
 		803B99E2258381B200DC99C8 /* SettingsHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHostingController.swift; sourceTree = "<group>"; };
+		8115B499BF5E4F602EFA8F6A /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = WatchAssistant/Info.plist; sourceTree = SOURCE_ROOT; };
 		85A34303200A837A009324F1 /* webfontloader.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = webfontloader.js; sourceTree = "<group>"; };
 		85A34308200A8FAF009324F1 /* term.css */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.css; path = term.css; sourceTree = "<group>"; };
+		90CE1766288D628B2B028BF5 /* WatchAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		98271250262E4BDB00F883FA /* BlinkFileProviderExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BlinkFileProviderExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		98271258262E4BDB00F883FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		98271259262E4BDB00F883FA /* BlinkFileProviderExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BlinkFileProviderExtension.entitlements; sourceTree = "<group>"; };
+		A11CE0000000000000000002 /* MacThreeColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThreeColumn.swift; sourceTree = "<group>"; };
+		A291B358471DE7C8ACB30B26 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/WatchOS.platform/Developer/SDKs/WatchOS11.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		B258F397308E2058F631D056 /* WatchAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B700AED71DD0F2C200100EBF /* CloudKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CloudKit.framework; path = System/Library/Frameworks/CloudKit.framework; sourceTree = SDKROOT; };
 		B75112CB1DE4A7B10040C693 /* BKiCloudConfigurationViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BKiCloudConfigurationViewController.h; sourceTree = "<group>"; };
 		B75112CC1DE4A7B10040C693 /* BKiCloudConfigurationViewController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BKiCloudConfigurationViewController.m; sourceTree = "<group>"; };
@@ -874,6 +890,7 @@
 		B7D4503B1DD4706000CE0DBE /* Reachability.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = Reachability.m; sourceTree = "<group>"; };
 		B7D6A6271E2D43A800EDF7B0 /* BKSmartKeysConfigViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BKSmartKeysConfigViewController.h; sourceTree = "<group>"; };
 		B7D6A6281E2D43A800EDF7B0 /* BKSmartKeysConfigViewController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BKSmartKeysConfigViewController.m; sourceTree = "<group>"; };
+		B8B16BAE7AA2F9C29F185197 /* Relay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Relay.swift; path = WatchAssistant/Sources/Relay.swift; sourceTree = SOURCE_ROOT; };
 		BD00000000000000000001A0 /* BlinkdSession.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BlinkdSession.h; sourceTree = "<group>"; };
 		BD00000000000000000001A1 /* BlinkdSession.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BlinkdSession.m; sourceTree = "<group>"; };
 		BD028AF22A8EC509002F5F54 /* TrialSupportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrialSupportView.swift; sourceTree = "<group>"; };
@@ -995,6 +1012,7 @@
 		BDF2B8D62BC481F000B9C7EA /* curl_ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = curl_ios.xcframework; path = xcfs/.build/artifacts/xcfs/curl_ios/curl_ios.xcframework; sourceTree = SOURCE_ROOT; };
 		BDF40FE92C14A6CE00DF41C1 /* AgentSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AgentSettingsView.swift; sourceTree = "<group>"; };
 		BDFA97342D959BC90020BBF2 /* TypingText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingText.swift; sourceTree = "<group>"; };
+		C6C4C926B5BAD06E54EF4D46 /* Models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Models.swift; path = WatchAssistant/Sources/Models.swift; sourceTree = SOURCE_ROOT; };
 		C94437551D8311960096F84E /* BKResource.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BKResource.h; sourceTree = "<group>"; };
 		C94437561D8311960096F84E /* BKResource.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BKResource.m; sourceTree = "<group>"; };
 		C944375F1D831CD30096F84E /* Themes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Themes; sourceTree = "<group>"; };
@@ -1016,6 +1034,7 @@
 		C9B2E0101D6B612300B89F69 /* BKTheme.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BKTheme.m; sourceTree = "<group>"; };
 		C9B2E0121D6B612300B89F69 /* BKSettingsFileDownloader.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BKSettingsFileDownloader.h; sourceTree = "<group>"; };
 		C9B2E0131D6B612300B89F69 /* BKSettingsFileDownloader.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = BKSettingsFileDownloader.m; sourceTree = "<group>"; };
+		CB226D027CF392B11569CCFA /* Assistant.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Assistant.swift; path = WatchAssistant/Sources/Assistant.swift; sourceTree = SOURCE_ROOT; };
 		D2011CD626A6FF9F002E4E85 /* Alert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Alert.swift; sourceTree = "<group>"; };
 		D2036B6223967F2F0013D2A3 /* BindingConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BindingConfigView.swift; sourceTree = "<group>"; };
 		D20394A929E6B30400FB337F /* Receipt.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Receipt.swift; sourceTree = "<group>"; };
@@ -1170,17 +1189,17 @@
 		D2A52297230D279B0010BC02 /* BlinkAssistantChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkAssistantChat.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010BC12 /* TeamStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamStatusView.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskCore.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskStub.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000012 /* RemoteShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteShell.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowAtQuery.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDesktopViewController.swift; sourceTree = "<group>"; };
-		D2AB5DE5C0DE000000000005 /* rustdesk_native.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = rustdesk_native.h; sourceTree = "<group>"; };
 		D2A5229A230D279B0010AC04 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
 		D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkImageViewerController.swift; sourceTree = "<group>"; };
 		D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkMachineStore.swift; sourceTree = "<group>"; };
 		D2A54CB029801062009D79FE /* BuildAccountModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildAccountModel.swift; sourceTree = "<group>"; };
 		D2A80978270713D200CD0FAF /* FeatureFlags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureFlags.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskCore.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDesktopViewController.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000005 /* rustdesk_native.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = rustdesk_native.h; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustDeskStub.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000012 /* RemoteShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteShell.swift; sourceTree = "<group>"; };
+		D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowAtQuery.swift; sourceTree = "<group>"; };
 		D2AB611D23AB5ACD00BE6585 /* UIApplication+Version.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "UIApplication+Version.m"; sourceTree = "<group>"; };
 		D2AB611F23AB5AE000BE6585 /* UIApplication+Version.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "UIApplication+Version.h"; sourceTree = "<group>"; };
 		D2AC6742220303D900177BC5 /* openurl.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = openurl.m; sourceTree = "<group>"; };
@@ -1260,11 +1279,13 @@
 		D2F64C9525CA99AD00F2225D /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = xcfs/.build/artifacts/xcfs/libssh2/libssh2.xcframework; sourceTree = SOURCE_ROOT; };
 		D2FBEC0727CF505D00FD974A /* browse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = browse.swift; sourceTree = "<group>"; };
 		D2FCB4DC2339F9DB00A88108 /* UIScrollView+Paging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIScrollView+Paging.swift"; sourceTree = "<group>"; };
+		E5E0722324E03443099C4A84 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = WatchAssistant/Info.plist; sourceTree = SOURCE_ROOT; };
 		EA0BA18B1C0CC57B00719C1A /* Blink.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blink.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC1133BD6EB44D86B15A8FF4 /* Assistant.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Assistant.swift; path = WatchAssistant/Sources/Assistant.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		BDEC85752E8398940096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		BDEC85752E8398940096BF4C /* Exceptions for "Common" folder in "BlinkCode" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BlinkLogging/BlinkLogging.swift,
@@ -1273,7 +1294,7 @@
 			);
 			target = BDBFA3042728914F00C77798 /* BlinkCode */;
 		};
-		BDEC85792E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		BDEC85792E8399960096BF4C /* Exceptions for "Common" folder in "Blink" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BlinkLogging/BlinkLogging.swift,
@@ -1282,7 +1303,7 @@
 			);
 			target = EA0BA18A1C0CC57B00719C1A /* Blink */;
 		};
-		BDEC857A2E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		BDEC857A2E8399960096BF4C /* Exceptions for "Common" folder in "BlinkFileProvider" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BlinkLogging/BlinkLogging.swift,
@@ -1291,7 +1312,7 @@
 			);
 			target = BD9513E02B4F5A7A00A7BEBE /* BlinkFileProvider */;
 		};
-		BDEC85862E839B280096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		BDEC85862E839B280096BF4C /* Exceptions for "Common" folder in "BlinkTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BlinkLogging/BlinkLogging.swift,
@@ -1302,7 +1323,21 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		BDEC856B2E8397520096BF4C /* Common */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (BDEC85792E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC85862E839B280096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC85752E8398940096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, BDEC857A2E8399960096BF4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = Common; sourceTree = "<group>"; };
+		BDEC856B2E8397520096BF4C /* Common */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BDEC85792E8399960096BF4C /* Exceptions for "Common" folder in "Blink" target */,
+				BDEC85862E839B280096BF4C /* Exceptions for "Common" folder in "BlinkTests" target */,
+				BDEC85752E8398940096BF4C /* Exceptions for "Common" folder in "BlinkCode" target */,
+				BDEC857A2E8399960096BF4C /* Exceptions for "Common" folder in "BlinkFileProvider" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = Common;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1341,6 +1376,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				07FABBB825C9AECF00E1CC2C /* BlinkFiles.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3B3111941FEA29446AFD2398 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A6B191BC3740BF8204C06CA /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1603,6 +1646,7 @@
 				0732F1051D062BF700AB5438 /* MBProgressHUD.xcodeproj */,
 				07FAB90925C8E94200E1CC2C /* swift-argument-parser */,
 				D2BF5F6B2659522C0070F839 /* Intents.framework */,
+				801CADAFCD746229282E9AEC /* watchOS */,
 			);
 			path = Frameworks;
 			sourceTree = "<group>";
@@ -1749,6 +1793,40 @@
 				07FABBC025C9AECF00E1CC2C /* Info.plist */,
 			);
 			path = BlinkFilesTests;
+			sourceTree = "<group>";
+		};
+		4030C0B3F1637EB1504F85F9 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C6C4C926B5BAD06E54EF4D46 /* Models.swift */,
+				CB226D027CF392B11569CCFA /* Assistant.swift */,
+				3679639C3DEC6C82268AB1DE /* ContentView.swift */,
+				3CE13F3977D4184683DBE5A1 /* Models.swift */,
+				B8B16BAE7AA2F9C29F185197 /* Relay.swift */,
+				FC1133BD6EB44D86B15A8FF4 /* Assistant.swift */,
+				1F07EF1B8C769092E5B2DF71 /* ContentView.swift */,
+			);
+			name = Sources;
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		6646C99FB0D90A9C35C3ED70 /* WatchAssistant */ = {
+			isa = PBXGroup;
+			children = (
+				4030C0B3F1637EB1504F85F9 /* Sources */,
+				8115B499BF5E4F602EFA8F6A /* Info.plist */,
+				E5E0722324E03443099C4A84 /* Info.plist */,
+			);
+			name = WatchAssistant;
+			path = WatchAssistant;
+			sourceTree = SOURCE_ROOT;
+		};
+		801CADAFCD746229282E9AEC /* watchOS */ = {
+			isa = PBXGroup;
+			children = (
+				A291B358471DE7C8ACB30B26 /* Foundation.framework */,
+			);
+			name = watchOS;
 			sourceTree = "<group>";
 		};
 		803B99CB2582865500DC99C8 /* Notifications */ = {
@@ -2207,19 +2285,6 @@
 			path = udptunnel;
 			sourceTree = "<group>";
 		};
-		D2AB5DE5C0DE000000000006 /* RustDesk */ = {
-			isa = PBXGroup;
-			children = (
-				D2AB5DE5C0DE000000000005 /* rustdesk_native.h */,
-				D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */,
-				D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */,
-				D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */,
-				D2AB5DE5C0DE000000000012 /* RemoteShell.swift */,
-				D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */,
-			);
-			path = RustDesk;
-			sourceTree = "<group>";
-		};
 		D241CB93230406E2003D64A5 /* SmarterKeys */ = {
 			isa = PBXGroup;
 			children = (
@@ -2319,6 +2384,19 @@
 				D28B0336243EF5F2008F38F6 /* Set+UIScene.swift */,
 			);
 			path = UIKit;
+			sourceTree = "<group>";
+		};
+		D2AB5DE5C0DE000000000006 /* RustDesk */ = {
+			isa = PBXGroup;
+			children = (
+				D2AB5DE5C0DE000000000005 /* rustdesk_native.h */,
+				D2AB5DE5C0DE000000000002 /* RustDeskCore.swift */,
+				D2AB5DE5C0DE000000000008 /* RustDeskStub.swift */,
+				D2AB5DE5C0DE000000000004 /* RemoteDesktopViewController.swift */,
+				D2AB5DE5C0DE000000000012 /* RemoteShell.swift */,
+				D2AB5DE5C0DE000000000014 /* WindowAtQuery.swift */,
+			);
+			path = RustDesk;
 			sourceTree = "<group>";
 		};
 		D2AD8E6027A2BAFA00DED28D /* Subscriptions */ = {
@@ -2498,6 +2576,7 @@
 				0716B5231CFFAB9300268B5B /* Blink */,
 				BDEC856B2E8397520096BF4C /* Common */,
 				EA0BA18C1C0CC57B00719C1A /* Products */,
+				6646C99FB0D90A9C35C3ED70 /* WatchAssistant */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -2523,6 +2602,8 @@
 				D22277D52A26115300D4C708 /* BlinkSnippetsTests.xctest */,
 				BD9513E12B4F5A7A00A7BEBE /* BlinkFileProvider.framework */,
 				BD9513EA2B4F5A7A00A7BEBE /* BlinkFileProviderTests.xctest */,
+				B258F397308E2058F631D056 /* WatchAssistant.app */,
+				90CE1766288D628B2B028BF5 /* WatchAssistant.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -2601,8 +2682,6 @@
 				07FABC4B25C9B08100E1CC2C /* PBXTargetDependency */,
 			);
 			name = SSH;
-			packageProductDependencies = (
-			);
 			productName = SSH;
 			productReference = 07FABB8425C9AEC000E1CC2C /* SSH.framework */;
 			productType = "com.apple.product-type.framework";
@@ -2677,8 +2756,6 @@
 				BD9514232B4F600800A7BEBE /* PBXTargetDependency */,
 			);
 			name = BlinkFileProviderExtension;
-			packageProductDependencies = (
-			);
 			productName = BlinkFileProviderExtension;
 			productReference = 98271250262E4BDB00F883FA /* BlinkFileProviderExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -2901,6 +2978,23 @@
 			productReference = D265FBBA2317DD3C0017EAC4 /* BlinkTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		DB221348C386475BFA8A5BF1 /* WatchAssistant */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D9B3C51032BB898883F778FE /* Build configuration list for PBXNativeTarget "WatchAssistant" */;
+			buildPhases = (
+				2C4E784C591D5679660B6970 /* Sources */,
+				3B3111941FEA29446AFD2398 /* Frameworks */,
+				67652306F95246A9DA3EEE0E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WatchAssistant;
+			productName = WatchAssistant;
+			productReference = 90CE1766288D628B2B028BF5 /* WatchAssistant.app */;
+			productType = "com.apple.product-type.application";
+		};
 		EA0BA18A1C0CC57B00719C1A /* Blink */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = EA0BA1AD1C0CC57C00719C1A /* Build configuration list for PBXNativeTarget "Blink" */;
@@ -3062,7 +3156,7 @@
 				D22278062A26216900D4C708 /* XCRemoteSwiftPackageReference "treesitterlanguages" */,
 				D222780D2A26217A00D4C708 /* XCRemoteSwiftPackageReference "Runestone" */,
 				BD792A4D2A3BDAAA009EE35F /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
-				BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite" */,
+				BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite.swift" */,
 				BDA35C972D7F4955004CD75C /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */,
 			);
 			productRefGroup = EA0BA18C1C0CC57B00719C1A /* Products */;
@@ -3092,6 +3186,7 @@
 				D22277D42A26115300D4C708 /* BlinkSnippetsTests */,
 				BD9513E02B4F5A7A00A7BEBE /* BlinkFileProvider */,
 				BD9513E92B4F5A7A00A7BEBE /* BlinkFileProviderTests */,
+				DB221348C386475BFA8A5BF1 /* WatchAssistant */,
 			);
 		};
 /* End PBXProject section */
@@ -3149,6 +3244,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		07FABBB525C9AECF00E1CC2C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		67652306F95246A9DA3EEE0E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -3358,6 +3460,17 @@
 				07FABBBF25C9AECF00E1CC2C /* BlinkFilesTests.swift in Sources */,
 				07FABC1525C9AF8F00E1CC2C /* LocalFilesTests.swift in Sources */,
 				07FABC1625C9AF8F00E1CC2C /* CopyFilesTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2C4E784C591D5679660B6970 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CB6F1C136A326CC762A49709 /* Models.swift in Sources */,
+				79E125ECF9D48BB005AC568A /* Relay.swift in Sources */,
+				06A21A920D7D58B11C07136B /* Assistant.swift in Sources */,
+				DD862B052A85AFB79893C37F /* ContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -4254,6 +4367,34 @@
 			};
 			name = Release;
 		};
+		5CFDC5DB2D5C5F230BEE15CB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 659T9VUN97;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WatchAssistant/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aitools.talkcode.watch;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
 		98271270262E4BDB00F883FA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -4954,6 +5095,33 @@
 			};
 			name = Release;
 		};
+		C9980A50DB25961C909D420A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 659T9VUN97;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WatchAssistant/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aitools.talkcode.watch;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
 		D218068B25CC277900B98902 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -5617,6 +5785,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		D9B3C51032BB898883F778FE /* Build configuration list for PBXNativeTarget "WatchAssistant" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CFDC5DB2D5C5F230BEE15CB /* Release */,
+				C9980A50DB25961C909D420A /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		EA0BA1861C0CC57B00719C1A /* Build configuration list for PBXProject "Blink" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -5638,7 +5815,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite" */ = {
+		BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/stephencelis/SQLite.swift";
 			requirement = {
@@ -5719,7 +5896,7 @@
 		};
 		BD4DBAF92CADA82700538194 /* SQLite */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite" */;
+			package = BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite.swift" */;
 			productName = SQLite;
 		};
 		BD792A4E2A3BDAAA009EE35F /* ZIPFoundation */ = {

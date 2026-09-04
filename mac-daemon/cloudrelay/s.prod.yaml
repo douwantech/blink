@@ -1,0 +1,44 @@
+edition: 3.0.0
+name: blink-watch-relay-prod
+access: douwan
+resources:
+  BlinkWatchRelay:
+    component: fc3
+    actions:
+      pre-deploy:
+        - run: go mod tidy
+          path: ./
+        - run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o cmd/main .
+          path: ./
+        - run: chmod +x cmd/main
+          path: ./
+    props:
+      region: cn-hangzhou
+      role: 'AliyunFcDefaultRole'
+      description: '腕上助手云中继 (Prod)'
+      timeout: 60
+      diskSize: 512
+      internetAccess: true
+      functionName: blink-watch-relay-prod
+      cpu: 1
+      disableOndemand: false
+      memorySize: 1024
+      runtime: custom.debian10
+      code: ./cmd
+      instanceConcurrency: 50
+      customRuntimeConfig:
+        port: 9000
+        command:
+          - './main'
+      environmentVariables: ${json(file("./env/prod.json"))}
+      triggers:
+        - triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
+            disableURLInternet: false
+          triggerName: blink-watch-relay-http
+          description: 'HTTP trigger 腕上助手中继'
+          qualifier: LATEST
+          triggerType: http
