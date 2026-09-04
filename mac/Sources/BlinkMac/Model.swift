@@ -52,6 +52,13 @@ struct ChatBlock: Identifiable {
 
 // MARK: - Machine & Session
 
+enum Transport {
+    case local
+    case blinkd(host: String, port: UInt16, token: String)
+
+    var isRemote: Bool { if case .blinkd = self { return true }; return false }
+}
+
 struct Machine: Identifiable {
     let id: String
     var name: String
@@ -59,6 +66,7 @@ struct Machine: Identifiable {
     var initials: String
     var grad: [Color]
     var online: Bool = true
+    var transport: Transport = .local
 }
 
 struct Session: Identifiable {

@@ -20,13 +20,28 @@ final class AppState: ObservableObject {
     private var toastTask: Task<Void, Never>?
 
     init() {
+        // blinkd 远程配置从环境变量注入（里程碑 3 E2E：本地起 daemon 时设这三个）。
+        let env = ProcessInfo.processInfo.environment
+        let btoken = env["BLINKD_TOKEN"] ?? ""
+        let bhost = env["BLINKD_HOST"] ?? "127.0.0.1"
+        let bport = UInt16(env["BLINKD_PORT"] ?? "7777") ?? 7777
+        let studioTransport: Transport = btoken.isEmpty ? .local : .blinkd(host: bhost, port: bport, token: btoken)
+
         machines = [
-            Machine(id: "mbp", name: "MacBook Pro", host: "jack@100.96.88.80", initials: "M", grad: Grad.blue),
-            Machine(id: "studio", name: "Mac Studio", host: "jack@100.96.88.42", initials: "S", grad: Grad.amber),
+            Machine(id: "mbp", name: "MacBook Pro", host: "jack@100.96.88.80", initials: "M", grad: Grad.blue, transport: .local),
+            Machine(id: "studio", name: "Mac Studio",
+                    host: btoken.isEmpty ? "jack@100.96.88.42" : "blinkd \(bhost):\(bport)",
+                    initials: "S", grad: Grad.amber, transport: studioTransport),
         ]
         sessions = AppState.sampleSessions()
-        activeMachineID = "mbp"
-        activeSessionID = "blink"
+        if btoken.isEmpty {
+            activeMachineID = "mbp"
+            activeSessionID = "blink"
+        } else {
+            // 配了 blinkd 就直接落到远程机器，启动即连（也方便 E2E）
+            activeMachineID = "studio"
+            activeSessionID = "talkai"
+        }
     }
 
     // MARK: Derived
@@ -103,7 +118,7 @@ final class AppState: ObservableObject {
     func reconnect() {
         guard !reconnecting else { return }
         reconnecting = true
-        term.restart(activeSession)   // 重开真实 shell
+        term.restart(activeSessionID)   // 本地=重开 shell；blinkd=重连
         let id = activeSessionID
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
