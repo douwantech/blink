@@ -22,6 +22,7 @@ struct RootView: View {
         }
         .background(Theme.bg)
         .foregroundColor(Theme.fg)
+        .task { await state.startup() }
     }
 }
 

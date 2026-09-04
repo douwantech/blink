@@ -6,11 +6,12 @@ import AppKit
 enum BlinkAvatars {
     private static let bundleId = "com.aitools.talkcode.stg"
 
-    static let byOwner: [String: NSImage] = load()
-
-    static func image(forOwner owner: String) -> NSImage? {
-        byOwner[owner.lowercased()]
+    /// 后台线程加载（读别的 app 容器 plist 会被 TCC 阻塞，绝不能在主线程/渲染里做）。
+    static func loadAsync() async -> [String: NSImage] {
+        await Task.detached(priority: .utility) { load() }.value
     }
+
+    static func load() -> [String: NSImage] { loadImpl() }
 
     private static func containerPlist() -> URL? {
         let base = NSHomeDirectory() + "/Library/Containers"
@@ -24,7 +25,7 @@ enum BlinkAvatars {
         return FileManager.default.fileExists(atPath: direct) ? URL(fileURLWithPath: direct) : nil
     }
 
-    private static func load() -> [String: NSImage] {
+    private static func loadImpl() -> [String: NSImage] {
         guard let url = containerPlist(),
               let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],

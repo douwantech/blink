@@ -9,7 +9,7 @@ struct TeamInspector: View {
             HStack {
                 Text("团队").font(Theme.ui(14, .bold))
                 Spacer()
-                IconButton(system: "arrow.clockwise", size: 26, iconSize: 15) { state.showToast("正在探测各机器…") }
+                IconButton(system: "arrow.clockwise", size: 26, iconSize: 15) { state.probe() }
             }
             .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
             Divider().overlay(Theme.hair)

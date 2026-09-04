@@ -116,7 +116,7 @@ struct SessionRow: View {
         Button { state.selectSession(session.id) } label: {
             HStack(spacing: 10) {
                 Avatar(text: session.initials, grad: session.grad, size: 30, corner: 9,
-                       image: BlinkAvatars.image(forOwner: session.owner))
+                       image: state.avatar(session.owner))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
                     Text(session.dir).font(Theme.mono(11)).foregroundColor(Theme.sub)

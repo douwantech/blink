@@ -1,7 +1,11 @@
 import SwiftUI
+import AppKit
 
 @MainActor
 final class AppState: ObservableObject {
+    @Published var avatars: [String: NSImage] = [:]   // owner(小写) → 真头像
+    func avatar(_ owner: String) -> NSImage? { avatars[owner.lowercased()] }
+
     @Published var machines: [Machine]
     @Published var sessions: [Session]
     @Published var activeMachineID: String
@@ -44,8 +48,18 @@ final class AppState: ObservableObject {
                                 grad: Grad.slate, status: .idle, lines: [], placeholder: true)]
             activeMachineID = "mbp"
             activeSessionID = "loading"
-            Task { @MainActor in await self.loadRealSessions(host: bhost, port: bport, token: btoken) }
         }
+    }
+
+    /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
+    func startup() async {
+        // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
+        Task.detached(priority: .utility) { [weak self] in
+            let a = BlinkAvatars.load()
+            await MainActor.run { self?.avatars = a }
+        }
+        guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
+        await loadRealSessions(host: h, port: p, token: t)
     }
 
     // MARK: 枚举真实会话
@@ -59,6 +73,66 @@ final class AppState: ObservableObject {
         }
         sessions = real
         activeSessionID = ""   // 不自动 attach，等用户点选（避免误连别人的会话）
+        await probeStatuses(host: host, port: port, token: token)   // 真实状态探测
+    }
+
+    // MARK: 真实状态探测（干活中/等你/空闲）
+
+    /// 一条 blinkd exec 遍历所有 cc-* 会话：pane_current_command + 底部有没有
+    /// "esc to interrupt"(busy)。分类同 iOS：裸 shell→空闲、busy→干活、否则→等你。
+    static let probeScript = #"""
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+BODY=$(
+tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
+  pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
+  busy=0
+  tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+  printf '%s\t%s\t%s\n' "$s" "$pc" "$busy"
+done
+)
+EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+printf '@TSB64@%s@TSB64E@\n' "$EB64"
+"""#
+
+    func probe() {
+        showToast("正在探测各机器…")
+        Task { @MainActor in await self.probeStatuses(); showToast("状态已更新") }
+    }
+
+    func probeStatuses() async {
+        guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
+        await probeStatuses(host: h, port: p, token: t)
+    }
+
+    func probeStatuses(host: String, port: UInt16, token: String) async {
+        let out = await BlinkdExec.run(host: host, port: port, token: token,
+                                       command: AppState.probeScript, timeout: 20, finishMarker: "@TSB64E@")
+        let map = AppState.parseProbe(out)
+        guard !map.isEmpty else { return }
+        for i in sessions.indices {
+            guard let name = sessions[i].tmuxName else { continue }
+            let probed = map[name] ?? .idle
+            sessions[i].probed = probed
+            sessions[i].status = MacRestStore.isResting(name) ? .rest : probed
+        }
+    }
+
+    static func parseProbe(_ out: String) -> [String: WorkStatus] {
+        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
+              a.upperBound <= b.lowerBound else { return [:] }
+        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
+        guard let data = Data(base64Encoded: String(b64)),
+              let body = String(data: data, encoding: .utf8) else { return [:] }
+        let shells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
+        var map: [String: WorkStatus] = [:]
+        for line in body.split(whereSeparator: { $0.isNewline }) {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard f.count >= 3 else { continue }
+            let pc = f[1].trimmingCharacters(in: .whitespaces)
+            let busy = f[2].trimmingCharacters(in: .whitespaces) == "1"
+            map[String(f[0])] = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
+        }
+        return map
     }
 
     static func parseSessions(_ out: String) -> [Session] {
@@ -72,9 +146,11 @@ final class AppState: ObservableObject {
             let path = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
             let title = String(full.dropFirst(3))
             let initials = String(title.replacingOccurrences(of: "-", with: "").prefix(2))
+            let resting = MacRestStore.isResting(full)
             result.append(Session(id: full, machineID: "mbp", name: title,
                                   dir: path.isEmpty ? "~" : path, initials: initials,
-                                  grad: grads[result.count % grads.count], status: .work,
+                                  grad: grads[result.count % grads.count],
+                                  status: resting ? .rest : .work, probed: .work,
                                   lines: [], tmuxName: full))
         }
         return result
@@ -154,8 +230,14 @@ final class AppState: ObservableObject {
     }
 
     func toggleRestActive() {
-        mutateActive { $0.status = $0.status == .rest ? .work : .rest }
-        showToast("已切换当前会话 休息/在岗")
+        let s = activeSession
+        guard !s.placeholder else { return }
+        let name = s.tmuxName ?? s.id
+        let nowResting = MacRestStore.toggle(name)   // 持久化到 UserDefaults
+        if let i = sessions.firstIndex(where: { $0.id == s.id }) {
+            sessions[i].status = nowResting ? .rest : sessions[i].probed
+        }
+        showToast(nowResting ? "已标记休息（本机持久）" : "已恢复在岗")
     }
 
     func reconnect() {

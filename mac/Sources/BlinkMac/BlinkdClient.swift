@@ -115,7 +115,8 @@ final class BlinkdClient {
 /// 一次性 blinkd exec：连接 → auth → exec → 收集全部输出直到连接关闭，返回字符串。
 /// 用于枚举远端 `tmux list-sessions` 等只读命令（无 resize，不涉及帧序问题）。
 enum BlinkdExec {
-    static func run(host: String, port: UInt16, token: String, command: String, timeout: TimeInterval = 6) async -> String {
+    static func run(host: String, port: UInt16, token: String, command: String,
+                    timeout: TimeInterval = 6, finishMarker: String? = nil) async -> String {
         await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
             let conn = NWConnection(host: NWEndpoint.Host(host),
                                     port: NWEndpoint.Port(rawValue: port) ?? 7777, using: .tcp)
@@ -145,8 +146,13 @@ enum BlinkdExec {
             }
             func recv() {
                 conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, err in
-                    if let d = data, !d.isEmpty { lock.lock(); buf.append(d); lock.unlock() }
-                    if complete || err != nil { finish() } else { recv() }
+                    var hitMarker = false
+                    if let d = data, !d.isEmpty {
+                        lock.lock(); buf.append(d)
+                        if let m = finishMarker { hitMarker = String(decoding: buf, as: UTF8.self).contains(m) }
+                        lock.unlock()
+                    }
+                    if hitMarker || complete || err != nil { finish() } else { recv() }
                 }
             }
             conn.start(queue: .global())
