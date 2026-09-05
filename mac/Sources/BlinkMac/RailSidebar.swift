@@ -62,7 +62,7 @@ struct SessionSidebar: View {
                         Image(systemName: "moon.zzz.fill").font(.system(size: 14)).foregroundColor(Theme.rest)
                         Text("休息中").font(Theme.ui(17, .bold))
                     }
-                    Text("点会话唤醒 · 🌙 收起面板").font(Theme.mono(11)).foregroundColor(Theme.dim)
+                    Text("点会话唤醒 · 下方返回在岗").font(Theme.mono(11)).foregroundColor(Theme.dim)
                 } else {
                     Text(state.activeMachine.name).font(Theme.ui(17, .bold))
                     Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 会话")
@@ -82,6 +82,33 @@ struct SessionSidebar: View {
                 .padding(.horizontal, 10)
             }
 
+            // 休息中入口 / 面板返回
+            if state.showResting {
+                Button { state.showResting = false } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                        Text("返回在岗").font(Theme.ui(12, .semibold))
+                        Spacer()
+                    }
+                    .foregroundColor(Theme.teal)
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if state.restingCount > 0 {
+                Button { state.showResting = true } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "moon.zzz.fill").font(.system(size: 12)).foregroundColor(Theme.rest)
+                        Text("休息中 · \(state.restingCount)").font(Theme.ui(12, .medium)).foregroundColor(Theme.sub)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.dim)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
             Divider().overlay(Theme.hair)
 
             // footer
@@ -97,25 +124,16 @@ struct SessionSidebar: View {
                 }
                 .buttonStyle(.plain)
 
-                Button { state.showResting.toggle() } label: {
-                    Image(systemName: state.showResting ? "moon.zzz.fill" : "moon")
+                // 让当前打开的会话休息（隐藏）——同手机底部休息按钮
+                Button { state.toggleRestActive() } label: {
+                    Image(systemName: "moon")
                         .font(.system(size: 15))
                         .foregroundColor(Theme.rest)
                         .frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(Theme.rest.opacity(state.showResting ? 0.28 : 0.14)))
-                        .overlay(alignment: .topTrailing) {
-                            if state.restingCount > 0 {
-                                Text("\(state.restingCount)")
-                                    .font(Theme.ui(9, .bold)).foregroundColor(.white)
-                                    .padding(.horizontal, 4).padding(.vertical, 1)
-                                    .background(Capsule().fill(Theme.rest))
-                                    .offset(x: 5, y: -4)
-                            }
-                        }
+                        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.rest.opacity(0.14)))
                 }
                 .buttonStyle(.plain)
-                .help("休息面板（\(state.restingCount)）")
+                .help("让当前会话休息（从列表隐藏）")
             }
             .padding(12)
         }
