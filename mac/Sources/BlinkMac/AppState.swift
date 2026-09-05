@@ -175,9 +175,19 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
                        initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
     }
+    /// 休息面板开关：休息=从主列表隐藏，开面板才看得到（同手机）
+    @Published var showResting = false
+
+    private func resting(_ s: Session) -> Bool { MacRestStore.isResting(s.tmuxName ?? s.id) }
+
     var sidebarSessions: [Session] {
         sessions.filter { $0.machineID == activeMachineID }
+            .filter { showResting ? resting($0) : !resting($0) }   // 休息=隐藏
             .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }   // 按项目排序
+    }
+
+    var restingCount: Int {
+        sessions.filter { $0.machineID == activeMachineID && resting($0) }.count
     }
 
     func count(_ s: WorkStatus) -> Int { sessions.filter { $0.status == s }.count }
@@ -240,15 +250,21 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
     }
 
+    /// 切换某个会话的休息（隐藏/唤醒）。
+    func toggleRest(sessionID: String) {
+        guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
+        let now = MacRestStore.toggle(s.tmuxName ?? s.id)   // 持久化
+        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[i].status = now ? .rest : sessions[i].probed
+        }
+        if showResting && restingCount == 0 { showResting = false }   // 面板空了自动收起
+    }
+
     func toggleRestActive() {
         let s = activeSession
         guard !s.placeholder else { return }
-        let name = s.tmuxName ?? s.id
-        let nowResting = MacRestStore.toggle(name)   // 持久化到 UserDefaults
-        if let i = sessions.firstIndex(where: { $0.id == s.id }) {
-            sessions[i].status = nowResting ? .rest : sessions[i].probed
-        }
-        showToast(nowResting ? "已标记休息（本机持久）" : "已恢复在岗")
+        toggleRest(sessionID: s.id)
+        showToast(resting(s) ? "已休息，从列表隐藏（🌙 里可唤醒）" : "已唤醒")
     }
 
     func reconnect() {

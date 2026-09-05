@@ -57,9 +57,17 @@ struct SessionSidebar: View {
         VStack(spacing: 0) {
             // header
             VStack(alignment: .leading, spacing: 3) {
-                Text(state.activeMachine.name).font(Theme.ui(17, .bold))
-                Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 会话")
-                    .font(Theme.mono(11)).foregroundColor(Theme.dim)
+                if state.showResting {
+                    HStack(spacing: 6) {
+                        Image(systemName: "moon.zzz.fill").font(.system(size: 14)).foregroundColor(Theme.rest)
+                        Text("休息中").font(Theme.ui(17, .bold))
+                    }
+                    Text("点会话唤醒 · 🌙 收起面板").font(Theme.mono(11)).foregroundColor(Theme.dim)
+                } else {
+                    Text(state.activeMachine.name).font(Theme.ui(17, .bold))
+                    Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 会话")
+                        .font(Theme.mono(11)).foregroundColor(Theme.dim)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
@@ -89,14 +97,25 @@ struct SessionSidebar: View {
                 }
                 .buttonStyle(.plain)
 
-                Button { state.toggleRestActive() } label: {
-                    Image(systemName: "moon")
+                Button { state.showResting.toggle() } label: {
+                    Image(systemName: state.showResting ? "moon.zzz.fill" : "moon")
                         .font(.system(size: 15))
                         .foregroundColor(Theme.rest)
                         .frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.rest.opacity(0.14)))
+                        .background(RoundedRectangle(cornerRadius: 9)
+                            .fill(Theme.rest.opacity(state.showResting ? 0.28 : 0.14)))
+                        .overlay(alignment: .topTrailing) {
+                            if state.restingCount > 0 {
+                                Text("\(state.restingCount)")
+                                    .font(Theme.ui(9, .bold)).foregroundColor(.white)
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Capsule().fill(Theme.rest))
+                                    .offset(x: 5, y: -4)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
+                .help("休息面板（\(state.restingCount)）")
             }
             .padding(12)
         }
@@ -113,7 +132,10 @@ struct SessionRow: View {
     var isActive: Bool { session.id == state.activeSessionID }
 
     var body: some View {
-        Button { state.selectSession(session.id) } label: {
+        Button {
+            if state.showResting { state.toggleRest(sessionID: session.id) }   // 面板里点=唤醒
+            else { state.selectSession(session.id) }
+        } label: {
             HStack(spacing: 10) {
                 Avatar(text: session.initials, grad: session.grad, size: 30, corner: 9,
                        image: state.avatar(session.owner))
