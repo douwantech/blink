@@ -110,21 +110,38 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         Task { @MainActor in await self.probeStatuses(); showToast("状态已更新") }
     }
 
-    /// 刷新：重新枚举 cc-* 会话 + 探测状态（Ctrl-R / 顶栏刷新按钮）。保留当前选中的会话。
-    func refresh() async {
-        guard case .blinkd(let h, let p, let t) = activeMachine.transport else {
-            showToast("本地示例数据，无需刷新"); return
+    /// 刷新当前选中会话的状态（Cmd-R）。只探测当前这一个，不动其它会话。
+    func refreshActive() async {
+        let s = activeSession
+        guard !s.placeholder, let name = s.tmuxName,
+              case .blinkd(let h, let p, let t) = activeMachine.transport else {
+            showToast("当前没有可刷新的会话"); return
         }
-        showToast("刷新会话中…")
-        let keep = activeSessionID
-        let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
-        let real = AppState.parseSessions(out)
-        if !real.isEmpty {
-            sessions = real
-            if !real.contains(where: { $0.id == keep }) { activeSessionID = "" }   // 选中的没了才清空
+        showToast("刷新「\(s.name)」…")
+        let out = await BlinkdExec.run(host: h, port: p, token: t,
+                                       command: AppState.probeOneScript(session: name),
+                                       timeout: 15, finishMarker: "@TSB64E@")
+        let map = AppState.parseProbe(out)
+        guard let st = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
+            showToast("刷新失败或会话已不存在"); return
         }
-        await probeStatuses(host: h, port: p, token: t)
-        showToast("已刷新 · \(sidebarSessions.count) 会话")
+        sessions[i].probed = st
+        sessions[i].status = MacRestStore.isResting(name) ? .rest : st
+        showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
+    }
+
+    /// 只探测单个会话的探测脚本（同 probeScript 但只跑一个 session）。
+    static func probeOneScript(session: String) -> String {
+        #"""
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        s='\#(session)'
+        pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
+        busy=0
+        tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+        BODY=$(printf '%s\t%s\t%s\n' "$s" "$pc" "$busy")
+        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+        printf '@TSB64@%s@TSB64E@\n' "$EB64"
+        """#
     }
 
     func probeStatuses() async {

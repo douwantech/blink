@@ -17,11 +17,11 @@ struct BlinkMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 860)
         .commands {
-            // Ctrl-R 刷新：走主菜单 key equivalent，NSApp 先于终端响应链拦截，
-            // 不管焦点在不在 SwiftTerm 都能刷新会话列表 + 探测状态。
+            // Cmd-R 刷新当前会话：走主菜单 key equivalent，NSApp 先于终端响应链拦截，
+            // 不管焦点在不在 SwiftTerm 都能刷新当前选中会话的状态（只刷这一个）。
             CommandGroup(after: .toolbar) {
-                Button("刷新会话") { Task { await state.refresh() } }
-                    .keyboardShortcut("r", modifiers: .control)
+                Button("刷新当前会话") { Task { await state.refreshActive() } }
+                    .keyboardShortcut("r", modifiers: .command)
             }
         }
     }
