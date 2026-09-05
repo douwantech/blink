@@ -33,18 +33,73 @@ struct TeamInspector: View {
             .background(RoundedRectangle(cornerRadius: 9).fill(Theme.panel))
             .padding(.horizontal, 14).padding(.bottom, 10)
 
-            // list
+            // list（真实会话，按当前分组；行尾月亮=休息开关，同手机）
             ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(state.teamItems) { it in
-                        teamCard(it)
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(state.teamGroups) { g in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Avatar(text: initials(g.title),
+                                       grad: g.sessions.first?.grad ?? Grad.slate,
+                                       size: 24, corner: 12, fontSize: 10,
+                                       image: state.inspector == .employee ? state.avatar(g.title) : nil)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(g.title).font(Theme.ui(13, .bold))
+                                    Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 2)
+                            ForEach(g.sessions) { s in teamRow(s) }
+                        }
+                    }
+                    if state.teamGroups.isEmpty {
+                        Text("无会话").font(Theme.ui(12)).foregroundColor(Theme.dim)
+                            .frame(maxWidth: .infinity).padding(.top, 20)
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 14).padding(.bottom, 14)
             }
         }
         .frame(width: 296)
         .background(Color.white.opacity(0.03))
+    }
+
+    private func initials(_ s: String) -> String {
+        String(s.replacingOccurrences(of: "-", with: "").prefix(2))
+    }
+
+    /// 一个真实会话行：点行=切到该会话；行尾月亮=休息/唤醒（写 iCloud KV，同步手机）。
+    private func teamRow(_ s: Session) -> some View {
+        Button { state.selectSession(s.id) } label: {
+            HStack(spacing: 9) {
+                Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(s.name).font(Theme.ui(12, .semibold)).foregroundColor(Theme.fg)
+                    Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                StatusPill(status: s.status)
+                Button { state.toggleRest(sessionID: s.id) } label: {
+                    Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
+                        .font(.system(size: 13))
+                        .foregroundColor(s.status == .rest ? Theme.rest : Theme.dim)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help(s.status == .rest ? "唤醒（在岗）" : "让 TA 休息")
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(s.id == state.activeSessionID ? Theme.teal.opacity(0.10)
+                      : (s.status == .rest ? Color.white.opacity(0.02) : Theme.panel)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(s.status == .wait ? Theme.wait.opacity(0.35) : Theme.hair))
+            .opacity(s.status == .rest ? 0.6 : 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func statTile(_ n: Int, _ label: String, _ color: Color) -> some View {
@@ -67,36 +122,5 @@ struct TeamInspector: View {
                 .background(RoundedRectangle(cornerRadius: 7).fill(on ? Theme.panel3 : .clear))
         }
         .buttonStyle(.plain)
-    }
-
-    private func teamCard(_ it: TeamMember) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Avatar(text: it.initials, grad: it.grad, size: 32, corner: 16, fontSize: 13)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(it.title).font(Theme.mono(13, .bold))
-                    Text(it.sub).font(Theme.ui(11)).foregroundColor(Theme.dim)
-                }
-                Spacer(minLength: 4)
-                StatusPill(status: it.status)
-                if it.showMoon {
-                    Button { state.showToast("已切换 在岗/休息") } label: {
-                        Image(systemName: "moon").font(.system(size: 14))
-                            .foregroundColor(it.status == .rest ? Theme.rest : Theme.dim)
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            if !it.note.isEmpty {
-                Text(it.note).font(Theme.ui(11)).foregroundColor(Theme.sub)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 2)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel)
-            .overlay(RoundedRectangle(cornerRadius: 14)
-                .stroke(it.status == .wait ? Theme.wait.opacity(0.35) : Theme.hair)))
     }
 }

@@ -57,17 +57,10 @@ struct SessionSidebar: View {
         VStack(spacing: 0) {
             // header
             VStack(alignment: .leading, spacing: 3) {
-                if state.showResting {
-                    HStack(spacing: 6) {
-                        Image(systemName: "moon.zzz.fill").font(.system(size: 14)).foregroundColor(Theme.rest)
-                        Text("休息中").font(Theme.ui(17, .bold))
-                    }
-                    Text("点会话唤醒 · 下方返回在岗").font(Theme.mono(11)).foregroundColor(Theme.dim)
-                } else {
-                    Text(state.activeMachine.name).font(Theme.ui(17, .bold))
-                    Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 会话")
-                        .font(Theme.mono(11)).foregroundColor(Theme.dim)
-                }
+                Text(state.activeMachine.name).font(Theme.ui(17, .bold))
+                Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 在岗"
+                     + (state.restingCount > 0 ? " · \(state.restingCount) 休息" : ""))
+                    .font(Theme.mono(11)).foregroundColor(Theme.dim)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
@@ -80,33 +73,6 @@ struct SessionSidebar: View {
                     }
                 }
                 .padding(.horizontal, 10)
-            }
-
-            // 休息中入口 / 面板返回
-            if state.showResting {
-                Button { state.showResting = false } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
-                        Text("返回在岗").font(Theme.ui(12, .semibold))
-                        Spacer()
-                    }
-                    .foregroundColor(Theme.teal)
-                    .padding(.horizontal, 16).padding(.vertical, 9)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else if state.restingCount > 0 {
-                Button { state.showResting = true } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "moon.zzz.fill").font(.system(size: 12)).foregroundColor(Theme.rest)
-                        Text("休息中 · \(state.restingCount)").font(Theme.ui(12, .medium)).foregroundColor(Theme.sub)
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.dim)
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 9)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
 
             Divider().overlay(Theme.hair)
@@ -151,8 +117,7 @@ struct SessionRow: View {
 
     var body: some View {
         Button {
-            if state.showResting { state.toggleRest(sessionID: session.id) }   // 面板里点=唤醒
-            else { state.selectSession(session.id) }
+            state.selectSession(session.id)
         } label: {
             HStack(spacing: 10) {
                 Avatar(text: session.initials, grad: session.grad, size: 30, corner: 9,

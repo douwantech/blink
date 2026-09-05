@@ -265,43 +265,46 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
                        initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
     }
-    /// 休息面板开关：休息=从主列表隐藏，开面板才看得到（同手机）
-    @Published var showResting = false
-
     private func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
 
+    /// 侧栏只显示在岗会话，休息的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
     var sidebarSessions: [Session] {
-        sessions.filter { $0.machineID == activeMachineID }
-            .filter { showResting ? resting($0) : !resting($0) }   // 休息=隐藏
-            .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }   // 按项目排序
+        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !resting($0) }
+            .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }
     }
 
     var restingCount: Int {
         sessions.filter { $0.machineID == activeMachineID && resting($0) }.count
     }
 
-    func count(_ s: WorkStatus) -> Int { sessions.filter { $0.status == s }.count }
+    func count(_ s: WorkStatus) -> Int {
+        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && $0.status == s }.count
+    }
 
-    var teamItems: [TeamMember] {
+    /// 员工列表分组（真实会话）：按员工/项目/机器分组，含休息中的会话（在这里唤醒）。
+    var teamGroups: [TeamGroup] {
+        let mine = sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil }
+        func summary(_ ss: [Session]) -> String {
+            let w = ss.filter { $0.status == .wait }.count
+            let r = ss.filter { $0.status == .rest }.count
+            var parts = ["\(ss.count) 会话"]
+            if w > 0 { parts.append("\(w) 等你") }
+            if r > 0 { parts.append("\(r) 休息") }
+            return parts.joined(separator: " · ")
+        }
+        func build(_ keyed: [(String, Session)]) -> [TeamGroup] {
+            var order: [String] = []; var map: [String: [Session]] = [:]
+            for (k, s) in keyed { if map[k] == nil { order.append(k) }; map[k, default: []].append(s) }
+            return order.map { k in
+                let ss = (map[k] ?? []).sorted { $0.name < $1.name }
+                return TeamGroup(id: k, title: k, sub: summary(ss), sessions: ss)
+            }.sorted { $0.title < $1.title }
+        }
         switch inspector {
-        case .employee:
-            return [
-                TeamMember(initials: "汤", grad: Grad.amber, title: "tangyuan", sub: "QA · Mac mini",
-                           status: .wait, note: "练口语 · #22 STT 空结果，卡在 review"),
-                TeamMember(initials: "T", grad: Grad.green, title: "toma", sub: "PM · Mac Studio", status: .work),
-                TeamMember(initials: "老", grad: Grad.slate, title: "laoda", sub: "老板 · MacBook", status: .idle),
-            ]
-        case .project:
-            return [
-                TeamMember(initials: "练", grad: Grad.blue, title: "练口语", sub: "3 人在跑 · 1 等你", status: .wait),
-                TeamMember(initials: "印", grad: Grad.green, title: "AI-Printer", sub: "你 · 干活中", status: .work),
-                TeamMember(initials: "B", grad: Grad.purple, title: "Blink", sub: "你 · 干活中", status: .work),
-            ]
-        case .machine:
-            return [
-                TeamMember(initials: "M", grad: Grad.blue, title: "MacBook Pro", sub: "2 会话在岗", status: .work, showMoon: true),
-                TeamMember(initials: "S", grad: Grad.amber, title: "Mac Studio", sub: "休息中", status: .rest, showMoon: true),
-            ]
+        case .employee: return build(mine.map { ($0.owner, $0) })
+        case .project:  return build(mine.map { ($0.project, $0) })
+        case .machine:  return [TeamGroup(id: activeMachineID, title: activeMachine.name,
+                                          sub: summary(mine), sessions: mine.sorted { $0.name < $1.name })]
         }
     }
 
@@ -354,7 +357,6 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
             sessions[i].status = now ? .rest : sessions[i].probed
         }
-        if showResting && restingCount == 0 { showResting = false }   // 面板空了自动收起
     }
 
     func toggleRestActive() {

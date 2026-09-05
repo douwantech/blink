@@ -108,6 +108,14 @@ struct TeamMember: Identifiable {
 enum TerminalMode { case terminal, chat }
 enum InspectorMode: String { case employee, project, machine }
 
+/// 员工列表的一组（真实会话），按员工/项目/机器聚合。
+struct TeamGroup: Identifiable {
+    let id: String
+    let title: String
+    let sub: String
+    let sessions: [Session]
+}
+
 // MARK: - Gradients
 
 enum Grad {
