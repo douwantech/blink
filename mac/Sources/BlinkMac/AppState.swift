@@ -24,14 +24,18 @@ final class AppState: ObservableObject {
     private var toastTask: Task<Void, Never>?
 
     init() {
-        // blinkd 配置从环境变量注入。设了 BLINKD_TOKEN → 本机 MacBook Pro 走 blinkd，
-        // 枚举真实 tmux cc-* 会话；没设 → 本地示例数据（make run 直接可看）。
-        let env = ProcessInfo.processInfo.environment
-        let btoken = env["BLINKD_TOKEN"] ?? ""
-        let bhost = env["BLINKD_HOST"] ?? "127.0.0.1"
-        let bport = UInt16(env["BLINKD_PORT"] ?? "7777") ?? 7777
-
-        if btoken.isEmpty {
+        // blinkd 配置：环境变量优先，其次 ~/.config/blinkmac/config.json（双击 .app 用这个）。
+        // 有配置 → 本机走 blinkd 枚举真实会话；没有 → 本地示例数据。
+        if let cfg = AppState.blinkdConfig() {
+            machines = [
+                Machine(id: "mbp", name: "MacBook Pro", host: "blinkd \(cfg.host):\(cfg.port)", initials: "M",
+                        grad: Grad.blue, transport: .blinkd(host: cfg.host, port: cfg.port, token: cfg.token)),
+            ]
+            sessions = [Session(id: "loading", machineID: "mbp", name: "连接中…", dir: "", initials: "··",
+                                grad: Grad.slate, status: .idle, lines: [], placeholder: true)]
+            activeMachineID = "mbp"
+            activeSessionID = "loading"
+        } else {
             machines = [
                 Machine(id: "mbp", name: "MacBook Pro", host: "本地 shell", initials: "M", grad: Grad.blue, transport: .local),
                 Machine(id: "studio", name: "Mac Studio", host: "jack@100.96.88.42", initials: "S", grad: Grad.amber, transport: .local),
@@ -39,16 +43,23 @@ final class AppState: ObservableObject {
             sessions = AppState.sampleSessions()
             activeMachineID = "mbp"
             activeSessionID = "blink"
-        } else {
-            machines = [
-                Machine(id: "mbp", name: "MacBook Pro", host: "blinkd \(bhost):\(bport)", initials: "M",
-                        grad: Grad.blue, transport: .blinkd(host: bhost, port: bport, token: btoken)),
-            ]
-            sessions = [Session(id: "loading", machineID: "mbp", name: "连接中…", dir: "", initials: "··",
-                                grad: Grad.slate, status: .idle, lines: [], placeholder: true)]
-            activeMachineID = "mbp"
-            activeSessionID = "loading"
         }
+    }
+
+    /// 读 blinkd 配置：环境变量 BLINKD_TOKEN/HOST/PORT，其次 ~/.config/blinkmac/config.json。
+    static func blinkdConfig() -> (host: String, port: UInt16, token: String)? {
+        let env = ProcessInfo.processInfo.environment
+        if let t = env["BLINKD_TOKEN"], !t.isEmpty {
+            return (env["BLINKD_HOST"] ?? "127.0.0.1", UInt16(env["BLINKD_PORT"] ?? "7777") ?? 7777, t)
+        }
+        let path = NSHomeDirectory() + "/.config/blinkmac/config.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let t = obj["token"] as? String, !t.isEmpty else { return nil }
+        let host = (obj["host"] as? String) ?? "127.0.0.1"
+        let port: UInt16 = (obj["port"] as? Int).map { UInt16(truncatingIfNeeded: $0) }
+            ?? UInt16((obj["port"] as? String) ?? "") ?? 7777
+        return (host, port, t)
     }
 
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
