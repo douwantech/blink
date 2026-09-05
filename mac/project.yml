@@ -1,0 +1,35 @@
+# xcodegen 工程：只用于「正式版」签名构建（automatic signing + iCloud KV entitlement）。
+# 日常开发仍走 SPM（make run）。生成物 .xcodeproj 不入库，由 make app 现生成。
+name: BlinkMac
+options:
+  bundleIdPrefix: com.douwantech
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: "1.2.0"
+targets:
+  BlinkMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/BlinkMac
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
+    dependencies:
+      - package: SwiftTerm
+        product: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.douwantech.blinkmac
+        INFOPLIST_FILE: Resources/Info.plist
+        DEVELOPMENT_TEAM: "659T9VUN97"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Resources/BlinkMac.entitlements
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ENABLE_HARDENED_RUNTIME: "YES"
+        COMBINE_HIDPI_IMAGES: "YES"

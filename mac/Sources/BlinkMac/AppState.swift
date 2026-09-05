@@ -18,6 +18,12 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     @Published var showTeam = true
 
+    // 跨设备休息（正式版）：cloudAvailable=有共享 KV；cloudResting=休息中的 cc-title；
+    // cloudMapping=cc-title↔tab UUID。dev 版 cloudAvailable=false → 回退本地 MacRestStore。
+    @Published var cloudResting: Set<String> = []
+    @Published var cloudAvailable = false
+    var cloudMapping = CloudRestStore.Mapping()
+
     /// Real local PTY terminals (SwiftTerm), one per session.
     let term = TerminalManager()
 
@@ -71,6 +77,35 @@ final class AppState: ObservableObject {
         }
         guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
         await loadRealSessions(host: h, port: p, token: t)
+        await loadCloudRest()
+    }
+
+    /// 从 iCloud KV + Blink 容器读跨设备休息状态（off-main），再重算各会话状态。
+    func loadCloudRest() async {
+        let (avail, mapping, resting) = await Task.detached(priority: .utility) {
+            () -> (Bool, CloudRestStore.Mapping, Set<String>) in
+            let m = CloudRestStore.loadMapping()
+            return (CloudRestStore.available, m, CloudRestStore.restingCCTitles(m))
+        }.value
+        cloudAvailable = avail
+        cloudMapping = mapping
+        cloudResting = resting
+        recomputeRestStatuses()
+    }
+
+    /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
+    func recomputeRestStatuses() {
+        for i in sessions.indices {
+            let name = sessions[i].tmuxName ?? sessions[i].id
+            sessions[i].status = isResting(name) ? .rest : sessions[i].probed
+        }
+    }
+
+    /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
+    func isResting(_ tmuxName: String) -> Bool {
+        if cloudResting.contains(tmuxName) { return true }
+        if cloudAvailable, cloudMapping.ccToUUIDs[tmuxName.lowercased()] != nil { return false }
+        return MacRestStore.isResting(tmuxName)
     }
 
     // MARK: 枚举真实会话
@@ -126,7 +161,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             showToast("刷新失败或会话已不存在"); return
         }
         sessions[i].probed = st
-        sessions[i].status = MacRestStore.isResting(name) ? .rest : st
+        sessions[i].status = isResting(name) ? .rest : st
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
     }
 
@@ -158,7 +193,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             guard let name = sessions[i].tmuxName else { continue }
             let probed = map[name] ?? .idle
             sessions[i].probed = probed
-            sessions[i].status = MacRestStore.isResting(name) ? .rest : probed
+            sessions[i].status = isResting(name) ? .rest : probed
         }
     }
 
@@ -212,7 +247,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     /// 休息面板开关：休息=从主列表隐藏，开面板才看得到（同手机）
     @Published var showResting = false
 
-    private func resting(_ s: Session) -> Bool { MacRestStore.isResting(s.tmuxName ?? s.id) }
+    private func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
 
     var sidebarSessions: [Session] {
         sessions.filter { $0.machineID == activeMachineID }
@@ -284,10 +319,17 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
     }
 
-    /// 切换某个会话的休息（隐藏/唤醒）。
+    /// 切换某个会话的休息（隐藏/唤醒）。正式版写 iCloud KV（同步到手机），否则写本地。
     func toggleRest(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
-        let now = MacRestStore.toggle(s.tmuxName ?? s.id)   // 持久化
+        let name = s.tmuxName ?? s.id
+        let now = !isResting(name)
+        // 有云映射 → 写 KV，Blink 收到 iCloud 变更后同步到手机；写不成（无对应 tab）回退本地。
+        if cloudAvailable, CloudRestStore.setResting(cc: name, on: now, mapping: cloudMapping) {
+            if now { cloudResting.insert(name) } else { cloudResting.remove(name) }
+        } else {
+            _ = MacRestStore.toggle(name)
+        }
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
             sessions[i].status = now ? .rest : sessions[i].probed
         }

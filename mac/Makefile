@@ -17,18 +17,19 @@ icon:
 	done
 	iconutil -c icns /tmp/BlinkMac.iconset -o Resources/AppIcon.icns
 
-# 打成可双击的 .app（release 构建 + Info.plist + 图标 + ad-hoc 签名）
+# 打成可双击的「正式版」.app：xcodegen 生成工程 + xcodebuild automatic signing
+# （团队 659T9VUN97 + iCloud KV entitlement），这样才有跨设备休息同步。
+# dev 版仍走上面的 swift run，纯本地、无 iCloud。
 APP = dist/BlinkMac.app
 app:
-	swift build -c release
-	rm -rf $(APP)
-	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
-	cp .build/release/BlinkMac $(APP)/Contents/MacOS/BlinkMac
-	cp Resources/Info.plist $(APP)/Contents/Info.plist
-	cp Resources/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
-	printf 'APPL????' > $(APP)/Contents/PkgInfo
-	codesign --force --deep -s - $(APP)
-	@echo "built $(APP)"
+	xcodegen generate
+	xcodebuild -project BlinkMac.xcodeproj -scheme BlinkMac -configuration Release \
+	  -destination 'platform=macOS,arch=arm64' -allowProvisioningUpdates \
+	  -skipPackagePluginValidation -skipMacroValidation \
+	  -derivedDataPath .build/xcode build
+	rm -rf $(APP) && mkdir -p dist
+	cp -R .build/xcode/Build/Products/Release/BlinkMac.app $(APP)
+	@echo "built $(APP)（正式版·带 iCloud 跨设备休息同步）"
 
 # 装到 ~/Applications（用户可写，Launchpad/Spotlight 可打开）
 install: app
