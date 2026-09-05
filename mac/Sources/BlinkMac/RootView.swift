@@ -48,6 +48,16 @@ struct TopBar: View {
             .padding(.horizontal, 8).padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 6).fill(Theme.teal.opacity(0.12)))
 
+            // 版本徽章：开发版琥珀 DEV / 正式版青色 正式，一眼区分两个窗口
+            HStack(spacing: 4) {
+                Image(systemName: AppBuild.isDev ? "hammer.fill" : "checkmark.seal.fill")
+                    .font(.system(size: 9, weight: .bold))
+                Text(AppBuild.label).font(Theme.ui(11, .bold))
+            }
+            .foregroundColor(AppBuild.isDev ? Theme.wait : Theme.work)
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 6).fill((AppBuild.isDev ? Theme.wait : Theme.work).opacity(0.14)))
+
             Spacer()
 
             IconButton(system: "person.2", iconSize: 17) { state.showTeam.toggle() }
