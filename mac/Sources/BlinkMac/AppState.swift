@@ -78,6 +78,26 @@ final class AppState: ObservableObject {
         guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
         await loadRealSessions(host: h, port: p, token: t)
         await loadCloudRest()
+        startObservingCloud()
+    }
+
+    private var observingCloud = false
+
+    /// 实时监听休息变化：iCloud KV 外部变更（手机改了推过来）+ 回前台补拉
+    /// （didChangeExternally 不可靠，Blink 自己也靠回前台 pull）。
+    func startObservingCloud() {
+        guard !observingCloud else { return }
+        observingCloud = true
+        NSUbiquitousKeyValueStore.default.synchronize()
+        let reload: (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor in await self?.loadCloudRest() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: nil, queue: .main, using: reload)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main, using: reload)
     }
 
     /// 从 iCloud KV + Blink 容器读跨设备休息状态（off-main），再重算各会话状态。
@@ -162,6 +182,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
         sessions[i].probed = st
         sessions[i].status = isResting(name) ? .rest : st
+        await loadCloudRest()   // 顺带重拉云端休息状态
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
     }
 
