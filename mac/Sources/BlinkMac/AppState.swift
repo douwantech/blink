@@ -110,6 +110,23 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         Task { @MainActor in await self.probeStatuses(); showToast("状态已更新") }
     }
 
+    /// 刷新：重新枚举 cc-* 会话 + 探测状态（Ctrl-R / 顶栏刷新按钮）。保留当前选中的会话。
+    func refresh() async {
+        guard case .blinkd(let h, let p, let t) = activeMachine.transport else {
+            showToast("本地示例数据，无需刷新"); return
+        }
+        showToast("刷新会话中…")
+        let keep = activeSessionID
+        let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
+        let real = AppState.parseSessions(out)
+        if !real.isEmpty {
+            sessions = real
+            if !real.contains(where: { $0.id == keep }) { activeSessionID = "" }   // 选中的没了才清空
+        }
+        await probeStatuses(host: h, port: p, token: t)
+        showToast("已刷新 · \(sidebarSessions.count) 会话")
+    }
+
     func probeStatuses() async {
         guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
         await probeStatuses(host: h, port: p, token: t)
