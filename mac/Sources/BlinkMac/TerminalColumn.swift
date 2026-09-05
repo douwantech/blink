@@ -125,7 +125,12 @@ struct TerminalColumn: View {
             PillButton(label: "刷新重连", system: "arrow.clockwise", tint: Theme.work, bg: Theme.work.opacity(0.12)) { state.reconnect() }
             PillButton(label: "休息", system: "moon", tint: Theme.rest, bg: Theme.rest.opacity(0.12)) { state.toggleRestActive() }
             VDivider().padding(.horizontal, 2)
-            PillButton(label: "收藏", system: "star", tint: Color(hex: 0xf5c451), bg: Color.white.opacity(0.05)) { state.showToast("已收藏本会话") }
+            PillButton(label: "收藏", system: "star", tint: Color(hex: 0xf5c451), bg: Color.white.opacity(0.05)) {
+                state.loadFavorites(); state.showFavorites.toggle()
+            }
+            .popover(isPresented: $state.showFavorites, arrowEdge: .bottom) {
+                FavoritesPopover().environmentObject(state)
+            }
             PillButton(label: "图片", system: "photo", bg: Color.white.opacity(0.05)) { state.showToast("插入图片…") }
             PillButton(label: "历史", system: "clock.arrow.circlepath", bg: Color.white.opacity(0.05)) { state.showToast("打开历史命令") }
             PillButton(label: "浏览器", system: "globe", tint: Theme.rest, bg: Color.white.opacity(0.05)) { state.showToast("打开内置浏览器") }

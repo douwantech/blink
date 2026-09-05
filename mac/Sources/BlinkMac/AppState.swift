@@ -24,6 +24,31 @@ final class AppState: ObservableObject {
     @Published var cloudAvailable = false
     var cloudMapping = CloudRestStore.Mapping()
 
+    // 收藏短语（跟手机同一套 iCloud KV，正式版跨设备同步）
+    @Published var favorites: [String] = []
+    @Published var showFavorites = false
+
+    func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
+
+    /// 发一条收藏到当前终端并回车（同手机 dock 收藏钮）。
+    func sendFavorite(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        guard !activeSession.placeholder, !activeSessionID.isEmpty else { showToast("先选一个会话"); return }
+        term.send(activeSessionID, text: t + "\r")
+        FavoritesStore.incrementUse(t, cloud: cloudAvailable)
+        loadFavorites()
+        showFavorites = false
+        showToast("已发送到 cc-\(activeSession.name)")
+    }
+
+    func addFavorite(_ text: String) {
+        FavoritesStore.add(text, cloud: cloudAvailable); loadFavorites()
+    }
+    func removeFavorite(_ text: String) {
+        FavoritesStore.remove(text, cloud: cloudAvailable); loadFavorites()
+    }
+
     /// Real local PTY terminals (SwiftTerm), one per session.
     let term = TerminalManager()
 
@@ -78,6 +103,7 @@ final class AppState: ObservableObject {
         guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
         await loadRealSessions(host: h, port: p, token: t)
         await loadCloudRest()
+        loadFavorites()
         startObservingCloud()
     }
 
@@ -90,7 +116,7 @@ final class AppState: ObservableObject {
         observingCloud = true
         NSUbiquitousKeyValueStore.default.synchronize()
         let reload: (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor in await self?.loadCloudRest() }
+            Task { @MainActor in self?.loadFavorites(); await self?.loadCloudRest() }
         }
         NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -183,6 +209,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         sessions[i].probed = st
         sessions[i].status = isResting(name) ? .rest : st
         await loadCloudRest()   // 顺带重拉云端休息状态
+        loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
     }
 
