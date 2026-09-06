@@ -77,30 +77,17 @@ struct SessionSidebar: View {
 
             Divider().overlay(Theme.hair)
 
-            // footer
-            HStack(spacing: 8) {
-                Button { state.newSession() } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
-                        Text("新会话").font(Theme.ui(13, .semibold))
-                    }
-                    .foregroundColor(Theme.teal)
-                    .frame(maxWidth: .infinity).frame(height: 34)
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.teal.opacity(0.4)))
+            // footer（休息统一在右侧员工列表管理，这里不再放休息按钮）
+            Button { state.newSession() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                    Text("新会话").font(Theme.ui(13, .semibold))
                 }
-                .buttonStyle(.plain)
-
-                // 让当前打开的会话休息（隐藏）——同手机底部休息按钮
-                Button { state.toggleRestActive() } label: {
-                    Image(systemName: "moon")
-                        .font(.system(size: 15))
-                        .foregroundColor(Theme.rest)
-                        .frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.rest.opacity(0.14)))
-                }
-                .buttonStyle(.plain)
-                .help("让当前会话休息（从列表隐藏）")
+                .foregroundColor(Theme.teal)
+                .frame(maxWidth: .infinity).frame(height: 34)
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.teal.opacity(0.4)))
             }
+            .buttonStyle(.plain)
             .padding(12)
         }
         .frame(width: 280)
