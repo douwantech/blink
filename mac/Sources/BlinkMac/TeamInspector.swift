@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// 员工列表（B 方案·分组卡片）：紧凑统计条 + 每个分组一张卡（卡内细线分行），
+/// 状态用「圆点＋文字」，行尾月亮=休息开关。数据来自真实会话（AppState.teamGroups）。
 struct TeamInspector: View {
     @EnvironmentObject var state: AppState
 
@@ -14,14 +16,15 @@ struct TeamInspector: View {
             .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
             Divider().overlay(Theme.hair)
 
-            // stat tiles
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                statTile(state.count(.wait), "等你", Theme.wait)
-                statTile(state.count(.work), "干活中", Theme.work)
-                statTile(state.count(.idle), "空闲", Theme.idle)
-                statTile(state.count(.rest), "休息中", Theme.rest)
+            // 紧凑统计条（替代 2×2 大块）
+            HStack(spacing: 16) {
+                statChip(state.count(.wait), "等你", Theme.wait)
+                statChip(state.count(.work), "干活", Theme.work)
+                statChip(state.count(.idle), "空闲", Theme.idle)
+                statChip(state.count(.rest), "休息", Theme.rest)
+                Spacer()
             }
-            .padding(.horizontal, 14).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
 
             // segmented
             HStack(spacing: 0) {
@@ -31,26 +34,15 @@ struct TeamInspector: View {
             }
             .padding(3)
             .background(RoundedRectangle(cornerRadius: 9).fill(Theme.panel))
-            .padding(.horizontal, 14).padding(.bottom, 10)
+            .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
 
-            // list（真实会话，按当前分组；行尾月亮=休息开关，同手机）
+            // list：每个分组一张卡，卡内细线分行
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(state.teamGroups) { g in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                Avatar(text: initials(g.title),
-                                       grad: g.sessions.first?.grad ?? Grad.slate,
-                                       size: 24, corner: 12, fontSize: 10,
-                                       image: state.inspector == .employee ? state.avatar(g.title) : nil)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(g.title).font(Theme.ui(13, .bold))
-                                    Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 2)
-                            ForEach(g.sessions) { s in teamRow(s) }
+                        VStack(alignment: .leading, spacing: 7) {
+                            groupHeader(g)
+                            card(g)
                         }
                     }
                     if state.teamGroups.isEmpty {
@@ -65,52 +57,75 @@ struct TeamInspector: View {
         .background(Color.white.opacity(0.03))
     }
 
-    private func initials(_ s: String) -> String {
-        String(s.replacingOccurrences(of: "-", with: "").prefix(2))
+    // 分组头：小头像 + 名 + 汇总（右对齐）
+    private func groupHeader(_ g: TeamGroup) -> some View {
+        HStack(spacing: 8) {
+            Avatar(text: initials(g.title),
+                   grad: headerGrad(g), size: 20, corner: 10, fontSize: 9,
+                   image: state.inspector == .employee ? state.avatar(g.title) : nil)
+            Text(g.title).font(Theme.ui(13, .bold)).foregroundColor(Theme.fg)
+            Spacer()
+            Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)
+        }
+        .padding(.horizontal, 2)
     }
 
-    /// 一个真实会话行：点行=切到该会话；行尾月亮=休息/唤醒（写 iCloud KV，同步手机）。
+    // 分组卡：一张圆角卡，内部会话行用细线分隔，无逐行边框
+    private func card(_ g: TeamGroup) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(g.sessions.enumerated()), id: \.element.id) { idx, s in
+                if idx > 0 { Divider().overlay(Theme.hair).padding(.leading, 12) }
+                teamRow(s)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.hair))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// 一行会话：点行=切到该会话；行尾月亮=休息/唤醒（写 iCloud KV，同步手机）。
     private func teamRow(_ s: Session) -> some View {
         Button { state.selectSession(s.id) } label: {
             HStack(spacing: 9) {
                 Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(s.name).font(Theme.ui(12, .semibold)).foregroundColor(Theme.fg)
+                    Text(s.name).font(Theme.ui(12.5, .semibold)).foregroundColor(Theme.fg)
                     Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                StatusPill(status: s.status)
+                statusLabel(s.status)
                 Button { state.toggleRest(sessionID: s.id) } label: {
                     Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
                         .font(.system(size: 13))
                         .foregroundColor(s.status == .rest ? Theme.rest : Theme.dim)
                         .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(s.status == .rest ? "唤醒（在岗）" : "让 TA 休息")
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 10)
-                .fill(s.id == state.activeSessionID ? Theme.teal.opacity(0.10)
-                      : (s.status == .rest ? Color.white.opacity(0.02) : Theme.panel)))
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(s.status == .wait ? Theme.wait.opacity(0.35) : Theme.hair))
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(s.id == state.activeSessionID ? Theme.teal.opacity(0.10) : Color.clear)
             .opacity(s.status == .rest ? 0.6 : 1)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    private func statTile(_ n: Int, _ label: String, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(n)").font(Theme.mono(20, .bold)).foregroundColor(color)
+    // 状态：圆点 + 文字（替代重胶囊）
+    private func statusLabel(_ st: WorkStatus) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(st.color).frame(width: 7, height: 7)
+            Text(st.label).font(Theme.ui(11, .semibold)).foregroundColor(st.color)
+        }
+    }
+
+    private func statChip(_ n: Int, _ label: String, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            Text("\(n)").font(Theme.mono(15, .bold)).foregroundColor(color)
             Text(label).font(Theme.ui(11)).foregroundColor(Theme.sub)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.panel)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.hair)))
     }
 
     private func segItem(_ label: String, _ mode: InspectorMode) -> some View {
@@ -122,5 +137,17 @@ struct TeamInspector: View {
                 .background(RoundedRectangle(cornerRadius: 7).fill(on ? Theme.panel3 : .clear))
         }
         .buttonStyle(.plain)
+    }
+
+    private func initials(_ s: String) -> String {
+        String(s.replacingOccurrences(of: "-", with: "").prefix(2))
+    }
+    // 分组头像底色：员工用真头像（外层已传 image），项目/机器给个中性渐变
+    private func headerGrad(_ g: TeamGroup) -> [Color] {
+        switch state.inspector {
+        case .employee: return g.sessions.first?.grad ?? Grad.slate
+        case .project:  return Grad.slate
+        case .machine:  return Grad.blue
+        }
     }
 }
