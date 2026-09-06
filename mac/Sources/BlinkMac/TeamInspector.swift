@@ -74,7 +74,11 @@ struct TeamInspector: View {
     private func card(_ g: TeamGroup) -> some View {
         VStack(spacing: 0) {
             ForEach(Array(g.sessions.enumerated()), id: \.element.id) { idx, s in
-                if idx > 0 { Divider().overlay(Theme.hair).padding(.leading, 12) }
+                if idx > 0 {
+                    // 缩进分隔线：从会话名处起（避开头像列），右侧留边，同 macOS 设置分组表
+                    Rectangle().fill(Theme.hair).frame(height: 1)
+                        .padding(.leading, 47).padding(.trailing, 12)
+                }
                 teamRow(s)
             }
         }
