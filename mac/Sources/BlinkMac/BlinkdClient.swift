@@ -171,7 +171,11 @@ final class BlinkdTerminalView: TerminalView, TerminalViewDelegate {
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func scrolled(source: TerminalView, position: Double) {}
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+    // Cmd+悬停下划线、Cmd+点击打开（linkHighlightMode 默认 .hoverWithModifier）。
+    // 之前是空实现→点了没反应；用默认处理器开 http/https/file。
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        TerminalView.openDefaultLink(link)
+    }
     func bell(source: TerminalView) {}
     func clipboardCopy(source: TerminalView, content: Data) {
         if let s = String(data: content, encoding: .utf8) {
