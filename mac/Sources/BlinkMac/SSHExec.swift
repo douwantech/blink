@@ -9,12 +9,15 @@ enum SSHExec {
     static func run(user: String, host: String, command: String, timeout: TimeInterval = 8) async -> String {
         await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
             let target = user.isEmpty ? host : "\(user)@\(host)"
+            // 命令(含单引号)base64 传，远端解码跑；经登录 shell(-lc)起 ssh 才拿得到 SSH_AUTH_SOCK(agent)。
+            let b64 = Data(command.utf8).base64EncodedString()
+            let remote = "echo \(b64) | base64 -d | bash"
+            let sshCmd = "exec /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=6 "
+                + "-o StrictHostKeyChecking=accept-new -T \(target) '\(remote)'"
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            p.arguments = ["-o", "BatchMode=yes",
-                           "-o", "ConnectTimeout=6",
-                           "-o", "StrictHostKeyChecking=accept-new",
-                           "-T", target, command]
+            p.executableURL = URL(fileURLWithPath: shell)
+            p.arguments = ["-lc", sshCmd]
             let outPipe = Pipe()
             p.standardOutput = outPipe
             p.standardError = Pipe()   // 吞掉 stderr，别混进输出

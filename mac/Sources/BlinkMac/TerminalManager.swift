@@ -107,6 +107,7 @@ final class SSHBackend: TerminalBackend {
         ptv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                        font: makeFont(), options: TerminalOptions.default)
         applyTheme(ptv)
+        ptv.feed(text: "\r\n  连接 \(target) …\r\n\r\n")   // 连接期间给个反馈，别空白
         launch()
     }
 
@@ -114,11 +115,15 @@ final class SSHBackend: TerminalBackend {
         // 远端脚本 base64 落盘再跑，跟手机 sshCommand 一致，绕开本地 shell 抢先展开 $HOME/$(pwd)。
         let b64 = Data(remoteScript.utf8).base64EncodedString()
         let remote = "echo \(b64) | base64 -d > /tmp/.blinkmac-ssh-$$.sh && exec bash /tmp/.blinkmac-ssh-$$.sh"
+        // 关键：经登录 shell 起 ssh（-lc），才能拿到 launchd 会话的 SSH_AUTH_SOCK(→ssh-agent) 和
+        // 完整 PATH/keychain 上下文。Finder/Spotlight 起的 app 进程环境里没有 SSH_AUTH_SOCK，
+        // 直接 spawn /usr/bin/ssh 会因子进程拿不到 agent/keychain 授权而连不上（表现为一片空白）。
+        let ssh = "exec /usr/bin/ssh -tt -o StrictHostKeyChecking=accept-new \(target) -- '\(remote)'"
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
-        // -t 要 PTY（远端 tmux/claude 需要）；交互式，密钥/host-key 首次确认都能在终端里处理。
-        ptv.startProcess(executable: "/usr/bin/ssh",
-                         args: ["-t", "-o", "StrictHostKeyChecking=accept-new", target, "--", remote],
+        let shell = env["SHELL"] ?? "/bin/zsh"
+        ptv.startProcess(executable: shell,
+                         args: ["-lc", ssh],
                          environment: env.map { "\($0.key)=\($0.value)" },
                          execName: nil,
                          currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
