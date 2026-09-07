@@ -124,21 +124,21 @@ final class AppState: ObservableObject {
         closedCC = MacClosedStore.all.union(CloudTabStore.fullyClosedCC()).subtracting(open)
     }
 
-    /// 用 iCloud KV 里手机的标签补齐「没有活会话」的机器（SSH 连不上、或 blinkd 离线枚举为空）。
-    /// 已经枚举到真实会话的机器不动 —— 那份是活的、带真实状态，比配置快照准。
+    /// 把 iCloud KV 里手机配置的标签并进来（所有机器），跟 iOS 显示同一份标签列表。
+    /// 已实时枚举到的会话保留真实状态；没在跑 tmux 的配置标签补成「空闲」（点开会 new-session -A 起）。
+    /// 按 cc-title 去重，不覆盖已有的活会话。
     func loadCloudTabs() {
         let tabs = CloudTabStore.tabs()
         guard !tabs.isEmpty else { return }
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
         for m in machines {
-            if sessions.contains(where: { $0.machineID == m.id }) { continue }   // 有活会话就不覆盖
+            // 这台机器已有的会话名（实时枚举 + 之前并进来的），避免重复。
+            var seen = Set(sessions.filter { $0.machineID == m.id }.compactMap { $0.tmuxName?.lowercased() })
             let mine = tabs.filter { $0.machineId == m.id }
-            guard !mine.isEmpty else { continue }
-            var seen = Set<String>()
             var built: [Session] = []
             for t in mine {
                 let full = "cc-" + t.ccName
-                guard seen.insert(full).inserted else { continue }   // 同机去重
+                guard seen.insert(full.lowercased()).inserted else { continue }
                 let initials = String(t.ccName.replacingOccurrences(of: "-", with: "").prefix(2))
                 built.append(Session(id: "\(m.id)/\(full)", machineID: m.id, name: t.ccName,
                                      dir: t.dir.isEmpty ? "~" : t.dir, initials: initials,
@@ -262,6 +262,7 @@ final class AppState: ObservableObject {
             sessions[i].probed = probed
             sessions[i].status = isResting(name) ? .rest : probed
         }
+        loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
     }
 
@@ -334,7 +335,12 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     func probe() {
         showToast("正在探测各机器…")
-        Task { @MainActor in await self.enumerateAll(); showToast("状态已更新") }
+        Task { @MainActor in
+            await self.enumerateAll()
+            self.loadCloudTabs()      // 并回没在跑 tmux 的配置标签
+            self.loadClosed()
+            self.showToast("状态已更新")
+        }
     }
 
     /// 刷新当前选中会话的状态（Cmd-R）。只探测当前这一个，不动其它会话。

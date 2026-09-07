@@ -73,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let cnt = out.split(whereSeparator: { $0.isNewline }).filter { $0.contains("cc-") }.count
                 lines.append("  SSH \(m.name) (\(u.isEmpty ? "?" : u)@\(h)): 枚举到 \(cnt) 个 cc-* 会话  \(out.isEmpty ? "[连不上/无免密]" : "✅")")
             }
+            s.loadCloudTabs()
+            for m in s.machines {
+                let n = s.sessions.filter { $0.machineID == m.id }.count
+                lines.append("MERGE-TABS \(m.name): 并入后会话=\(n)")
+            }
             let map = CloudTabStore.mapping()
             let sample = map.ccToUUIDs.prefix(4).map { "\($0.key)→\($0.value.count)uuid" }.joined(separator: ", ")
             lines.append("REST-MAP cc→uuid 条目=\(map.ccToUUIDs.count)  [\(sample)]")
