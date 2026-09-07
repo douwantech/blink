@@ -124,6 +124,10 @@ struct TerminalColumn: View {
         HStack(spacing: 7) {
             PillButton(label: "刷新重连", system: "arrow.clockwise", tint: Theme.work, bg: Theme.work.opacity(0.12)) { state.reconnect() }
             PillButton(label: "休息", system: "moon", tint: Theme.rest, bg: Theme.rest.opacity(0.12)) { state.toggleRestActive() }
+            PillButton(label: "关闭", system: "xmark", tint: Color(hex: 0xff5a5c), bg: Color(hex: 0xff5a5c).opacity(0.12)) {
+                guard !state.activeSession.placeholder, !state.activeSessionID.isEmpty else { state.showToast("没有可关闭的会话"); return }
+                state.closeTab(sessionID: state.activeSessionID)
+            }
             VDivider().padding(.horizontal, 2)
             PillButton(label: "收藏", system: "star", tint: Color(hex: 0xf5c451), bg: Color.white.opacity(0.05)) {
                 state.loadFavorites(); state.showFavorites.toggle()
