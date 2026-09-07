@@ -132,20 +132,7 @@ struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        // 悬停显示关闭 ×（盖在状态胶囊上）；右键也有「关闭标签」。
-        .overlay(alignment: .trailing) {
-            if hovering {
-                Button { state.closeTab(sessionID: session.id) } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(Theme.sub)
-                        .background(Circle().fill(Theme.bg).padding(1))
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 10)
-                .help("关闭标签")
-            }
-        }
+        // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
         .contextMenu {
             Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
                 Label("关闭标签", systemImage: "xmark")
