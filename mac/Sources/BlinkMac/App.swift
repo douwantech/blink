@@ -59,16 +59,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for m in s.machines {
                 switch m.transport {
                 case .blinkd(let h, let p, _): lines.append("  MERGED \(m.name) → blinkd \(h):\(p)  [\(m.host)]")
-                case .ssh(_, let h):           lines.append("  MERGED \(m.name) → ssh \(h)  [不可连]")
+                case .ssh(_, let h):           lines.append("  MERGED \(m.name) → ssh \(h)  [系统ssh]")
                 case .local:                   lines.append("  MERGED \(m.name) → local")
                 }
             }
-            let tabs = CloudTabStore.tabs()
-            lines.append("KV tabs=\(tabs.count)")
-            s.loadCloudTabs()   // 没有活会话的机器（诊断里全都没枚举）→ 从 KV 标签补
+            // 真连测试：对每台 SSH 机器跑一次系统 ssh 枚举，看这台 Mac 到底能不能免密登进去。
             for m in s.machines {
-                let ss = s.sessions.filter { $0.machineID == m.id }
-                lines.append("  SESSIONS \(m.name): \(ss.count) 个  [\(ss.prefix(6).map { $0.name }.joined(separator: ", "))]")
+                guard case .ssh(let u, let h) = m.transport else { continue }
+                let sem = DispatchSemaphore(value: 0)
+                var out = ""
+                Task.detached { out = await SSHExec.run(user: u, host: h, command: BlinkdScript.listSessions(), timeout: 8); sem.signal() }
+                sem.wait()
+                let cnt = out.split(whereSeparator: { $0.isNewline }).filter { $0.contains("cc-") }.count
+                lines.append("  SSH \(m.name) (\(u.isEmpty ? "?" : u)@\(h)): 枚举到 \(cnt) 个 cc-* 会话  \(out.isEmpty ? "[连不上/无免密]" : "✅")")
             }
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)

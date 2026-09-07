@@ -12,6 +12,7 @@ struct MacMachine {
     let id: String
     let name: String
     let host: String
+    let user: String
     let blinkdHost: String?
     let blinkdPort: Int?
     let blinkdToken: String?
@@ -41,6 +42,7 @@ enum MacMachineStore {
             return MacMachine(id: id,
                               name: name.isEmpty ? host : name,
                               host: host,
+                              user: (m["user"] as? String) ?? "",
                               blinkdHost: m["blinkdHost"] as? String,
                               blinkdPort: m["blinkdPort"] as? Int,
                               blinkdToken: m["blinkdToken"] as? String)

@@ -92,26 +92,42 @@ final class RemoteBackend: TerminalBackend {
     func stop() { client?.stop() }
 }
 
-// MARK: - Info backend（只显示一段提示，不建任何进程/连接）
+// MARK: - SSH backend（系统 /usr/bin/ssh，本地 PTY，用用户自己的 ~/.ssh 密钥/agent）
 
 @MainActor
-final class InfoBackend: TerminalBackend {
-    private let tv: BlinkdTerminalView
-    var view: TerminalView { tv }
+final class SSHBackend: TerminalBackend {
+    private let ptv: LocalProcessTerminalView
+    private let target: String
+    private let remoteScript: String
+    var view: TerminalView { ptv }
 
-    init(message: String) {
-        tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
-                                font: makeFont(), options: TerminalOptions.default)
-        applyTheme(tv)
-        tv.terminalDelegate = tv   // 没有 client，键盘输入无处可去（只读展示）
-        let body = message.replacingOccurrences(of: "\n", with: "\r\n")
-        tv.feed(text: "\r\n  " + body + "\r\n")
+    init(user: String, host: String, remoteScript: String) {
+        target = user.isEmpty ? host : "\(user)@\(host)"
+        self.remoteScript = remoteScript
+        ptv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
+                                       font: makeFont(), options: TerminalOptions.default)
+        applyTheme(ptv)
+        launch()
     }
 
-    func sendText(_ s: String) {}
-    func clear() {}
-    func restart() {}
-    func stop() {}
+    private func launch() {
+        // 远端脚本 base64 落盘再跑，跟手机 sshCommand 一致，绕开本地 shell 抢先展开 $HOME/$(pwd)。
+        let b64 = Data(remoteScript.utf8).base64EncodedString()
+        let remote = "echo \(b64) | base64 -d > /tmp/.blinkmac-ssh-$$.sh && exec bash /tmp/.blinkmac-ssh-$$.sh"
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "xterm-256color"
+        // -t 要 PTY（远端 tmux/claude 需要）；交互式，密钥/host-key 首次确认都能在终端里处理。
+        ptv.startProcess(executable: "/usr/bin/ssh",
+                         args: ["-t", "-o", "StrictHostKeyChecking=accept-new", target, "--", remote],
+                         environment: env.map { "\($0.key)=\($0.value)" },
+                         execName: nil,
+                         currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
+    }
+
+    func sendText(_ s: String) { if ptv.process.running { ptv.process.send(data: [UInt8](s.utf8)[...]) } }
+    func clear() { ptv.process.send(data: [0x0c as UInt8][...]) }
+    func restart() { ptv.terminate(); launch() }
+    func stop() { ptv.terminate() }
 }
 
 // MARK: - Manager
@@ -121,19 +137,6 @@ final class TerminalManager {
     private var backends: [String: TerminalBackend] = [:]
 
     func backend(for session: Session, machine: Machine) -> TerminalBackend {
-        // 连不了的机器（手机配成 SSH）：按机器缓存一份提示，不跟别的机器串。
-        if case .ssh(let user, let host) = machine.transport {
-            let key = "ssh-info/\(machine.id)"
-            if let b = backends[key] { return b }
-            let who = user.isEmpty ? host : "\(user)@\(host)"
-            let b = InfoBackend(message:
-                "「\(machine.name)」在手机上配的是 SSH（\(who)）。\n" +
-                "BlinkMac 目前只能连 blinkd（Socket）机器，没有 SSH 客户端。\n\n" +
-                "想在 Mac 上用它：手机 → 机器 → 这台 → 连接方式改成 Socket，\n" +
-                "填上这台机器 blinkd daemon 的地址/端口/token，就会自动出现。")
-            backends[key] = b
-            return b
-        }
         if let b = backends[session.id] { return b }
         let b: TerminalBackend
         switch machine.transport {
@@ -144,8 +147,12 @@ final class TerminalManager {
             let exec = session.tmuxName.map { BlinkdScript.attach($0) }
                 ?? BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
             b = RemoteBackend(host: h, port: p, token: t, exec: exec)
-        case .ssh:
-            b = InfoBackend(message: "SSH 机器，Mac 暂不支持连接。")   // 兜底（正常走上面按机器缓存那条）
+        case .ssh(let user, let host):
+            // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
+            // 空/~ 时用 "."（ssh 登录落点就是远端 $HOME），别用会被单引号挡住展开的 $HOME。
+            let workDir = (session.dir.isEmpty || session.dir == "~") ? "." : session.dir
+            let script = BlinkdScript.tmuxClaude(title: session.name, workDir: workDir)
+            b = SSHBackend(user: user, host: host, remoteScript: script)
         }
         backends[session.id] = b
         return b

@@ -158,14 +158,15 @@ final class AppState: ObservableObject {
                 hostLabel = isThisMac ? "本机 · \(b.host):\(b.port)" : "blinkd \(b.host):\(b.port)"
                 if isThisMac { thisMacId = cm.id }
             } else {
-                // 手机上配的是 SSH：列出来但连不了（BlinkMac 只有 blinkd 传输），点开给提示。
-                transport = .ssh(user: "", host: cm.host)
-                hostLabel = "SSH \(cm.host) · Mac 暂不支持"
+                // 手机上配的是 SSH：用系统 /usr/bin/ssh + 用户自己的密钥连（跟手机同一套远端脚本）。
+                transport = .ssh(user: cm.user, host: cm.host)
+                let who = cm.user.isEmpty ? cm.host : "\(cm.user)@\(cm.host)"
+                hostLabel = "SSH \(who)"
             }
             out.append(Machine(id: cm.id, name: name, host: hostLabel,
                                initials: String(name.prefix(2)).uppercased(),
                                grad: grads[i % grads.count],
-                               online: transport.connectable, transport: transport))
+                               online: true, transport: transport))
         }
         guard !out.isEmpty else { return }
         // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。
@@ -182,10 +183,9 @@ final class AppState: ObservableObject {
     func enumerateAll() async {
         await withTaskGroup(of: [Session].self) { group in
             for m in machines {
-                guard case .blinkd(let h, let p, let t) = m.transport else { continue }
-                let mid = m.id
+                let mid = m.id, tr = m.transport
                 group.addTask {
-                    let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
+                    let out = await AppState.exec(tr, BlinkdScript.listSessions(), timeout: 8, marker: nil)
                     return AppState.parseSessions(out, machineID: mid)
                 }
             }
@@ -197,11 +197,9 @@ final class AppState: ObservableObject {
         }
         await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
             for m in machines {
-                guard case .blinkd(let h, let p, let t) = m.transport else { continue }
-                let mid = m.id
+                let mid = m.id, tr = m.transport
                 group.addTask {
-                    let out = await BlinkdExec.run(host: h, port: p, token: t,
-                                                   command: AppState.probeScript, timeout: 20, finishMarker: "@TSB64E@")
+                    let out = await AppState.exec(tr, AppState.probeScript, timeout: 20, marker: "@TSB64E@")
                     return (mid, AppState.parseProbe(out))
                 }
             }
@@ -217,15 +215,40 @@ final class AppState: ObservableObject {
         recomputeRestStatuses()
     }
 
+    /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。
+    nonisolated static func exec(_ transport: Transport, _ command: String,
+                                 timeout: TimeInterval, marker: String?) async -> String {
+        switch transport {
+        case .blinkd(let h, let p, let t):
+            return await BlinkdExec.run(host: h, port: p, token: t, command: command,
+                                        timeout: timeout, finishMarker: marker)
+        case .ssh(let u, let h):
+            return await SSHExec.run(user: u, host: h, command: command, timeout: timeout)
+        case .local:
+            return ""
+        }
+    }
+
     /// 枚举单台机器的会话并合并（只替换这台的，别动别的机器）。选机器/需要刷新单台时用。
     func loadSessions(for machine: Machine) async {
-        guard case .blinkd(let h, let p, let t) = machine.transport else { return }
-        let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
+        guard machine.transport.connectable else { return }
+        let out = await AppState.exec(machine.transport, BlinkdScript.listSessions(), timeout: 8, marker: nil)
         let real = AppState.parseSessions(out, machineID: machine.id)
+        guard !real.isEmpty else {
+            // 枚举不到（离线 / 无免密）→ 保留原有（可能是 KV 标签），别清空
+            loadCloudTabs()
+            return
+        }
         sessions.removeAll { $0.machineID == machine.id }
-        guard !real.isEmpty else { return }
         sessions.append(contentsOf: real)
-        await probeStatuses(host: h, port: p, token: t, machineID: machine.id)
+        let out2 = await AppState.exec(machine.transport, AppState.probeScript, timeout: 20, marker: "@TSB64E@")
+        let map = AppState.parseProbe(out2)
+        for i in sessions.indices where sessions[i].machineID == machine.id {
+            guard let name = sessions[i].tmuxName else { continue }
+            let probed = map[name] ?? .idle
+            sessions[i].probed = probed
+            sessions[i].status = isResting(name) ? .rest : probed
+        }
         recomputeRestStatuses()
     }
 
@@ -302,14 +325,13 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     /// 刷新当前选中会话的状态（Cmd-R）。只探测当前这一个，不动其它会话。
     func refreshActive() async {
         let s = activeSession
-        guard !s.placeholder, let name = s.tmuxName,
-              case .blinkd(let h, let p, let t) = activeMachine.transport else {
+        guard !s.placeholder, let name = s.tmuxName, activeMachine.transport.connectable else {
             showToast("当前没有可刷新的会话"); return
         }
         showToast("刷新「\(s.name)」…")
-        let out = await BlinkdExec.run(host: h, port: p, token: t,
-                                       command: AppState.probeOneScript(session: name),
-                                       timeout: 15, finishMarker: "@TSB64E@")
+        let out = await AppState.exec(activeMachine.transport,
+                                      AppState.probeOneScript(session: name),
+                                      timeout: 15, marker: "@TSB64E@")
         let map = AppState.parseProbe(out)
         guard let st = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
             showToast("刷新失败或会话已不存在"); return
@@ -333,25 +355,6 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
         printf '@TSB64@%s@TSB64E@\n' "$EB64"
         """#
-    }
-
-    func probeStatuses() async {
-        guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
-        await probeStatuses(host: h, port: p, token: t, machineID: activeMachineID)
-    }
-
-    /// 探测某一台机器的会话状态（只动这台的会话）。
-    func probeStatuses(host: String, port: UInt16, token: String, machineID: String) async {
-        let out = await BlinkdExec.run(host: host, port: port, token: token,
-                                       command: AppState.probeScript, timeout: 20, finishMarker: "@TSB64E@")
-        let map = AppState.parseProbe(out)
-        guard !map.isEmpty else { return }
-        for i in sessions.indices where sessions[i].machineID == machineID {
-            guard let name = sessions[i].tmuxName else { continue }
-            let probed = map[name] ?? .idle
-            sessions[i].probed = probed
-            sessions[i].status = isResting(name) ? .rest : probed
-        }
     }
 
     nonisolated static func parseProbe(_ out: String) -> [String: WorkStatus] {
