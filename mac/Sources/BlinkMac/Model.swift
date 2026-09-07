@@ -55,8 +55,12 @@ struct ChatBlock: Identifiable {
 enum Transport {
     case local
     case blinkd(host: String, port: UInt16, token: String)
+    /// 手机上配成 SSH 的机器：Mac 版没有 SSH 客户端，只能列出来、点开给提示，连不了。
+    case ssh(user: String, host: String)
 
     var isRemote: Bool { if case .blinkd = self { return true }; return false }
+    /// Mac 端能否真正建连接（只有 blinkd / 本地能）。
+    var connectable: Bool { if case .ssh = self { return false }; return true }
 }
 
 struct Machine: Identifiable {

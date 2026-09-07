@@ -45,6 +45,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 隐藏诊断：BLINKMAC_DIAG=1 时打印从 iCloud KV 读到的机器清单（不含 token），随后退出。
+        // 用来验证「从手机同步机器清单」这条路真的读到数据——正式签名跑才有 KV。
+        if ProcessInfo.processInfo.environment["BLINKMAC_DIAG"] == "1" {
+            let raw = MacMachineStore.machines()
+            let s = AppState()
+            s.loadCloudMachines()
+            var lines = ["DIAG kv_machines=\(raw.count) merged=\(s.machines.count)"]
+            for m in raw {
+                let b = m.blinkd
+                lines.append("  KV \(m.name) host=\(m.host) blinkd=\(b != nil ? "\(b!.host):\(b!.port)" : "-（无/走SSH）")")
+            }
+            for m in s.machines {
+                switch m.transport {
+                case .blinkd(let h, let p, _): lines.append("  MERGED \(m.name) → blinkd \(h):\(p)  [\(m.host)]")
+                case .ssh(_, let h):           lines.append("  MERGED \(m.name) → ssh \(h)  [不可连]")
+                case .local:                   lines.append("  MERGED \(m.name) → local")
+                }
+            }
+            FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+            exit(0)
+        }
         NSApp.activate(ignoringOtherApps: true)
         // 开发版在 Dock 图标挂红色 DEV 角标 + 窗口标题带后缀，和正式版一眼分清。
         if AppBuild.isDev {

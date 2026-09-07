@@ -100,11 +100,106 @@ final class AppState: ObservableObject {
             let a = BlinkAvatars.load()
             await MainActor.run { self?.avatars = a }
         }
-        guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
-        await loadRealSessions(host: h, port: p, token: t)
+        guard case .blinkd = activeMachine.transport else { return }
+        loadCloudMachines()          // 用 iCloud KV 的机器清单扩展成多机（正式版才有）
         await loadCloudRest()
         loadFavorites()
         startObservingCloud()
+        sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
+        await enumerateAll()         // 逐台并行枚举 + 探测真实会话
+        if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
+    }
+
+    /// 用 iCloud KV 的机器清单扩展本地机器列表（正式版签名才读得到 KV）。
+    /// 本地 config.json 那台 = 这台 Mac，走 127.0.0.1 直连更快；KV 里 token 相同的那条即同一台，
+    /// 套用手机上给它起的显示名，不重复列。KV 空（dev / 未同步）→ 保持本地单机不动。
+    func loadCloudMachines() {
+        let cloud = MacMachineStore.machines()
+        guard !cloud.isEmpty, case .blinkd(let lh, let lp, let lt) = machines.first?.transport else { return }
+        let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple, Grad.slate]
+        var out: [Machine] = []
+        var thisMacId: String? = nil
+        for (i, cm) in cloud.enumerated() {
+            let name = cm.name.isEmpty ? "机器\(i + 1)" : cm.name
+            let transport: Transport
+            let hostLabel: String
+            if let b = cm.blinkd {
+                let isThisMac = (b.token == lt)
+                // 这台 Mac 走本地直连（config.json 那台），其余 blinkd 机器走 KV 里的地址（tsnet）。
+                transport = isThisMac ? .blinkd(host: lh, port: lp, token: lt)
+                                      : .blinkd(host: b.host, port: b.port, token: b.token)
+                hostLabel = isThisMac ? "本机 · \(b.host):\(b.port)" : "blinkd \(b.host):\(b.port)"
+                if isThisMac { thisMacId = cm.id }
+            } else {
+                // 手机上配的是 SSH：列出来但连不了（BlinkMac 只有 blinkd 传输），点开给提示。
+                transport = .ssh(user: "", host: cm.host)
+                hostLabel = "SSH \(cm.host) · Mac 暂不支持"
+            }
+            out.append(Machine(id: cm.id, name: name, host: hostLabel,
+                               initials: String(name.prefix(2)).uppercased(),
+                               grad: grads[i % grads.count],
+                               online: transport.connectable, transport: transport))
+        }
+        guard !out.isEmpty else { return }
+        // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。
+        if thisMacId == nil, let local = machines.first {
+            out.insert(local, at: 0)
+            thisMacId = local.id
+        }
+        machines = out
+        activeMachineID = thisMacId ?? out[0].id
+    }
+
+    /// 逐台并行枚举所有 blinkd 机器的会话，再逐台并行探测状态。
+    /// 只传 Sendable 原语进 task（host/port/token/machineID），结果回到主 actor 合并。
+    func enumerateAll() async {
+        await withTaskGroup(of: [Session].self) { group in
+            for m in machines {
+                guard case .blinkd(let h, let p, let t) = m.transport else { continue }
+                let mid = m.id
+                group.addTask {
+                    let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
+                    return AppState.parseSessions(out, machineID: mid)
+                }
+            }
+            for await real in group {
+                guard let mid = real.first?.machineID else { continue }
+                sessions.removeAll { $0.machineID == mid }
+                sessions.append(contentsOf: real)
+            }
+        }
+        await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
+            for m in machines {
+                guard case .blinkd(let h, let p, let t) = m.transport else { continue }
+                let mid = m.id
+                group.addTask {
+                    let out = await BlinkdExec.run(host: h, port: p, token: t,
+                                                   command: AppState.probeScript, timeout: 20, finishMarker: "@TSB64E@")
+                    return (mid, AppState.parseProbe(out))
+                }
+            }
+            for await (mid, map) in group where !map.isEmpty {
+                for i in sessions.indices where sessions[i].machineID == mid {
+                    guard let name = sessions[i].tmuxName else { continue }
+                    let probed = map[name] ?? .idle
+                    sessions[i].probed = probed
+                    sessions[i].status = isResting(name) ? .rest : probed
+                }
+            }
+        }
+        recomputeRestStatuses()
+    }
+
+    /// 枚举单台机器的会话并合并（只替换这台的，别动别的机器）。选机器/需要刷新单台时用。
+    func loadSessions(for machine: Machine) async {
+        guard case .blinkd(let h, let p, let t) = machine.transport else { return }
+        let out = await BlinkdExec.run(host: h, port: p, token: t, command: BlinkdScript.listSessions())
+        let real = AppState.parseSessions(out, machineID: machine.id)
+        sessions.removeAll { $0.machineID == machine.id }
+        guard !real.isEmpty else { return }
+        sessions.append(contentsOf: real)
+        await probeStatuses(host: h, port: p, token: t, machineID: machine.id)
+        recomputeRestStatuses()
     }
 
     private var observingCloud = false
@@ -154,25 +249,11 @@ final class AppState: ObservableObject {
         return MacRestStore.isResting(tmuxName)
     }
 
-    // MARK: 枚举真实会话
-
-    func loadRealSessions(host: String, port: UInt16, token: String) async {
-        let out = await BlinkdExec.run(host: host, port: port, token: token, command: BlinkdScript.listSessions())
-        let real = AppState.parseSessions(out)
-        guard !real.isEmpty else {
-            showToast("未枚举到 cc-* 会话（检查 blinkd host/token）")
-            return
-        }
-        sessions = real
-        activeSessionID = ""   // 不自动 attach，等用户点选（避免误连别人的会话）
-        await probeStatuses(host: host, port: port, token: token)   // 真实状态探测
-    }
-
     // MARK: 真实状态探测（干活中/等你/空闲）
 
     /// 一条 blinkd exec 遍历所有 cc-* 会话：pane_current_command + 底部有没有
     /// "esc to interrupt"(busy)。分类同 iOS：裸 shell→空闲、busy→干活、否则→等你。
-    static let probeScript = #"""
+    nonisolated static let probeScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 BODY=$(
 tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
@@ -188,7 +269,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     func probe() {
         showToast("正在探测各机器…")
-        Task { @MainActor in await self.probeStatuses(); showToast("状态已更新") }
+        Task { @MainActor in await self.enumerateAll(); showToast("状态已更新") }
     }
 
     /// 刷新当前选中会话的状态（Cmd-R）。只探测当前这一个，不动其它会话。
@@ -229,15 +310,16 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     func probeStatuses() async {
         guard case .blinkd(let h, let p, let t) = activeMachine.transport else { return }
-        await probeStatuses(host: h, port: p, token: t)
+        await probeStatuses(host: h, port: p, token: t, machineID: activeMachineID)
     }
 
-    func probeStatuses(host: String, port: UInt16, token: String) async {
+    /// 探测某一台机器的会话状态（只动这台的会话）。
+    func probeStatuses(host: String, port: UInt16, token: String, machineID: String) async {
         let out = await BlinkdExec.run(host: host, port: port, token: token,
                                        command: AppState.probeScript, timeout: 20, finishMarker: "@TSB64E@")
         let map = AppState.parseProbe(out)
         guard !map.isEmpty else { return }
-        for i in sessions.indices {
+        for i in sessions.indices where sessions[i].machineID == machineID {
             guard let name = sessions[i].tmuxName else { continue }
             let probed = map[name] ?? .idle
             sessions[i].probed = probed
@@ -245,7 +327,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
     }
 
-    static func parseProbe(_ out: String) -> [String: WorkStatus] {
+    nonisolated static func parseProbe(_ out: String) -> [String: WorkStatus] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
@@ -263,7 +345,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         return map
     }
 
-    static func parseSessions(_ out: String) -> [Session] {
+    nonisolated static func parseSessions(_ out: String, machineID: String) -> [Session] {
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
         var result: [Session] = []
         // PTY 输出行尾是 \r\n（Swift 里是单个 grapheme），用 isNewline 才分得开
@@ -275,7 +357,8 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             let title = String(full.dropFirst(3))
             let initials = String(title.replacingOccurrences(of: "-", with: "").prefix(2))
             let resting = MacRestStore.isResting(full)
-            result.append(Session(id: full, machineID: "mbp", name: title,
+            // id 必须跨机器唯一（TerminalManager 按 id 建后端），用 <machineID>/<tmuxName>；tmuxName 仍是裸 cc- 名。
+            result.append(Session(id: "\(machineID)/\(full)", machineID: machineID, name: title,
                                   dir: path.isEmpty ? "~" : path, initials: initials,
                                   grad: grads[result.count % grads.count],
                                   status: resting ? .rest : .work, probed: .work,
@@ -330,8 +413,16 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         switch inspector {
         case .employee: return build(mine.map { ($0.owner, $0) })
         case .project:  return build(mine.map { ($0.project, $0) })
-        case .machine:  return [TeamGroup(id: activeMachineID, title: activeMachine.name,
-                                          sub: summary(mine), sessions: mine.sorted { $0.name < $1.name })]
+        case .machine:
+            // 「按机器」跨所有机器分组，这样其它机器也一眼看到（点行会切到对应机器的会话）。
+            let all = sessions.filter { $0.tmuxName != nil }
+            let nameOf: (String) -> String = { mid in self.machines.first { $0.id == mid }?.name ?? mid }
+            var order: [String] = []; var map: [String: [Session]] = [:]
+            for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
+            return order.map { mid in
+                let ss = (map[mid] ?? []).sorted { $0.name < $1.name }
+                return TeamGroup(id: mid, title: nameOf(mid), sub: summary(ss), sessions: ss)
+            }
         }
     }
 
@@ -339,13 +430,15 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     func selectMachine(_ id: String) {
         activeMachineID = id
-        if let first = sessions.first(where: { $0.machineID == id }) {
-            activeSessionID = first.id
-        }
+        // 指到这台机器的一个在岗会话（没有就置空，等用户点选）——避免终端拿旧机器的 transport 连错。
+        activeSessionID = sidebarSessions.first(where: { $0.machineID == id })?.id ?? ""
+        Task { @MainActor in await self.loadSessions(for: self.activeMachine) }
     }
 
     func selectSession(_ id: String) {
         activeSessionID = id
+        // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
+        if let s = sessions.first(where: { $0.id == id }) { activeMachineID = s.machineID }
         mode = .terminal
     }
 
