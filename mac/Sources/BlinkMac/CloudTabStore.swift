@@ -1,12 +1,15 @@
 import Foundation
 
-/// 从 iCloud KV 读手机的「标签」(tab) 列表 —— 连不上的机器（SSH / 离线）靠它显示标签，跟手机一致。
+/// 从 iCloud KV 读手机的「标签」(tab) 列表 —— 连不上的机器（SSH / 离线）靠它显示标签，跟手机一致；
+/// 同时提供 cc-title ↔ tab UUID 映射，供「休息」跨设备同步（写 KV 的 TabRestStore.resting）。
 ///
 /// iOS Blink 的 tab 列表存在 `TabStateStore.syncState`，工作目录存在 `BlinkWorkDirStore.workDirs`，
 /// 两者都被 CloudConfigSync 镜像进共享 KV（顶层 key，读 KV 不吃 TCC，不像读容器 plist 会卡）。
-/// 每个 tab 带 machineId / workDirId / tmuxSession；workDirId → 路径 → basename，配合 tmuxSession
-/// 按 iOS 同一套规则算出 cc-title，于是标签名和 blinkd 枚举出来的活会话对得上、能一起分组。
+/// 每个 tab 带 id / machineId / workDirId / tmuxSession；workDirId → 路径 → basename，配合 tmuxSession
+/// 按 iOS 同一套规则算出 cc-title，于是标签名和 blinkd 枚举出来的活会话对得上、能一起分组，
+/// 而 tab 的 id 正是 iOS「休息」用的那个 UUID。
 struct CloudTab {
+    let id: String       // tab UUID（= iOS TabRestStore.resting 里存的那个）
     let machineId: String
     let ccName: String   // cc-title（不含 "cc-" 前缀），如 jack-talkai
     let dir: String      // 工作目录绝对路径
@@ -21,7 +24,6 @@ enum CloudTabStore {
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
 
-        // workDirId → path
         var dirOf: [String: String] = [:]
         if let wd = dataForKey(kv, kWorkDirs),
            let arr = try? JSONSerialization.jsonObject(with: wd) as? [[String: Any]] {
@@ -37,7 +39,7 @@ enum CloudTabStore {
 
         var out: [CloudTab] = []
         for t in rawTabs {
-            if let id = t["id"] as? String, closed.contains(id.uppercased()) { continue }
+            guard let id = t["id"] as? String, !closed.contains(id.uppercased()) else { continue }
             guard let mid = t["machineId"] as? String, !mid.isEmpty else { continue }
             let path = (t["workDirId"] as? String).flatMap { dirOf[$0] } ?? ""
             let basename = path.isEmpty ? "" : (path as NSString).lastPathComponent.lowercased()
@@ -46,9 +48,18 @@ enum CloudTabStore {
             let title: String
             if basename.isEmpty { title = session.isEmpty ? "shell" : session }
             else { title = CloudRestStore.ccTitle(basename: basename, session: session.isEmpty ? basename : session) }
-            out.append(CloudTab(machineId: mid, ccName: title, dir: path))
+            out.append(CloudTab(id: id, machineId: mid, ccName: title, dir: path))
         }
         return out
+    }
+
+    /// cc-<title>(小写) → 该 cc 对应的所有 tab UUID。给「休息」跨设备用（不依赖容器/TCC）。
+    static func mapping() -> CloudRestStore.Mapping {
+        var m = CloudRestStore.Mapping()
+        for t in tabs() {
+            m.ccToUUIDs["cc-" + t.ccName, default: []].append(t.id)
+        }
+        return m
     }
 
     private static func dataForKey(_ kv: NSUbiquitousKeyValueStore, _ key: String) -> Data? {

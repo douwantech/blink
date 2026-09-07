@@ -73,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let cnt = out.split(whereSeparator: { $0.isNewline }).filter { $0.contains("cc-") }.count
                 lines.append("  SSH \(m.name) (\(u.isEmpty ? "?" : u)@\(h)): 枚举到 \(cnt) 个 cc-* 会话  \(out.isEmpty ? "[连不上/无免密]" : "✅")")
             }
+            let map = CloudTabStore.mapping()
+            let sample = map.ccToUUIDs.prefix(4).map { "\($0.key)→\($0.value.count)uuid" }.joined(separator: ", ")
+            lines.append("REST-MAP cc→uuid 条目=\(map.ccToUUIDs.count)  [\(sample)]")
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }

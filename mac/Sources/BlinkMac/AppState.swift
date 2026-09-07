@@ -275,7 +275,9 @@ final class AppState: ObservableObject {
     func loadCloudRest() async {
         let (avail, mapping, resting) = await Task.detached(priority: .utility) {
             () -> (Bool, CloudRestStore.Mapping, Set<String>) in
-            let m = CloudRestStore.loadMapping()
+            // 优先用 KV 的 tab 映射（可靠、无 TCC）；KV 拿不到再兜底读容器 plist。
+            var m = CloudTabStore.mapping()
+            if m.ccToUUIDs.isEmpty { m = CloudRestStore.loadMapping() }
             return (CloudRestStore.available, m, CloudRestStore.restingCCTitles(m))
         }.value
         cloudAvailable = avail
