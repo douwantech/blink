@@ -88,6 +88,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     lines.append("CLOSE dry-run uuid=\(anyUUID.prefix(8)): tabs \(beforeTabs)→\(at), closedIds \(beforeClosed)→\(ac)  (未写KV)")
                 } else { lines.append("CLOSE dry-run: mutate 返回 nil") }
             }
+            // 已关闭标签：本地记录 + 过滤 自测（用不存在的合成 cc，不动真数据；测完清理）
+            let testCC = "cc-blinkmac-selftest"
+            MacClosedStore.add(testCC)
+            s.loadClosed()
+            let hidden = s.closedCC.contains(testCC)
+            MacClosedStore.remove([testCC])
+            s.loadClosed()
+            let cleared = !s.closedCC.contains(testCC)
+            lines.append("CLOSED-PERSIST 合成cc加入后隐藏=\(hidden) 清理后=\(cleared ? "已移除" : "残留")  当前closedCC=\(s.closedCC.count)")
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }

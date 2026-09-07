@@ -20,7 +20,25 @@ enum CloudTabStore {
     private static let kWorkDirs = "BlinkWorkDirStore.workDirs"
 
     /// 读 KV 里全部有效标签（排除墓碑 closedIds）。KV 空 / dev 版 → []。
-    static func tabs() -> [CloudTab] {
+    static func tabs() -> [CloudTab] { rawEntries().filter { !$0.closed }.map { $0.tab } }
+
+    /// KV 里「仍打开」的 cc-<title> 集合（小写）。
+    static func openCC() -> Set<String> { Set(tabs().map { "cc-" + $0.ccName }) }
+
+    /// KV 里「有 tab 但全部已关（墓碑）」的 cc-<title> 集合（小写）——用来隐藏这些标签。
+    /// 只要某个 cc 还有至少一个 open 的 tab，就不算全关（手机重新开了同名 → 解封）。
+    static func fullyClosedCC() -> Set<String> {
+        var open = Set<String>(); var all = Set<String>()
+        for e in rawEntries() {
+            let cc = "cc-" + e.tab.ccName
+            all.insert(cc)
+            if !e.closed { open.insert(cc) }
+        }
+        return all.subtracting(open)
+    }
+
+    /// 解析 KV 全部 tab，带 closed 标记（不提前丢弃墓碑）。
+    private static func rawEntries() -> [(tab: CloudTab, closed: Bool)] {
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
 
@@ -35,11 +53,11 @@ enum CloudTabStore {
         guard let td = dataForKey(kv, kTabs),
               let obj = try? JSONSerialization.jsonObject(with: td) as? [String: Any],
               let rawTabs = obj["tabs"] as? [[String: Any]] else { return [] }
-        let closed = Set((obj["closedIds"] as? [String] ?? []).map { $0.uppercased() })
+        let closedIds = Set((obj["closedIds"] as? [String] ?? []).map { $0.uppercased() })
 
-        var out: [CloudTab] = []
+        var out: [(CloudTab, Bool)] = []
         for t in rawTabs {
-            guard let id = t["id"] as? String, !closed.contains(id.uppercased()) else { continue }
+            guard let id = t["id"] as? String else { continue }
             guard let mid = t["machineId"] as? String, !mid.isEmpty else { continue }
             let path = (t["workDirId"] as? String).flatMap { dirOf[$0] } ?? ""
             let basename = path.isEmpty ? "" : (path as NSString).lastPathComponent.lowercased()
@@ -48,7 +66,7 @@ enum CloudTabStore {
             let title: String
             if basename.isEmpty { title = session.isEmpty ? "shell" : session }
             else { title = CloudRestStore.ccTitle(basename: basename, session: session.isEmpty ? basename : session) }
-            out.append(CloudTab(id: id, machineId: mid, ccName: title, dir: path))
+            out.append((CloudTab(id: id, machineId: mid, ccName: title, dir: path), closedIds.contains(id.uppercased())))
         }
         return out
     }

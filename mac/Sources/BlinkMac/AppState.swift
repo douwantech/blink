@@ -28,6 +28,9 @@ final class AppState: ObservableObject {
     @Published var favorites: [String] = []
     @Published var showFavorites = false
 
+    // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
+    @Published var closedCC: Set<String> = []
+
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
 
     /// 发一条收藏到当前终端并回车（同手机 dock 收藏钮）。
@@ -105,10 +108,20 @@ final class AppState: ObservableObject {
         await loadCloudRest()
         loadFavorites()
         startObservingCloud()
+        loadClosed()                 // 已关闭标签（本地 + KV 墓碑），显示时过滤
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
         await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
+        loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
+    }
+
+    /// 计算要隐藏的已关闭会话集合：本地记录 ∪ KV「全关」墓碑，减去 KV 里仍打开的（手机重新开了→解封）。
+    /// 顺带清掉本地记录里已被手机重新打开的项，防止无限增长。
+    func loadClosed() {
+        let open = CloudTabStore.openCC()
+        MacClosedStore.remove(open)   // 手机又开了同名 → 本地解封
+        closedCC = MacClosedStore.all.union(CloudTabStore.fullyClosedCC()).subtracting(open)
     }
 
     /// 用 iCloud KV 里手机的标签补齐「没有活会话」的机器（SSH 连不上、或 blinkd 离线枚举为空）。
@@ -261,7 +274,7 @@ final class AppState: ObservableObject {
         observingCloud = true
         NSUbiquitousKeyValueStore.default.synchronize()
         let reload: (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor in self?.loadFavorites(); await self?.loadCloudRest() }
+            Task { @MainActor in self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed() }
         }
         NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -409,23 +422,26 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     }
     private func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
 
-    /// 侧栏只显示在岗会话，休息的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
+    /// 该会话是否被「关闭」（本地记录 + KV 墓碑，且手机没重新开同名 → 见 loadClosed）。
+    func isClosed(_ s: Session) -> Bool { closedCC.contains((s.tmuxName ?? s.id).lowercased()) }
+
+    /// 侧栏只显示在岗会话，休息/已关闭的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
     var sidebarSessions: [Session] {
-        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !resting($0) }
+        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !resting($0) && !isClosed($0) }
             .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }
     }
 
     var restingCount: Int {
-        sessions.filter { $0.machineID == activeMachineID && resting($0) }.count
+        sessions.filter { $0.machineID == activeMachineID && resting($0) && !isClosed($0) }.count
     }
 
     func count(_ s: WorkStatus) -> Int {
-        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && $0.status == s }.count
+        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !isClosed($0) && $0.status == s }.count
     }
 
     /// 员工列表分组（真实会话）：按员工/项目/机器分组，含休息中的会话（在这里唤醒）。
     var teamGroups: [TeamGroup] {
-        let mine = sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil }
+        let mine = sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !isClosed($0) }
         func summary(_ ss: [Session]) -> String {
             let w = ss.filter { $0.status == .wait }.count
             let r = ss.filter { $0.status == .rest }.count
@@ -447,7 +463,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         case .project:  return build(mine.map { ($0.project, $0) })
         case .machine:
             // 「按机器」跨所有机器分组，这样其它机器也一眼看到（点行会切到对应机器的会话）。
-            let all = sessions.filter { $0.tmuxName != nil }
+            let all = sessions.filter { $0.tmuxName != nil && !isClosed($0) }
             let nameOf: (String) -> String = { mid in self.machines.first { $0.id == mid }?.name ?? mid }
             var order: [String] = []; var map: [String: [Session]] = [:]
             for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
@@ -521,8 +537,10 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         let uuids = cloudMapping.ccToUUIDs[full] ?? []
         var synced = false
         for id in uuids where CloudTabStore.closeTab(id: id) { synced = true }
+        MacClosedStore.add(full)        // 本地记一份，重启后仍隐藏（枚举/无墓碑的也挡得住）
         sessions.removeAll { $0.id == sessionID }
         if activeSessionID == sessionID { activeSessionID = sidebarSessions.first?.id ?? "" }
+        loadClosed()                    // 立即纳入隐藏集
         Task { @MainActor in await self.loadCloudRest() }   // 刷新映射
         showToast(synced ? "已关闭「\(s.name)」并同步到手机" : "已关闭「\(s.name)」（本地）")
     }
