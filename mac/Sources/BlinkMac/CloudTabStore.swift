@@ -62,6 +62,41 @@ enum CloudTabStore {
         return m
     }
 
+    /// 关闭一个标签并同步到 iOS：读回 KV 里**整份** syncState，把该 tab 从 tabs 移除、
+    /// 加进 closedIds 墓碑、bump updatedAt 后整份写回。iOS 靠 closedIds 墓碑传播删除
+    /// （last-writer-wins）。读整份再改一条，绝不用 Mac 的局部视图重写 tabs，避免误删别的标签。
+    /// 返回是否真的动了（KV 里没这个 tab → false）。
+    @discardableResult
+    static func closeTab(id: String) -> Bool {
+        guard let obj = mutateSyncState(closingId: id) else { return false }
+        let kv = NSUbiquitousKeyValueStore.default
+        guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+        kv.set(out, forKey: kTabs)
+        kv.synchronize()
+        return true
+    }
+
+    /// 纯计算（不写 KV）：读 KV 整份 syncState，产出「关闭 id 后」的新对象；没这个 tab → nil。
+    /// closeTab 用它落盘；诊断用它做 dry-run（不动真数据）。
+    static func mutateSyncState(closingId id: String) -> [String: Any]? {
+        let kv = NSUbiquitousKeyValueStore.default
+        kv.synchronize()
+        guard let td = dataForKey(kv, kTabs),
+              var obj = try? JSONSerialization.jsonObject(with: td) as? [String: Any] else { return nil }
+        var tabs = (obj["tabs"] as? [[String: Any]]) ?? []
+        let upper = id.uppercased()
+        let before = tabs.count
+        tabs.removeAll { ($0["id"] as? String)?.uppercased() == upper }
+        guard tabs.count < before else { return nil }   // KV 里没这个 tab
+        var closed = (obj["closedIds"] as? [String]) ?? []
+        if !closed.contains(where: { $0.uppercased() == upper }) { closed.append(id) }
+        obj["tabs"] = tabs
+        obj["closedIds"] = closed
+        obj["updatedAt"] = Date().timeIntervalSince1970
+        obj["version"] = (obj["version"] as? Int) ?? 1
+        return obj
+    }
+
     private static func dataForKey(_ kv: NSUbiquitousKeyValueStore, _ key: String) -> Data? {
         kv.data(forKey: key) ?? kv.string(forKey: key)?.data(using: .utf8)
     }

@@ -511,6 +511,22 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
     }
 
+    /// 关闭一个标签：写 KV 墓碑同步到 iOS（有对应 tab UUID 时），本地也移除。
+    /// 说明：blinkd 机器的会话是「实时枚举」出来的，关了下次刷新还会再枚举回来
+    /// （tmux 还活着，关标签不 kill 远端进程，跟 iOS 一致）；SSH/离线机器的标签来自 KV，
+    /// 写了墓碑后 iOS 和 Mac 都不再显示。
+    func closeTab(sessionID: String) {
+        guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
+        let full = (s.tmuxName ?? ("cc-" + s.name)).lowercased()
+        let uuids = cloudMapping.ccToUUIDs[full] ?? []
+        var synced = false
+        for id in uuids where CloudTabStore.closeTab(id: id) { synced = true }
+        sessions.removeAll { $0.id == sessionID }
+        if activeSessionID == sessionID { activeSessionID = sidebarSessions.first?.id ?? "" }
+        Task { @MainActor in await self.loadCloudRest() }   // 刷新映射
+        showToast(synced ? "已关闭「\(s.name)」并同步到手机" : "已关闭「\(s.name)」（本地）")
+    }
+
     func toggleRestActive() {
         let s = activeSession
         guard !s.placeholder else { return }

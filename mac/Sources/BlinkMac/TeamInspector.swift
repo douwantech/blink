@@ -114,6 +114,11 @@ struct TeamInspector: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) { state.closeTab(sessionID: s.id) } label: {
+                Label("关闭标签", systemImage: "xmark")
+            }
+        }
     }
 
     // 状态：圆点 + 文字（替代重胶囊）

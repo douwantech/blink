@@ -76,6 +76,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let map = CloudTabStore.mapping()
             let sample = map.ccToUUIDs.prefix(4).map { "\($0.key)→\($0.value.count)uuid" }.joined(separator: ", ")
             lines.append("REST-MAP cc→uuid 条目=\(map.ccToUUIDs.count)  [\(sample)]")
+            // 关闭标签 dry-run（只算不写）：拿第一个 tab 的 uuid 走一遍 mutateSyncState
+            if let anyUUID = map.ccToUUIDs.values.first?.first,
+               let td = NSUbiquitousKeyValueStore.default.data(forKey: "TabStateStore.syncState"),
+               let obj = try? JSONSerialization.jsonObject(with: td) as? [String: Any] {
+                let beforeTabs = (obj["tabs"] as? [[String: Any]])?.count ?? 0
+                let beforeClosed = (obj["closedIds"] as? [String])?.count ?? 0
+                if let after = CloudTabStore.mutateSyncState(closingId: anyUUID) {
+                    let at = (after["tabs"] as? [[String: Any]])?.count ?? 0
+                    let ac = (after["closedIds"] as? [String])?.count ?? 0
+                    lines.append("CLOSE dry-run uuid=\(anyUUID.prefix(8)): tabs \(beforeTabs)→\(at), closedIds \(beforeClosed)→\(ac)  (未写KV)")
+                } else { lines.append("CLOSE dry-run: mutate 返回 nil") }
+            }
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }
