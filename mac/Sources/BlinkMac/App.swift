@@ -63,6 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .local:                   lines.append("  MERGED \(m.name) → local")
                 }
             }
+            let tabs = CloudTabStore.tabs()
+            lines.append("KV tabs=\(tabs.count)")
+            s.loadCloudTabs()   // 没有活会话的机器（诊断里全都没枚举）→ 从 KV 标签补
+            for m in s.machines {
+                let ss = s.sessions.filter { $0.machineID == m.id }
+                lines.append("  SESSIONS \(m.name): \(ss.count) 个  [\(ss.prefix(6).map { $0.name }.joined(separator: ", "))]")
+            }
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }

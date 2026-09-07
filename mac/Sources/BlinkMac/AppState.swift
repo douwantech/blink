@@ -106,8 +106,35 @@ final class AppState: ObservableObject {
         loadFavorites()
         startObservingCloud()
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
-        await enumerateAll()         // 逐台并行枚举 + 探测真实会话
+        await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
+        loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
+    }
+
+    /// 用 iCloud KV 里手机的标签补齐「没有活会话」的机器（SSH 连不上、或 blinkd 离线枚举为空）。
+    /// 已经枚举到真实会话的机器不动 —— 那份是活的、带真实状态，比配置快照准。
+    func loadCloudTabs() {
+        let tabs = CloudTabStore.tabs()
+        guard !tabs.isEmpty else { return }
+        let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
+        for m in machines {
+            if sessions.contains(where: { $0.machineID == m.id }) { continue }   // 有活会话就不覆盖
+            let mine = tabs.filter { $0.machineId == m.id }
+            guard !mine.isEmpty else { continue }
+            var seen = Set<String>()
+            var built: [Session] = []
+            for t in mine {
+                let full = "cc-" + t.ccName
+                guard seen.insert(full).inserted else { continue }   // 同机去重
+                let initials = String(t.ccName.replacingOccurrences(of: "-", with: "").prefix(2))
+                built.append(Session(id: "\(m.id)/\(full)", machineID: m.id, name: t.ccName,
+                                     dir: t.dir.isEmpty ? "~" : t.dir, initials: initials,
+                                     grad: grads[built.count % grads.count],
+                                     status: .idle, probed: .idle, lines: [], tmuxName: full))
+            }
+            sessions.append(contentsOf: built)
+        }
+        recomputeRestStatuses()   // 休息叠加（这些标签若在手机上被标了休息，也照样隐藏）
     }
 
     /// 用 iCloud KV 的机器清单扩展本地机器列表（正式版签名才读得到 KV）。
