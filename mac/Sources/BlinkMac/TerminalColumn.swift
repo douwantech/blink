@@ -5,9 +5,6 @@ struct TerminalColumn: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            tabStrip
-            Divider().overlay(Theme.hair)
-
             ZStack {
                 if state.mode == .terminal { terminalBody } else { chatBody }
                 if state.reconnecting { reconnectOverlay }
@@ -19,44 +16,6 @@ struct TerminalColumn: View {
         }
         .background(Theme.term)
         .overlay(alignment: .bottom) { if let t = state.toast { toast(t) } }
-    }
-
-    // MARK: Tab strip
-
-    private var tabStrip: some View {
-        HStack(spacing: 2) {
-            HStack(spacing: 7) {
-                Circle().fill(state.activeSession.status.color).frame(width: 7, height: 7)
-                Text("claude").font(Theme.mono(12)).foregroundColor(Theme.fg)
-            }
-            .padding(.horizontal, 12).frame(height: 26)
-            .background(
-                UnevenRoundedRectangle(topLeadingRadius: 8, topTrailingRadius: 8)
-                    .fill(Theme.term)
-                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 8, topTrailingRadius: 8).stroke(Theme.hair))
-            )
-
-            Button { state.showToast("切到 zsh 标签") } label: {
-                Text("zsh").font(Theme.mono(12)).foregroundColor(Theme.dim)
-                    .padding(.horizontal, 12).frame(height: 26)
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Button { state.toggleMode() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 12))
-                    Text(state.mode == .chat ? "终端" : "对话").font(Theme.ui(12, .semibold))
-                }
-                .foregroundColor(state.mode == .chat ? Theme.teal : Theme.sub)
-                .padding(.horizontal, 10).frame(height: 26)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 38)
-        .background(Color.white.opacity(0.02))
     }
 
     // MARK: Terminal body — real SwiftTerm PTY
