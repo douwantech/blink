@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let kChatBottom = "chat-bottom-anchor"
+
 struct TerminalColumn: View {
     @EnvironmentObject var state: AppState
 
@@ -64,26 +66,36 @@ struct TerminalColumn: View {
             .background(Color.white.opacity(0.02))
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(state.activeSession.chat) { c in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(c.role).font(Theme.mono(11, .bold)).tracking(1.2).foregroundColor(c.color)
-                            Text(c.text).font(Theme.ui(14)).foregroundColor(Theme.fg)
-                                .textSelection(.enabled)
-                                .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(state.activeSession.chat) { c in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(c.role).font(Theme.mono(11, .bold)).tracking(1.2).foregroundColor(c.color)
+                                Text(c.text).font(Theme.ui(14)).foregroundColor(Theme.fg)
+                                    .textSelection(.enabled)
+                                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.leading, 14)
+                            .overlay(alignment: .leading) {
+                                Rectangle().fill(c.color).frame(width: 2)
+                            }
                         }
-                        .padding(.leading, 14)
-                        .overlay(alignment: .leading) {
-                            Rectangle().fill(c.color).frame(width: 2)
+                        if state.activeSession.chat.isEmpty {
+                            Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
                         }
+                        // 底部锚点：加载 / 有新内容后自动滚到这里（对话记录看最新的）
+                        Color.clear.frame(height: 1).id(kChatBottom)
                     }
-                    if state.activeSession.chat.isEmpty {
-                        Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
-                    }
+                    .padding(.horizontal, 24).padding(.vertical, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 24).padding(.vertical, 20)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: state.activeSession.chat.count) { _ in
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(kChatBottom, anchor: .bottom) }
+                }
+                .onAppear {
+                    DispatchQueue.main.async { proxy.scrollTo(kChatBottom, anchor: .bottom) }
+                }
             }
         }
     }
