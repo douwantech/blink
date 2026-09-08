@@ -584,8 +584,8 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     // MARK: 历史 / 对话记录（同手机「历史」按钮：把中间切成聊天显示）
 
-    /// 点「历史」：把中间从终端切成对话记录视图，异步拉当前会话的 claude transcript。
-    /// 再点一次回终端（点左侧会话也回终端，见 selectSession）。
+    /// 点「历史」：把中间从终端切成对话记录视图。先秒显本地缓存，再只拉游标之后的
+    /// 新行增量追加（不每次整拉）。再点一次回终端（点左侧会话也回终端，见 selectSession）。
     func openHistory() {
         if mode == .chat { mode = .terminal; return }
         let s = activeSession
@@ -593,28 +593,89 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             showToast("当前会话没有对话记录可看"); return
         }
         let title = name.hasPrefix("cc-") ? String(name.dropFirst(3)) : name
+        let cacheKey = activeMachine.id + "/" + name
         mode = .chat
-        if let i = sessions.firstIndex(where: { $0.id == s.id }) {
+
+        // 1) 缓存秒显（有缓存直接铺出来，像聊天 App 一样进来就有历史）
+        let cached = MacTranscriptStore.load(cacheKey)
+        let sid = s.id
+        if let c = cached, !c.pairs.isEmpty {
+            setChat(sid, AppState.blocks(from: c.pairs))
+        } else if let i = sessions.firstIndex(where: { $0.id == sid }) {
             sessions[i].chat = [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "正在拉取对话记录…")]
         }
+
+        // 2) 后台增量：同文件只拉 lines+1 之后的新行，换文件/无缓存才整拉最后 100 条
         let transport = activeMachine.transport
-        let sid = s.id
         Task { @MainActor in
-            let out = await AppState.exec(transport, AppState.historyScript(title: title),
-                                          timeout: 25, marker: "@TSB64E@")
-            let blocks = AppState.parseTranscript(out)
-            guard mode == .chat, let i = sessions.firstIndex(where: { $0.id == sid }) else { return }
-            sessions[i].chat = blocks.isEmpty
-                ? [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "没读到这个会话的对话记录。")]
-                : blocks
+            let out = await AppState.exec(
+                transport,
+                AppState.historyDeltaScript(title: title, cachedFile: cached?.file, cachedLines: cached?.lines ?? 0),
+                timeout: 25, marker: "@TSB64E@")
+            guard let d = AppState.parseTranscriptDelta(out) else {
+                if cached == nil, let i = sessions.firstIndex(where: { $0.id == sid }) {
+                    sessions[i].chat = [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "对话记录拉取失败。")]
+                }
+                return
+            }
+            if d.notFound {
+                if cached?.pairs.isEmpty ?? true, let i = sessions.firstIndex(where: { $0.id == sid }) {
+                    sessions[i].chat = [ChatBlock(role: "ASSISTANT", color: Theme.dim,
+                        text: d.message.isEmpty ? "没读到这个会话的对话记录。" : d.message)]
+                }
+                return
+            }
+            // 合并缓存：整拉或换文件 → 替换；同文件 → 游标续接、pairs 追加
+            var merged: TranscriptCache
+            if d.full || cached == nil || cached!.file != d.file {
+                merged = TranscriptCache(file: d.file, lines: d.total, pairs: d.pairs)
+            } else {
+                merged = cached!
+                merged.file = d.file
+                merged.lines = d.total
+                merged.pairs += d.pairs
+            }
+            MacTranscriptStore.save(cacheKey, merged)
+            // 有新内容、或之前没缓存可显时才重刷 UI（省得无谓重排）
+            if !d.pairs.isEmpty || (cached?.pairs.isEmpty ?? true) {
+                guard mode == .chat, let i = sessions.firstIndex(where: { $0.id == sid }) else { return }
+                sessions[i].chat = merged.pairs.isEmpty
+                    ? [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "没读到这个会话的对话记录。")]
+                    : AppState.blocks(from: merged.pairs)
+            }
         }
     }
 
-    /// 远端拉 transcript：按 customTitle 在 ~/.claude/projects 里定位 jsonl，jq 解析成
-    /// 「▶ You / ◆ Claude」块（同 iOS BlinkMachineStore 的 transcript 脚本），
-    /// 结果 base64 包在 @TSB64@…@TSB64E@ 里回来。title = cc- 之后的会话名。
-    nonisolated static func historyScript(title: String) -> String {
-        #"""
+    private func setChat(_ sid: String, _ blocks: [ChatBlock]) {
+        guard let i = sessions.firstIndex(where: { $0.id == sid }) else { return }
+        sessions[i].chat = blocks
+    }
+
+    /// (role,text) 缓存对 → 显示用 ChatBlock。
+    nonisolated static func blocks(from pairs: [TranscriptPair]) -> [ChatBlock] {
+        pairs.map { p in
+            ChatBlock(role: p.r == "you" ? "YOU" : "ASSISTANT",
+                      color: p.r == "you" ? Theme.green2 : Theme.blue, text: p.t)
+        }
+    }
+
+    struct TranscriptDelta {
+        var file: String
+        var total: Int
+        var full: Bool
+        var pairs: [TranscriptPair]
+        var notFound: Bool
+        var message: String
+    }
+
+    /// 远端增量拉 transcript：按 customTitle 在 ~/.claude/projects 定位 jsonl，
+    /// 只 sed 出游标(cachedLines+1)之后的新行喂 jq，解析成「▶ You / ◆ Claude」块
+    /// （同 iOS BlinkMachineStore.transcriptDeltaScript）。输出
+    /// @TSB64@<b64(META\t<file>\t<total>\t<full>\n<正文>)>@TSB64E@。
+    nonisolated static func historyDeltaScript(title: String, cachedFile: String?, cachedLines: Int) -> String {
+        let safeFile = (cachedFile ?? "").filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." }
+        let cachedN = max(cachedLines, 0)
+        return #"""
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
         TITLE='\#(title)'
         PROJ="$HOME/.claude/projects"
@@ -624,16 +685,27 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             printf '%d\t%s\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
           done | sort -rn | head -1 | cut -f2-
         }
-        F=""
-        if command -v jq >/dev/null 2>&1; then
-          F=$(grep -rilF "\"customTitle\":\"$TITLE\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
-        fi
+        emit() { EB64=$(printf '%s' "$1" | base64 | tr -d '\n'); printf '@TSB64@%s@TSB64E@\n' "$EB64"; }
         if ! command -v jq >/dev/null 2>&1; then
-          BODY="⚠️ 这台机器没装 jq，读不了对话记录。ssh 上去 brew install jq"
-        elif [ -z "$F" ]; then
-          BODY="没找到这个会话的对话记录（customTitle『$TITLE』未匹配）。到这个 cc 里跑一次 /title $TITLE 固定命名后再看。"
-        else
-          BODY=$(jq -s -r '
+          emit "$(printf 'META\tNOTFOUND\t0\t1\n⚠️ 这台机器没装 jq，读不了对话记录。ssh 上去 brew install jq')"
+          exit 0
+        fi
+        F=$(grep -rilF "\"customTitle\":\"$TITLE\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+        if [ -z "$F" ]; then
+          emit "$(printf 'META\tNOTFOUND\t0\t1\n没找到这个会话的对话记录（customTitle『%s』未匹配）。到这个 cc 里跑一次 /title %s 固定命名后再看。' "$TITLE" "$TITLE")"
+          exit 0
+        fi
+        BASE=$(basename "$F")
+        TOTAL=$(wc -l < "$F" | tr -d ' ')
+        START=1
+        if [ "$BASE" = "\#(safeFile)" ] && [ \#(cachedN) -le "$TOTAL" ]; then
+          START=$(( \#(cachedN) + 1 ))
+        fi
+        FULL=0
+        [ "$START" -eq 1 ] && FULL=1
+        BODY=""
+        if [ "$START" -le "$TOTAL" ]; then
+          BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" '
             [.[] | select(.type=="user" or .type=="assistant")
               | (if (.message.content|type)=="string" then .message.content
                  else [.message.content[]? | select(.type=="text") | .text] | join("\n") end) as $raw
@@ -654,53 +726,59 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                        and $body!="No response requested."
                        and ($body|test("^\\[Request interrupted by user[^\\]]*\\]")|not))
               | {type:.type, body:$body}]
-            | .[-100:] | .[]
+            | (if $full == "1" then .[-100:] else . end)
+            | .[]
             | (if .type=="user" then "▶ You" else "◆ Claude" end), .body, ""
-          ' "$F" 2>&1)
+          ' 2>&1)
         fi
-        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-        printf '@TSB64@%s@TSB64E@\n' "$EB64"
+        if [ "$FULL" = "1" ] && [ -z "$BODY" ]; then
+          BODY="（这个 session 里没有可显示的对话内容——可能是全新会话，或内容全是命令输出被过滤了）"
+        fi
+        emit "$(printf 'META\t%s\t%s\t%s\n' "$BASE" "$TOTAL" "$FULL"; printf '%s' "$BODY")"
         """#
     }
 
-    /// 解析 transcript 脚本输出：拆 @TSB64@…@TSB64E@ → base64 解码 → 按
-    /// 「▶ You / ◆ Claude」行切成 ChatBlock。没有 marker（jq 缺失 / 没找到）时，
-    /// 整段文本作为一条系统提示返回。
-    nonisolated static func parseTranscript(_ out: String) -> [ChatBlock] {
+    /// 解析增量脚本输出：拆 @TSB64@…@TSB64E@ → base64 解码 → 首行 META 拿 file/total/full，
+    /// 其余按「▶ You / ◆ Claude」行切成 (role,text) 对。NOTFOUND → notFound=true 带提示。
+    nonisolated static func parseTranscriptDelta(_ out: String) -> TranscriptDelta? {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
-              a.upperBound <= b.lowerBound else { return [] }
+              a.upperBound <= b.lowerBound else { return nil }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
         guard let data = Data(base64Encoded: String(b64)),
-              let body = String(data: data, encoding: .utf8) else { return [] }
+              let body = String(data: data, encoding: .utf8) else { return nil }
 
-        var blocks: [ChatBlock] = []
+        var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let head = lines.first, head.hasPrefix("META\t") else { return nil }
+        lines.removeFirst()
+        let meta = head.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        let base = meta.count > 1 ? meta[1] : ""
+        let total = meta.count > 2 ? (Int(meta[2]) ?? 0) : 0
+        let full = meta.count > 3 && meta[3] == "1"
+        if base == "NOTFOUND" {
+            let msg = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return TranscriptDelta(file: "", total: 0, full: true, pairs: [], notFound: true, message: msg)
+        }
+
+        var pairs: [TranscriptPair] = []
         var role: String? = nil
         var buf: [String] = []
-        var preamble: [String] = []
         func flush() {
             guard let r = role else { return }
-            var lines = buf
-            while let f = lines.first, f.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-            while let l = lines.last, l.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
-            let text = lines.joined(separator: "\n")
-            if !text.isEmpty {
-                blocks.append(ChatBlock(role: r == "you" ? "YOU" : "ASSISTANT",
-                                        color: r == "you" ? Theme.green2 : Theme.blue, text: text))
-            }
+            var ls = buf
+            while let f = ls.first, f.trimmingCharacters(in: .whitespaces).isEmpty { ls.removeFirst() }
+            while let l = ls.last, l.trimmingCharacters(in: .whitespaces).isEmpty { ls.removeLast() }
+            let text = ls.joined(separator: "\n")
+            if !text.isEmpty { pairs.append(TranscriptPair(r: r, t: text)) }
             buf = []
         }
-        for line in body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        for line in lines {
             if line == "▶ You" { flush(); role = "you"; continue }
             if line == "◆ Claude" { flush(); role = "claude"; continue }
-            if role == nil { preamble.append(line); continue }
+            if role == nil { continue }   // 跳过正文前的杂行（HEAD 等）
             buf.append(line)
         }
         flush()
-        if blocks.isEmpty {
-            let pre = preamble.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !pre.isEmpty { blocks.append(ChatBlock(role: "ASSISTANT", color: Theme.dim, text: pre)) }
-        }
-        return blocks
+        return TranscriptDelta(file: base, total: total, full: full, pairs: pairs, notFound: false, message: "")
     }
 
     func showToast(_ msg: String) {
