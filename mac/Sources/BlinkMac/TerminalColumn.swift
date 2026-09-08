@@ -42,25 +42,49 @@ struct TerminalColumn: View {
     // MARK: Chat body
 
     private var chatBody: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(state.activeSession.chat) { c in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(c.role).font(Theme.mono(11, .bold)).tracking(1.2).foregroundColor(c.color)
-                        Text(c.text).font(Theme.ui(14)).foregroundColor(Theme.fg)
-                            .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 0) {
+            // header：对话记录标题 + 返回终端
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 13)).foregroundColor(Theme.teal)
+                Text("对话记录").font(Theme.ui(13, .semibold)).foregroundColor(Theme.fg)
+                Text("cc-\(state.activeSession.name)").font(Theme.mono(11)).foregroundColor(Theme.sub)
+                Spacer()
+                Button { state.openHistory() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                        Text("终端").font(Theme.ui(12, .semibold))
                     }
-                    .padding(.leading, 14)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(c.color).frame(width: 2)
-                    }
+                    .foregroundColor(Theme.sub)
+                    .padding(.horizontal, 10).frame(height: 26)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.05)))
                 }
-                if state.activeSession.chat.isEmpty {
-                    Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
-                }
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 24).padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).frame(height: 40)
+            .background(Color.white.opacity(0.02))
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(state.activeSession.chat) { c in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(c.role).font(Theme.mono(11, .bold)).tracking(1.2).foregroundColor(c.color)
+                            Text(c.text).font(Theme.ui(14)).foregroundColor(Theme.fg)
+                                .textSelection(.enabled)
+                                .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.leading, 14)
+                        .overlay(alignment: .leading) {
+                            Rectangle().fill(c.color).frame(width: 2)
+                        }
+                    }
+                    if state.activeSession.chat.isEmpty {
+                        Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
+                    }
+                }
+                .padding(.horizontal, 24).padding(.vertical, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
@@ -95,7 +119,9 @@ struct TerminalColumn: View {
                 FavoritesPopover().environmentObject(state)
             }
             PillButton(label: "图片", system: "photo", bg: Color.white.opacity(0.05)) { state.showToast("插入图片…") }
-            PillButton(label: "历史", system: "clock.arrow.circlepath", bg: Color.white.opacity(0.05)) { state.showToast("打开历史命令") }
+            PillButton(label: "历史", system: "clock.arrow.circlepath",
+                       tint: state.mode == .chat ? Theme.teal : Theme.sub,
+                       bg: state.mode == .chat ? Theme.teal.opacity(0.12) : Color.white.opacity(0.05)) { state.openHistory() }
             PillButton(label: "浏览器", system: "globe", tint: Theme.rest, bg: Color.white.opacity(0.05)) { state.showToast("打开内置浏览器") }
             Spacer()
         }

@@ -582,6 +582,127 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     func toggleMode() { mode = (mode == .chat) ? .terminal : .chat }
 
+    // MARK: 历史 / 对话记录（同手机「历史」按钮：把中间切成聊天显示）
+
+    /// 点「历史」：把中间从终端切成对话记录视图，异步拉当前会话的 claude transcript。
+    /// 再点一次回终端（点左侧会话也回终端，见 selectSession）。
+    func openHistory() {
+        if mode == .chat { mode = .terminal; return }
+        let s = activeSession
+        guard !s.placeholder, let name = s.tmuxName, activeMachine.transport.connectable else {
+            showToast("当前会话没有对话记录可看"); return
+        }
+        let title = name.hasPrefix("cc-") ? String(name.dropFirst(3)) : name
+        mode = .chat
+        if let i = sessions.firstIndex(where: { $0.id == s.id }) {
+            sessions[i].chat = [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "正在拉取对话记录…")]
+        }
+        let transport = activeMachine.transport
+        let sid = s.id
+        Task { @MainActor in
+            let out = await AppState.exec(transport, AppState.historyScript(title: title),
+                                          timeout: 25, marker: "@TSB64E@")
+            let blocks = AppState.parseTranscript(out)
+            guard mode == .chat, let i = sessions.firstIndex(where: { $0.id == sid }) else { return }
+            sessions[i].chat = blocks.isEmpty
+                ? [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "没读到这个会话的对话记录。")]
+                : blocks
+        }
+    }
+
+    /// 远端拉 transcript：按 customTitle 在 ~/.claude/projects 里定位 jsonl，jq 解析成
+    /// 「▶ You / ◆ Claude」块（同 iOS BlinkMachineStore 的 transcript 脚本），
+    /// 结果 base64 包在 @TSB64@…@TSB64E@ 里回来。title = cc- 之后的会话名。
+    nonisolated static func historyScript(title: String) -> String {
+        #"""
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        TITLE='\#(title)'
+        PROJ="$HOME/.claude/projects"
+        pick_latest_by_mtime() {
+          while read f; do
+            [ -z "$f" ] && continue
+            printf '%d\t%s\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
+          done | sort -rn | head -1 | cut -f2-
+        }
+        F=""
+        if command -v jq >/dev/null 2>&1; then
+          F=$(grep -rilF "\"customTitle\":\"$TITLE\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if ! command -v jq >/dev/null 2>&1; then
+          BODY="⚠️ 这台机器没装 jq，读不了对话记录。ssh 上去 brew install jq"
+        elif [ -z "$F" ]; then
+          BODY="没找到这个会话的对话记录（customTitle『$TITLE』未匹配）。到这个 cc 里跑一次 /title $TITLE 固定命名后再看。"
+        else
+          BODY=$(jq -s -r '
+            [.[] | select(.type=="user" or .type=="assistant")
+              | (if (.message.content|type)=="string" then .message.content
+                 else [.message.content[]? | select(.type=="text") | .text] | join("\n") end) as $raw
+              | ($raw
+                 | gsub("(?s)<system-reminder>.*?</system-reminder>";"")
+                 | gsub("(?s)<task-notification>.*?</task-notification>";"")
+                 | gsub("(?s)<local-command-stdout>.*?</local-command-stdout>";"")
+                 | gsub("(?s)<local-command-stderr>.*?</local-command-stderr>";"")
+                 | gsub("(?s)<command-name>.*?</command-name>";"")
+                 | gsub("(?s)<command-message>.*?</command-message>";"")
+                 | gsub("(?s)<command-args>.*?</command-args>";"")
+                 | gsub("(?s)<bash-input>.*?</bash-input>";"")
+                 | gsub("(?s)<bash-stdout>.*?</bash-stdout>";"")
+                 | gsub("(?s)<bash-stderr>.*?</bash-stderr>";"")
+                 | sub("^\\s+";"") | sub("\\s+$";"")) as $body
+              | select(($body|length)>0)
+              | select($body!="Continue from where you left off."
+                       and $body!="No response requested."
+                       and ($body|test("^\\[Request interrupted by user[^\\]]*\\]")|not))
+              | {type:.type, body:$body}]
+            | .[-100:] | .[]
+            | (if .type=="user" then "▶ You" else "◆ Claude" end), .body, ""
+          ' "$F" 2>&1)
+        fi
+        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+        printf '@TSB64@%s@TSB64E@\n' "$EB64"
+        """#
+    }
+
+    /// 解析 transcript 脚本输出：拆 @TSB64@…@TSB64E@ → base64 解码 → 按
+    /// 「▶ You / ◆ Claude」行切成 ChatBlock。没有 marker（jq 缺失 / 没找到）时，
+    /// 整段文本作为一条系统提示返回。
+    nonisolated static func parseTranscript(_ out: String) -> [ChatBlock] {
+        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
+              a.upperBound <= b.lowerBound else { return [] }
+        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
+        guard let data = Data(base64Encoded: String(b64)),
+              let body = String(data: data, encoding: .utf8) else { return [] }
+
+        var blocks: [ChatBlock] = []
+        var role: String? = nil
+        var buf: [String] = []
+        var preamble: [String] = []
+        func flush() {
+            guard let r = role else { return }
+            var lines = buf
+            while let f = lines.first, f.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
+            while let l = lines.last, l.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+            let text = lines.joined(separator: "\n")
+            if !text.isEmpty {
+                blocks.append(ChatBlock(role: r == "you" ? "YOU" : "ASSISTANT",
+                                        color: r == "you" ? Theme.green2 : Theme.blue, text: text))
+            }
+            buf = []
+        }
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if line == "▶ You" { flush(); role = "you"; continue }
+            if line == "◆ Claude" { flush(); role = "claude"; continue }
+            if role == nil { preamble.append(line); continue }
+            buf.append(line)
+        }
+        flush()
+        if blocks.isEmpty {
+            let pre = preamble.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pre.isEmpty { blocks.append(ChatBlock(role: "ASSISTANT", color: Theme.dim, text: pre)) }
+        }
+        return blocks
+    }
+
     func showToast(_ msg: String) {
         toast = msg
         toastTask?.cancel()
