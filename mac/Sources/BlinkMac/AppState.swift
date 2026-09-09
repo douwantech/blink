@@ -31,11 +31,12 @@ final class AppState: ObservableObject {
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
-    // 未读红点：会话处于「等你（= AI 完成一轮、在等你看）」且你还没点进去看 → 冒红点。
-    // 「等你」的橙标不再显示，直接用红点代替。seenWait = 你已看过（在等你态下点进去过）的会话，
-    // 离开等你会被清出（下次再完成又冒点）。内存态，不落盘。
-    @Published var seenWait: Set<String> = []
-    @Published var appActive = true                       // 窗口是否在前台（正看着的等你算已看）
+    // 未读红点：会话处于「等你（完成）」且**自你上次看之后有新输出**（session_activity 变大）→ 冒红点。
+    // 「等你」橙标不再显示，直接用红点代替。用 activity 而非「状态跳变」判断，才不会被 12s 轮询漏掉
+    // 秒级任务的工作阶段。currentActivity=最近探测到的活动时间戳；lastSeenActivity=你上次看时的。
+    @Published var currentActivity: [String: Int] = [:]   // tmuxName → 最近 session_activity
+    private var lastSeenActivity: [String: Int] = [:]     // tmuxName → 你上次看这个会话时的 activity
+    @Published var appActive = true                       // 窗口是否在前台（正看着的会话算已看）
 
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
 
@@ -303,7 +304,7 @@ final class AppState: ObservableObject {
     /// 只探测状态、不重列会话（轮询用）：逐台并行跑 probeScript，更新各会话 probed/status。
     /// 完成的会话会从此变 .wait → hasUnseen 自动冒红点。
     func refreshStatuses() async {
-        await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
+        await withTaskGroup(of: (String, [String: (status: WorkStatus, activity: Int)]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
                 group.addTask {
@@ -314,13 +315,14 @@ final class AppState: ObservableObject {
             for await (mid, map) in group where !map.isEmpty {
                 for i in sessions.indices where sessions[i].machineID == mid {
                     guard let name = sessions[i].tmuxName else { continue }
-                    let probed = map[name] ?? .idle
+                    let probed = map[name]?.status ?? .idle
                     sessions[i].probed = probed
                     sessions[i].status = isResting(name) ? .rest : probed
+                    if let act = map[name]?.activity { currentActivity[name] = act }
                 }
             }
         }
-        recomputeRestStatuses()   // 内含 refreshSeen（离开等你清 seenWait / 正看着算已看）
+        recomputeRestStatuses()   // 内含 refreshSeen（正看着的会话把 activity 记成已看）
     }
 
     private var pollTask: Task<Void, Never>?
@@ -367,9 +369,10 @@ final class AppState: ObservableObject {
         let map = AppState.parseProbe(out2)
         for i in sessions.indices where sessions[i].machineID == machine.id {
             guard let name = sessions[i].tmuxName else { continue }
-            let probed = map[name] ?? .idle
+            let probed = map[name]?.status ?? .idle
             sessions[i].probed = probed
             sessions[i].status = isResting(name) ? .rest : probed
+            if let act = map[name]?.activity { currentActivity[name] = act }
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
@@ -424,22 +427,28 @@ final class AppState: ObservableObject {
 
     // MARK: 未读红点
 
-    /// 红点 = 处于「等你」且没看过。看过（在等你态点进去）= seenWait，离开等你会被清出。
-    func hasUnseen(_ s: Session) -> Bool { s.status == .wait && !seenWait.contains(s.id) }
+    /// 红点 = 处于「等你」且自上次看之后有新输出（当前 activity > 上次看时的 activity）。
+    /// 上次没记过（nil）当 -1，这样首次探测到的等你会话也算未看 → 冒点。
+    func hasUnseen(_ s: Session) -> Bool {
+        guard s.status == .wait, let name = s.tmuxName else { return false }
+        return (currentActivity[name] ?? 0) > (lastSeenActivity[name] ?? -1)
+    }
     func machineHasUnseen(_ mid: String) -> Bool {
         sessions.contains { $0.machineID == mid && !isClosed($0) && hasUnseen($0) }
     }
 
-    /// 看过了 → 记进 seenWait，红点消失（直到它离开等你再回来）。
-    func markSeen(_ sessionID: String) { seenWait.insert(sessionID) }
+    /// 看过了 → 把「上次看时的 activity」推到 max(当前探测值, now)，红点消失（直到又有新输出）。
+    /// 取 now 兜住上次轮询到点开之间刚冒的输出，避免看完又闪回红点。
+    func markSeen(_ sessionID: String) {
+        guard let name = sessions.first(where: { $0.id == sessionID })?.tmuxName else { return }
+        lastSeenActivity[name] = max(currentActivity[name] ?? 0, Int(Date().timeIntervalSince1970))
+    }
 
-    /// 每次状态定妥后维护 seenWait：离开等你的清出（下次完成再冒点）；正看着的等你算已看。
+    /// 每次状态定妥后：正看着的会话（前台+选中+终端）持续算已看。
     private func refreshSeen() {
-        let waiting = Set(sessions.filter { $0.status == .wait }.map { $0.id })
-        seenWait.formIntersection(waiting)
-        if appActive, mode == .terminal, waiting.contains(activeSessionID) {
-            seenWait.insert(activeSessionID)
-        }
+        guard appActive, mode == .terminal,
+              let name = sessions.first(where: { $0.id == activeSessionID })?.tmuxName else { return }
+        lastSeenActivity[name] = currentActivity[name] ?? lastSeenActivity[name]
     }
 
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
@@ -467,9 +476,10 @@ export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 BODY=$(
 tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
   pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
+  act=$(tmux display-message -p -t "$s" '#{session_activity}' 2>/dev/null)
   busy=0
   tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-  printf '%s\t%s\t%s\n' "$s" "$pc" "$busy"
+  printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act"
 done
 )
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
@@ -497,11 +507,12 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                                       AppState.probeOneScript(session: name),
                                       timeout: 15, marker: "@TSB64E@")
         let map = AppState.parseProbe(out)
-        guard let st = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
+        guard let info = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
             showToast("刷新失败或会话已不存在"); return
         }
-        sessions[i].probed = st
-        sessions[i].status = isResting(name) ? .rest : st
+        sessions[i].probed = info.status
+        sessions[i].status = isResting(name) ? .rest : info.status
+        currentActivity[name] = info.activity
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
@@ -513,28 +524,32 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
         s='\#(session)'
         pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
+        act=$(tmux display-message -p -t "$s" '#{session_activity}' 2>/dev/null)
         busy=0
         tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-        BODY=$(printf '%s\t%s\t%s\n' "$s" "$pc" "$busy")
+        BODY=$(printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act")
         EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
         printf '@TSB64@%s@TSB64E@\n' "$EB64"
         """#
     }
 
-    nonisolated static func parseProbe(_ out: String) -> [String: WorkStatus] {
+    /// 探测结果：状态 + session_activity（最后有输出的 unix 时间戳，判「有没有新输出」用）。
+    nonisolated static func parseProbe(_ out: String) -> [String: (status: WorkStatus, activity: Int)] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
         guard let data = Data(base64Encoded: String(b64)),
               let body = String(data: data, encoding: .utf8) else { return [:] }
         let shells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
-        var map: [String: WorkStatus] = [:]
+        var map: [String: (WorkStatus, Int)] = [:]
         for line in body.split(whereSeparator: { $0.isNewline }) {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard f.count >= 3 else { continue }
             let pc = f[1].trimmingCharacters(in: .whitespaces)
             let busy = f[2].trimmingCharacters(in: .whitespaces) == "1"
-            map[String(f[0])] = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
+            let act = f.count >= 4 ? (Int(f[3].trimmingCharacters(in: .whitespaces)) ?? 0) : 0
+            let st: WorkStatus = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
+            map[String(f[0])] = (st, act)
         }
         return map
     }
