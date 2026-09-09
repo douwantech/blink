@@ -184,22 +184,25 @@ struct ChatBubbleRow: View {
     }
 
     private var bubble: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(AppState.chatSegments(block.text)) { seg in
-                switch seg {
-                case .text(let t):
-                    Text(t)
-                        .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
-                        .textSelection(.enabled)
-                        .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                case .remoteImage(let url):
-                    ChatImage(remote: url, cap: cap)
-                case .localImage(let path):
-                    ChatImage(localPath: path, cap: cap)
+        // BubbleWidth 自定义布局：给内容提议 cap-26 宽，取内容「实际用到」的宽度——
+        // 短消息按内容收窄、长消息在 cap 处换行（不截断），都不撑满整行。
+        BubbleWidth(maxWidth: cap - 26) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(AppState.chatSegments(block.text)) { seg in
+                    switch seg {
+                    case .text(let t):
+                        Text(t)
+                            .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
+                            .textSelection(.enabled)
+                            .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    case .remoteImage(let url):
+                        ChatImage(remote: url, cap: cap)
+                    case .localImage(let path):
+                        ChatImage(localPath: path, cap: cap)
+                    }
                 }
             }
         }
-        .frame(maxWidth: cap, alignment: .leading)
         .padding(.horizontal, 13).padding(.vertical, 9)
         .background(
             UnevenRoundedRectangle(
@@ -212,7 +215,6 @@ struct ChatBubbleRow: View {
                         bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
                         .stroke(isYou ? Theme.green2.opacity(0.28) : Theme.hair))
         )
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var avatar: some View {
@@ -225,6 +227,20 @@ struct ChatBubbleRow: View {
     }
 }
 
+/// 让气泡按内容宽度 hug、但封顶 maxWidth：给子视图提议 maxWidth 宽，取它换行后
+/// 「实际用到」的宽度（短内容 < maxWidth、长内容换行到 = maxWidth），不填充、不截断。
+struct BubbleWidth: Layout {
+    var maxWidth: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let s = subviews.first?.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil)) ?? .zero
+        return CGSize(width: min(s.width, maxWidth), height: s.height)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
+}
+
 /// 气泡里的一张图：远端 URL 走 AsyncImage，本地路径直接 NSImage 读盘。
 /// 加载不出（门禁 / 404 / 文件没了）就显示一枚小占位，不撑破气泡。
 struct ChatImage: View {
@@ -232,7 +248,7 @@ struct ChatImage: View {
     var localPath: String? = nil
     let cap: CGFloat
 
-    private var side: CGFloat { min(cap - 26, 340) }
+    private var side: CGFloat { min(cap - 26, 460) }
 
     var body: some View {
         Group {

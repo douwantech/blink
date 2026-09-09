@@ -96,8 +96,31 @@ final class AppState: ObservableObject {
         return (host, port, t)
     }
 
+    /// 截图自测模式（BLINKMAC_CHATSHOT=1）：塞样例对话、直接进对话记录页，供命令行截图核对气泡布局。
+    func chatShotIfNeeded() -> Bool {
+        guard ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT"] == "1" else { return false }
+        let img = ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT_IMG"] ?? ""
+        machines = [Machine(id: "mbp", name: "mac", host: "本机", initials: "M", grad: Grad.blue, transport: .local)]
+        var chat: [ChatBlock] = [
+            ChatBlock(role: "YOU", color: Theme.green2, text: "短消息"),
+            ChatBlock(role: "YOU", color: Theme.green2, text: "让 command+D 可以执行这种切换，顺便把对话记录页做得好看一点。"),
+            ChatBlock(role: "ASSISTANT", color: Theme.blue, text: "好的。Cmd-D 现在来回切换终端 ↔ 对话记录，跟点底部「历史」等价。走主菜单 key equivalent，焦点在 SwiftTerm 终端里也能触发。这是一段较长的回复，用来检验 Claude 侧气泡在超过最大宽度时是否正确换行、并且靠左对齐、不撑满整行。"),
+            ChatBlock(role: "YOU", color: Theme.green2, text: "显示的还是不对，绿色的没有按长度来靠右对齐，图片还多了一些文字出来"),
+        ]
+        if !img.isEmpty {
+            chat.append(ChatBlock(role: "YOU", color: Theme.green2, text: "[Image #13] 你咋测试的 [Image: source: \(img)]"))
+        }
+        sessions = [Session(id: "shot", machineID: "mbp", name: "jack-blink", dir: "~/Codes/Jack/blink",
+                            initials: "JB", grad: Grad.green, status: .work, lines: [], chat: chat, tmuxName: "cc-jack-blink")]
+        activeMachineID = "mbp"
+        activeSessionID = "shot"
+        mode = .chat
+        return true
+    }
+
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
+        if chatShotIfNeeded() { return }
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
             let a = BlinkAvatars.load()

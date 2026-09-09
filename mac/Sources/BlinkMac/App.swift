@@ -108,6 +108,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }
+        // 截图自测：BLINKMAC_CHATSHOT=1 时，窗口渲染好后把 contentView 存成 PNG 再退出
+        // （app 自绘成位图，不吃屏幕录制权限，命令行也能拿到真实布局图）。
+        if ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT"] == "1" {
+            let out = ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT_OUT"] ?? "/tmp/blinkmac-chatshot.png"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if let w = NSApp.windows.first(where: { $0.contentView != nil }),
+                   let v = w.contentView,
+                   let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    if let data = rep.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: out))
+                    }
+                }
+                exit(0)
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
         // 开发版在 Dock 图标挂红色 DEV 角标 + 窗口标题带后缀，和正式版一眼分清。
         if AppBuild.isDev {
