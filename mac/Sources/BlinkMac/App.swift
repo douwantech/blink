@@ -22,6 +22,9 @@ struct BlinkMacApp: App {
             CommandGroup(after: .toolbar) {
                 Button("刷新重连") { state.reconnect() }
                     .keyboardShortcut("r", modifiers: .command)
+                // Cmd-D = 终端 ↔ 对话记录 来回切（同底部「历史」按钮）
+                Button("终端 / 对话记录") { state.openHistory() }
+                    .keyboardShortcut("d", modifiers: .command)
             }
         }
     }
