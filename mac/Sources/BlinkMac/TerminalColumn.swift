@@ -67,28 +67,21 @@ struct TerminalColumn: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
 
             ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        ForEach(state.activeSession.chat) { c in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(c.role).font(Theme.mono(11, .bold)).tracking(1.2).foregroundColor(c.color)
-                                Text(c.text).font(Theme.ui(14)).foregroundColor(Theme.fg)
-                                    .textSelection(.enabled)
-                                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                GeometryReader { geo in
+                    ScrollView {
+                        VStack(spacing: 14) {
+                            ForEach(state.activeSession.chat) { c in
+                                ChatBubbleRow(block: c, maxBubble: geo.size.width * 0.74)
                             }
-                            .padding(.leading, 14)
-                            .overlay(alignment: .leading) {
-                                Rectangle().fill(c.color).frame(width: 2)
+                            if state.activeSession.chat.isEmpty {
+                                Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
                             }
+                            // 底部锚点：加载 / 有新内容后自动滚到这里（对话记录看最新的）
+                            Color.clear.frame(height: 1).id(kChatBottom)
                         }
-                        if state.activeSession.chat.isEmpty {
-                            Text("（这个会话还没有对话记录）").font(Theme.ui(13)).foregroundColor(Theme.dim)
-                        }
-                        // 底部锚点：加载 / 有新内容后自动滚到这里（对话记录看最新的）
-                        Color.clear.frame(height: 1).id(kChatBottom)
+                        .padding(.horizontal, 20).padding(.vertical, 18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, 24).padding(.vertical, 20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .onChange(of: state.activeSession.chat.count) { _ in
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(kChatBottom, anchor: .bottom) }
@@ -165,6 +158,59 @@ struct TerminalColumn: View {
                 .overlay(RoundedRectangle(cornerRadius: 11).stroke(Theme.hair2)))
             .padding(.bottom, 92)
             .transition(.opacity)
+    }
+}
+
+// MARK: - Chat bubble (方案 A：iMessage 式气泡)
+
+/// 一条对话气泡：你靠右绿气泡，Claude 靠左深卡＋蓝头像。maxBubble = 气泡最大宽度。
+struct ChatBubbleRow: View {
+    let block: ChatBlock
+    let maxBubble: CGFloat
+
+    private var isYou: Bool { block.role == "YOU" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            if isYou {
+                Spacer(minLength: 40)
+                bubble
+            } else {
+                avatar
+                bubble
+                Spacer(minLength: 40)
+            }
+        }
+    }
+
+    private var bubble: some View {
+        Text(block.text)
+            .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
+            .textSelection(.enabled)
+            .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 13).padding(.vertical, 9)
+            .frame(maxWidth: max(maxBubble, 120), alignment: .leading)
+            .background(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
+                    bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
+                    .fill(isYou ? Theme.green2.opacity(0.14) : Theme.panel3)
+                    .overlay(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
+                            bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
+                            .stroke(isYou ? Theme.green2.opacity(0.28) : Theme.hair))
+            )
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var avatar: some View {
+        Text("C")
+            .font(.system(size: 10, weight: .heavy)).foregroundColor(Color(hex: 0x04122b))
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(LinearGradient(colors: [Theme.blue, Color(hex: 0x3f7fe0)],
+                                                     startPoint: .topLeading, endPoint: .bottomTrailing)))
+            .padding(.top, 2)
     }
 }
 
