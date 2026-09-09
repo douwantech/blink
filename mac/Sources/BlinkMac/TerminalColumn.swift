@@ -123,11 +123,9 @@ struct TerminalColumn: View {
             .popover(isPresented: $state.showFavorites, arrowEdge: .bottom) {
                 FavoritesPopover().environmentObject(state)
             }
-            PillButton(label: "图片", system: "photo", bg: Color.white.opacity(0.05)) { state.showToast("插入图片…") }
             PillButton(label: "历史", system: "clock.arrow.circlepath",
                        tint: state.mode == .chat ? Theme.teal : Theme.sub,
                        bg: state.mode == .chat ? Theme.teal.opacity(0.12) : Color.white.opacity(0.05)) { state.openHistory() }
-            PillButton(label: "浏览器", system: "globe", tint: Theme.rest, bg: Color.white.opacity(0.05)) { state.showToast("打开内置浏览器") }
             Spacer()
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 10)
