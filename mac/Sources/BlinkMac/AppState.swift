@@ -304,7 +304,8 @@ final class AppState: ObservableObject {
     /// 只探测状态、不重列会话（轮询用）：逐台并行跑 probeScript，更新各会话 probed/status。
     /// 完成的会话会从此变 .wait → hasUnseen 自动冒红点。
     func refreshStatuses() async {
-        await withTaskGroup(of: (String, [String: (status: WorkStatus, activity: Int)]).self) { group in
+        // 1) 状态（快，pc/busy）——永远可靠，慢的未读探测不掺和进来。
+        await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
                 group.addTask {
@@ -315,14 +316,32 @@ final class AppState: ObservableObject {
             for await (mid, map) in group where !map.isEmpty {
                 for i in sessions.indices where sessions[i].machineID == mid {
                     guard let name = sessions[i].tmuxName else { continue }
-                    let probed = map[name]?.status ?? .idle
+                    let probed = map[name] ?? .idle
                     sessions[i].probed = probed
                     sessions[i].status = isResting(name) ? .rest : probed
-                    if let act = map[name]?.activity { currentActivity[name] = act }
                 }
             }
         }
-        recomputeRestStatuses()   // 内含 refreshSeen（正看着的会话把 activity 记成已看）
+        recomputeRestStatuses()   // 内含 refreshSeen
+        // 2) 未读（jsonl mtime，单独一条、超时也不影响上面的状态）
+        await refreshUnread()
+    }
+
+    /// 未读探测：逐台并行拉各会话 jsonl mtime，更新 currentActivity → hasUnseen 冒红点。
+    func refreshUnread() async {
+        await withTaskGroup(of: (String, [String: Int]).self) { group in
+            for m in machines {
+                let mid = m.id, tr = m.transport
+                group.addTask {
+                    let out = await AppState.exec(tr, AppState.unreadScript, timeout: 30, marker: "@TSB64E@")
+                    return (mid, AppState.parseUnread(out))
+                }
+            }
+            for await (_, map) in group where !map.isEmpty {
+                for (name, mt) in map { currentActivity[name] = mt }
+            }
+        }
+        refreshSeen()
     }
 
     private var pollTask: Task<Void, Never>?
@@ -369,10 +388,9 @@ final class AppState: ObservableObject {
         let map = AppState.parseProbe(out2)
         for i in sessions.indices where sessions[i].machineID == machine.id {
             guard let name = sessions[i].tmuxName else { continue }
-            let probed = map[name]?.status ?? .idle
+            let probed = map[name] ?? .idle
             sessions[i].probed = probed
             sessions[i].status = isResting(name) ? .rest : probed
-            if let act = map[name]?.activity { currentActivity[name] = act }
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
@@ -445,10 +463,10 @@ final class AppState: ObservableObject {
         let tr = machines.first(where: { $0.id == s.machineID })?.transport
         guard let tr, tr.connectable else { return }
         Task { @MainActor in
-            let out = await AppState.exec(tr, AppState.probeOneScript(session: name), timeout: 12, marker: "@TSB64E@")
-            if let info = AppState.parseProbe(out)[name] {
-                currentActivity[name] = info.activity
-                lastSeenActivity[name] = info.activity   // 以点开那刻的最新行数为准
+            let out = await AppState.exec(tr, AppState.unreadOneScript(session: name), timeout: 15, marker: "@TSB64E@")
+            if let mt = AppState.parseUnread(out)[name] {
+                currentActivity[name] = mt
+                lastSeenActivity[name] = mt   // 以点开那刻的最新 mtime 为准
             }
         }
     }
@@ -482,26 +500,70 @@ final class AppState: ObservableObject {
     /// "esc to interrupt"(busy)。分类同 iOS：裸 shell→空闲、busy→干活、否则→等你。
     nonisolated static let probeScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-PROJ="$HOME/.claude/projects"
 BODY=$(
 tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
   pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
   busy=0
   tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-  # act = 该会话 jsonl 的 mtime：只有真写入新消息才更新（状态栏/光标重绘不碰文件）。
-  # 按会话 cwd 映射到 ~/.claude/projects/<enc> 里、customTitle 匹配的 jsonl（限本目录，够快）。
-  cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
-  enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
-  TITLE=${s#cc-}
-  act=0
-  F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl "$PROJ/$enc"*/*.jsonl 2>/dev/null | head -1)
-  [ -n "$F" ] && act=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-  printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act"
+  printf '%s\t%s\t%s\n' "$s" "$pc" "$busy"
 done
 )
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
 printf '@TSB64@%s@TSB64E@\n' "$EB64"
 """#
+
+    /// 未读探测（单独一条，慢了不影响状态）：每个 cc 会话 jsonl 的 mtime。
+    /// 按会话 cwd → ~/.claude/projects/<enc>，customTitle 匹配（限本目录，够快）。
+    nonisolated static let unreadScript = #"""
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+PROJ="$HOME/.claude/projects"
+BODY=$(
+tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
+  cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
+  enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
+  TITLE=${s#cc-}
+  mt=0
+  F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl 2>/dev/null | head -1)
+  [ -n "$F" ] && mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
+  printf '%s\t%s\n' "$s" "$mt"
+done
+)
+EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+printf '@TSB64@%s@TSB64E@\n' "$EB64"
+"""#
+
+    nonisolated static func parseUnread(_ out: String) -> [String: Int] {
+        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
+              a.upperBound <= b.lowerBound else { return [:] }
+        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
+        guard let data = Data(base64Encoded: String(b64)),
+              let body = String(data: data, encoding: .utf8) else { return [:] }
+        var map: [String: Int] = [:]
+        for line in body.split(whereSeparator: { $0.isNewline }) {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard f.count >= 2 else { continue }
+            map[String(f[0])] = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? 0
+        }
+        return map
+    }
+
+    /// 单会话未读探测（markSeen 拿最新 mtime 用）。
+    static func unreadOneScript(session: String) -> String {
+        #"""
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        PROJ="$HOME/.claude/projects"
+        s='\#(session)'
+        cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
+        enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
+        TITLE=${s#cc-}
+        mt=0
+        F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl 2>/dev/null | head -1)
+        [ -n "$F" ] && mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
+        BODY=$(printf '%s\t%s\n' "$s" "$mt")
+        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+        printf '@TSB64@%s@TSB64E@\n' "$EB64"
+        """#
+    }
 
     func probe() {
         showToast("正在探测各机器…")
@@ -524,12 +586,11 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                                       AppState.probeOneScript(session: name),
                                       timeout: 15, marker: "@TSB64E@")
         let map = AppState.parseProbe(out)
-        guard let info = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
+        guard let st = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
             showToast("刷新失败或会话已不存在"); return
         }
-        sessions[i].probed = info.status
-        sessions[i].status = isResting(name) ? .rest : info.status
-        currentActivity[name] = info.activity
+        sessions[i].probed = st
+        sessions[i].status = isResting(name) ? .rest : st
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
@@ -539,40 +600,30 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     static func probeOneScript(session: String) -> String {
         #"""
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        PROJ="$HOME/.claude/projects"
         s='\#(session)'
         pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
         busy=0
         tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-        cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
-        enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
-        TITLE=${s#cc-}
-        act=0
-        F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl "$PROJ/$enc"*/*.jsonl 2>/dev/null | head -1)
-        [ -n "$F" ] && act=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-        BODY=$(printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act")
+        BODY=$(printf '%s\t%s\t%s\n' "$s" "$pc" "$busy")
         EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
         printf '@TSB64@%s@TSB64E@\n' "$EB64"
         """#
     }
 
-    /// 探测结果：状态 + session_activity（最后有输出的 unix 时间戳，判「有没有新输出」用）。
-    nonisolated static func parseProbe(_ out: String) -> [String: (status: WorkStatus, activity: Int)] {
+    nonisolated static func parseProbe(_ out: String) -> [String: WorkStatus] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
         guard let data = Data(base64Encoded: String(b64)),
               let body = String(data: data, encoding: .utf8) else { return [:] }
         let shells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
-        var map: [String: (WorkStatus, Int)] = [:]
+        var map: [String: WorkStatus] = [:]
         for line in body.split(whereSeparator: { $0.isNewline }) {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard f.count >= 3 else { continue }
             let pc = f[1].trimmingCharacters(in: .whitespaces)
             let busy = f[2].trimmingCharacters(in: .whitespaces) == "1"
-            let act = f.count >= 4 ? (Int(f[3].trimmingCharacters(in: .whitespaces)) ?? 0) : 0
-            let st: WorkStatus = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
-            map[String(f[0])] = (st, act)
+            map[String(f[0])] = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
         }
         return map
     }
