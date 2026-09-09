@@ -58,15 +58,30 @@ struct MarkdownText: View {
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(Theme.hair2).frame(width: 2) }
         case .table(let header, let rows):
+            // 列用 Grid 对齐；单元格走行内 markdown（**粗** `码` 等）；空表头不显示。
+            let cols = max(header.count, rows.map { $0.count }.max() ?? 0)
+            let hasHeader = header.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             ScrollView(.horizontal, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(header.joined(separator: "  │  ")).font(Theme.mono(12, .bold)).foregroundColor(base)
-                    Rectangle().fill(Theme.hair).frame(height: 1)
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 5) {
+                    if hasHeader {
+                        GridRow {
+                            ForEach(0..<cols, id: \.self) { c in
+                                inline(c < header.count ? header[c] : "")
+                                    .font(Theme.ui(12.5, .semibold)).foregroundColor(base)
+                            }
+                        }
+                        Rectangle().fill(Theme.hair).frame(height: 1).gridCellColumns(cols)
+                    }
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
-                        Text(r.joined(separator: "  │  ")).font(Theme.mono(12)).foregroundColor(base)
+                        GridRow {
+                            ForEach(0..<cols, id: \.self) { c in
+                                inline(c < r.count ? r[c] : "")
+                                    .font(Theme.ui(12.5)).foregroundColor(base).lineSpacing(2)
+                            }
+                        }
                     }
                 }
-                .padding(.horizontal, 10).padding(.vertical, 8)
+                .padding(.horizontal, 12).padding(.vertical, 9)
             }
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.hair))

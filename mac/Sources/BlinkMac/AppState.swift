@@ -120,6 +120,15 @@ final class AppState: ObservableObject {
             | mac | 21 个活会话 |
             | xiaobai | 4 个 KV 标签 |
 
+            你手上还剩四条：
+
+            |     |                                |         |
+            |-----|--------------------------------|---------|
+            | **03** | RC 点「Apply in App Store Connect」 | 30 秒 |
+            | **04** | 把 webhook token + `sk_` 给开发 | 1 分钟 |
+            | **05** | 填 App 隐私标签 | 5 分钟 |
+            | **06** | 补 810 号令涉税信息 | 3 分钟，只影响打款 |
+
             ```swift
             func openHistory() { mode = .chat }
             ```
