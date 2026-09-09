@@ -164,44 +164,54 @@ struct TerminalColumn: View {
 // MARK: - Chat bubble (方案 A：iMessage 式气泡)
 
 /// 一条对话气泡：你靠右绿气泡，Claude 靠左深卡＋蓝头像。maxBubble = 气泡最大宽度。
+/// 正文里的图片（markdown ![](url) / 图床 URL / 本地绝对路径）直接渲染出来。
 struct ChatBubbleRow: View {
     let block: ChatBlock
     let maxBubble: CGFloat
 
     private var isYou: Bool { block.role == "YOU" }
+    private var cap: CGFloat { max(maxBubble, 140) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            if isYou {
-                Spacer(minLength: 40)
-                bubble
-            } else {
-                avatar
-                bubble
-                Spacer(minLength: 40)
-            }
+            if !isYou { avatar }
+            bubble
         }
+        // 整行铺满并把气泡靠边：你靠右、Claude 靠左。
+        .frame(maxWidth: .infinity, alignment: isYou ? .trailing : .leading)
     }
 
     private var bubble: some View {
-        Text(block.text)
-            .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
-            .textSelection(.enabled)
-            .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 13).padding(.vertical, 9)
-            .frame(maxWidth: max(maxBubble, 120), alignment: .leading)
-            .background(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
-                    bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
-                    .fill(isYou ? Theme.green2.opacity(0.14) : Theme.panel3)
-                    .overlay(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
-                            bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
-                            .stroke(isYou ? Theme.green2.opacity(0.28) : Theme.hair))
-            )
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(AppState.chatSegments(block.text)) { seg in
+                switch seg {
+                case .text(let t):
+                    Text(t)
+                        .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
+                        .textSelection(.enabled)
+                        .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .remoteImage(let url):
+                    ChatImage(remote: url, cap: cap)
+                case .localImage(let path):
+                    ChatImage(localPath: path, cap: cap)
+                }
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 9)
+        .frame(maxWidth: cap, alignment: .leading)
+        .background(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
+                bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
+                .fill(isYou ? Theme.green2.opacity(0.14) : Theme.panel3)
+                .overlay(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,
+                        bottomTrailingRadius: isYou ? 5 : 14, topTrailingRadius: 14, style: .continuous)
+                        .stroke(isYou ? Theme.green2.opacity(0.28) : Theme.hair))
+        )
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var avatar: some View {
@@ -211,6 +221,46 @@ struct ChatBubbleRow: View {
             .background(Circle().fill(LinearGradient(colors: [Theme.blue, Color(hex: 0x3f7fe0)],
                                                      startPoint: .topLeading, endPoint: .bottomTrailing)))
             .padding(.top, 2)
+    }
+}
+
+/// 气泡里的一张图：远端 URL 走 AsyncImage，本地路径直接 NSImage 读盘。
+/// 加载不出（门禁 / 404 / 文件没了）就显示一枚小占位，不撑破气泡。
+struct ChatImage: View {
+    var remote: URL? = nil
+    var localPath: String? = nil
+    let cap: CGFloat
+
+    private var side: CGFloat { min(cap - 26, 340) }
+
+    var body: some View {
+        Group {
+            if let url = remote {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFit()
+                    case .empty: placeholder(spinning: true)
+                    default: placeholder(spinning: false)
+                    }
+                }
+            } else if let p = localPath, let ns = NSImage(contentsOfFile: p) {
+                Image(nsImage: ns).resizable().scaledToFit()
+            } else {
+                placeholder(spinning: false)
+            }
+        }
+        .frame(maxWidth: side, maxHeight: side)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Theme.hair))
+    }
+
+    private func placeholder(spinning: Bool) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9).fill(Theme.panel2)
+            if spinning { ProgressView().controlSize(.small).tint(Theme.dim) }
+            else { Image(systemName: "photo").font(.system(size: 18)).foregroundColor(Theme.dim) }
+        }
+        .frame(width: 120, height: 84)
     }
 }
 

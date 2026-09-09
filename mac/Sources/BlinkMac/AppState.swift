@@ -651,6 +651,55 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         sessions[i].chat = blocks
     }
 
+    /// 气泡正文切片：文本 / 图片。图片支持 markdown ![](url)、图床 http(s) 图片 URL、
+    /// 本地绝对路径（如 transcript 里的 [Image: source: /Users/.../x.png]）。
+    enum ChatSegment: Identifiable {
+        case text(String)
+        case remoteImage(URL)
+        case localImage(String)
+        var id: String {
+            switch self {
+            case .text(let t): return "t:" + String(t.prefix(24)) + "\(t.count)"
+            case .remoteImage(let u): return "r:" + u.absoluteString
+            case .localImage(let p): return "l:" + p
+            }
+        }
+    }
+
+    private static let imageRegex: NSRegularExpression? = {
+        // ① markdown ![alt](url) ② 裸 http(s) 图片 URL ③ 本地绝对路径图片
+        let p = #"!\[[^\]]*\]\(\s*([^)\s]+)\s*\)|https?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s)]*)?|/(?:[^\s/]+/)+[^\s/]+\.(?:png|jpe?g|gif|webp|bmp)"#
+        return try? NSRegularExpression(pattern: p, options: [.caseInsensitive])
+    }()
+
+    nonisolated static func chatSegments(_ raw: String) -> [ChatSegment] {
+        guard let re = imageRegex else { return [.text(raw)] }
+        let ns = raw as NSString
+        let ms = re.matches(in: raw, range: NSRange(location: 0, length: ns.length))
+        guard !ms.isEmpty else { return [.text(raw)] }
+
+        var out: [ChatSegment] = []
+        var idx = 0
+        func pushText(_ s: String) {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { out.append(.text(t)) }
+        }
+        for m in ms {
+            if m.range.location > idx {
+                pushText(ns.substring(with: NSRange(location: idx, length: m.range.location - idx)))
+            }
+            let urlStr: String
+            if m.range(at: 1).location != NSNotFound { urlStr = ns.substring(with: m.range(at: 1)) }
+            else { urlStr = ns.substring(with: m.range) }
+            if urlStr.hasPrefix("http"), let u = URL(string: urlStr) { out.append(.remoteImage(u)) }
+            else if urlStr.hasPrefix("/") { out.append(.localImage(urlStr)) }
+            else { pushText(urlStr) }   // markdown 里写的是相对路径 → 当文本
+            idx = m.range.location + m.range.length
+        }
+        if idx < ns.length { pushText(ns.substring(with: NSRange(location: idx, length: ns.length - idx))) }
+        return out.isEmpty ? [.text(raw)] : out
+    }
+
     /// (role,text) 缓存对 → 显示用 ChatBlock。
     nonisolated static func blocks(from pairs: [TranscriptPair]) -> [ChatBlock] {
         pairs.map { p in
