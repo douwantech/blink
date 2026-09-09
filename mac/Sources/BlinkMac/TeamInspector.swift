@@ -101,10 +101,14 @@ struct TeamInspector: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                if state.hasUnseen(s) {
-                    Circle().fill(Color(hex: 0xff453a)).frame(width: 7, height: 7)
+                // 「等你」不显示橙标：没看过 → 红点，看过 → 干净；其它状态照常
+                if s.status == .wait {
+                    if state.hasUnseen(s) {
+                        Circle().fill(Color(hex: 0xff453a)).frame(width: 8, height: 8)
+                    }
+                } else {
+                    statusLabel(s.status)
                 }
-                statusLabel(s.status)
                 Button { state.toggleRest(sessionID: s.id) } label: {
                     Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
                         .font(.system(size: 13))

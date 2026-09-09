@@ -124,10 +124,14 @@ struct SessionRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                if state.hasUnseen(session) {
-                    Circle().fill(Color(hex: 0xff453a)).frame(width: 8, height: 8)
+                // 「等你」不显示橙标：没看过 → 红点，看过 → 干净留白；其它状态照常显示
+                if session.status == .wait {
+                    if state.hasUnseen(session) {
+                        Circle().fill(Color(hex: 0xff453a)).frame(width: 9, height: 9)
+                    }
+                } else {
+                    StatusPill(status: session.status)
                 }
-                StatusPill(status: session.status)
             }
             .padding(.leading, 14).padding(.trailing, 12).padding(.vertical, 11)
             .background(

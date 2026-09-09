@@ -31,12 +31,11 @@ final class AppState: ObservableObject {
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
-    // 未读红点：AI「干活中 → 等你」跳变（= 完成一轮、等你看）且你还没点进去看 → 标 session.id；
-    // 点进去（selectSession）就清。内存态，不落盘。lastProbed 存上轮探测值用来判跳变。
-    @Published var unseen: Set<String> = []
-    private var lastProbed: [String: WorkStatus] = [:]   // tmuxName → 上轮 probed
-    @Published var appActive = true                       // 窗口是否在前台（后台完成也算没看到）
-    private var baselinedUnseen = false                  // 首次枚举只建基线、不冒红点
+    // 未读红点：会话处于「等你（= AI 完成一轮、在等你看）」且你还没点进去看 → 冒红点。
+    // 「等你」的橙标不再显示，直接用红点代替。seenWait = 你已看过（在等你态下点进去过）的会话，
+    // 离开等你会被清出（下次再完成又冒点）。内存态，不落盘。
+    @Published var seenWait: Set<String> = []
+    @Published var appActive = true                       // 窗口是否在前台（正看着的等你算已看）
 
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
 
@@ -175,7 +174,7 @@ final class AppState: ObservableObject {
             S("studio/cc-bella-english", "studio", "bella-english", .wait),
             S("studio/cc-bella-life", "studio", "bella-life", .idle),
         ]
-        unseen = ["mbp/cc-jack-printer", "studio/cc-bella-english"]   // 这俩完成了、没看 → 红点
+        // 处于 .wait 的（jack-printer / bella-english）没看过 → 自动冒红点
         activeMachineID = "mbp"
         activeSessionID = "mbp/cc-jack-blink"
         showTeam = true
@@ -314,7 +313,6 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        markUnseenTransitions()
         recomputeRestStatuses()
     }
 
@@ -353,7 +351,6 @@ final class AppState: ObservableObject {
             sessions[i].status = isResting(name) ? .rest : probed
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
-        markUnseenTransitions()
         recomputeRestStatuses()
     }
 
@@ -406,35 +403,22 @@ final class AppState: ObservableObject {
 
     // MARK: 未读红点
 
-    /// 探测更新后调用：谁从「非等你」跳到「等你」= 完成一轮，若不是你正看着的会话就标未读。
-    /// 首轮只建基线不冒红点（避免开 app 就一堆点）。
-    func markUnseenTransitions() {
-        var live = Set<String>()
-        for s in sessions {
-            guard let name = s.tmuxName else { continue }
-            live.insert(name)
-            let now = s.probed
-            if baselinedUnseen, let prev = lastProbed[name], prev != .wait, now == .wait, !isViewing(s) {
-                unseen.insert(s.id)
-            }
-            lastProbed[name] = now
-        }
-        lastProbed = lastProbed.filter { live.contains($0.key) }
-        unseen = unseen.intersection(Set(sessions.map { $0.id }))
-        baselinedUnseen = true
-    }
-
-    /// 你此刻是否正看着这个会话（前台 + 选中 + 终端模式）。
-    private func isViewing(_ s: Session) -> Bool {
-        appActive && s.id == activeSessionID && mode == .terminal
-    }
-
-    /// 看过了 → 清红点。
-    func markSeen(_ sessionID: String) { unseen.remove(sessionID) }
-
-    func hasUnseen(_ s: Session) -> Bool { unseen.contains(s.id) }
+    /// 红点 = 处于「等你」且没看过。看过（在等你态点进去）= seenWait，离开等你会被清出。
+    func hasUnseen(_ s: Session) -> Bool { s.status == .wait && !seenWait.contains(s.id) }
     func machineHasUnseen(_ mid: String) -> Bool {
-        sessions.contains { $0.machineID == mid && unseen.contains($0.id) && !isClosed($0) }
+        sessions.contains { $0.machineID == mid && !isClosed($0) && hasUnseen($0) }
+    }
+
+    /// 看过了 → 记进 seenWait，红点消失（直到它离开等你再回来）。
+    func markSeen(_ sessionID: String) { seenWait.insert(sessionID) }
+
+    /// 每次状态定妥后维护 seenWait：离开等你的清出（下次完成再冒点）；正看着的等你算已看。
+    private func refreshSeen() {
+        let waiting = Set(sessions.filter { $0.status == .wait }.map { $0.id })
+        seenWait.formIntersection(waiting)
+        if appActive, mode == .terminal, waiting.contains(activeSessionID) {
+            seenWait.insert(activeSessionID)
+        }
     }
 
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
@@ -443,6 +427,7 @@ final class AppState: ObservableObject {
             let name = sessions[i].tmuxName ?? sessions[i].id
             sessions[i].status = isResting(name) ? .rest : sessions[i].probed
         }
+        refreshSeen()
     }
 
     /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
@@ -496,7 +481,6 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
         sessions[i].probed = st
         sessions[i].status = isResting(name) ? .rest : st
-        markUnseenTransitions()
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
