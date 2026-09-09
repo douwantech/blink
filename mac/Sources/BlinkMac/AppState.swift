@@ -31,11 +31,11 @@ final class AppState: ObservableObject {
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
-    // 未读红点：会话处于「等你（完成）」且**自你上次看之后有新输出**（session_activity 变大）→ 冒红点。
-    // 「等你」橙标不再显示，直接用红点代替。用 activity 而非「状态跳变」判断，才不会被 12s 轮询漏掉
-    // 秒级任务的工作阶段。currentActivity=最近探测到的活动时间戳；lastSeenActivity=你上次看时的。
-    @Published var currentActivity: [String: Int] = [:]   // tmuxName → 最近 session_activity
-    private var lastSeenActivity: [String: Int] = [:]     // tmuxName → 你上次看这个会话时的 activity
+    // 未读红点：会话处于「等你（完成）」且**自你上次看之后有新消息**（jsonl mtime 变大）→ 冒红点。
+    // 「等你」橙标不再显示，直接用红点代替。信号用 claude 会话 jsonl 的 mtime：只有真写入新消息才更新，
+    // 状态栏/光标重绘不碰文件（history_size 恒 0、session_activity 每秒乱跳，都不可靠）。
+    @Published var currentActivity: [String: Int] = [:]   // tmuxName → 最近探到的 jsonl mtime
+    private var lastSeenActivity: [String: Int] = [:]     // tmuxName → 你上次看时的 jsonl mtime
     @Published var appActive = true                       // 窗口是否在前台（正看着的会话算已看）
 
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
@@ -437,11 +437,20 @@ final class AppState: ObservableObject {
         sessions.contains { $0.machineID == mid && !isClosed($0) && hasUnseen($0) }
     }
 
-    /// 看过了 → 把「上次看时的 activity」推到 max(当前探测值, now)，红点消失（直到又有新输出）。
-    /// 取 now 兜住上次轮询到点开之间刚冒的输出，避免看完又闪回红点。
+    /// 看过了 → 把「上次看时的 history_size」推到当前值，红点消失（直到又有新内容）。
+    /// 立刻用已知值清点，再异步探一次拿最新行数（兜住上次轮询到点开之间刚冒的内容）。
     func markSeen(_ sessionID: String) {
-        guard let name = sessions.first(where: { $0.id == sessionID })?.tmuxName else { return }
-        lastSeenActivity[name] = max(currentActivity[name] ?? 0, Int(Date().timeIntervalSince1970))
+        guard let s = sessions.first(where: { $0.id == sessionID }), let name = s.tmuxName else { return }
+        lastSeenActivity[name] = currentActivity[name] ?? Int.max   // 没探到过就先当全看过，别误冒
+        let tr = machines.first(where: { $0.id == s.machineID })?.transport
+        guard let tr, tr.connectable else { return }
+        Task { @MainActor in
+            let out = await AppState.exec(tr, AppState.probeOneScript(session: name), timeout: 12, marker: "@TSB64E@")
+            if let info = AppState.parseProbe(out)[name] {
+                currentActivity[name] = info.activity
+                lastSeenActivity[name] = info.activity   // 以点开那刻的最新行数为准
+            }
+        }
     }
 
     /// 每次状态定妥后：正看着的会话（前台+选中+终端）持续算已看。
@@ -473,12 +482,20 @@ final class AppState: ObservableObject {
     /// "esc to interrupt"(busy)。分类同 iOS：裸 shell→空闲、busy→干活、否则→等你。
     nonisolated static let probeScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+PROJ="$HOME/.claude/projects"
 BODY=$(
 tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
   pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-  act=$(tmux display-message -p -t "$s" '#{session_activity}' 2>/dev/null)
   busy=0
   tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+  # act = 该会话 jsonl 的 mtime：只有真写入新消息才更新（状态栏/光标重绘不碰文件）。
+  # 按会话 cwd 映射到 ~/.claude/projects/<enc> 里、customTitle 匹配的 jsonl（限本目录，够快）。
+  cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
+  enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
+  TITLE=${s#cc-}
+  act=0
+  F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl "$PROJ/$enc"*/*.jsonl 2>/dev/null | head -1)
+  [ -n "$F" ] && act=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
   printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act"
 done
 )
@@ -522,11 +539,17 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     static func probeOneScript(session: String) -> String {
         #"""
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        PROJ="$HOME/.claude/projects"
         s='\#(session)'
         pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-        act=$(tmux display-message -p -t "$s" '#{session_activity}' 2>/dev/null)
         busy=0
         tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+        cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
+        enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
+        TITLE=${s#cc-}
+        act=0
+        F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl "$PROJ/$enc"*/*.jsonl 2>/dev/null | head -1)
+        [ -n "$F" ] && act=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
         BODY=$(printf '%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$act")
         EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
         printf '@TSB64@%s@TSB64E@\n' "$EB64"
