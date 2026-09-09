@@ -101,10 +101,12 @@ final class AppState: ObservableObject {
         guard ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT"] == "1" else { return false }
         let img = ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT_IMG"] ?? ""
         machines = [Machine(id: "mbp", name: "mac", host: "本机", initials: "M", grad: Grad.blue, transport: .local)]
-        var chat: [ChatBlock] = [
-            ChatBlock(role: "YOU", color: Theme.green2, text: "短消息"),
-            ChatBlock(role: "YOU", color: Theme.green2, text: "让 command+D 可以执行这种切换，顺便把对话记录页做得好看一点。"),
-            ChatBlock(role: "ASSISTANT", color: Theme.blue, text: """
+        // 走真实 blocks(from:) 清洗路径，顺便验证系统注入的图片元信息被丢掉。
+        var pairs: [TranscriptPair] = [
+            TranscriptPair(r: "you", t: "短消息"),
+            TranscriptPair(r: "you", t: "[Image: original 3456x2168, displayed at 2000x1255. Multiply coordinates by 1.73 to map to original image.]"),
+            TranscriptPair(r: "you", t: "让 command+D 可以执行这种切换，顺便把对话记录页做得好看一点。"),
+            TranscriptPair(r: "claude", t: """
             ## 改完效果
 
             **Cmd-D** 现在来回切换终端 ↔ 对话记录，跟点底部「历史」等价，`openHistory()` 里做的。
@@ -124,11 +126,12 @@ final class AppState: ObservableObject {
 
             > 端到端都验过了，装好正式版。
             """),
-            ChatBlock(role: "YOU", color: Theme.green2, text: "显示的还是不对，绿色的没有按长度来靠右对齐，图片还多了一些文字出来"),
+            TranscriptPair(r: "you", t: "显示的还是不对，绿色的没有按长度来靠右对齐，图片还多了一些文字出来"),
         ]
         if !img.isEmpty {
-            chat.append(ChatBlock(role: "YOU", color: Theme.green2, text: "[Image #13] 你咋测试的 [Image: source: \(img)]"))
+            pairs.append(TranscriptPair(r: "you", t: "[Image #14] 这种是不是系统发的 [Image: source: \(img)]\n[Image: original 3456x2168, displayed at 2000x1255. Multiply coordinates by 1.73 to map to original image.]"))
         }
+        let chat = AppState.blocks(from: pairs)
         sessions = [Session(id: "shot", machineID: "mbp", name: "jack-blink", dir: "~/Codes/Jack/blink",
                             initials: "JB", grad: Grad.green, status: .work, lines: [], chat: chat, tmuxName: "cc-jack-blink")]
         activeMachineID = "mbp"
@@ -755,12 +758,28 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         return out.isEmpty ? [.text(raw)] : out
     }
 
-    /// (role,text) 缓存对 → 显示用 ChatBlock。
+    /// (role,text) 缓存对 → 显示用 ChatBlock。清洗掉系统注入的图片元信息，
+    /// 清完为空的整条丢掉（那种「只有一行系统图片说明」的消息不再显示）。
     nonisolated static func blocks(from pairs: [TranscriptPair]) -> [ChatBlock] {
-        pairs.map { p in
-            ChatBlock(role: p.r == "you" ? "YOU" : "ASSISTANT",
-                      color: p.r == "you" ? Theme.green2 : Theme.blue, text: p.t)
+        pairs.compactMap { p in
+            let t = cleanTranscriptText(p.t)
+            guard !t.isEmpty else { return nil }
+            return ChatBlock(role: p.r == "you" ? "YOU" : "ASSISTANT",
+                             color: p.r == "you" ? Theme.green2 : Theme.blue, text: t)
         }
+    }
+
+    /// 去掉 harness/系统在贴图时注入、非用户输入的文本：
+    ///  · [Image: original 3456x2168, displayed at …. Multiply coordinates … map to original image.]
+    ///  · [Image #N] 占位
+    /// 注意保留 [Image: source: /path]（那是要渲染的真图）。
+    nonisolated static func cleanTranscriptText(_ s: String) -> String {
+        var t = s
+        t = t.replacingOccurrences(
+            of: #"\[Image:\s*original\s+\d+x\d+[^\]]*\]"#, with: "", options: .regularExpression)
+        t = t.replacingOccurrences(
+            of: #"\[Image\s*#\d+\]"#, with: "", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     struct TranscriptDelta {
@@ -824,6 +843,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                  | gsub("(?s)<bash-input>.*?</bash-input>";"")
                  | gsub("(?s)<bash-stdout>.*?</bash-stdout>";"")
                  | gsub("(?s)<bash-stderr>.*?</bash-stderr>";"")
+                 | gsub("\\[Image: original [^\\]]*\\]";"")
                  | sub("^\\s+";"") | sub("\\s+$";"")) as $body
               | select(($body|length)>0)
               | select($body!="Continue from where you left off."
