@@ -34,8 +34,10 @@ final class AppState: ObservableObject {
     // 未读红点：会话处于「等你（完成）」且**自你上次看之后有新消息**（jsonl mtime 变大）→ 冒红点。
     // 「等你」橙标不再显示，直接用红点代替。信号用 claude 会话 jsonl 的 mtime：只有真写入新消息才更新，
     // 状态栏/光标重绘不碰文件（history_size 恒 0、session_activity 每秒乱跳，都不可靠）。
-    @Published var currentActivity: [String: Int] = [:]   // tmuxName → 最近探到的 jsonl mtime
-    private var lastSeenActivity: [String: Int] = [:]     // tmuxName → 你上次看时的 jsonl mtime
+    @Published var currentActivity: [String: Int] = [:]   // session.id → 最近探到的 jsonl mtime
+    private var lastSeenActivity: [String: Int] = [:]     // session.id → 你上次看时的 jsonl mtime
+    private var jsonlPath: [String: String] = [:]         // session.id → 该会话 jsonl 绝对路径（全局 grep 定位一次后缓存）
+    private var unreadTick = 0                            // 轮询计数：每隔几轮重定位一次路径
     @Published var appActive = true                       // 窗口是否在前台（正看着的会话算已看）
 
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
@@ -203,6 +205,16 @@ final class AppState: ObservableObject {
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
+        if ProcessInfo.processInfo.environment["BLINKMAC_UNREADDIAG"] == "1" {
+            await refreshStatuses()   // 状态 + 未读（定位 + stat）
+            var lines = ["UNREAD-DIAG 会话数=\(sessions.filter { $0.tmuxName != nil && !isClosed($0) }.count)"]
+            for s in sessions where s.tmuxName != nil && !isClosed(s) {
+                let f = jsonlPath[s.id].map { ($0 as NSString).lastPathComponent } ?? "—未定位"
+                lines.append("  \(s.name)  status=\(s.status)  jsonl=\(f)  mtime=\(currentActivity[s.id].map(String.init) ?? "—")  unseen=\(hasUnseen(s))")
+            }
+            FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+            exit(0)
+        }
         startPolling()               // 定时探测，完成的会话自动冒红点
     }
 
@@ -327,21 +339,59 @@ final class AppState: ObservableObject {
         await refreshUnread()
     }
 
-    /// 未读探测：逐台并行拉各会话 jsonl mtime，更新 currentActivity → hasUnseen 冒红点。
+    /// 未读探测：先（按需）用全局 grep 精确定位每个会话的 jsonl 并缓存路径，再逐台并行 stat 缓存路径的
+    /// mtime → 更新 currentActivity → hasUnseen 冒红点。全局 grep 不受 cwd 漂移影响，可靠；缓存后每轮只 stat，快。
     func refreshUnread() async {
+        unreadTick += 1
+        // 缓存空 / 有会话还没定位到 / 每 5 轮，重定位一次路径（新会话、换 jsonl 都能跟上）。
+        let needResolve = jsonlPath.isEmpty
+            || sessions.contains { $0.tmuxName != nil && !isClosed($0) && jsonlPath[$0.id] == nil }
+            || unreadTick % 5 == 0
+        if needResolve { await resolveJsonlPaths() }
+
         await withTaskGroup(of: (String, [String: Int]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
+                // 这台机器每个会话的 (tmuxName, 缓存路径)
+                let pairs: [(String, String)] = sessions
+                    .filter { $0.machineID == mid && $0.tmuxName != nil }
+                    .compactMap { s in jsonlPath[s.id].map { (s.tmuxName!, $0) } }
+                guard !pairs.isEmpty, tr.connectable else { continue }
                 group.addTask {
-                    let out = await AppState.exec(tr, AppState.unreadScript, timeout: 30, marker: "@TSB64E@")
+                    let out = await AppState.exec(tr, AppState.mtimeScript(pairs: pairs), timeout: 12, marker: "@TSB64E@")
                     return (mid, AppState.parseUnread(out))
                 }
             }
-            for await (_, map) in group where !map.isEmpty {
-                for (name, mt) in map { currentActivity[name] = mt }
+            for await (mid, map) in group where !map.isEmpty {
+                for s in sessions where s.machineID == mid {
+                    guard let name = s.tmuxName, let mt = map[name] else { continue }
+                    currentActivity[s.id] = mt
+                }
             }
         }
         refreshSeen()
+    }
+
+    /// 全局 grep 精确定位每台机器每个 cc 会话的 jsonl 路径（取 customTitle 匹配里 mtime 最新的），缓存。
+    func resolveJsonlPaths() async {
+        await withTaskGroup(of: (String, [String: String]).self) { group in
+            for m in machines {
+                let mid = m.id, tr = m.transport
+                guard m.transport.connectable else { continue }
+                group.addTask {
+                    let out = await AppState.exec(tr, AppState.resolveJsonlScript, timeout: 30, marker: "@TSB64E@")
+                    return (mid, AppState.parseResolve(out))
+                }
+            }
+            for await (mid, map) in group where !map.isEmpty {
+                for s in sessions where s.machineID == mid {
+                    // title = tmuxName 去掉 "cc-" 前缀，跟 jsonl 里的 customTitle 对齐
+                    guard let name = s.tmuxName else { continue }
+                    let title = name.hasPrefix("cc-") ? String(name.dropFirst(3)) : name
+                    if let p = map[title] { jsonlPath[s.id] = p }
+                }
+            }
+        }
     }
 
     private var pollTask: Task<Void, Never>?
@@ -445,37 +495,36 @@ final class AppState: ObservableObject {
 
     // MARK: 未读红点
 
-    /// 红点 = 处于「等你」且自上次看之后有新输出（当前 activity > 上次看时的 activity）。
-    /// 上次没记过（nil）当 -1，这样首次探测到的等你会话也算未看 → 冒点。
+    /// 红点 = 处于「等你」且自上次看之后 jsonl 有新写入（当前 mtime > 上次看时的 mtime）。
+    /// 上次没记过（nil）当 -1，这样首次探测到的等你会话也算未看 → 冒点。按 session.id 记（跨机器唯一）。
     func hasUnseen(_ s: Session) -> Bool {
-        guard s.status == .wait, let name = s.tmuxName else { return false }
-        return (currentActivity[name] ?? 0) > (lastSeenActivity[name] ?? -1)
+        guard s.status == .wait else { return false }
+        return (currentActivity[s.id] ?? 0) > (lastSeenActivity[s.id] ?? -1)
     }
     func machineHasUnseen(_ mid: String) -> Bool {
         sessions.contains { $0.machineID == mid && !isClosed($0) && hasUnseen($0) }
     }
 
-    /// 看过了 → 把「上次看时的 history_size」推到当前值，红点消失（直到又有新内容）。
-    /// 立刻用已知值清点，再异步探一次拿最新行数（兜住上次轮询到点开之间刚冒的内容）。
+    /// 看过了 → 把「上次看时的 mtime」推到当前值，红点消失（直到 jsonl 又有新写入）。
+    /// 立刻用已知值清点，再异步 stat 缓存路径拿最新 mtime（兜住上轮到点开之间刚写的消息）。
     func markSeen(_ sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }), let name = s.tmuxName else { return }
-        lastSeenActivity[name] = currentActivity[name] ?? Int.max   // 没探到过就先当全看过，别误冒
-        let tr = machines.first(where: { $0.id == s.machineID })?.transport
-        guard let tr, tr.connectable else { return }
+        lastSeenActivity[sessionID] = currentActivity[sessionID] ?? Int.max   // 没探到过就先当全看过，别误冒
+        guard let path = jsonlPath[sessionID],
+              let tr = machines.first(where: { $0.id == s.machineID })?.transport, tr.connectable else { return }
         Task { @MainActor in
-            let out = await AppState.exec(tr, AppState.unreadOneScript(session: name), timeout: 15, marker: "@TSB64E@")
+            let out = await AppState.exec(tr, AppState.mtimeScript(pairs: [(name, path)]), timeout: 12, marker: "@TSB64E@")
             if let mt = AppState.parseUnread(out)[name] {
-                currentActivity[name] = mt
-                lastSeenActivity[name] = mt   // 以点开那刻的最新 mtime 为准
+                currentActivity[sessionID] = mt
+                lastSeenActivity[sessionID] = mt   // 以点开那刻的最新 mtime 为准
             }
         }
     }
 
     /// 每次状态定妥后：正看着的会话（前台+选中+终端）持续算已看。
     private func refreshSeen() {
-        guard appActive, mode == .terminal,
-              let name = sessions.first(where: { $0.id == activeSessionID })?.tmuxName else { return }
-        lastSeenActivity[name] = currentActivity[name] ?? lastSeenActivity[name]
+        guard appActive, mode == .terminal, !activeSessionID.isEmpty else { return }
+        lastSeenActivity[activeSessionID] = currentActivity[activeSessionID] ?? lastSeenActivity[activeSessionID]
     }
 
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
@@ -512,26 +561,62 @@ EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
 printf '@TSB64@%s@TSB64E@\n' "$EB64"
 """#
 
-    /// 未读探测（单独一条，慢了不影响状态）：每个 cc 会话 jsonl 的 mtime。
-    /// 按会话 cwd → ~/.claude/projects/<enc>，customTitle 匹配（限本目录，够快）。
-    nonisolated static let unreadScript = #"""
+    /// 路径定位（按需跑）：**一次扫描**全部 jsonl，抽每份的 customTitle + mtime，输出
+    /// `title<TAB>mtime<TAB>file`。一次 grep（每文件 -m1 首个匹配即停）够快，不受 cwd 漂移影响。
+    /// Swift 侧按 title 取 mtime 最新那份（处理同名多份），再映射到会话（title = tmuxName 去掉 cc-）。
+    nonisolated static let resolveJsonlScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 PROJ="$HOME/.claude/projects"
 BODY=$(
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
-  cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
-  enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
-  TITLE=${s#cc-}
-  mt=0
-  F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl 2>/dev/null | head -1)
-  [ -n "$F" ] && mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-  printf '%s\t%s\n' "$s" "$mt"
+grep -rHm1 -oE '"customTitle":"[^"]*"' "$PROJ" --include='*.jsonl' 2>/dev/null | while IFS= read -r line; do
+  f=${line%%:*}
+  ct=${line#*\"customTitle\":\"}; ct=${ct%\"}
+  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
+  printf '%s\t%s\t%s\n' "$ct" "$m" "$f"
 done
 )
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
 printf '@TSB64@%s@TSB64E@\n' "$EB64"
 """#
 
+    /// mtime 探测（快）：stat 缓存路径拿 mtime。pairs = [(tmuxName, jsonl 绝对路径)]。
+    static func mtimeScript(pairs: [(String, String)]) -> String {
+        // 逐条 printf '<name>\t<mtime>'；路径单引号包裹，路径里不含单引号（jsonl 都是 UUID/安全字符）。
+        let lines = pairs.map { (name, path) -> String in
+            let p = path.replacingOccurrences(of: "'", with: "")   // 保险：去掉单引号
+            return "printf '%s\\t%s\\n' '\(name)' \"$(stat -f %m '\(p)' 2>/dev/null || stat -c %Y '\(p)' 2>/dev/null || echo 0)\""
+        }.joined(separator: "\n")
+        return #"""
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        BODY=$(
+        \#(lines)
+        )
+        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+        printf '@TSB64@%s@TSB64E@\n' "$EB64"
+        """#
+    }
+
+    /// 解析 `title<TAB>mtime<TAB>file` → [title: path]，同名 title 取 mtime 最新那份。
+    nonisolated static func parseResolve(_ out: String) -> [String: String] {
+        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
+              a.upperBound <= b.lowerBound else { return [:] }
+        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
+        guard let data = Data(base64Encoded: String(b64)),
+              let body = String(data: data, encoding: .utf8) else { return [:] }
+        var best: [String: (mtime: Int, path: String)] = [:]
+        for line in body.split(whereSeparator: { $0.isNewline }) {
+            let f = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard f.count >= 3 else { continue }
+            let title = String(f[0])
+            let mtime = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            let path = String(f[2]).trimmingCharacters(in: .whitespaces)
+            if let cur = best[title], cur.mtime >= mtime { continue }
+            best[title] = (mtime, path)
+        }
+        return best.mapValues { $0.path }
+    }
+
+    /// 解析 `s<TAB>mtime` → [tmuxName: mtime]。
     nonisolated static func parseUnread(_ out: String) -> [String: Int] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
@@ -545,24 +630,6 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             map[String(f[0])] = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? 0
         }
         return map
-    }
-
-    /// 单会话未读探测（markSeen 拿最新 mtime 用）。
-    static func unreadOneScript(session: String) -> String {
-        #"""
-        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        PROJ="$HOME/.claude/projects"
-        s='\#(session)'
-        cwd=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
-        enc=$(printf '%s' "$cwd" | sed 's/[/.]/-/g')
-        TITLE=${s#cc-}
-        mt=0
-        F=$(grep -lF "\"customTitle\":\"$TITLE\"" "$PROJ/$enc"/*.jsonl 2>/dev/null | head -1)
-        [ -n "$F" ] && mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-        BODY=$(printf '%s\t%s\n' "$s" "$mt")
-        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-        printf '@TSB64@%s@TSB64E@\n' "$EB64"
-        """#
     }
 
     func probe() {
