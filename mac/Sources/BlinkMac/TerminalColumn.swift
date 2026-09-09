@@ -170,15 +170,17 @@ struct ChatBubbleRow: View {
     let maxBubble: CGFloat
 
     private var isYou: Bool { block.role == "YOU" }
-    private var cap: CGFloat { max(maxBubble, 140) }
+    private var cap: CGFloat { min(max(maxBubble, 140), 600) }
 
     var body: some View {
+        // 用 Spacer 把气泡挤到一边：你靠右、Claude 靠左。气泡按内容宽度自适应
+        // （封顶 cap），短消息就短、长消息才换行，不再撑满整行。
         HStack(alignment: .top, spacing: 9) {
+            if isYou { Spacer(minLength: 44) }
             if !isYou { avatar }
             bubble
+            if !isYou { Spacer(minLength: 44) }
         }
-        // 整行铺满并把气泡靠边：你靠右、Claude 靠左。
-        .frame(maxWidth: .infinity, alignment: isYou ? .trailing : .leading)
     }
 
     private var bubble: some View {
@@ -190,7 +192,6 @@ struct ChatBubbleRow: View {
                         .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
                         .textSelection(.enabled)
                         .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 case .remoteImage(let url):
                     ChatImage(remote: url, cap: cap)
                 case .localImage(let path):
@@ -198,8 +199,8 @@ struct ChatBubbleRow: View {
                 }
             }
         }
-        .padding(.horizontal, 13).padding(.vertical, 9)
         .frame(maxWidth: cap, alignment: .leading)
+        .padding(.horizontal, 13).padding(.vertical, 9)
         .background(
             UnevenRoundedRectangle(
                 topLeadingRadius: 14, bottomLeadingRadius: isYou ? 14 : 5,

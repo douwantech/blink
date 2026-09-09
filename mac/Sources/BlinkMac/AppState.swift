@@ -667,8 +667,11 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     }
 
     private static let imageRegex: NSRegularExpression? = {
-        // ① markdown ![alt](url) ② 裸 http(s) 图片 URL ③ 本地绝对路径图片
-        let p = #"!\[[^\]]*\]\(\s*([^)\s]+)\s*\)|https?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s)]*)?|/(?:[^\s/]+/)+[^\s/]+\.(?:png|jpe?g|gif|webp|bmp)"#
+        // 分支（含把整段连括号一起吃掉的包裹形式，避免留下 "[Image: source:" / "]" 碎字）：
+        //  g1 = [Image: source: <path>] 的路径     g2 = markdown ![](url) 的 url
+        //  g3 = 裸 http(s) 图片 URL                 g4 = 本地绝对路径图片
+        //  另有 [Image #N] 占位：整体匹配、无捕获组 → 直接丢弃
+        let p = #"\[Image:\s*source:\s*([^\]\s]+)\s*\]|\[Image\s*#\d+\]|!\[[^\]]*\]\(\s*([^)\s]+)\s*\)|(https?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s)]*)?)|(/(?:[^\s/]+/)+[^\s/]+\.(?:png|jpe?g|gif|webp|bmp))"#
         return try? NSRegularExpression(pattern: p, options: [.caseInsensitive])
     }()
 
@@ -684,16 +687,26 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { out.append(.text(t)) }
         }
+        func grp(_ m: NSTextCheckingResult, _ i: Int) -> String? {
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? nil : ns.substring(with: r)
+        }
         for m in ms {
             if m.range.location > idx {
                 pushText(ns.substring(with: NSRange(location: idx, length: m.range.location - idx)))
             }
-            let urlStr: String
-            if m.range(at: 1).location != NSNotFound { urlStr = ns.substring(with: m.range(at: 1)) }
-            else { urlStr = ns.substring(with: m.range) }
-            if urlStr.hasPrefix("http"), let u = URL(string: urlStr) { out.append(.remoteImage(u)) }
-            else if urlStr.hasPrefix("/") { out.append(.localImage(urlStr)) }
-            else { pushText(urlStr) }   // markdown 里写的是相对路径 → 当文本
+            if let p = grp(m, 1) {                    // [Image: source: <path>]
+                out.append(.localImage(p))
+            } else if let mdURL = grp(m, 2) {          // markdown ![](url)
+                if mdURL.hasPrefix("http"), let u = URL(string: mdURL) { out.append(.remoteImage(u)) }
+                else if mdURL.hasPrefix("/") { out.append(.localImage(mdURL)) }
+                else { pushText(mdURL) }
+            } else if let httpURL = grp(m, 3), let u = URL(string: httpURL) {
+                out.append(.remoteImage(u))
+            } else if let local = grp(m, 4) {
+                out.append(.localImage(local))
+            }
+            // 其余（[Image #N] 占位）：无捕获组 → 丢弃
             idx = m.range.location + m.range.length
         }
         if idx < ns.length { pushText(ns.substring(with: NSRange(location: idx, length: ns.length - idx))) }
