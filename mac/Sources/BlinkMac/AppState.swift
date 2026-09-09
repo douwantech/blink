@@ -31,6 +31,13 @@ final class AppState: ObservableObject {
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
+    // 未读红点：AI「干活中 → 等你」跳变（= 完成一轮、等你看）且你还没点进去看 → 标 session.id；
+    // 点进去（selectSession）就清。内存态，不落盘。lastProbed 存上轮探测值用来判跳变。
+    @Published var unseen: Set<String> = []
+    private var lastProbed: [String: WorkStatus] = [:]   // tmuxName → 上轮 probed
+    @Published var appActive = true                       // 窗口是否在前台（后台完成也算没看到）
+    private var baselinedUnseen = false                  // 首次枚举只建基线、不冒红点
+
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
 
     /// 发一条收藏到当前终端并回车（同手机 dock 收藏钮）。
@@ -149,8 +156,36 @@ final class AppState: ObservableObject {
         return true
     }
 
+    /// 截图自测：BLINKMAC_DOTSHOT=1 塞多机多会话、标几个未读红点，终端视图（看侧栏/机器栏/团队栏）。
+    func dotShotIfNeeded() -> Bool {
+        guard ProcessInfo.processInfo.environment["BLINKMAC_DOTSHOT"] == "1" else { return false }
+        machines = [
+            Machine(id: "mbp", name: "mac", host: "本机", initials: "M", grad: Grad.blue, online: true, transport: .local),
+            Machine(id: "studio", name: "Mac Studio", host: "jack@studio", initials: "MS", grad: Grad.amber, online: true, transport: .local),
+        ]
+        func S(_ id: String, _ mid: String, _ name: String, _ st: WorkStatus) -> Session {
+            Session(id: id, machineID: mid, name: name, dir: "~/Codes/Jack/blink",
+                    initials: String(name.prefix(2)).uppercased(), grad: Grad.green,
+                    status: st, probed: st, lines: [], tmuxName: "cc-" + name)
+        }
+        sessions = [
+            S("mbp/cc-jack-blink", "mbp", "jack-blink", .work),
+            S("mbp/cc-jack-printer", "mbp", "jack-printer", .wait),
+            S("mbp/cc-jack-talkai", "mbp", "jack-talkai", .idle),
+            S("studio/cc-bella-english", "studio", "bella-english", .wait),
+            S("studio/cc-bella-life", "studio", "bella-life", .idle),
+        ]
+        unseen = ["mbp/cc-jack-printer", "studio/cc-bella-english"]   // 这俩完成了、没看 → 红点
+        activeMachineID = "mbp"
+        activeSessionID = "mbp/cc-jack-blink"
+        showTeam = true
+        mode = .terminal
+        return true
+    }
+
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
+        if dotShotIfNeeded() { return }
         if chatShotIfNeeded() { return }
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
@@ -279,6 +314,7 @@ final class AppState: ObservableObject {
                 }
             }
         }
+        markUnseenTransitions()
         recomputeRestStatuses()
     }
 
@@ -317,6 +353,7 @@ final class AppState: ObservableObject {
             sessions[i].status = isResting(name) ? .rest : probed
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
+        markUnseenTransitions()
         recomputeRestStatuses()
     }
 
@@ -337,6 +374,19 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main, using: reload)
+        // 前台/后台：后台时会话完成也算「没看到」→ 照标红点。回前台顺带把正看着的清掉。
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.appActive = true
+                if self.mode == .terminal, !self.activeSessionID.isEmpty { self.markSeen(self.activeSessionID) }
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.appActive = false }
+        }
     }
 
     /// 从 iCloud KV + Blink 容器读跨设备休息状态（off-main），再重算各会话状态。
@@ -352,6 +402,39 @@ final class AppState: ObservableObject {
         cloudMapping = mapping
         cloudResting = resting
         recomputeRestStatuses()
+    }
+
+    // MARK: 未读红点
+
+    /// 探测更新后调用：谁从「非等你」跳到「等你」= 完成一轮，若不是你正看着的会话就标未读。
+    /// 首轮只建基线不冒红点（避免开 app 就一堆点）。
+    func markUnseenTransitions() {
+        var live = Set<String>()
+        for s in sessions {
+            guard let name = s.tmuxName else { continue }
+            live.insert(name)
+            let now = s.probed
+            if baselinedUnseen, let prev = lastProbed[name], prev != .wait, now == .wait, !isViewing(s) {
+                unseen.insert(s.id)
+            }
+            lastProbed[name] = now
+        }
+        lastProbed = lastProbed.filter { live.contains($0.key) }
+        unseen = unseen.intersection(Set(sessions.map { $0.id }))
+        baselinedUnseen = true
+    }
+
+    /// 你此刻是否正看着这个会话（前台 + 选中 + 终端模式）。
+    private func isViewing(_ s: Session) -> Bool {
+        appActive && s.id == activeSessionID && mode == .terminal
+    }
+
+    /// 看过了 → 清红点。
+    func markSeen(_ sessionID: String) { unseen.remove(sessionID) }
+
+    func hasUnseen(_ s: Session) -> Bool { unseen.contains(s.id) }
+    func machineHasUnseen(_ mid: String) -> Bool {
+        sessions.contains { $0.machineID == mid && unseen.contains($0.id) && !isClosed($0) }
     }
 
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
@@ -413,6 +496,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         }
         sessions[i].probed = st
         sessions[i].status = isResting(name) ? .rest : st
+        markUnseenTransitions()
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
@@ -548,6 +632,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
         if let s = sessions.first(where: { $0.id == id }) { activeMachineID = s.machineID }
         mode = .terminal
+        markSeen(id)   // 点进去看了 → 清红点
     }
 
     private func mutateActive(_ f: (inout Session) -> Void) {

@@ -23,6 +23,15 @@ struct MachineRail: View {
                                     .offset(x: 1, y: 1)
                             }
                         }
+                        .overlay(alignment: .topTrailing) {
+                            // 未读红点：这台机器上有 AI 完成了还没看
+                            if state.machineHasUnseen(m.id) {
+                                Circle().fill(Color(hex: 0xff453a))
+                                    .frame(width: 10, height: 10)
+                                    .overlay(Circle().stroke(Theme.bg, lineWidth: 2))
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
             }
@@ -115,6 +124,9 @@ struct SessionRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
+                if state.hasUnseen(session) {
+                    Circle().fill(Color(hex: 0xff453a)).frame(width: 8, height: 8)
+                }
                 StatusPill(status: session.status)
             }
             .padding(.leading, 14).padding(.trailing, 12).padding(.vertical, 11)
