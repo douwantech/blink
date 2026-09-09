@@ -64,10 +64,6 @@ struct TeamInspector: View {
                    grad: headerGrad(g), size: 20, corner: 10, fontSize: 9,
                    image: state.inspector == .employee ? state.avatar(g.title) : nil)
             Text(g.title).font(Theme.ui(13, .bold)).foregroundColor(Theme.fg)
-            // 未读红点：这个 section 里有 AI 完成了还没看
-            if g.sessions.contains(where: { state.hasUnseen($0) }) {
-                Circle().fill(Color(hex: 0xff453a)).frame(width: 8, height: 8)
-            }
             Spacer()
             Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)
         }
@@ -101,14 +97,7 @@ struct TeamInspector: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                // 「等你」不显示橙标：没看过 → 红点，看过 → 干净；其它状态照常
-                if s.status == .wait {
-                    if state.hasUnseen(s) {
-                        Circle().fill(Color(hex: 0xff453a)).frame(width: 8, height: 8)
-                    }
-                } else {
-                    statusLabel(s.status)
-                }
+                statusLabel(s.status)
                 Button { state.toggleRest(sessionID: s.id) } label: {
                     Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
                         .font(.system(size: 13))

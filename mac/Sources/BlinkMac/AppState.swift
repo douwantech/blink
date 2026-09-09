@@ -31,15 +31,6 @@ final class AppState: ObservableObject {
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
-    // 未读红点：会话处于「等你（完成）」且**自你上次看之后有新消息**（jsonl mtime 变大）→ 冒红点。
-    // 「等你」橙标不再显示，直接用红点代替。信号用 claude 会话 jsonl 的 mtime：只有真写入新消息才更新，
-    // 状态栏/光标重绘不碰文件（history_size 恒 0、session_activity 每秒乱跳，都不可靠）。
-    @Published var currentActivity: [String: Int] = [:]   // session.id → 最近探到的 jsonl mtime
-    private var lastSeenActivity: [String: Int] = [:]     // session.id → 你上次看时的 jsonl mtime
-    private var jsonlPath: [String: String] = [:]         // session.id → 该会话 jsonl 绝对路径（全局 grep 定位一次后缓存）
-    private var unreadTick = 0                            // 轮询计数：每隔几轮重定位一次路径
-    @Published var appActive = true                       // 窗口是否在前台（正看着的会话算已看）
-
     func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
 
     /// 发一条收藏到当前终端并回车（同手机 dock 收藏钮）。
@@ -158,36 +149,8 @@ final class AppState: ObservableObject {
         return true
     }
 
-    /// 截图自测：BLINKMAC_DOTSHOT=1 塞多机多会话、标几个未读红点，终端视图（看侧栏/机器栏/团队栏）。
-    func dotShotIfNeeded() -> Bool {
-        guard ProcessInfo.processInfo.environment["BLINKMAC_DOTSHOT"] == "1" else { return false }
-        machines = [
-            Machine(id: "mbp", name: "mac", host: "本机", initials: "M", grad: Grad.blue, online: true, transport: .local),
-            Machine(id: "studio", name: "Mac Studio", host: "jack@studio", initials: "MS", grad: Grad.amber, online: true, transport: .local),
-        ]
-        func S(_ id: String, _ mid: String, _ name: String, _ st: WorkStatus) -> Session {
-            Session(id: id, machineID: mid, name: name, dir: "~/Codes/Jack/blink",
-                    initials: String(name.prefix(2)).uppercased(), grad: Grad.green,
-                    status: st, probed: st, lines: [], tmuxName: "cc-" + name)
-        }
-        sessions = [
-            S("mbp/cc-jack-blink", "mbp", "jack-blink", .work),
-            S("mbp/cc-jack-printer", "mbp", "jack-printer", .wait),
-            S("mbp/cc-jack-talkai", "mbp", "jack-talkai", .idle),
-            S("studio/cc-bella-english", "studio", "bella-english", .wait),
-            S("studio/cc-bella-life", "studio", "bella-life", .idle),
-        ]
-        // 处于 .wait 的（jack-printer / bella-english）没看过 → 自动冒红点
-        activeMachineID = "mbp"
-        activeSessionID = "mbp/cc-jack-blink"
-        showTeam = true
-        mode = .terminal
-        return true
-    }
-
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
-        if dotShotIfNeeded() { return }
         if chatShotIfNeeded() { return }
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
@@ -205,17 +168,6 @@ final class AppState: ObservableObject {
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
-        if ProcessInfo.processInfo.environment["BLINKMAC_UNREADDIAG"] == "1" {
-            await refreshStatuses()   // 状态 + 未读（定位 + stat）
-            var lines = ["UNREAD-DIAG 会话数=\(sessions.filter { $0.tmuxName != nil && !isClosed($0) }.count)"]
-            for s in sessions where s.tmuxName != nil && !isClosed(s) {
-                let f = jsonlPath[s.id].map { ($0 as NSString).lastPathComponent } ?? "—未定位"
-                lines.append("  \(s.name)  status=\(s.status)  jsonl=\(f)  mtime=\(currentActivity[s.id].map(String.init) ?? "—")  unseen=\(hasUnseen(s))")
-            }
-            FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
-            exit(0)
-        }
-        startPolling()               // 定时探测，完成的会话自动冒红点
     }
 
     /// 计算要隐藏的已关闭会话集合：本地记录 ∪ KV「全关」墓碑，减去 KV 里仍打开的（手机重新开了→解封）。
@@ -310,13 +262,6 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
-        await refreshStatuses()
-    }
-
-    /// 只探测状态、不重列会话（轮询用）：逐台并行跑 probeScript，更新各会话 probed/status。
-    /// 完成的会话会从此变 .wait → hasUnseen 自动冒红点。
-    func refreshStatuses() async {
-        // 1) 状态（快，pc/busy）——永远可靠，慢的未读探测不掺和进来。
         await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
@@ -334,78 +279,7 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        recomputeRestStatuses()   // 内含 refreshSeen
-        // 2) 未读（jsonl mtime，单独一条、超时也不影响上面的状态）
-        await refreshUnread()
-    }
-
-    /// 未读探测：先（按需）用全局 grep 精确定位每个会话的 jsonl 并缓存路径，再逐台并行 stat 缓存路径的
-    /// mtime → 更新 currentActivity → hasUnseen 冒红点。全局 grep 不受 cwd 漂移影响，可靠；缓存后每轮只 stat，快。
-    func refreshUnread() async {
-        unreadTick += 1
-        // 缓存空 / 有会话还没定位到 / 每 5 轮，重定位一次路径（新会话、换 jsonl 都能跟上）。
-        let needResolve = jsonlPath.isEmpty
-            || sessions.contains { $0.tmuxName != nil && !isClosed($0) && jsonlPath[$0.id] == nil }
-            || unreadTick % 5 == 0
-        if needResolve { await resolveJsonlPaths() }
-
-        await withTaskGroup(of: (String, [String: Int]).self) { group in
-            for m in machines {
-                let mid = m.id, tr = m.transport
-                // 这台机器每个会话的 (tmuxName, 缓存路径)
-                let pairs: [(String, String)] = sessions
-                    .filter { $0.machineID == mid && $0.tmuxName != nil }
-                    .compactMap { s in jsonlPath[s.id].map { (s.tmuxName!, $0) } }
-                guard !pairs.isEmpty, tr.connectable else { continue }
-                group.addTask {
-                    let out = await AppState.exec(tr, AppState.mtimeScript(pairs: pairs), timeout: 12, marker: "@TSB64E@")
-                    return (mid, AppState.parseUnread(out))
-                }
-            }
-            for await (mid, map) in group where !map.isEmpty {
-                for s in sessions where s.machineID == mid {
-                    guard let name = s.tmuxName, let mt = map[name] else { continue }
-                    currentActivity[s.id] = mt
-                }
-            }
-        }
-        refreshSeen()
-    }
-
-    /// 全局 grep 精确定位每台机器每个 cc 会话的 jsonl 路径（取 customTitle 匹配里 mtime 最新的），缓存。
-    func resolveJsonlPaths() async {
-        await withTaskGroup(of: (String, [String: String]).self) { group in
-            for m in machines {
-                let mid = m.id, tr = m.transport
-                guard m.transport.connectable else { continue }
-                group.addTask {
-                    let out = await AppState.exec(tr, AppState.resolveJsonlScript, timeout: 30, marker: "@TSB64E@")
-                    return (mid, AppState.parseResolve(out))
-                }
-            }
-            for await (mid, map) in group where !map.isEmpty {
-                for s in sessions where s.machineID == mid {
-                    // title = tmuxName 去掉 "cc-" 前缀，跟 jsonl 里的 customTitle 对齐
-                    guard let name = s.tmuxName else { continue }
-                    let title = name.hasPrefix("cc-") ? String(name.dropFirst(3)) : name
-                    if let p = map[title] { jsonlPath[s.id] = p }
-                }
-            }
-        }
-    }
-
-    private var pollTask: Task<Void, Never>?
-
-    /// 定时轮询状态（每 12s），让完成的会话自动冒红点——不然只有手动刷新才更新。
-    func startPolling() {
-        guard pollTask == nil else { return }
-        pollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
-                if Task.isCancelled { break }
-                await self?.refreshStatuses()
-            }
-        }
+        recomputeRestStatuses()
     }
 
     /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。
@@ -463,19 +337,6 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main, using: reload)
-        // 前台/后台：后台时会话完成也算「没看到」→ 照标红点。回前台顺带把正看着的清掉。
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.appActive = true
-                if self.mode == .terminal, !self.activeSessionID.isEmpty { self.markSeen(self.activeSessionID) }
-            }
-        }
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.appActive = false }
-        }
     }
 
     /// 从 iCloud KV + Blink 容器读跨设备休息状态（off-main），再重算各会话状态。
@@ -493,47 +354,12 @@ final class AppState: ObservableObject {
         recomputeRestStatuses()
     }
 
-    // MARK: 未读红点
-
-    /// 红点 = 处于「等你」且自上次看之后 jsonl 有新写入（当前 mtime > 上次看时的 mtime）。
-    /// 上次没记过（nil）当 -1，这样首次探测到的等你会话也算未看 → 冒点。按 session.id 记（跨机器唯一）。
-    func hasUnseen(_ s: Session) -> Bool {
-        guard s.status == .wait else { return false }
-        return (currentActivity[s.id] ?? 0) > (lastSeenActivity[s.id] ?? -1)
-    }
-    func machineHasUnseen(_ mid: String) -> Bool {
-        sessions.contains { $0.machineID == mid && !isClosed($0) && hasUnseen($0) }
-    }
-
-    /// 看过了 → 把「上次看时的 mtime」推到当前值，红点消失（直到 jsonl 又有新写入）。
-    /// 立刻用已知值清点，再异步 stat 缓存路径拿最新 mtime（兜住上轮到点开之间刚写的消息）。
-    func markSeen(_ sessionID: String) {
-        guard let s = sessions.first(where: { $0.id == sessionID }), let name = s.tmuxName else { return }
-        lastSeenActivity[sessionID] = currentActivity[sessionID] ?? Int.max   // 没探到过就先当全看过，别误冒
-        guard let path = jsonlPath[sessionID],
-              let tr = machines.first(where: { $0.id == s.machineID })?.transport, tr.connectable else { return }
-        Task { @MainActor in
-            let out = await AppState.exec(tr, AppState.mtimeScript(pairs: [(name, path)]), timeout: 12, marker: "@TSB64E@")
-            if let mt = AppState.parseUnread(out)[name] {
-                currentActivity[sessionID] = mt
-                lastSeenActivity[sessionID] = mt   // 以点开那刻的最新 mtime 为准
-            }
-        }
-    }
-
-    /// 每次状态定妥后：正看着的会话（前台+选中+终端）持续算已看。
-    private func refreshSeen() {
-        guard appActive, mode == .terminal, !activeSessionID.isEmpty else { return }
-        lastSeenActivity[activeSessionID] = currentActivity[activeSessionID] ?? lastSeenActivity[activeSessionID]
-    }
-
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
     func recomputeRestStatuses() {
         for i in sessions.indices {
             let name = sessions[i].tmuxName ?? sessions[i].id
             sessions[i].status = isResting(name) ? .rest : sessions[i].probed
         }
-        refreshSeen()
     }
 
     /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
@@ -560,77 +386,6 @@ done
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
 printf '@TSB64@%s@TSB64E@\n' "$EB64"
 """#
-
-    /// 路径定位（按需跑）：**一次扫描**全部 jsonl，抽每份的 customTitle + mtime，输出
-    /// `title<TAB>mtime<TAB>file`。一次 grep（每文件 -m1 首个匹配即停）够快，不受 cwd 漂移影响。
-    /// Swift 侧按 title 取 mtime 最新那份（处理同名多份），再映射到会话（title = tmuxName 去掉 cc-）。
-    nonisolated static let resolveJsonlScript = #"""
-export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-PROJ="$HOME/.claude/projects"
-BODY=$(
-grep -rHm1 -oE '"customTitle":"[^"]*"' "$PROJ" --include='*.jsonl' 2>/dev/null | while IFS= read -r line; do
-  f=${line%%:*}
-  ct=${line#*\"customTitle\":\"}; ct=${ct%\"}
-  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
-  printf '%s\t%s\t%s\n' "$ct" "$m" "$f"
-done
-)
-EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-printf '@TSB64@%s@TSB64E@\n' "$EB64"
-"""#
-
-    /// mtime 探测（快）：stat 缓存路径拿 mtime。pairs = [(tmuxName, jsonl 绝对路径)]。
-    static func mtimeScript(pairs: [(String, String)]) -> String {
-        // 逐条 printf '<name>\t<mtime>'；路径单引号包裹，路径里不含单引号（jsonl 都是 UUID/安全字符）。
-        let lines = pairs.map { (name, path) -> String in
-            let p = path.replacingOccurrences(of: "'", with: "")   // 保险：去掉单引号
-            return "printf '%s\\t%s\\n' '\(name)' \"$(stat -f %m '\(p)' 2>/dev/null || stat -c %Y '\(p)' 2>/dev/null || echo 0)\""
-        }.joined(separator: "\n")
-        return #"""
-        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        BODY=$(
-        \#(lines)
-        )
-        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-        printf '@TSB64@%s@TSB64E@\n' "$EB64"
-        """#
-    }
-
-    /// 解析 `title<TAB>mtime<TAB>file` → [title: path]，同名 title 取 mtime 最新那份。
-    nonisolated static func parseResolve(_ out: String) -> [String: String] {
-        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
-              a.upperBound <= b.lowerBound else { return [:] }
-        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
-        guard let data = Data(base64Encoded: String(b64)),
-              let body = String(data: data, encoding: .utf8) else { return [:] }
-        var best: [String: (mtime: Int, path: String)] = [:]
-        for line in body.split(whereSeparator: { $0.isNewline }) {
-            let f = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            guard f.count >= 3 else { continue }
-            let title = String(f[0])
-            let mtime = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? 0
-            let path = String(f[2]).trimmingCharacters(in: .whitespaces)
-            if let cur = best[title], cur.mtime >= mtime { continue }
-            best[title] = (mtime, path)
-        }
-        return best.mapValues { $0.path }
-    }
-
-    /// 解析 `s<TAB>mtime` → [tmuxName: mtime]。
-    nonisolated static func parseUnread(_ out: String) -> [String: Int] {
-        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
-              a.upperBound <= b.lowerBound else { return [:] }
-        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
-        guard let data = Data(base64Encoded: String(b64)),
-              let body = String(data: data, encoding: .utf8) else { return [:] }
-        var map: [String: Int] = [:]
-        for line in body.split(whereSeparator: { $0.isNewline }) {
-            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard f.count >= 2 else { continue }
-            map[String(f[0])] = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? 0
-        }
-        return map
-    }
 
     func probe() {
         showToast("正在探测各机器…")
@@ -711,7 +466,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             result.append(Session(id: "\(machineID)/\(full)", machineID: machineID, name: title,
                                   dir: path.isEmpty ? "~" : path, initials: initials,
                                   grad: grads[result.count % grads.count],
-                                  status: resting ? .rest : .idle, probed: .idle,   // 探测前先按空闲，别一开全「干活中」
+                                  status: resting ? .rest : .work, probed: .work,
                                   lines: [], tmuxName: full))
         }
         return result
@@ -793,7 +548,6 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
         if let s = sessions.first(where: { $0.id == id }) { activeMachineID = s.machineID }
         mode = .terminal
-        markSeen(id)   // 点进去看了 → 清红点
     }
 
     private func mutateActive(_ f: (inout Session) -> Void) {

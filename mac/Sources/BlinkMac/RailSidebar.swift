@@ -115,10 +115,7 @@ struct SessionRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                // 侧栏保持干净：不显示任何状态标（干活中/空闲/等你），只在「完成且没看」时冒红点。
-                if state.hasUnseen(session) {
-                    Circle().fill(Color(hex: 0xff453a)).frame(width: 9, height: 9)
-                }
+                StatusPill(status: session.status)
             }
             .padding(.leading, 14).padding(.trailing, 12).padding(.vertical, 11)
             .background(
