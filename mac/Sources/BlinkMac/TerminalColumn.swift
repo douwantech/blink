@@ -191,10 +191,7 @@ struct ChatBubbleRow: View {
                 ForEach(AppState.chatSegments(block.text)) { seg in
                     switch seg {
                     case .text(let t):
-                        Text(t)
-                            .font(Theme.ui(13.5)).foregroundColor(isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
-                            .textSelection(.enabled)
-                            .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                        MarkdownText(raw: t, base: isYou ? Color(hex: 0xd8f6e8) : Theme.fg)
                     case .remoteImage(let url):
                         ChatImage(remote: url, cap: cap)
                     case .localImage(let path):

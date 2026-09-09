@@ -104,7 +104,26 @@ final class AppState: ObservableObject {
         var chat: [ChatBlock] = [
             ChatBlock(role: "YOU", color: Theme.green2, text: "短消息"),
             ChatBlock(role: "YOU", color: Theme.green2, text: "让 command+D 可以执行这种切换，顺便把对话记录页做得好看一点。"),
-            ChatBlock(role: "ASSISTANT", color: Theme.blue, text: "好的。Cmd-D 现在来回切换终端 ↔ 对话记录，跟点底部「历史」等价。走主菜单 key equivalent，焦点在 SwiftTerm 终端里也能触发。这是一段较长的回复，用来检验 Claude 侧气泡在超过最大宽度时是否正确换行、并且靠左对齐、不撑满整行。"),
+            ChatBlock(role: "ASSISTANT", color: Theme.blue, text: """
+            ## 改完效果
+
+            **Cmd-D** 现在来回切换终端 ↔ 对话记录，跟点底部「历史」等价，`openHistory()` 里做的。
+
+            要点：
+            - 走主菜单 key equivalent，焦点在 `SwiftTerm` 里也能触发
+            - 短消息 hug、长消息换行，都*不撑满*
+
+            | 机器 | 标签 |
+            |---|---|
+            | mac | 21 个活会话 |
+            | xiaobai | 4 个 KV 标签 |
+
+            ```swift
+            func openHistory() { mode = .chat }
+            ```
+
+            > 端到端都验过了，装好正式版。
+            """),
             ChatBlock(role: "YOU", color: Theme.green2, text: "显示的还是不对，绿色的没有按长度来靠右对齐，图片还多了一些文字出来"),
         ]
         if !img.isEmpty {
