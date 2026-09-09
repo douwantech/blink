@@ -202,6 +202,7 @@ final class AppState: ObservableObject {
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
+        startPolling()               // 定时探测，完成的会话自动冒红点
     }
 
     /// 计算要隐藏的已关闭会话集合：本地记录 ∪ KV「全关」墓碑，减去 KV 里仍打开的（手机重新开了→解封）。
@@ -296,6 +297,12 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
+        await refreshStatuses()
+    }
+
+    /// 只探测状态、不重列会话（轮询用）：逐台并行跑 probeScript，更新各会话 probed/status。
+    /// 完成的会话会从此变 .wait → hasUnseen 自动冒红点。
+    func refreshStatuses() async {
         await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
@@ -313,7 +320,21 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        recomputeRestStatuses()
+        recomputeRestStatuses()   // 内含 refreshSeen（离开等你清 seenWait / 正看着算已看）
+    }
+
+    private var pollTask: Task<Void, Never>?
+
+    /// 定时轮询状态（每 12s），让完成的会话自动冒红点——不然只有手动刷新才更新。
+    func startPolling() {
+        guard pollTask == nil else { return }
+        pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                if Task.isCancelled { break }
+                await self?.refreshStatuses()
+            }
+        }
     }
 
     /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。

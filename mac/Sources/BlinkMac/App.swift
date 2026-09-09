@@ -110,9 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 截图自测：BLINKMAC_CHATSHOT=1 时，窗口渲染好后把 contentView 存成 PNG 再退出
         // （app 自绘成位图，不吃屏幕录制权限，命令行也能拿到真实布局图）。
-        if ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT"] == "1" {
-            let out = ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT_OUT"] ?? "/tmp/blinkmac-chatshot.png"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+        let env = ProcessInfo.processInfo.environment
+        if env["BLINKMAC_CHATSHOT"] == "1" || env["BLINKMAC_SHOT_OUT"] != nil {
+            let out = env["BLINKMAC_SHOT_OUT"] ?? env["BLINKMAC_CHATSHOT_OUT"] ?? "/tmp/blinkmac-chatshot.png"
+            let delay = Double(env["BLINKMAC_SHOT_DELAY"] ?? "") ?? 2.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if let w = NSApp.windows.first(where: { $0.contentView != nil }),
                    let v = w.contentView,
                    let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
