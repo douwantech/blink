@@ -593,7 +593,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             result.append(Session(id: "\(machineID)/\(full)", machineID: machineID, name: title,
                                   dir: path.isEmpty ? "~" : path, initials: initials,
                                   grad: grads[result.count % grads.count],
-                                  status: resting ? .rest : .work, probed: .work,
+                                  status: resting ? .rest : .idle, probed: .idle,   // 探测前先按空闲，别一开全「干活中」
                                   lines: [], tmuxName: full))
         }
         return result
