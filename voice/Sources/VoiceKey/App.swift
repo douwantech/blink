@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import Speech
+import AVFoundation
 
 @main
 struct VoiceKeyApp: App {
@@ -49,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)   // 菜单栏后台 app，不占 Dock
 
         HUDPanelController.shared.begin()
+
+        // 尽早申请麦克风/语音权限：让 HAL 在进程早期就拿到授权，避免首次录音拿到零缓冲。
+        SFSpeechRecognizer.requestAuthorization { _ in }
+        AVCaptureDevice.requestAccess(for: .audio) { _ in }
 
         // 自测：VOICEKEY_SELFTEST=1 时自动跑一遍完整听写周期（开始录→tap 落盘→停→afconvert→
         // GLM-ASR），用来在没人按地球键的情况下验证录音/转换路径不崩。跑完退出。

@@ -7,6 +7,8 @@ struct SettingsView: View {
     @State private var baseURL = AITextPolisher.shared.baseURL
     @State private var aiEnabled = AITextPolisher.shared.enabled
     @State private var localeID = DictationController.shared.localeID
+    @State private var inputUID = DictationController.shared.selectedInputUID
+    @State private var devices = DictationController.inputDevices()
     @State private var globeOn = HotkeyMonitor.shared.globeEnabled
     @State private var optSpaceOn = HotkeyMonitor.shared.optSpaceEnabled
     @State private var axTrusted = AccessibilityPermission.isTrusted
@@ -44,6 +46,19 @@ struct SettingsView: View {
                 Toggle("⌥Space 兜底触发", isOn: $optSpaceOn)
                     .onChange(of: optSpaceOn) { _, v in HotkeyMonitor.shared.optSpaceEnabled = v }
                 Text("按一下开始听写，再按一下结束并转写；Esc 取消。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section("麦克风") {
+                Picker("输入设备", selection: $inputUID) {
+                    Text("自动（跳过虚拟声卡）").tag("")
+                    ForEach(devices, id: \.uniqueID) { d in
+                        Text(d.localizedName + (DictationController.isVirtualDevice(d) ? "（虚拟）" : "")).tag(d.uniqueID)
+                    }
+                }
+                .onChange(of: inputUID) { _, v in DictationController.shared.selectedInputUID = v }
+                Button("刷新设备列表") { devices = DictationController.inputDevices() }
+                Text("如果录不到声音，多半是默认输入被 BlackHole/Loopback 等虚拟声卡占了，这里手动选你的真麦克风。")
                     .font(.caption).foregroundColor(.secondary)
             }
 
