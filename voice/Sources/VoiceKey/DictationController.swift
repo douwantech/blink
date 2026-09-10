@@ -34,11 +34,8 @@ final class DictationController: ObservableObject {
     private var audioFile: AVAudioFile?
     private var audioFileURL: URL?
     private var isRecording = false
+    private var starting = false   // start() 到拿到权限回调之间的过渡态，防重入
     private var doneHideWork: DispatchWorkItem?
-
-    // GLM-ASR 只收单声道 WAV，麦克风常是 48k 立体声，落盘前统一转 16kHz 单声道 16-bit。
-    private let asrFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
-    private var converter: AVAudioConverter?
 
     private init() {}
 
@@ -48,6 +45,7 @@ final class DictationController: ObservableObject {
     func toggle() {
         DispatchQueue.main.async {
             if self.isRecording { self.finish(cancelled: false) }
+            else if self.starting { return }   // 正在起（等权限回调），别重入起第二套引擎
             else { self.start() }
         }
     }
@@ -63,6 +61,8 @@ final class DictationController: ObservableObject {
     // MARK: - 开始
 
     private func start() {
+        guard !starting, !isRecording else { return }
+        starting = true
         doneHideWork?.cancel()
         isError = false
         finalText = ""
@@ -73,10 +73,12 @@ final class DictationController: ObservableObject {
         requestPermissions { [weak self] ok, reason in
             guard let self else { return }
             DispatchQueue.main.async {
+                self.starting = false
                 guard ok else {
                     self.showError(reason ?? "没有麦克风 / 语音识别权限")
                     return
                 }
+                guard self.phase == .listening, !self.isRecording else { return }  // 期间被取消/已在录就别再起
                 self.beginLocalASR()
             }
         }
@@ -116,16 +118,16 @@ final class DictationController: ObservableObject {
         Diag.log("beginLocalASR：inputFormat sampleRate=\(fmt.sampleRate) ch=\(fmt.channelCount)")
         guard fmt.sampleRate > 0 else { showError("拿不到麦克风输入"); return }
 
-        // 同一路 tap：原始 buffer 喂实时识别；转成 16k 单声道后落 WAV（GLM-ASR 只收单声道）。
+        // 同一路 tap：原始 buffer 直接喂实时识别 + 原样落 WAV（麦克风原格式，别在实时音频
+        // 线程上做采样率/声道转换——AVAudioConverter 在 RT 线程会崩）。单声道转换等录完离线做。
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("voicekey-\(UUID().uuidString).wav")
         audioFileURL = url
-        audioFile = try? AVAudioFile(forWriting: url, settings: asrFormat.settings)
-        converter = AVAudioConverter(from: fmt, to: asrFormat)
+        audioFile = try? AVAudioFile(forWriting: url, settings: fmt.settings)
 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buffer, _ in
             self?.request?.append(buffer)
-            self?.writeMono(buffer)
+            try? self?.audioFile?.write(from: buffer)
         }
 
         audioEngine.prepare()
@@ -140,23 +142,22 @@ final class DictationController: ObservableObject {
         statusLine = "正在聆听 · 再按一下结束"
     }
 
-    /// 把麦克风的立体声 buffer 转成 16k 单声道 Int16 写进 WAV（GLM-ASR 只吃单声道）。
-    private func writeMono(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, let audioFile else { return }
-        let ratio = asrFormat.sampleRate / buffer.format.sampleRate
-        let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
-        guard let out = AVAudioPCMBuffer(pcmFormat: asrFormat, frameCapacity: cap) else { return }
-        var fed = false
-        var err: NSError?
-        let status = converter.convert(to: out, error: &err) { _, outStatus in
-            if fed { outStatus.pointee = .noDataNow; return nil }
-            fed = true
-            outStatus.pointee = .haveData
-            return buffer
+    /// 用系统 afconvert 把录音离线转成 16k 单声道 16-bit WAV（GLM-ASR 只收单声道）。
+    /// 离线跑、不在实时音频线程，稳。失败返回 nil，调用方回退用原文件。
+    private static func convertToMono(_ src: URL) -> URL? {
+        let dst = src.deletingPathExtension().appendingPathExtension("mono.wav")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        p.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", src.path, dst.path]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run(); p.waitUntilExit() } catch {
+            Diag.log("afconvert 起失败：\(error.localizedDescription)"); return nil
         }
-        if (status == .haveData || out.frameLength > 0) {
-            try? audioFile.write(from: out)
+        guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: dst.path) else {
+            Diag.log("afconvert 失败 status=\(p.terminationStatus)"); return nil
         }
+        return dst
     }
 
     /// 起一段本地识别任务。停顿会让系统把当前段判 final（或报错结束），
@@ -229,7 +230,6 @@ final class DictationController: ObservableObject {
         request?.endAudio()
         task?.cancel()
         task = nil; request = nil
-        converter = nil
 
         let text = localText.trimmingCharacters(in: .whitespacesAndNewlines)
         let wav = audioFileURL
@@ -280,18 +280,24 @@ final class DictationController: ObservableObject {
         }
         let key = AITextPolisher.shared.apiKey
         if let wav, !key.isEmpty {
-            GLMASRClient.transcribe(fileURL: wav, apiKey: key) { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let asr) where !asr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
-                        Diag.log("GLM-ASR 成功：\"\(asr.prefix(60))\"")
-                        polishThen(asr)
-                    case .success(let asr):
-                        Diag.log("GLM-ASR 返回空（\"\(asr)\"），回退本地文字=\"\(local.prefix(30))\"")
-                        polishThen(local)
-                    case .failure(let e):
-                        Diag.log("GLM-ASR 失败：\(e.localizedDescription)，回退本地文字=\"\(local.prefix(30))\"")
-                        polishThen(local)
+            // 离线转单声道（afconvert）再上传，别在实时线程转。
+            DispatchQueue.global(qos: .userInitiated).async {
+                let mono = Self.convertToMono(wav)
+                let upload = mono ?? wav
+                GLMASRClient.transcribe(fileURL: upload, apiKey: key) { result in
+                    DispatchQueue.main.async {
+                        if let mono { try? FileManager.default.removeItem(at: mono) }
+                        switch result {
+                        case .success(let asr) where !asr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                            Diag.log("GLM-ASR 成功：\"\(asr.prefix(60))\"")
+                            polishThen(asr)
+                        case .success(let asr):
+                            Diag.log("GLM-ASR 返回空（\"\(asr)\"），回退本地文字=\"\(local.prefix(30))\"")
+                            polishThen(local)
+                        case .failure(let e):
+                            Diag.log("GLM-ASR 失败：\(e.localizedDescription)，回退本地文字=\"\(local.prefix(30))\"")
+                            polishThen(local)
+                        }
                     }
                 }
             }

@@ -50,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         HUDPanelController.shared.begin()
 
+        // 自测：VOICEKEY_SELFTEST=1 时自动跑一遍完整听写周期（开始录→tap 落盘→停→afconvert→
+        // GLM-ASR），用来在没人按地球键的情况下验证录音/转换路径不崩。跑完退出。
+        if ProcessInfo.processInfo.environment["VOICEKEY_SELFTEST"] == "1" {
+            Diag.log("SELFTEST 开始")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { DictationController.shared.toggle() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { DictationController.shared.toggle() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 9.0) { Diag.log("SELFTEST 结束"); exit(0) }
+        }
+
         // 辅助功能：第一次装会弹系统引导；授权前 event tap 起不来，起不来就轮询重试。
         AccessibilityPermission.prompt()
         if !HotkeyMonitor.shared.start() {
