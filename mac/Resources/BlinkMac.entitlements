@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 认领 Blink 的 iCloud KV 容器（团队 659T9VUN97 通配授权），读写同一份 TabRestStore.resting -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>659T9VUN97.com.aitools.talkcode.stg</string>
+</dict>
+</plist>
