@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)   // 菜单栏后台 app，不占 Dock
 
         HUDPanelController.shared.begin()
+        _ = LearningStore.shared   // 提前建好持久化学习库（~/Library/Application Support/VoiceKey）
 
         // 尽早申请麦克风/语音权限：让 HAL 在进程早期就拿到授权，避免首次录音拿到零缓冲。
         SFSpeechRecognizer.requestAuthorization { _ in }

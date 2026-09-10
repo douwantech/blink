@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// 设置窗（Cmd-,）：权限、触发键、识别语言、GLM 后端。
 struct SettingsView: View {
@@ -79,6 +80,22 @@ struct SettingsView: View {
                 TextField("Chat Base URL", text: $baseURL)
                     .onChange(of: baseURL) { _, v in AITextPolisher.shared.baseURL = v }
                 Text("不填 Key 也能用——只走苹果本地识别。填了 Key 会额外走智谱 GLM-ASR 精转 + GLM 润色（同音纠错更准）。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section("学习数据（删 app 也不丢）") {
+                Text("\(LearningStore.shared.history.count) 条历史 · \(LearningStore.shared.corrections.count) 条修正 · \(LearningStore.shared.terms.count) 个错词")
+                    .font(.callout)
+                HStack {
+                    Text(LearningStore.shared.storePath)
+                        .font(.caption).foregroundColor(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("在访达显示") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: LearningStore.shared.storePath)])
+                    }
+                }
+                Text("每次语音提交的文字都会记进这个文件，随时间让 GLM 润色更懂你的常用词。存在用户数据目录，卸载 app 不会删。")
                     .font(.caption).foregroundColor(.secondary)
             }
 
