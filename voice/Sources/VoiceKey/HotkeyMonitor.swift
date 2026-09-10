@@ -11,7 +11,7 @@ final class HotkeyMonitor {
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var fnDown = false
+    private var lastToggle = Date.distantPast
 
     private let kGlobe = "VoiceKey.hotkey.globe"
     private let kOptSpace = "VoiceKey.hotkey.optSpace"
@@ -64,6 +64,14 @@ final class HotkeyMonitor {
         tap = nil
     }
 
+    /// 触发一次听写开关，250ms 防抖（防单次按压产生两个事件时来回抵消）。
+    private func fireToggle() {
+        let now = Date()
+        guard now.timeIntervalSince(lastToggle) > 0.25 else { return }
+        lastToggle = now
+        DispatchQueue.main.async { DictationController.shared.toggle() }
+    }
+
     // MARK: - 事件处理（返回 nil = 吃掉；返回 event = 放行）
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -76,15 +84,14 @@ final class HotkeyMonitor {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
 
-        // 地球键 / Fn：flagsChanged，keyCode 63
+        // 地球键 / Fn：flagsChanged，keyCode 63。
+        // 一次物理按压 = 一个「Fn 按下」事件（flags 含 secondaryFn）+ 一个「Fn 抬起」事件。
+        // 只在「按下」那个事件 toggle，抬起的不管。不再持久追踪按下沿——消费 Fn 事件会让
+        // 抬起的 flagsChanged 收不到、旧的 wasDown 卡死导致第二次按下关不掉。改成每个按下
+        // 事件都 toggle + 防抖，既不依赖抬起、也不会卡。
         if type == .flagsChanged, keyCode == 63 {
-            let nowDown = flags.contains(.maskSecondaryFn)
-            let wasDown = fnDown
-            fnDown = nowDown
             guard globeEnabled else { return Unmanaged.passUnretained(event) }
-            if nowDown && !wasDown {
-                DispatchQueue.main.async { DictationController.shared.toggle() }
-            }
+            if flags.contains(.maskSecondaryFn) { fireToggle() }
             return nil  // 吃掉地球键，免得系统弹表情/切输入法
         }
 
@@ -93,7 +100,7 @@ final class HotkeyMonitor {
             if optSpaceEnabled, keyCode == 49,
                flags.contains(.maskAlternate),
                !flags.contains(.maskCommand), !flags.contains(.maskControl) {
-                DispatchQueue.main.async { DictationController.shared.toggle() }
+                fireToggle()
                 return nil
             }
             // Esc：只在正在录/展示时吃掉并取消；空闲时放行给前台 app
