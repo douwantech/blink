@@ -36,6 +36,10 @@ final class DictationController: ObservableObject {
     private var isRecording = false
     private var doneHideWork: DispatchWorkItem?
 
+    // GLM-ASR 只收单声道 WAV，麦克风常是 48k 立体声，落盘前统一转 16kHz 单声道 16-bit。
+    private let asrFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+    private var converter: AVAudioConverter?
+
     private init() {}
 
     // MARK: - 对外入口
@@ -80,10 +84,12 @@ final class DictationController: ObservableObject {
 
     private func requestPermissions(_ done: @escaping (Bool, String?) -> Void) {
         SFSpeechRecognizer.requestAuthorization { speechStatus in
+            Diag.log("语音识别授权 = \(speechStatus.rawValue)（3=authorized）")
             guard speechStatus == .authorized else {
                 done(false, "语音识别未授权（系统设置→隐私→语音识别）"); return
             }
             AVCaptureDevice.requestAccess(for: .audio) { micGranted in
+                Diag.log("麦克风授权 = \(micGranted)")
                 guard micGranted else {
                     done(false, "麦克风未授权（系统设置→隐私→麦克风）"); return
                 }
@@ -107,27 +113,50 @@ final class DictationController: ObservableObject {
 
         let input = audioEngine.inputNode
         let fmt = input.outputFormat(forBus: 0)
+        Diag.log("beginLocalASR：inputFormat sampleRate=\(fmt.sampleRate) ch=\(fmt.channelCount)")
         guard fmt.sampleRate > 0 else { showError("拿不到麦克风输入"); return }
 
-        // 同一路 tap：喂实时识别 + 落一份 WAV（后面走 GLM-ASR 精转）
+        // 同一路 tap：原始 buffer 喂实时识别；转成 16k 单声道后落 WAV（GLM-ASR 只收单声道）。
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("voicekey-\(UUID().uuidString).wav")
         audioFileURL = url
-        audioFile = try? AVAudioFile(forWriting: url, settings: fmt.settings)
+        audioFile = try? AVAudioFile(forWriting: url, settings: asrFormat.settings)
+        converter = AVAudioConverter(from: fmt, to: asrFormat)
 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buffer, _ in
             self?.request?.append(buffer)
-            try? self?.audioFile?.write(from: buffer)
+            self?.writeMono(buffer)
         }
 
         audioEngine.prepare()
         do { try audioEngine.start() } catch {
+            Diag.log("audioEngine.start 失败：\(error.localizedDescription)")
             showError("录音启动失败：\(error.localizedDescription)"); return
         }
+        Diag.log("录音已开始，WAV=\(url.lastPathComponent)")
 
         isRecording = true
         phase = .listening
         statusLine = "正在聆听 · 再按一下结束"
+    }
+
+    /// 把麦克风的立体声 buffer 转成 16k 单声道 Int16 写进 WAV（GLM-ASR 只吃单声道）。
+    private func writeMono(_ buffer: AVAudioPCMBuffer) {
+        guard let converter, let audioFile else { return }
+        let ratio = asrFormat.sampleRate / buffer.format.sampleRate
+        let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: asrFormat, frameCapacity: cap) else { return }
+        var fed = false
+        var err: NSError?
+        let status = converter.convert(to: out, error: &err) { _, outStatus in
+            if fed { outStatus.pointee = .noDataNow; return nil }
+            fed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        if (status == .haveData || out.frameLength > 0) {
+            try? audioFile.write(from: out)
+        }
     }
 
     /// 起一段本地识别任务。停顿会让系统把当前段判 final（或报错结束），
@@ -135,15 +164,18 @@ final class DictationController: ObservableObject {
     private func startRecognitionTask() {
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
-        if recognizer?.supportsOnDeviceRecognition == true {
-            req.requiresOnDeviceRecognition = true
-        }
+        // 不强制 on-device：macOS 上中文本地模型常没就绪，硬走 on-device 会一个字都不出。
+        // 让苹果自己挑（有网就云端），实在不行还有 GLM-ASR 兜底。
+        Diag.log("recognitionTask 起：locale=\(localeID) onDeviceSupported=\(recognizer?.supportsOnDeviceRecognition ?? false)")
         request = req
         currentPiece = ""
 
         task = recognizer?.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
             guard self.request === req else { return }   // 旧任务迟到回调，忽略
+            if let error, self.currentPiece.isEmpty, self.committedText.isEmpty {
+                Diag.log("识别回调 error（暂无文字）：\(error.localizedDescription)")
+            }
             if let result {
                 let piece = result.bestTranscription.formattedString
                 if result.speechRecognitionMetadata != nil || result.isFinal {
@@ -197,24 +229,32 @@ final class DictationController: ObservableObject {
         request?.endAudio()
         task?.cancel()
         task = nil; request = nil
+        converter = nil
 
         let text = localText.trimmingCharacters(in: .whitespacesAndNewlines)
         let wav = audioFileURL
         audioFile = nil; audioFileURL = nil
+
+        let wavSize = wav.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path)[.size]) as? Int } ?? 0
+        let key = AITextPolisher.shared.apiKey
+        Diag.log("finish：cancelled=\(cancelled) 本地文字=\"\(text.prefix(40))\"(\(text.count)) WAV=\(wavSize)B GLMkey=\(key.isEmpty ? "无" : "有")")
 
         if cancelled {
             if let wav { try? FileManager.default.removeItem(at: wav) }
             hideDone()
             return
         }
-        guard !text.isEmpty else {
+
+        // 本地没识别出文字时：只要录到了真实音频 + 有 GLM key，照样送 GLM-ASR 兜底，别直接判「没内容」。
+        let haveAudio = wavSize > 8000   // 44 字节头 + 一点点采样都算不上，8KB≈几百 ms
+        if text.isEmpty && !(haveAudio && !key.isEmpty) {
             if let wav { try? FileManager.default.removeItem(at: wav) }
-            showError("没听到内容")
+            showError(haveAudio ? "没听到内容（填 GLM key 可提升识别）" : "没听到内容")
             return
         }
 
         phase = .transcribing
-        statusLine = "转写中…"
+        statusLine = text.isEmpty ? "转写中（GLM）…" : "转写中…"
         liveText = text
         runOptimize(local: text, wav: wav)
     }
@@ -227,12 +267,14 @@ final class DictationController: ObservableObject {
             self.commit(out)
         }
         let polishThen: (String) -> Void = { base in
+            let b = base.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !b.isEmpty else { finish(""); return }   // 空串绝不润色，交给 commit 报「没内容」
             let key = AITextPolisher.shared.apiKey
-            guard AITextPolisher.shared.enabled, !key.isEmpty else { finish(base); return }
-            AITextPolisher.shared.polish(base) { result in
+            guard AITextPolisher.shared.enabled, !key.isEmpty else { finish(b); return }
+            AITextPolisher.shared.polish(b) { result in
                 switch result {
                 case .success(let p): finish(p)
-                case .failure: finish(base)
+                case .failure: finish(b)
                 }
             }
         }
@@ -242,8 +284,13 @@ final class DictationController: ObservableObject {
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let asr) where !asr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                        Diag.log("GLM-ASR 成功：\"\(asr.prefix(60))\"")
                         polishThen(asr)
-                    default:
+                    case .success(let asr):
+                        Diag.log("GLM-ASR 返回空（\"\(asr)\"），回退本地文字=\"\(local.prefix(30))\"")
+                        polishThen(local)
+                    case .failure(let e):
+                        Diag.log("GLM-ASR 失败：\(e.localizedDescription)，回退本地文字=\"\(local.prefix(30))\"")
                         polishThen(local)
                     }
                 }
@@ -255,8 +302,12 @@ final class DictationController: ObservableObject {
 
     /// 最终文字：记进历史（喂给润色器学习）→ 粘到当前光标处 → done 态短暂展示后隐藏。
     private func commit(_ text: String) {
-        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 防御：万一润色模型回吐了 <asr> 包裹标签，剥掉。
+        var clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        clean = clean.replacingOccurrences(of: "<asr>", with: "").replacingOccurrences(of: "</asr>", with: "")
+        clean = clean.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { showError("没听到内容"); return }
+        Diag.log("最终插入：\"\(clean.prefix(60))\"")
         AITextPolisher.shared.recordHistory(clean)
         DispatchQueue.main.async {
             self.finalText = clean
@@ -271,6 +322,7 @@ final class DictationController: ObservableObject {
     // MARK: - 收尾 / 错误
 
     private func showError(_ msg: String) {
+        Diag.log("showError：\(msg)")
         DispatchQueue.main.async {
             self.isRecording = false
             self.isError = true
