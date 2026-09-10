@@ -22,11 +22,18 @@ app:
 	cp -R .build/xcode/Build/Products/Release/VoiceKey.app $(APP)
 	@echo "built $(APP)（正式版·签名）"
 
-# 装到 ~/Applications（用户可写，Launchpad/Spotlight 可打开）
+# 装到 ~/Applications（用户可写，Launchpad/Spotlight 可打开）。
+# 关键：装完必须删掉 dist 中转拷贝并从 LaunchServices 注销——否则同一个 bundle id
+# 在 dist/ 和 ~/Applications/ 两处都注册，双击/Spotlight 打开时系统会启到另一份、
+# 和正在跑的撞车 → 闪退。只保留 ~/Applications 这一份并重新注册。
+LSR = /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 install: app
 	mkdir -p $(HOME)/Applications
 	rm -rf $(HOME)/Applications/VoiceKey.app
 	cp -R $(APP) $(HOME)/Applications/VoiceKey.app
+	-"$(LSR)" -u "$(PWD)/$(APP)" 2>/dev/null
+	rm -rf dist
+	-"$(LSR)" -f "$(HOME)/Applications/VoiceKey.app" 2>/dev/null
 	@echo "installed ~/Applications/VoiceKey.app —— 双击或 Spotlight 打开「语音键」"
 
 clean:
