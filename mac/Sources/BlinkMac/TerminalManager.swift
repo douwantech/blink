@@ -148,9 +148,9 @@ final class TerminalManager {
         case .local:
             b = LocalBackend(dir: session.dir)
         case .blinkd(let h, let p, let t):
-            // 枚举出来的真实会话 attach 它；否则按 title 新建 tmux+claude
-            let exec = session.tmuxName.map { BlinkdScript.attach($0) }
-                ?? BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
+            // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
+            // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
+            let exec = BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
             b = RemoteBackend(host: h, port: p, token: t, exec: exec)
         case .ssh(let user, let host):
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
