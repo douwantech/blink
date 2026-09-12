@@ -148,9 +148,9 @@ final class TerminalManager {
         case .local:
             b = LocalBackend(dir: session.dir)
         case .blinkd(let h, let p, let t):
-            // 枚举出来的真实会话 attach 它；否则按 title 新建 tmux+claude
-            let exec = session.tmuxName.map { BlinkdScript.attach($0) }
-                ?? BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
+            // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
+            // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
+            let exec = BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
             b = RemoteBackend(host: h, port: p, token: t, exec: exec)
         case .ssh(let user, let host):
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
@@ -177,6 +177,9 @@ final class TerminalManager {
 struct TerminalContainer: NSViewRepresentable {
     @EnvironmentObject var state: AppState
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator { var lastSessionID: String = "" }
+
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
         container.wantsLayer = true
@@ -185,13 +188,35 @@ struct TerminalContainer: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        let tv = state.term.view(for: state.activeSession, machine: state.activeMachine)
-        if tv.superview !== nsView {
+        let session = state.activeSession
+        let tv = state.term.view(for: session, machine: state.activeMachine)
+        let swapped = tv.superview !== nsView
+        if swapped {
             nsView.subviews.forEach { $0.removeFromSuperview() }
             tv.frame = nsView.bounds
             tv.autoresizingMask = [.width, .height]
             nsView.addSubview(tv)
             DispatchQueue.main.async { nsView.window?.makeFirstResponder(tv) }
+        }
+        // 切 tab / 首次换入：布局 settle 后强制把终端尺寸对齐容器。终端 view 在别的 tab
+        // 显示时被移出层级、期间窗口变过尺寸，切回来 frame/行列会是旧的（表现为内容只占
+        // 上半截、残留旧状态栏）——这里对齐一次并逼后端(tmux)按当前尺寸重绘。
+        if swapped || context.coordinator.lastSessionID != session.id {
+            context.coordinator.lastSessionID = session.id
+            DispatchQueue.main.async { Self.refit(tv, in: nsView) }
+        }
+    }
+
+    /// 把终端 frame 对齐容器；若已相等，抖动一整行高度再复原，逼 SwiftTerm 重算行列并
+    /// 通过 sizeChanged 把新尺寸发给后端（本地 PTY / blinkd / ssh 上的 tmux），触发重绘。
+    private static func refit(_ tv: NSView, in nsView: NSView) {
+        let b = nsView.bounds
+        guard b.width > 1, b.height > 20 else { return }
+        if tv.frame.equalTo(b) {
+            tv.frame = b.insetBy(dx: 0, dy: 20)     // 掉至少一行，确保行数变化 → 触发 sizeChanged
+            DispatchQueue.main.async { tv.frame = b }
+        } else {
+            tv.frame = b
         }
     }
 }
