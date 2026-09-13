@@ -70,6 +70,7 @@ struct TopBar: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 48)
+        .background(WindowChromeDragZoom())   // 双击放大/还原、拖拽移动窗口（空白处生效）
         .background(Color.white.opacity(0.02))
     }
 }

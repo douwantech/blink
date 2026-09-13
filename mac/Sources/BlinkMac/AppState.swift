@@ -541,17 +541,29 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     // MARK: Actions
 
+    /// 每台机器上次选的 tab（machineID → sessionID）：切回该机器时恢复，不再总跳第一个。
+    private var lastSessionByMachine: [String: String] = [:]
+
     func selectMachine(_ id: String) {
         activeMachineID = id
-        // 指到这台机器的一个在岗会话（没有就置空，等用户点选）——避免终端拿旧机器的 transport 连错。
-        activeSessionID = sidebarSessions.first(where: { $0.machineID == id })?.id ?? ""
+        // 记住上次在这台机器点的 tab：还在就恢复，否则第一个在岗会话（都没有就置空，等用户点选）。
+        // 置空是为了避免终端拿旧机器的 transport 连错。
+        let avail = sidebarSessions   // 已按 activeMachineID(=id) 过滤
+        if let last = lastSessionByMachine[id], avail.contains(where: { $0.id == last }) {
+            activeSessionID = last
+        } else {
+            activeSessionID = avail.first?.id ?? ""
+        }
         Task { @MainActor in await self.loadSessions(for: self.activeMachine) }
     }
 
     func selectSession(_ id: String) {
         activeSessionID = id
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
-        if let s = sessions.first(where: { $0.id == id }) { activeMachineID = s.machineID }
+        if let s = sessions.first(where: { $0.id == id }) {
+            activeMachineID = s.machineID
+            lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab
+        }
         mode = .terminal
     }
 
