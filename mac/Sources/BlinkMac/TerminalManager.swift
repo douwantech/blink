@@ -243,8 +243,11 @@ struct TerminalContainer: NSViewRepresentable {
         let b = nsView.bounds
         guard b.width > 1, b.height > 20 else { return }
         if tv.frame.equalTo(b) {
-            tv.frame = b.insetBy(dx: 0, dy: 20)     // 掉至少一行，确保行数变化 → 触发 sizeChanged
-            DispatchQueue.main.async { tv.frame = b }
+            // 同一 runloop 内先缩一行再复原：SwiftTerm 的 setFrameSize→processSizeChange 是同步的，
+            // 两次都会触发行列重算(→ sizeChanged 通知后端重绘)，但中间那帧不跨 runloop、不会被画出来，
+            // 避免切 tab 时的抖动（旧版用 DispatchQueue.main.async 复原，中间帧被绘制 → 抖）。
+            tv.setFrameSize(NSSize(width: b.width, height: b.height - 20))
+            tv.frame = b
         } else {
             tv.frame = b
         }
