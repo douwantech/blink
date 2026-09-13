@@ -165,6 +165,19 @@ enum BlinkdExec {
 /// A SwiftTerm view whose keyboard input and resizes go to a blinkd connection.
 final class BlinkdTerminalView: TerminalView, TerminalViewDelegate {
     weak var client: BlinkdClient?
+    /// 远程会话：贴图时上传图床、把 URL 打进终端（本机=false，走原生粘贴让 claude 读本机剪贴板）。
+    var uploadImageOnPaste = false
+    var onToast: ((String) -> Void)?
+
+    override func paste(_ sender: Any) {
+        if uploadImageOnPaste,
+           ImageHostUploader.handlePaste(NSPasteboard.general,
+                                         send: { [weak self] s in self?.client?.sendData([UInt8](s.utf8)[...]) },
+                                         toast: onToast) {
+            return
+        }
+        super.paste(sender)
+    }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) { client?.sendData(data) }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { client?.sendResize(cols: newCols, rows: newRows) }

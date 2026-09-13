@@ -87,6 +87,8 @@ final class AppState: ObservableObject {
             activeMachineID = "mbp"
             activeSessionID = "blink"
         }
+        // 远程会话贴图上传图床时，把进度/结果 toast 冒出来（需 self 全初始化后再接）。
+        term.onToast = { [weak self] m in Task { @MainActor in self?.showToast(m) } }
     }
 
     /// 读 blinkd 配置：环境变量 BLINKD_TOKEN/HOST/PORT，其次 ~/.config/blinkmac/config.json。
@@ -265,23 +267,26 @@ final class AppState: ObservableObject {
             let name = cm.name.isEmpty ? "机器\(i + 1)" : cm.name
             let transport: Transport
             let hostLabel: String
+            let isLocalMac: Bool
             if let b = cm.blinkd {
                 let isThisMac = (b.token == lt)
                 // 这台 Mac 走本地直连（config.json 那台），其余 blinkd 机器走 KV 里的地址（tsnet）。
                 transport = isThisMac ? .blinkd(host: lh, port: lp, token: lt)
                                       : .blinkd(host: b.host, port: b.port, token: b.token)
                 hostLabel = isThisMac ? "本机 · \(b.host):\(b.port)" : "blinkd \(b.host):\(b.port)"
+                isLocalMac = isThisMac
                 if isThisMac { thisMacId = cm.id }
             } else {
                 // 手机上配的是 SSH：用系统 /usr/bin/ssh + 用户自己的密钥连（跟手机同一套远端脚本）。
                 transport = .ssh(user: cm.user, host: cm.host)
                 let who = cm.user.isEmpty ? cm.host : "\(cm.user)@\(cm.host)"
                 hostLabel = "SSH \(who)"
+                isLocalMac = false
             }
             out.append(Machine(id: cm.id, name: name, host: hostLabel,
                                initials: String(name.prefix(2)).uppercased(),
                                grad: grads[i % grads.count],
-                               online: true, transport: transport))
+                               online: true, transport: transport, isLocalMac: isLocalMac))
         }
         guard !out.isEmpty else { return }
         // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。

@@ -69,13 +69,16 @@ final class RemoteBackend: TerminalBackend {
     private var client: BlinkdClient?
     var view: TerminalView { tv }
 
-    init(host: String, port: UInt16, token: String, exec: String) {
+    init(host: String, port: UInt16, token: String, exec: String,
+         uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil) {
         self.host = host; self.port = port; self.token = token
         execCmd = exec
         tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(tv)
         tv.terminalDelegate = tv
+        tv.uploadImageOnPaste = uploadImageOnPaste
+        tv.onToast = onToast
         connect()
     }
 
@@ -92,21 +95,42 @@ final class RemoteBackend: TerminalBackend {
     func stop() { client?.stop() }
 }
 
+// 本地 PTY 视图，贴图时可选上传图床（远程 SSH 会话用；本机 shell 关掉走原生粘贴）。
+final class PasteImageTermView: LocalProcessTerminalView {
+    var uploadImageOnPaste = false
+    var onToast: ((String) -> Void)?
+
+    override func paste(_ sender: Any) {
+        if uploadImageOnPaste,
+           ImageHostUploader.handlePaste(NSPasteboard.general,
+                                         send: { [weak self] s in
+                                             if let p = self?.process { p.send(data: [UInt8](s.utf8)[...]) }
+                                         },
+                                         toast: onToast) {
+            return
+        }
+        super.paste(sender)
+    }
+}
+
 // MARK: - SSH backend（系统 /usr/bin/ssh，本地 PTY，用用户自己的 ~/.ssh 密钥/agent）
 
 @MainActor
 final class SSHBackend: TerminalBackend {
-    private let ptv: LocalProcessTerminalView
+    private let ptv: PasteImageTermView
     private let target: String
     private let remoteScript: String
     var view: TerminalView { ptv }
 
-    init(user: String, host: String, remoteScript: String) {
+    init(user: String, host: String, remoteScript: String,
+         uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil) {
         target = user.isEmpty ? host : "\(user)@\(host)"
         self.remoteScript = remoteScript
-        ptv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
-                                       font: makeFont(), options: TerminalOptions.default)
+        ptv = PasteImageTermView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
+                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(ptv)
+        ptv.uploadImageOnPaste = uploadImageOnPaste
+        ptv.onToast = onToast
         ptv.feed(text: "\r\n  连接 \(target) …\r\n\r\n")   // 连接期间给个反馈，别空白
         launch()
     }
@@ -140,24 +164,30 @@ final class SSHBackend: TerminalBackend {
 @MainActor
 final class TerminalManager {
     private var backends: [String: TerminalBackend] = [:]
+    /// 远程贴图上传图床时冒 toast（AppState 注入）。
+    var onToast: ((String) -> Void)?
 
     func backend(for session: Session, machine: Machine) -> TerminalBackend {
         if let b = backends[session.id] { return b }
         let b: TerminalBackend
         switch machine.transport {
         case .local:
-            b = LocalBackend(dir: session.dir)
+            b = LocalBackend(dir: session.dir)   // 本机 shell，贴图走原生（claude 读本机剪贴板）
         case .blinkd(let h, let p, let t):
             // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
             // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
             let exec = BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
-            b = RemoteBackend(host: h, port: p, token: t, exec: exec)
+            // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
+            b = RemoteBackend(host: h, port: p, token: t, exec: exec,
+                              uploadImageOnPaste: !machine.isLocalMac, onToast: onToast)
         case .ssh(let user, let host):
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
             // 空/~ 时用 "."（ssh 登录落点就是远端 $HOME），别用会被单引号挡住展开的 $HOME。
             let workDir = (session.dir.isEmpty || session.dir == "~") ? "." : session.dir
             let script = BlinkdScript.tmuxClaude(title: session.name, workDir: workDir)
-            b = SSHBackend(user: user, host: host, remoteScript: script)
+            // SSH 一定是远程机器，贴图上传图床。
+            b = SSHBackend(user: user, host: host, remoteScript: script,
+                           uploadImageOnPaste: true, onToast: onToast)
         }
         backends[session.id] = b
         return b
