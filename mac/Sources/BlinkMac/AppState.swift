@@ -542,19 +542,34 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     // MARK: Actions
 
     /// 每台机器上次选的 tab（machineID → sessionID）：切回该机器时恢复，不再总跳第一个。
-    private var lastSessionByMachine: [String: String] = [:]
+    /// 落 UserDefaults，重启也记得。didSet 里同步写盘。
+    private static let lastSessionKey = "BlinkMac.lastSessionByMachine"
+    private var lastSessionByMachine: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: AppState.lastSessionKey) as? [String: String]) ?? [:] {
+        didSet { UserDefaults.standard.set(lastSessionByMachine, forKey: AppState.lastSessionKey) }
+    }
 
     func selectMachine(_ id: String) {
         activeMachineID = id
-        // 记住上次在这台机器点的 tab：还在就恢复，否则第一个在岗会话（都没有就置空，等用户点选）。
-        // 置空是为了避免终端拿旧机器的 transport 连错。
-        let avail = sidebarSessions   // 已按 activeMachineID(=id) 过滤
-        if let last = lastSessionByMachine[id], avail.contains(where: { $0.id == last }) {
-            activeSessionID = last
-        } else {
-            activeSessionID = avail.first?.id ?? ""
+        // 先用当前已有会话恢复（切换要即时），再等这台机器重枚举完确认一次——
+        // loadSessions 会把这台的会话整段 removeAll+重加，不二次恢复就会被冲回第一个。
+        restoreActiveSession(for: id)
+        Task { @MainActor in
+            await self.loadSessions(for: self.activeMachine)
+            self.restoreActiveSession(for: id)
         }
-        Task { @MainActor in await self.loadSessions(for: self.activeMachine) }
+    }
+
+    /// 恢复某机器上次选中的会话：记得且还在（含休息中，只要没关）→ 用它；
+    /// 否则当前选中若已是这台机器的有效会话就保持；再否则落到该机器第一个可选会话；都没有→置空。
+    /// 置空是为了避免终端拿旧机器的 transport 连错。
+    private func restoreActiveSession(for machineID: String) {
+        let mine = sessions.filter { $0.machineID == machineID && $0.tmuxName != nil && !isClosed($0) }
+        if let last = lastSessionByMachine[machineID], mine.contains(where: { $0.id == last }) {
+            activeSessionID = last
+        } else if !mine.contains(where: { $0.id == activeSessionID }) {
+            activeSessionID = mine.first(where: { !resting($0) })?.id ?? mine.first?.id ?? ""
+        }
     }
 
     func selectSession(_ id: String) {
@@ -562,7 +577,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
         if let s = sessions.first(where: { $0.id == id }) {
             activeMachineID = s.machineID
-            lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab
+            lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab（并落盘）
         }
         mode = .terminal
     }
