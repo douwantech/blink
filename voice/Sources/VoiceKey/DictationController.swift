@@ -3,17 +3,17 @@ import AVFoundation
 import Speech
 import AppKit
 
-/// 语音听写核心：用 AVCaptureSession + AVCaptureAudioFileOutput 录音（AVAudioEngine 的
+/// 语音听写核心：用 AVCaptureSession + AVCaptureAudioDataOutput 实时采音（AVAudioEngine 的
 /// inputNode 在本机给这个 app 的是纯静音缓冲，换成和相机/麦克风 app 同一条、直接对应
-/// AVCaptureDevice 授权的采集路径），录完 afconvert 转 16k 单声道 → GLM-ASR 精转 → GLM
-/// 润色 → 把文字粘到当前光标处。
-final class DictationController: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+/// AVCaptureDevice 授权的采集路径），把音频缓冲边采边喂给 SFSpeechRecognizer 做**流式识别**
+/// （边说边出字，进 liveText），松手拿最终文本 →（可选）GLM 润色 → 把文字粘到当前光标处。
+final class DictationController: NSObject, ObservableObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     static let shared = DictationController()
 
     enum Phase: Equatable { case idle, listening, transcribing, done }
 
     @Published private(set) var phase: Phase = .idle
-    @Published private(set) var liveText: String = ""     // 展示用（本方案无实时识别，转写完才有）
+    @Published private(set) var liveText: String = ""     // 流式识别的实时文字（边说边更新）
     @Published private(set) var statusLine: String = ""
     @Published private(set) var finalText: String = ""
     @Published private(set) var isError: Bool = false
@@ -64,12 +64,21 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
 
     private let sessionQueue = DispatchQueue(label: "voicekey.capture")
     private var captureSession: AVCaptureSession?
-    private var fileOutput: AVCaptureAudioFileOutput?
-    private var captureURL: URL?
-    private var pendingCancel = false
+    private var audioOutput: AVCaptureAudioDataOutput?
     private var isRecording = false
     private var starting = false
     private var doneHideWork: DispatchWorkItem?
+
+    // 流式识别状态（主线程访问）
+    private var recognizer: SFSpeechRecognizer?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var committedText = ""        // 已定稿的段落（分段续跑时累加）
+    private var currentPiece = ""         // 当前段的实时 partial
+    private var finishing = false         // 松手后等最终结果
+    private var didFinalize = false       // 防重复收尾
+    private var finalizeGuard: DispatchWorkItem?  // 最终结果迟迟不来的兜底
+    private var epoch = 0                  // 段序号：防旧段迟到回调串扰
 
     private override init() { super.init() }
 
@@ -96,9 +105,14 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
         guard !starting, !isRecording else { return }
         starting = true
         doneHideWork?.cancel()
+        finalizeGuard?.cancel()
         isError = false
         finalText = ""
         liveText = ""
+        committedText = ""
+        currentPiece = ""
+        finishing = false
+        didFinalize = false
         statusLine = "准备中…"
         phase = .listening
 
@@ -129,6 +143,12 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
     }
 
     private func beginCapture() {
+        // 先起流式识别任务（主线程建 request/task），再起采集把缓冲喂进去。
+        guard startRecognition() else {
+            starting = false
+            showError("本机识别不可用（系统设置→隐私→语音识别，或缺对应语言包）")
+            return
+        }
         sessionQueue.async { [weak self] in
             guard let self else { return }
             let session = AVCaptureSession()
@@ -142,28 +162,23 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
                 self.failOnMain("麦克风无法接入"); return
             }
             session.addInput(input)
-            let out = AVCaptureAudioFileOutput()
+            let out = AVCaptureAudioDataOutput()
+            out.setSampleBufferDelegate(self, queue: self.sessionQueue)
             guard session.canAddOutput(out) else { self.failOnMain("录音输出不可用"); return }
             session.addOutput(out)
             session.startRunning()
-
-            let types = AVCaptureAudioFileOutput.availableOutputFileTypes()
-            let ftype: AVFileType = types.contains(.aiff) ? .aiff : (types.contains(.m4a) ? .m4a : (types.first ?? .aiff))
-            let ext = (ftype == .aiff) ? "aiff" : (ftype == .m4a ? "m4a" : "caf")
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("voicekey-\(UUID().uuidString).\(ext)")
-            Diag.log("AVCaptureSession 起：device=\(device.localizedName) type=\(ftype.rawValue)")
+            Diag.log("AVCaptureSession 起（流式）：device=\(device.localizedName)")
 
             self.captureSession = session
-            self.fileOutput = out
-            self.captureURL = url
-            out.startRecording(to: url, outputFileType: ftype, recordingDelegate: self)
+            self.audioOutput = out
 
             DispatchQueue.main.async {
                 self.starting = false
                 guard self.phase == .listening else {
                     // 起录期间被取消：直接停
-                    self.pendingCancel = true
-                    out.stopRecording()
+                    self.teardownSession()
+                    self.abortRecognition()
+                    self.hideDone()
                     return
                 }
                 self.isRecording = true
@@ -172,11 +187,87 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
         }
     }
 
+    /// AVCaptureAudioDataOutput 实时回调：把音频缓冲喂给流式识别请求。
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        recognitionRequest?.appendAudioSampleBuffer(sampleBuffer)
+    }
+
     private func failOnMain(_ msg: String) {
         DispatchQueue.main.async {
             self.starting = false
             self.teardownSession()
+            self.abortRecognition()
             self.showError(msg)
+        }
+    }
+
+    // MARK: - 流式识别
+
+    /// 建识别器 + 起第一段流式任务。返回 false = 本机识别不可用。
+    private func startRecognition() -> Bool {
+        let rec = SFSpeechRecognizer(locale: Locale(identifier: localeID)) ?? SFSpeechRecognizer()
+        guard let rec, rec.isAvailable else { return false }
+        recognizer = rec
+        Diag.log("流式识别：locale=\(localeID) onDevice=\(rec.supportsOnDeviceRecognition)")
+        startStreamingTask()
+        return true
+    }
+
+    /// 起一段新的流式任务（request/task 的建立与置空全在 sessionQueue，和采集回调 append 同队列串行，
+    /// 避免「endAudio 后再 append」崩溃）。文字状态更新回主线程。epoch 防旧段迟到回调串扰。
+    private func startStreamingTask() {
+        epoch += 1
+        let myEpoch = epoch
+        currentPiece = ""
+        sessionQueue.async { [weak self] in
+            guard let self, let rec = self.recognizer else { return }
+            let req = SFSpeechAudioBufferRecognitionRequest()
+            req.shouldReportPartialResults = true
+            if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+            self.recognitionRequest = req
+            self.recognitionTask = rec.recognitionTask(with: req) { [weak self] result, error in
+                DispatchQueue.main.async { self?.handle(result: result, error: error, epoch: myEpoch) }
+            }
+        }
+    }
+
+    /// 识别回调（主线程）：更新实时文字；分段收尾并入 committedText；录音中续跑，松手后收尾。
+    private func handle(result: SFSpeechRecognitionResult?, error: Error?, epoch: Int) {
+        guard epoch == self.epoch else { return }   // 旧段迟到回调，忽略
+        if let result {
+            let piece = result.bestTranscription.formattedString
+            if result.speechRecognitionMetadata != nil || result.isFinal {
+                if !piece.isEmpty { committedText += piece }
+                currentPiece = ""
+                liveText = committedText
+                if result.isFinal {
+                    if isRecording { startStreamingTask() }        // 段内自动收尾但还在录 → 续新段
+                    else if finishing { finalizeStreaming() }      // 松手后的最终段 → 收尾
+                }
+            } else {
+                currentPiece = piece
+                liveText = committedText + piece
+            }
+        } else if error != nil {
+            if isRecording {
+                if !currentPiece.isEmpty { committedText += currentPiece; currentPiece = "" }
+                liveText = committedText
+                startStreamingTask()
+            } else if finishing {
+                finalizeStreaming()
+            }
+        }
+    }
+
+    /// 取消/失败时把识别整个丢掉，不收尾。
+    private func abortRecognition() {
+        epoch += 1   // 让残留回调作废
+        finishing = false
+        sessionQueue.async { [weak self] in
+            self?.recognitionTask?.cancel()
+            self?.recognitionRequest = nil
+            self?.recognitionTask = nil
         }
     }
 
@@ -185,102 +276,54 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
     private func finish(cancelled: Bool) {
         guard isRecording else { return }
         isRecording = false
-        pendingCancel = cancelled
-        if !cancelled {
-            phase = .transcribing
-            statusLine = "转写中（GLM）…"
-        }
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if let out = self.fileOutput, out.isRecording {
-                out.stopRecording()   // → didFinishRecordingTo
-            } else {
-                DispatchQueue.main.async {
-                    if cancelled { self.hideDone() } else { self.showError("没录到音频") }
-                }
-            }
-        }
-    }
+        teardownSession()   // 停采集 → 不再有新缓冲喂进来
 
-    // AVCaptureAudioFileOutput 录完回调（stopRecording 后触发）。
-    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
-                    from connections: [AVCaptureConnection], error: Error?) {
-        teardownSession()
-        let size = (try? FileManager.default.attributesOfItem(atPath: outputFileURL.path)[.size]) as? Int ?? 0
-        let peak = Self.peakLevel(outputFileURL)
-        // AVCapture 常在正常结束时也带一个 error（含 RecordingSuccessfullyFinished），文件有内容就当成功。
-        Diag.log("录完：size=\(size)B 峰值=\(String(format: "%.4f", peak)) err=\(error?.localizedDescription ?? "无")")
-
-        DispatchQueue.main.async {
-            let key = AITextPolisher.shared.apiKey
-            if self.pendingCancel {
-                try? FileManager.default.removeItem(at: outputFileURL)
-                self.hideDone(); return
-            }
-            guard size > 4000 else {
-                try? FileManager.default.removeItem(at: outputFileURL)
-                self.showError("没录到音频"); return
-            }
-            guard !key.isEmpty else {
-                try? FileManager.default.removeItem(at: outputFileURL)
-                self.showError("请在设置里填 GLM key"); return
-            }
-            self.phase = .transcribing
-            self.statusLine = "转写中（GLM）…"
-            self.runOptimize(local: "", wav: outputFileURL)
+        if cancelled {
+            abortRecognition()
+            hideDone()
+            return
         }
+        phase = .transcribing
+        statusLine = "识别收尾中…"
+        finishing = true
+        // 停采集后 endAudio，让当前段吐出最终结果（在 sessionQueue，和 append 串行）。
+        sessionQueue.async { [weak self] in self?.recognitionRequest?.endAudio() }
+        // 兜底：最终结果迟迟不来（1.5s）就用手上已有的文字收尾。
+        finalizeGuard?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.finalizeStreaming() }
+        finalizeGuard = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
     }
 
     private func teardownSession() {
         sessionQueue.async { [weak self] in
             self?.captureSession?.stopRunning()
             self?.captureSession = nil
-            self?.fileOutput = nil
-            self?.captureURL = nil
+            self?.audioOutput = nil
         }
     }
 
-    // MARK: - 转写 → 插入
+    // MARK: - 收尾：最终文本 →（可选）GLM 润色 → 插入
 
-    /// afconvert 转 16k 单声道 → GLM-ASR → GLM 润色 → 插入。
-    private func runOptimize(local: String, wav: URL?) {
-        let done: (String) -> Void = { [weak self] out in
-            guard let self else { return }
-            if let wav { try? FileManager.default.removeItem(at: wav) }
-            self.commit(out)
-        }
-        let polishThen: (String) -> Void = { base in
-            let b = base.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !b.isEmpty else { done(""); return }
-            let key = AITextPolisher.shared.apiKey
-            guard AITextPolisher.shared.enabled, !key.isEmpty else { done(b); return }
-            AITextPolisher.shared.polish(b) { result in
-                switch result {
-                case .success(let p): done(p)
-                case .failure: done(b)
-                }
-            }
-        }
+    /// 松手后拿最终识别文本，（可选）交 GLM 润色，再插入光标处。只收尾一次。
+    private func finalizeStreaming() {
+        guard finishing, !didFinalize else { return }
+        didFinalize = true
+        finishing = false
+        finalizeGuard?.cancel()
+        let raw = (committedText + currentPiece).trimmingCharacters(in: .whitespacesAndNewlines)
+        abortRecognition()
+
+        guard !raw.isEmpty else { showError("没听到内容"); return }
+        Diag.log("流式识别最终：\"\(raw.prefix(60))\"")
+
         let key = AITextPolisher.shared.apiKey
-        guard let wav, !key.isEmpty else { polishThen(local); return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let mono = Self.convertToMono(wav)
-            let upload = mono ?? wav
-            GLMASRClient.transcribe(fileURL: upload, apiKey: key) { result in
-                DispatchQueue.main.async {
-                    if let mono { try? FileManager.default.removeItem(at: mono) }
-                    switch result {
-                    case .success(let asr) where !asr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
-                        Diag.log("GLM-ASR 成功：\"\(asr.prefix(60))\"")
-                        polishThen(asr)
-                    case .success:
-                        Diag.log("GLM-ASR 返回空")
-                        polishThen(local)
-                    case .failure(let e):
-                        Diag.log("GLM-ASR 失败：\(e.localizedDescription)")
-                        polishThen(local)
-                    }
-                }
+        guard AITextPolisher.shared.enabled, !key.isEmpty else { commit(raw); return }
+        statusLine = "AI 优化中…"
+        AITextPolisher.shared.polish(raw) { [weak self] result in
+            switch result {
+            case .success(let p): self?.commit(p)
+            case .failure: self?.commit(raw)
             }
         }
     }
@@ -300,42 +343,6 @@ final class DictationController: NSObject, ObservableObject, AVCaptureFileOutput
             TextInserter.insert(clean)
             self.scheduleHideDone(after: 1.4)
         }
-    }
-
-    // MARK: - 工具
-
-    /// 用系统 afconvert 把录音离线转成 16k 单声道 16-bit WAV（GLM-ASR 只收单声道）。
-    private static func convertToMono(_ src: URL) -> URL? {
-        let dst = src.deletingPathExtension().appendingPathExtension("mono.wav")
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        p.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", src.path, dst.path]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do { try p.run(); p.waitUntilExit() } catch {
-            Diag.log("afconvert 起失败：\(error.localizedDescription)"); return nil
-        }
-        guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: dst.path) else {
-            Diag.log("afconvert 失败 status=\(p.terminationStatus)"); return nil
-        }
-        return dst
-    }
-
-    /// 读录音峰值（诊断用）。
-    private static func peakLevel(_ url: URL) -> Float {
-        guard let f = try? AVAudioFile(forReading: url) else { return -1 }
-        let fmt = f.processingFormat
-        let frames = AVAudioFrameCount(f.length)
-        guard frames > 0, let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return -2 }
-        do { try f.read(into: buf) } catch { return -3 }
-        guard let ch = buf.floatChannelData else { return -4 }
-        var peak: Float = 0
-        let n = Int(buf.frameLength)
-        for c in 0..<Int(fmt.channelCount) {
-            let p = ch[c]
-            for i in 0..<n { peak = max(peak, abs(p[i])) }
-        }
-        return peak
     }
 
     // MARK: - 收尾 / 错误
