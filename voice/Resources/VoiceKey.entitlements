@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 不开 App Sandbox：语音键要全局监听地球键（CGEventTap）+ 合成 Cmd-V 把文字粘到
+	     别的 app，沙盒会挡死这两条。麦克风/语音/辅助功能一律走 TCC 授权，不靠沙盒 entitlement。 -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

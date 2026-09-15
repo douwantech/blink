@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>VoiceKey</string>
+	<key>CFBundleDisplayName</key>
+	<string>语音键</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.douwantech.voicekey</string>
+	<key>CFBundleExecutable</key>
+	<string>VoiceKey</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<!-- 菜单栏后台 app：不占 Dock、不抢焦点，这样按地球键时当前 app 仍持有输入焦点，
+	     转写完的文字才能粘回去。 -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>语音键需要麦克风来录制你的语音并转成文字。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>语音键使用语音识别把你的话转成文字。</string>
+</dict>
+</plist>

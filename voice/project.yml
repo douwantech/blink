@@ -1,0 +1,27 @@
+# xcodegen 工程：只用于「正式版」签名构建（辅助功能 / 麦克风 TCC 授权要认稳定的
+# 签名身份，dev 的 swift run 二进制路径每次变、授权留不住）。日常开发走 SPM（make run）。
+# 生成物 .xcodeproj 不入库，由 make app 现生成。
+name: VoiceKey
+options:
+  bundleIdPrefix: com.douwantech
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+targets:
+  VoiceKey:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/VoiceKey
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.douwantech.voicekey
+        INFOPLIST_FILE: Resources/Info.plist
+        DEVELOPMENT_TEAM: "659T9VUN97"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Resources/VoiceKey.entitlements
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ENABLE_HARDENED_RUNTIME: "YES"
+        COMBINE_HIDPI_IMAGES: "YES"
