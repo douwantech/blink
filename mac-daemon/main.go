@@ -32,7 +32,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"tailscale.com/tsnet"
@@ -140,6 +144,14 @@ func (co *conn) startPTY(name string, args []string) {
 	co.mu.Unlock()
 	log.Printf("pty started for %s: %s (pid %d)", co.nc.RemoteAddr(), name, cmd.Process.Pid)
 
+	// 必须 Wait 收尸:否则子进程退出后留 <defunct>,跑几天攒到 kern.maxprocperuid 上限,
+	// 整台 Mac 起不了新进程(2026-09-15 事故:7174 个僵尸)。命令退出也顺手关连接。
+	go func() {
+		err := cmd.Wait()
+		log.Printf("pty exited for %s: pid %d (%v)", co.nc.RemoteAddr(), cmd.Process.Pid, err)
+		co.nc.Close()
+	}()
+
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -185,6 +197,51 @@ func (co *conn) closePTY() {
 	co.mu.Unlock()
 	if ptmx != nil {
 		_ = ptmx.Close() // SIGHUP → 远端 tmux detach,会话保留
+	}
+}
+
+// watchChildren 每分钟数一次自己名下的子进程 / 僵尸,超过阈值告警。
+// 僵尸连续两轮都在(Wait 本该秒收)的,兜底用 wait4(WNOHANG) 直接收掉。
+func watchChildren(limit int) {
+	self := os.Getpid()
+	prevZombies := map[int]bool{}
+	for range time.Tick(time.Minute) {
+		out, err := exec.Command("/bin/ps", "-axo", "pid=,ppid=,stat=").Output()
+		if err != nil {
+			log.Printf("child watch: ps: %v", err)
+			continue
+		}
+		children, zombies := 0, map[int]bool{}
+		for _, line := range strings.Split(string(out), "\n") {
+			f := strings.Fields(line)
+			if len(f) < 3 {
+				continue
+			}
+			pid, _ := strconv.Atoi(f[0])
+			ppid, _ := strconv.Atoi(f[1])
+			if ppid != self {
+				continue
+			}
+			children++
+			if strings.HasPrefix(f[2], "Z") {
+				zombies[pid] = true
+			}
+		}
+		reaped := 0
+		for pid := range zombies {
+			if !prevZombies[pid] {
+				continue
+			}
+			var ws syscall.WaitStatus
+			if got, _ := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil); got == pid {
+				reaped++
+				delete(zombies, pid)
+			}
+		}
+		prevZombies = zombies
+		if children > limit || len(zombies) > limit || reaped > 0 {
+			log.Printf("child watch WARN: children=%d zombies=%d reaped=%d (limit %d)", children, len(zombies), reaped, limit)
+		}
 	}
 }
 
@@ -250,6 +307,7 @@ func main() {
 	}
 
 	log.Printf("blinkd ready on %s | token=%s | default cmd=%s", ln.Addr(), *token, *cmdline)
+	go watchChildren(50)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
