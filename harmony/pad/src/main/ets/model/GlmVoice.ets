@@ -342,7 +342,10 @@ export class GlmClient {
 
 export class Uploader {
   static async uploadImage(path: string, fileName: string): Promise<string> {
-    const data: Uint8Array = Uploader.readFile(path);
+    return Uploader.uploadImageData(Uploader.readFile(path), fileName);
+  }
+
+  static async uploadImageData(data: Uint8Array, fileName: string): Promise<string> {
     try {
       return await Uploader.uploadUguu(data, fileName);
     } catch (e) {
@@ -351,9 +354,14 @@ export class Uploader {
     }
   }
 
+  private static mimeOf(fileName: string): string {
+    return new RegExp('\\.jpe?g$', 'i').test(fileName) ? 'image/jpeg' : 'image/png';
+  }
+
   private static readFile(path: string): Uint8Array {
+    // path 可能是图库 file://media/... URI：statSync 不认 URI，用 fd 取大小
     const f = fs.openSync(path, fs.OpenMode.READ_ONLY);
-    const st = fs.statSync(path);
+    const st = fs.statSync(f.fd);
     const buf: ArrayBuffer = new ArrayBuffer(st.size);
     fs.readSync(f.fd, buf);
     fs.closeSync(f);
@@ -377,7 +385,7 @@ export class Uploader {
 
   private static uploadUguu(data: Uint8Array, fileName: string): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void, reject: (e: Error) => void) => {
-      const mp: [string, Uint8Array] = Uploader.multipart('files[]', fileName, 'image/png', data);
+      const mp: [string, Uint8Array] = Uploader.multipart('files[]', fileName, Uploader.mimeOf(fileName), data);
       const req = http.createHttp();
       req.request('https://uguu.se/upload?output=text', {
         method: http.RequestMethod.POST,
@@ -403,7 +411,7 @@ export class Uploader {
 
   private static uploadTmpfiles(data: Uint8Array, fileName: string): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void, reject: (e: Error) => void) => {
-      const mp: [string, Uint8Array] = Uploader.multipart('file', fileName, 'image/png', data);
+      const mp: [string, Uint8Array] = Uploader.multipart('file', fileName, Uploader.mimeOf(fileName), data);
       const req = http.createHttp();
       req.request('https://tmpfiles.org/api/v1/upload', {
         method: http.RequestMethod.POST,

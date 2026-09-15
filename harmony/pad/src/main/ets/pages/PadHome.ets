@@ -30,13 +30,14 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
-import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig } from '../model/BlinkStores';
+import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig, PinnedTab } from '../model/BlinkStores';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS } from '../model/GlmVoice';
 import { CfgSync } from '../model/CfgSync';
 import { PadExec, Endpoint } from '../model/PadExec';
 import { PadProbe, PROBE_SCRIPT, WorkStatus } from '../model/PadProbe';
 import { buildChatHtml, ChatBridge, TranscriptCacheH } from '../model/ChatHtml';
+import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 
 const DOMAIN: number = 0x0B12;
 const TAG: string = 'BlinkPad';
@@ -88,8 +89,8 @@ const CHAT_DARK_CSS: string =
   '.meta{color:#6b7683;}.ava-user{background:#3a4048;}' +
   '.ava-claude{background:linear-gradient(135deg,#4ea8ff,#8f8cff);}.ava.has-img{background:#23272e;}';
 
-type Sheet = 'none' | 'settings' | 'newTab' | 'favorites' | 'claude' | 'history' | 'aiConfig' | 'machines' | 'workDirs';
-type Mode = 'terminal' | 'chat';
+type Sheet = 'none' | 'settings' | 'newTab' | 'favorites' | 'claude' | 'history' | 'aiConfig' | 'machines' | 'workDirs' | 'pinEdit' | 'protoAuth';
+type Mode = 'terminal' | 'chat' | 'browser';
 type Inspector = 'employee' | 'project' | 'machine';
 
 interface MachineVM {
@@ -124,6 +125,11 @@ interface TeamGroupVM {
   rows: SessRow[];
 }
 
+interface ProtoSortRow {
+  it: ProtoItem;
+  i: number;
+}
+
 class JsBridge {
   private cb: (op: string, data: string) => void;
   constructor(cb: (op: string, data: string) => void) {
@@ -131,6 +137,26 @@ class JsBridge {
   }
   post(op: string, data: string): void {
     this.cb(op, data);
+  }
+}
+
+class BrowserUrl {
+  /// 同 iOS normalizeURL：带 scheme 原样；像域名/IP 的补 https（tailnet 裸 IP / 带端口补 http）；其它走搜索
+  static normalize(raw: string): string {
+    const s: string = raw.trim();
+    if (s.length === 0) {
+      return '';
+    }
+    if (new RegExp('^(https?|about|file|data):', 'i').test(s)) {
+      return s;
+    }
+    if (new RegExp('^(localhost|\\d{1,3}(\\.\\d{1,3}){3})(:\\d+)?(/.*)?$').test(s)) {
+      return 'http://' + s;
+    }
+    if (s.indexOf('.') > 0 && s.indexOf(' ') < 0) {
+      return 'https://' + s;
+    }
+    return 'https://www.bing.com/search?q=' + encodeURIComponent(s);
   }
 }
 
@@ -145,6 +171,8 @@ struct PadHome {
   @State hostname: string = 'harmony-pad';
   // 布局
   @State winW: number = 1200;
+  @State winH: number = 800;
+  @State fabY: number = -1;             // 右侧浮动切换钮的纵向位置（vp，-1 = 默认），可拖动并记住
   @State topInset: number = 0;
   @State botInset: number = 0;
   @State kbHeight: number = 0;
@@ -185,6 +213,31 @@ struct PadHome {
   @State ntMachineId: string = '';
   @State ntWorkDirId: string = '';
   @State ntSession: string = '';
+  // 浏览器（同 iOS PinnedBrowser）
+  @State browserOpened: boolean = false;   // Web 首次打开后常驻，关掉只隐藏保住页面
+  @State browserSide: boolean = true;      // 左侧栏开关
+  @State browserSeg: string = 'admin';     // admin = 后台 | proto = 原型
+  @State browserPinned: PinnedTab[] = [];
+  @State browserCurUrl: string = '';       // 侧栏高亮：最近一次从侧栏/地址栏打开的网址
+  @State browserUrlText: string = '';
+  @State browserEditing: boolean = false;
+  @State browserLoading: boolean = false;
+  @State browserProgress: number = 0;
+  @State browserCanBack: boolean = false;
+  @State browserCanFwd: boolean = false;
+  @State protoAll: ProtoItem[] = [];
+  @State protoSections: string[] = [];
+  @State protoFilter: string = '';         // '' = 最近更新
+  @State protoQuery: string = '';
+  @State protoState: string = 'idle';      // idle | loading | ok | noauth | error
+  @State protoMsg: string = '';
+  @State protoUser: string = '';
+  @State protoPass: string = '';
+  @State peIdx: number = -1;               // 钉住标签编辑器：-1 = 新增
+  @State peTitle: string = '';
+  @State peUrl: string = '';
+  @State peUser: string = '';
+  @State pePwd: string = '';
 
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
@@ -222,6 +275,13 @@ struct PadHome {
   private chatAvatarURI: string = '';
   private chatBridge: ChatBridge = new ChatBridge();
   private chatFetchToken: number = 0;
+  // 浏览器
+  private browserCtl: webview.WebviewController = new webview.WebviewController();
+  private browserStartUrl: string = 'about:blank';
+  private browserAttached: boolean = false;
+  private protoFetchedAt: number = 0;
+  private fabDragBase: number = 0;
+  private browserAuthTries: Map<string, number> = new Map();
 
   // ===========================================================================
   // lifecycle
@@ -266,6 +326,7 @@ struct PadHome {
     this.hostname = await this.tsPrefs.get('hostname', 'harmony-pad') as string;
     this.fontSize = await this.uiPrefs.get('fontSize', 12) as number;
     this.showTeam = await this.uiPrefs.get('showTeam', false) as boolean;
+    this.fabY = await this.uiPrefs.get('fabY', -1) as number;
     await this.store.load(ctx);
     this.store.onLocalChange = (): void => {
       this.sync.notifyChanged();
@@ -1006,6 +1067,8 @@ struct PadHome {
     this.lastTabPerMachine[tab.machineId] = tabId;
     if (this.mode === 'chat') {
       this.closeChat();
+    } else if (this.mode === 'browser') {
+      this.closeBrowser();
     }
     if (tabId !== this.activeTabId) {
       this.activeTabId = tabId;
@@ -1159,6 +1222,9 @@ struct PadHome {
     hilog.info(DOMAIN, TAG, 'cfg synced (stamp %{public}d): %{public}d machines %{public}d tabs',
       stamp, cfg.machines.length, cfg.tabs.length);
     this.toast('配置已同步');
+    if (this.browserOpened) {
+      this.browserPinned = this.store.pinned.slice();   // 别端改了后台列表
+    }
   }
 
   // ===========================================================================
@@ -1334,37 +1400,106 @@ struct PadHome {
     return out;
   }
 
+  /// 粘贴：剪贴板有图片 → 压成 JPEG 传图床，把链接插进终端（同 iOS）；否则贴文本
   private async pasteClipboard(): Promise<void> {
     try {
       const data = await pasteboard.getSystemPasteboard().getData();
-      const text: string = data.getPrimaryText();
-      if (text && text.length > 0) {
+      const images: Uint8Array[] = [];
+      let text: string = '';
+      for (let i = 0; i < data.getRecordCount(); i++) {
+        const r = data.getRecord(i);
+        if (r.mimeType === pasteboard.MIMETYPE_PIXELMAP && r.pixelMap) {
+          images.push(await this.packJpeg(r.pixelMap));
+        } else if (r.mimeType === pasteboard.MIMETYPE_TEXT_URI && r.uri &&
+          new RegExp('\\.(png|jpe?g|gif|webp|heic|bmp)$', 'i').test(r.uri)) {
+          images.push(await this.jpegFromFile(r.uri));
+        } else if (text.length === 0 && r.mimeType === pasteboard.MIMETYPE_TEXT_PLAIN && r.plainText) {
+          text = r.plainText;
+        }
+      }
+      if (images.length > 0) {
+        await this.uploadAndInsert(images);
+        return;
+      }
+      if (text.length === 0) {
+        text = data.getPrimaryText() ?? '';
+      }
+      if (text.length > 0) {
         const c = this.activeClient();
         if (c !== null) {
           c.sendInput(text);
         }
       } else {
-        this.toast('剪贴板没有文本');
+        this.toast('剪贴板是空的');
       }
     } catch (e) {
-      this.toast('粘贴失败');
+      hilog.warn(DOMAIN, TAG, 'paste: %{public}s', `${e}`);
+      this.toast('粘贴失败: ' + e);
     }
+  }
+
+  private async packJpeg(pm: image.PixelMap): Promise<Uint8Array> {
+    const packer = image.createImagePacker();
+    try {
+      const buf: ArrayBuffer = await packer.packToData(pm, { format: 'image/jpeg', quality: 75 });
+      return new Uint8Array(buf);
+    } finally {
+      packer.release();
+    }
+  }
+
+  private async jpegFromFile(uri: string): Promise<Uint8Array> {
+    const f = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+    try {
+      const src = image.createImageSource(f.fd);
+      const pm = await src.createPixelMap();
+      const out = await this.packJpeg(pm);
+      pm.release();
+      src.release();
+      return out;
+    } finally {
+      fs.closeSync(f);
+    }
+  }
+
+  /// 多张保序上传，成功的链接换行拼好一次写进终端
+  private async uploadAndInsert(images: Uint8Array[]): Promise<void> {
+    const total: number = images.length;
+    this.toast(total === 1 ? '上传图片中…' : '正在上传 ' + total + ' 张…');
+    const urls: string[] = await Promise.all(images.map((d: Uint8Array, i: number): Promise<string> =>
+      Uploader.uploadImageData(d, 'image' + (i + 1) + '.jpg').catch((e: Object): string => {
+        hilog.warn(DOMAIN, TAG, 'image upload: %{public}s', `${e}`);
+        return '';
+      })));
+    const good: string[] = urls.filter((u: string) => u.length > 0);
+    if (good.length === 0) {
+      this.toast('图片上传失败');
+      return;
+    }
+    const c = this.activeClient();
+    if (c === null) {
+      this.toast('当前没有会话，链接没插进去');
+      return;
+    }
+    c.sendInput(good.join('\n'));
+    this.toast(good.length === total ? (total === 1 ? '已插入图片链接' : '已插入 ' + total + ' 个图片链接')
+      : good.length + '/' + total + ' 已插入，失败 ' + (total - good.length) + ' 张');
   }
 
   private async pickAndUploadImage(): Promise<void> {
     try {
       const picker = new photoAccessHelper.PhotoViewPicker();
-      const res = await picker.select({ MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE, maxSelectNumber: 1 });
+      const res = await picker.select({ MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE, maxSelectNumber: 9 });
       if (res.photoUris.length === 0) {
         return;
       }
-      this.toast('上传图片中…');
-      const url: string = await Uploader.uploadImage(res.photoUris[0], 'image.png');
-      const c = this.activeClient();
-      if (c !== null) {
-        c.sendInput(url);
+      const images: Uint8Array[] = [];
+      for (let i = 0; i < res.photoUris.length; i++) {
+        images.push(await this.jpegFromFile(res.photoUris[i]));
       }
+      await this.uploadAndInsert(images);
     } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'pick image: %{public}s', `${e}`);
       this.toast('图片上传失败: ' + e);
     }
   }
@@ -1720,6 +1855,304 @@ struct PadHome {
   }
 
   // ===========================================================================
+  // 浏览器（全屏，左侧栏 = 方案 C：[后台 | 原型] 分段）
+  //   后台 = store.pinned（带 Basic Auth，经 Mac 文件与 iOS / 手机同步）
+  //   原型 = prototype.douwantech.com 首页目录（ProtoCatalog），默认「最近更新」混排，
+  //          分区做筛选标签，支持搜索。Web 首开后常驻，关掉只隐藏保住页面。
+  // ===========================================================================
+
+  private openBrowser(): void {
+    if (this.mode === 'chat') {
+      this.closeChat();
+    }
+    this.hideKeyboard();
+    this.browserPinned = this.store.pinned.slice();
+    if (!this.browserOpened) {
+      const p = this.uiPrefs;
+      if (p !== null) {
+        this.browserSeg = (p.getSync('browserSeg', 'admin') as string) === 'proto' ? 'proto' : 'admin';
+        this.protoUser = p.getSync('protoUser', '') as string;
+        this.protoPass = p.getSync('protoPass', '') as string;
+      }
+      const cache: ProtoCache | null = ProtoCatalog.load(this.protoCachePath());
+      if (cache !== null) {
+        this.applyProtoCache(cache);
+      }
+      let first: string = p !== null ? p.getSync('browserLast', '') as string : '';
+      if (first.length === 0 && this.browserPinned.length > 0) {
+        first = this.browserPinned[0].url;
+      }
+      this.browserOpened = true;
+      if (first.length > 0) {
+        this.openInBrowser(first);
+      }
+    }
+    // 目录 10 分钟内拉过就不重拉（右下角可手动刷新）
+    if (Date.now() - this.protoFetchedAt > 600000) {
+      this.refreshProto();
+    }
+    this.mode = 'browser';
+  }
+
+  private closeBrowser(): void {
+    this.mode = 'terminal';
+    this.browserEditing = false;
+    this.focusTerm();
+  }
+
+  private setBrowserSeg(seg: string): void {
+    this.browserSeg = seg;
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('browserSeg', seg).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+  }
+
+  private protoCachePath(): string {
+    return this.filesDir() + '/proto_index.json';
+  }
+
+  private applyProtoCache(c: ProtoCache): void {
+    this.protoAll = c.items;
+    this.protoSections = c.sections;
+    this.protoFetchedAt = c.fetchedAt;
+    if (this.protoFilter.length > 0 && c.sections.indexOf(this.protoFilter) < 0) {
+      this.protoFilter = '';
+    }
+  }
+
+  private refreshProto(): void {
+    if (this.protoState === 'loading') {
+      return;
+    }
+    this.protoState = 'loading';
+    ProtoCatalog.fetch(this.protoUser, this.protoPass, (r: ProtoFetchResult, c: ProtoCache | null, msg: string) => {
+      if (r === 'ok' && c !== null) {
+        this.applyProtoCache(c);
+        ProtoCatalog.save(this.protoCachePath(), c);
+        this.protoState = 'ok';
+        this.protoMsg = '';
+      } else {
+        this.protoState = r;
+        this.protoMsg = msg;
+        hilog.warn(DOMAIN, TAG, 'proto fetch %{public}s: %{public}s', r, msg);
+      }
+    });
+  }
+
+  private saveProtoAuth(): void {
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('protoUser', this.protoUser).then((): Promise<void> => p.put('protoPass', this.protoPass))
+        .then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    this.sheet = 'none';
+    this.protoFetchedAt = 0;
+    this.refreshProto();
+    // 网页若正停在 401 上，带新账密重载
+    if (this.browserUrlText.indexOf(PROTO_HOST) >= 0) {
+      this.browserAuthTries.clear();
+      try { this.browserCtl.refresh(); } catch (e) { }
+    }
+  }
+
+  /// 侧栏「原型」当前要显示的列表：筛选分区 → 搜索 → 最近更新时按日期倒序
+  private protoVisible(): ProtoItem[] {
+    const q: string = this.protoQuery.trim().toLowerCase();
+    let arr: ProtoItem[] = this.protoAll.filter((it: ProtoItem) =>
+      (this.protoFilter.length === 0 || it.section === this.protoFilter) &&
+      (q.length === 0 || it.title.toLowerCase().indexOf(q) >= 0 || it.desc.toLowerCase().indexOf(q) >= 0 ||
+        it.section.toLowerCase().indexOf(q) >= 0));
+    if (this.protoFilter.length === 0) {
+      arr = arr.map((it: ProtoItem, i: number): ProtoSortRow => ({ it: it, i: i } as ProtoSortRow))
+        .sort((a: ProtoSortRow, b: ProtoSortRow) =>
+          a.it.updated === b.it.updated ? a.i - b.i : (a.it.updated < b.it.updated ? 1 : -1))
+        .map((r: ProtoSortRow): ProtoItem => r.it);
+    }
+    return arr;
+  }
+
+  /// 3 天内更新过的标「新」
+  private protoIsNew(updated: string): boolean {
+    if (updated.length < 10) {
+      return false;
+    }
+    const t: number = new Date(updated.substring(0, 10) + 'T00:00:00+08:00').getTime();
+    return !Number.isNaN(t) && Date.now() - t < 3 * 86400000;
+  }
+
+  private protoNewCount(): number {
+    return this.protoAll.filter((it: ProtoItem) => this.protoIsNew(it.updated)).length;
+  }
+
+  private sameUrl(a: string, b: string): boolean {
+    const strip = (u: string): string => u.replace(new RegExp('^https?://'), '').replace(new RegExp('/$'), '');
+    return a.length > 0 && b.length > 0 && strip(a) === strip(b);
+  }
+
+  private openInBrowser(url: string): void {
+    const u: string = BrowserUrl.normalize(url);
+    if (u.length === 0) {
+      return;
+    }
+    this.browserEditing = false;
+    this.browserUrlText = u;
+    this.browserCurUrl = u;
+    this.browserAuthTries.clear();
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('browserLast', u).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    if (!this.browserAttached) {
+      this.browserStartUrl = u;   // Web 还没挂上：挂上时 onControllerAttached 补载
+      return;
+    }
+    try {
+      this.browserCtl.loadUrl(u);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'browser load: %{public}s', `${e}`);
+    }
+  }
+
+  private deletePinned(i: number): void {
+    if (i < 0 || i >= this.store.pinned.length) {
+      return;
+    }
+    const t: PinnedTab = this.store.pinned[i];
+    this.getUIContext().showAlertDialog({
+      title: '删除后台',
+      message: '删除「' + (t.title.length > 0 ? t.title : t.url) + '」？',
+      primaryButton: {
+        value: '删除', fontColor: RED, action: () => {
+          this.store.pinned.splice(i, 1);
+          this.store.savePinned();
+          this.browserPinned = this.store.pinned.slice();
+        },
+      },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
+  /// 后台编辑器：i = -1 新增（默认填当前网页）
+  private openPinEditor(i: number): void {
+    if (i >= 0 && i < this.store.pinned.length) {
+      const t: PinnedTab = this.store.pinned[i];
+      this.peIdx = i;
+      this.peTitle = t.title;
+      this.peUrl = t.url;
+      this.peUser = t.authUser !== undefined ? t.authUser : '';
+      this.pePwd = t.authPassword !== undefined ? t.authPassword : '';
+    } else {
+      this.peIdx = -1;
+      let title: string = '';
+      let url: string = this.browserUrlText;
+      try {
+        if (this.browserAttached) {
+          const u: string = this.browserCtl.getUrl();
+          if (u.length > 0 && u !== 'about:blank') {
+            url = u;
+            title = this.browserCtl.getTitle();
+          }
+        }
+      } catch (e) {
+      }
+      this.peTitle = title;
+      this.peUrl = url === 'about:blank' ? '' : url;
+      this.peUser = '';
+      this.pePwd = '';
+    }
+    this.sheet = 'pinEdit';
+  }
+
+  private savePinEditor(): void {
+    const url: string = this.peUrl.trim();
+    if (url.length === 0) {
+      this.toast('网址不能为空');
+      return;
+    }
+    const item: PinnedTab = { title: this.peTitle.trim(), url: url } as PinnedTab;
+    if (this.peUser.length > 0) {
+      item.authUser = this.peUser;
+    }
+    if (this.pePwd.length > 0) {
+      item.authPassword = this.pePwd;
+    }
+    if (this.peIdx >= 0 && this.peIdx < this.store.pinned.length) {
+      this.store.pinned[this.peIdx] = item;
+    } else {
+      this.store.pinned.push(item);
+    }
+    this.store.savePinned();
+    this.browserPinned = this.store.pinned.slice();
+    this.sheet = 'none';
+    this.setBrowserSeg('admin');
+    this.openInBrowser(url);
+  }
+
+  private onBrowserNav(url: string, begin: boolean): void {
+    this.browserLoading = begin;
+    if (!this.browserEditing && url.length > 0 && url !== 'about:blank') {
+      this.browserUrlText = url;
+    }
+    if (!begin) {
+      this.browserAuthTries.clear();
+    }
+    try {
+      this.browserCanBack = this.browserCtl.accessBackward();
+      this.browserCanFwd = this.browserCtl.accessForward();
+    } catch (e) {
+    }
+  }
+
+  /// Basic Auth：原型站用原型账密；其它按 host 找后台里存的账密。每个 host 只自动应答一次防死循环
+  private browserAuth(host: string): string[] | null {
+    const n: number = this.browserAuthTries.get(host) ?? 0;
+    if (n >= 1) {
+      return null;
+    }
+    this.browserAuthTries.set(host, n + 1);
+    if (host === PROTO_HOST) {
+      return this.protoUser.length > 0 ? [this.protoUser, this.protoPass] : null;
+    }
+    return this.pinnedAuthFor(host);
+  }
+
+  private browserReloadOrStop(): void {
+    try {
+      if (this.browserLoading) {
+        this.browserCtl.stop();
+        this.browserLoading = false;
+      } else {
+        this.browserCtl.refresh();
+      }
+    } catch (e) {
+    }
+  }
+
+  onBackPress(): boolean {
+    if (this.sheet !== 'none') {
+      this.sheet = 'none';
+      return true;
+    }
+    if (this.mode === 'browser') {
+      try {
+        if (this.browserCtl.accessBackward()) {
+          this.browserCtl.backward();
+          return true;
+        }
+      } catch (e) {
+      }
+      this.closeBrowser();
+      return true;
+    }
+    if (this.mode === 'chat') {
+      this.closeChat();
+      return true;
+    }
+    return false;
+  }
+
+  // ===========================================================================
   // UI：通用小件
   // ===========================================================================
 
@@ -1972,6 +2405,15 @@ struct PadHome {
             .focusOnTouch(false).enableKeyboardOnFocus(this.kbWanted)
             .onChange((v: string) => this.onInput(v))
             .onSubmit(() => this.submitLine())
+            .onPaste((content: string, ev: PasteEvent) => {
+              // 外接键盘 Ctrl+V：剪贴板是图片时文本为空，改走图床上传
+              if (content.length === 0) {
+                if (ev.preventDefault) {
+                  ev.preventDefault();
+                }
+                this.pasteClipboard();
+              }
+            })
             .onKeyEvent((e: KeyEvent) => this.onHwKey(e))
         }
         .width('100%').height('100%').padding(6).backgroundColor(TERM)
@@ -2044,10 +2486,442 @@ struct PadHome {
   }
 
   // ===========================================================================
+  // UI：浏览器（全屏）
+  // ===========================================================================
+
+  private browserLockIcon(): Resource {
+    const u: string = this.browserUrlText;
+    if (u.startsWith('https://')) {
+      return $r('sys.symbol.lock_fill');
+    } else if (u.startsWith('http://')) {
+      return $r('sys.symbol.exclamationmark_triangle_fill');
+    } else if (u.startsWith('file://')) {
+      return $r('sys.symbol.doc_text');
+    }
+    return $r('sys.symbol.discover');
+  }
+
+  private hostOf(url: string): string {
+    const m = url.match(new RegExp('^https?://([^/]+)'));
+    return m !== null ? m[1] : url;
+  }
+
+  @Builder
+  browserSegBtn(label: string, seg: string) {
+    Row({ space: 5 }) {
+      Text(label).fontSize(13)
+        .fontWeight(this.browserSeg === seg ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.browserSeg === seg ? '#F2F2F2' : SUB)
+      // 数量在里面直接读 @State（@Builder 基本类型参数按值传，不会跟着刷新）
+      Text((seg === 'admin' ? this.browserPinned.length : this.protoAll.length).toString()).fontSize(11).fontFamily(MONO)
+        .fontColor(this.browserSeg === seg ? '#B0FFFFFF' : DIM)
+    }
+    .layoutWeight(1).height(30).justifyContent(FlexAlign.Center).borderRadius(8)
+    .backgroundColor(this.browserSeg === seg ? '#24FFFFFF' : Color.Transparent)
+    .onClick(() => this.setBrowserSeg(seg))
+  }
+
+  @Builder
+  adminMenu(i: number) {
+    Menu() {
+      MenuItem({ content: '编辑' }).onClick(() => this.openPinEditor(i))
+      MenuItem({ content: '删除' }).onClick(() => this.deletePinned(i))
+    }
+  }
+
+  @Builder
+  adminList() {
+    if (this.browserPinned.length === 0) {
+      Column({ space: 8 }) {
+        Text('还没有后台').fontSize(13).fontColor(SUB)
+        Text('打开网页后点右上角 + 钉住').fontSize(12).fontColor(DIM)
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List({ space: 2 }) {
+        ForEach(this.browserPinned, (t: PinnedTab, i: number) => {
+          ListItem() {
+            Row({ space: 10 }) {
+              Stack() {
+                Text((t.title.length > 0 ? t.title : this.hostOf(t.url)).substring(0, 1).toUpperCase())
+                  .fontSize(13).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+              }
+              .width(30).height(30).borderRadius(8)
+              .linearGradient({ angle: 135, colors: [[GRADS[i % GRADS.length][0], 0], [GRADS[i % GRADS.length][1], 1]] })
+              Column({ space: 1 }) {
+                Text(t.title.length > 0 ? t.title : this.hostOf(t.url)).fontSize(14).fontColor(FG)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(this.hostOf(t.url)).fontSize(10.5).fontFamily(MONO).fontColor(DIM)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (t.authUser !== undefined && t.authUser.length > 0) {
+                SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(10).fontColor(['#4A515C'])
+              }
+            }
+            .width('100%').height(50).padding({ left: 10, right: 10 }).borderRadius(10)
+            .backgroundColor(this.sameUrl(this.browserCurUrl, t.url) ? this.tint(TEAL, '1F') : Color.Transparent)
+            .onClick(() => this.openInBrowser(t.url))
+          }
+          .bindContextMenu(this.adminMenu(i), ResponseType.LongPress)
+        }, (t: PinnedTab, i: number) => i + '_' + t.url + '_' + t.title + '_' +
+          (this.sameUrl(this.browserCurUrl, t.url) ? 1 : 0))
+      }
+      .layoutWeight(1).width('100%').padding({ left: 8, right: 8, top: 4 }).scrollBar(BarState.Off)
+    }
+  }
+
+  @Builder
+  protoChip(label: string, filter: string) {
+    Text(label).fontSize(12).maxLines(1)
+      .fontColor(this.protoFilter === filter ? '#D9D8FF' : SUB)
+      .height(26).padding({ left: 11, right: 11 }).borderRadius(13)
+      .backgroundColor(this.protoFilter === filter ? this.tint(C_REST, '38') : '#0FFFFFFF')
+      .onClick(() => { this.protoFilter = filter; })
+  }
+
+  @Builder
+  protoList() {
+    Row({ space: 6 }) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(13).fontColor([DIM])
+      TextInput({ text: this.protoQuery, placeholder: '搜索原型' })
+        .id('protoSearch')
+        .layoutWeight(1).height(30).fontSize(13).fontColor(FG).placeholderColor(DIM)
+        .backgroundColor(Color.Transparent).caretColor(TEAL).padding({ left: 0, right: 0 })
+        .onChange((v: string) => { this.protoQuery = v; })
+      if (this.protoQuery.length > 0) {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(12).fontColor([DIM])
+          .onClick(() => { this.protoQuery = ''; })
+      }
+    }
+    .height(32).margin({ left: 10, right: 10, top: 2 }).padding({ left: 10, right: 8 })
+    .borderRadius(8).backgroundColor(PANEL3)
+
+    // 分区筛选：一行横滑，不换行挤成一坨
+    Scroll() {
+      Row({ space: 6 }) {
+        this.protoChip('最近更新', '')
+        ForEach(this.protoSections, (s: string) => {
+          this.protoChip(s, s)
+        }, (s: string) => s + '_' + (this.protoFilter === s ? 1 : 0))
+      }
+      .padding({ left: 10, right: 10 })
+    }
+    .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+    .width('100%').height(28).margin({ top: 10, bottom: 6 }).align(Alignment.Start)
+
+    if (this.protoAll.length === 0) {
+      Column({ space: 10 }) {
+        if (this.protoState === 'loading') {
+          LoadingProgress().width(22).height(22).color(DIM)
+          Text('正在拉取原型目录…').fontSize(12).fontColor(DIM)
+        } else if (this.protoState === 'noauth') {
+          SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(22).fontColor(['#4A515C'])
+          Text(this.protoMsg).fontSize(13).fontColor(SUB)
+          Text('填写原型站账号').fontSize(13).fontColor(TEAL)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
+            .border({ width: 1, color: this.tint(TEAL, '66') })
+            .onClick(() => { this.sheet = 'protoAuth'; })
+        } else {
+          Text(this.protoMsg.length > 0 ? this.protoMsg : '还没有原型目录').fontSize(12).fontColor(DIM)
+            .textAlign(TextAlign.Center).padding({ left: 16, right: 16 })
+          Text('重试').fontSize(13).fontColor(TEAL).onClick(() => this.refreshProto())
+        }
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List({ space: 4 }) {
+        ForEach(this.protoVisible(), (it: ProtoItem) => {
+          ListItem() {
+            Column({ space: 3 }) {
+              Text(it.title).fontSize(13).fontColor('#E3E8ED').maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              if (this.protoFilter.length > 0 && it.desc.length > 0) {
+                Text(it.desc).fontSize(11).fontColor(DIM).maxLines(2).lineHeight(16)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              Row({ space: 6 }) {
+                if (this.protoIsNew(it.updated)) {
+                  Text('新').fontSize(9).fontWeight(FontWeight.Bold).fontColor('#1A1206')
+                    .padding({ left: 4, right: 4 }).height(15).borderRadius(4).backgroundColor(C_WAIT)
+                }
+                Text((it.updated.length >= 10 ? it.updated.substring(5, 10) : '') +
+                  (this.protoFilter.length === 0 ? '  ·  ' + it.section : ''))
+                  .fontSize(10.5).fontFamily(MONO).fontColor('#5A636E')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+              }
+              .width('100%')
+            }
+            .alignItems(HorizontalAlign.Start).width('100%')
+            .padding({ left: 11, right: 11, top: 9, bottom: 9 }).borderRadius(9)
+            .backgroundColor(this.sameUrl(this.browserCurUrl, it.url) ? this.tint(C_REST, '24') : '#09FFFFFF')
+            .border(this.sameUrl(this.browserCurUrl, it.url)
+              ? { width: 1, color: this.tint(C_REST, '73') } : { width: 1, color: Color.Transparent })
+            .onClick(() => this.openInBrowser(it.url))
+          }
+        }, (it: ProtoItem) => it.url + '_' + it.updated + '_' + this.protoFilter + '_' +
+          (this.sameUrl(this.browserCurUrl, it.url) ? 1 : 0))
+      }
+      .layoutWeight(1).width('100%').padding({ left: 8, right: 8, top: 4 }).scrollBar(BarState.Off)
+    }
+  }
+
+  private protoFooter(): string {
+    if (this.protoState === 'loading') {
+      return '更新中…';
+    }
+    if (this.protoFetchedAt <= 0) {
+      return '';
+    }
+    const d = new Date(this.protoFetchedAt);
+    const hm: string = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    const fail: string = (this.protoState === 'noauth' || this.protoState === 'error') ? ' · 刷新失败' : '';
+    return this.protoAll.length + ' 页 · ' + hm + ' 更新' + fail;
+  }
+
+  @Builder
+  browserSidebar() {
+    Column() {
+      Row({ space: 2 }) {
+        this.browserSegBtn('后台', 'admin')
+        this.browserSegBtn('原型', 'proto')
+      }
+      .padding(2).margin({ left: 10, right: 10, top: 10, bottom: 6 }).borderRadius(10).backgroundColor('#0DFFFFFF')
+
+      if (this.browserSeg === 'admin') {
+        this.adminList()
+      } else {
+        this.protoList()
+      }
+
+      Row({ space: 6 }) {
+        if (this.browserSeg === 'proto') {
+          Text(this.protoFooter()).fontSize(11).fontFamily(MONO).fontColor(DIM).layoutWeight(1)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.iconBtn($r('sys.symbol.person'), SUB, 14, () => { this.sheet = 'protoAuth'; })
+          this.iconBtn($r('sys.symbol.arrow_clockwise'), SUB, 14, () => this.refreshProto())
+        } else {
+          Text('长按编辑 · 与 iOS / 手机同步').fontSize(11).fontColor(DIM).layoutWeight(1)
+          this.iconBtn($r('sys.symbol.plus'), TEAL, 15, () => this.openPinEditor(-1))
+        }
+      }
+      .width('100%').height(40).padding({ left: 14, right: 6 })
+      .border({ width: { top: 1 }, color: HAIR })
+    }
+    .width(this.winW >= 1000 ? 290 : 260).height('100%').backgroundColor('#121418')
+  }
+
+  @Builder
+  browserView() {
+    Column() {
+      // 顶栏：侧栏开关 ← → [锁 网址 刷新] + ×
+      Row({ space: 4 }) {
+        this.iconBtn(this.browserSide ? $r('sys.symbol.close_sidebar') : $r('sys.symbol.open_sidebar'), this.browserSide ? TEAL : SUB, 17,
+          () => { this.browserSide = !this.browserSide; })
+        this.iconBtn($r('sys.symbol.chevron_left'), this.browserCanBack ? FG : '#3A4048', 16, () => {
+          try { if (this.browserCtl.accessBackward()) { this.browserCtl.backward(); } } catch (e) { }
+        })
+        this.iconBtn($r('sys.symbol.chevron_right'), this.browserCanFwd ? FG : '#3A4048', 16, () => {
+          try { if (this.browserCtl.accessForward()) { this.browserCtl.forward(); } } catch (e) { }
+        })
+        Row({ space: 6 }) {
+          if (this.browserLoading) {
+            LoadingProgress().width(14).height(14).color(DIM)
+          } else {
+            SymbolGlyph(this.browserLockIcon()).fontSize(12)
+              .fontColor([this.browserUrlText.startsWith('http://') ? C_WAIT : DIM])
+          }
+          TextInput({ text: this.browserUrlText, placeholder: '搜索或输入网址' })
+            .id('browserUrl')
+            .layoutWeight(1).height(32).fontSize(13).fontColor(FG).placeholderColor(DIM)
+            .backgroundColor(Color.Transparent).caretColor(TEAL).padding({ left: 0, right: 0 })
+            .type(InputType.URL).enterKeyType(EnterKeyType.Go)
+            .textAlign(this.browserEditing ? TextAlign.Start : TextAlign.Center)
+            .selectAll(true)
+            .onEditChange((editing: boolean) => { this.browserEditing = editing; })
+            .onChange((v: string) => { this.browserUrlText = v; })
+            .onSubmit(() => this.openInBrowser(this.browserUrlText))
+          Stack() {
+            SymbolGlyph(this.browserLoading ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_clockwise'))
+              .fontSize(13).fontColor([SUB])
+          }
+          .width(28).height(28).borderRadius(14)
+          .onClick(() => this.browserReloadOrStop())
+        }
+        .layoutWeight(1).height(34).padding({ left: 12, right: 4 }).margin({ left: 4, right: 4 })
+        .borderRadius(17).backgroundColor(PANEL3)
+        this.iconBtn($r('sys.symbol.plus'), TEAL, 16, () => this.openPinEditor(-1))
+        this.iconBtn($r('sys.symbol.xmark'), SUB, 16, () => this.closeBrowser())
+      }
+      .width('100%').height(48).padding({ left: 8, right: 8 })
+      .border({ width: { bottom: 1 }, color: HAIR })
+
+      Row() {
+        if (this.browserSide) {
+          this.browserSidebar()
+          Row().width(1).height('100%').backgroundColor(HAIR)
+        }
+        Stack({ alignContent: Alignment.Top }) {
+          Web({ src: this.browserStartUrl, controller: this.browserCtl })
+            .javaScriptAccess(true).domStorageAccess(true).fileAccess(true).imageAccess(true)
+            .mixedMode(MixedMode.All).zoomAccess(true).overviewModeAccess(true)
+            .multiWindowAccess(false)
+            .width('100%').height('100%').backgroundColor('#FFFFFF')
+            .onControllerAttached(() => {
+              this.browserAttached = true;
+              if (this.browserStartUrl !== 'about:blank') {
+                try {
+                  if (this.browserCtl.getUrl() !== this.browserStartUrl) {
+                    this.browserCtl.loadUrl(this.browserStartUrl);
+                  }
+                } catch (e) {
+                }
+              }
+            })
+            .onPageBegin((e) => { if (e) { this.onBrowserNav(e.url, true); } })
+            .onPageEnd((e) => { if (e) { this.onBrowserNav(e.url, false); } })
+            .onProgressChange((e) => {
+              if (e) {
+                this.browserProgress = e.newProgress;
+                if (e.newProgress >= 100) {
+                  this.browserLoading = false;
+                }
+              }
+            })
+            .onHttpAuthRequest((event) => {
+              if (event) {
+                const cred: string[] | null = this.browserAuth(event.host);
+                if (cred !== null) {
+                  event.handler.confirm(cred[0], cred[1]);
+                } else {
+                  event.handler.cancel();
+                  if (event.host === PROTO_HOST) {
+                    this.sheet = 'protoAuth';
+                  }
+                }
+              }
+              return true;
+            })
+
+          if (this.browserLoading && this.browserProgress < 100) {
+            Row().width(`${Math.max(4, this.browserProgress)}%`).height(2).backgroundColor(TEAL)
+              .position({ x: 0, y: 0 })
+          }
+
+          if (this.browserCurUrl.length === 0) {
+            Column({ space: 12 }) {
+              SymbolGlyph($r('sys.symbol.rectangle_stack')).fontSize(38).fontColor(['#4A515C'])
+              Text('从左侧选一个后台或原型').fontSize(14).fontColor(SUB)
+              Text('也可以在地址栏直接输入网址').fontSize(12).fontColor(DIM)
+            }
+            .width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor('#101216')
+          }
+        }
+        .layoutWeight(1).height('100%')
+      }
+      .layoutWeight(1).width('100%')
+    }
+    .width('100%').height('100%').backgroundColor(PANEL2)
+  }
+
+  @Builder
+  pinEditBody() {
+    Column() {
+      this.sectionHeader('名称（可空，会用网址）')
+      TextInput({ text: this.peTitle, placeholder: '名称' })
+        .fontSize(14).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+        .onChange((v: string) => { this.peTitle = v; })
+      this.sectionHeader('网址')
+      TextInput({ text: this.peUrl, placeholder: '如 xxx-admin.douwantech.com/admin' })
+        .fontSize(14).type(InputType.URL).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+        .onChange((v: string) => { this.peUrl = v; })
+      this.sectionHeader('HTTP Basic 账密（可空）')
+      Row({ space: 8 }) {
+        TextInput({ text: this.peUser, placeholder: '用户名' })
+          .layoutWeight(1).fontSize(14).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+          .onChange((v: string) => { this.peUser = v; })
+        TextInput({ text: this.pePwd, placeholder: '密码' })
+          .layoutWeight(1).fontSize(14).type(InputType.Password).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+          .onChange((v: string) => { this.pePwd = v; })
+      }.width('100%')
+      Blank()
+      Button('保存').fontSize(14).width('100%').height(40)
+        .backgroundColor(TEAL).fontColor('#0B0C0E').margin({ top: 16, bottom: 20 })
+        .onClick(() => this.savePinEditor())
+    }
+    .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  protoAuthBody() {
+    Column() {
+      Text('prototype.douwantech.com 整站有账号密码门禁。只存在这台平板上。')
+        .fontSize(12).fontColor(DIM).width('100%').margin({ top: 14 })
+      this.sectionHeader('用户名')
+      TextInput({ text: this.protoUser, placeholder: '用户名' })
+        .fontSize(14).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+        .onChange((v: string) => { this.protoUser = v; })
+      this.sectionHeader('密码')
+      TextInput({ text: this.protoPass, placeholder: '密码' })
+        .fontSize(14).type(InputType.Password).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+        .onChange((v: string) => { this.protoPass = v; })
+      Blank()
+      Button('保存并刷新目录').fontSize(14).width('100%').height(40)
+        .backgroundColor(TEAL).fontColor('#0B0C0E').margin({ top: 16, bottom: 20 })
+        .onClick(() => this.saveProtoAuth())
+    }
+    .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).alignItems(HorizontalAlign.Start)
+  }
+
+  // ===========================================================================
+  // UI：右侧浮动切换钮 —— 终端 ⇄ 浏览器（同 iOS FloatingDockBar，可上下拖动并记住位置）
+  // ===========================================================================
+
+  private readonly FAB: number = 50;
+
+  private fabTop(): number {
+    const minY: number = this.topInset + 60;
+    const maxY: number = this.winH - this.botInset - this.FAB - 80;
+    const y: number = this.fabY < 0 ? this.winH * 0.42 : this.fabY;
+    return Math.max(minY, Math.min(maxY, y));
+  }
+
+  @Builder
+  floatingSwitch() {
+    Stack() {
+      Image(this.mode === 'browser' ? $r('app.media.tool_terminal') : $r('app.media.tool_globe'))
+        .width(22).height(22).objectFit(ImageFit.Contain).draggable(false)
+    }
+    .width(this.FAB).height(this.FAB).borderRadius(this.FAB / 2)
+    .backgroundColor(this.mode === 'browser' ? '#F2182A2E' : '#F21A1D23')
+    .border({ width: 1, color: this.mode === 'browser' ? this.tint(TEAL, '80') : '#33FFFFFF' })
+    .shadow({ radius: 18, color: '#99000000', offsetY: 4 })
+    .stateStyles({ pressed: { .opacity(0.7) }, normal: { .opacity(1) } })
+    .position({ x: this.winW - this.FAB - 14, y: this.fabTop() })
+    .onClick(() => {
+      if (this.mode === 'browser') {
+        this.closeBrowser();
+      } else {
+        this.openBrowser();
+      }
+    })
+    .gesture(
+      PanGesture({ direction: PanDirection.Vertical, distance: 6 })
+        .onActionStart(() => { this.fabDragBase = this.fabTop(); })
+        .onActionUpdate((e: GestureEvent) => { this.fabY = this.fabDragBase + e.offsetY; })
+        .onActionEnd(() => {
+          this.fabY = this.fabTop();
+          const p = this.uiPrefs;
+          if (p !== null) {
+            p.put('fabY', this.fabY).then((): Promise<void> => p.flush()).catch(() => {});
+          }
+        })
+    )
+  }
+
+  // ===========================================================================
   // 底部 dock —— 严格按 iOS VoiceInputView 的布局（同手机版鸿蒙 bottomDock）：
   //   第一行：功能/键盘 分段 + 工具药丸（funcTools / keyToolsRow1）
   //   第二行：功能组 = 对话记录钮 + 按住说话条；键盘组 = keyToolsRow2
-  // 平板左侧已有机器栏、没有内置浏览器，去掉 iOS 的 browser / desktop 两个药丸。
+  // 平板去掉 iOS 的 desktop / browser 药丸；浏览器改由右侧浮动按钮切换（floatingSwitch）。
   // ===========================================================================
 
   private switchToolsGroup(idx: number): void {
@@ -2455,6 +3329,10 @@ struct PadHome {
       return '机器';
     } else if (this.sheet === 'workDirs') {
       return '工作目录';
+    } else if (this.sheet === 'pinEdit') {
+      return this.peIdx >= 0 ? '编辑后台' : '钉住到后台';
+    } else if (this.sheet === 'protoAuth') {
+      return '原型站账号';
     }
     return '';
   }
@@ -2463,7 +3341,7 @@ struct PadHome {
   sheetDialog() {
     Stack() {
       Column().width('100%').height('100%').backgroundColor('#99000000')
-        .onClick(() => { this.sheet = 'none'; this.focusTerm(); })
+        .onClick(() => { this.sheet = 'none'; if (this.mode !== 'browser') { this.focusTerm(); } })
       Column() {
         Row() {
           Text(this.sheetTitle()).fontSize(17).fontWeight(FontWeight.Bold).fontColor(FG).layoutWeight(1)
@@ -2471,7 +3349,7 @@ struct PadHome {
             Text('发送历史').fontSize(13).fontColor(TEAL).margin({ right: 14 })
               .onClick(() => { this.sheet = 'history'; })
           }
-          this.iconBtn($r('sys.symbol.xmark'), SUB, 15, () => { this.sheet = 'none'; this.focusTerm(); })
+          this.iconBtn($r('sys.symbol.xmark'), SUB, 15, () => { this.sheet = 'none'; if (this.mode !== 'browser') { this.focusTerm(); } })
         }
         .width('100%').height(52).padding({ left: 20, right: 10 })
         Row().width('100%').height(1).backgroundColor(HAIR)
@@ -2492,10 +3370,14 @@ struct PadHome {
           this.machinesBody()
         } else if (this.sheet === 'workDirs') {
           this.workDirsBody()
+        } else if (this.sheet === 'pinEdit') {
+          this.pinEditBody()
+        } else if (this.sheet === 'protoAuth') {
+          this.protoAuthBody()
         }
       }
       .width(Math.min(600, this.winW * 0.9))
-      .height(this.sheet === 'claude' || this.sheet === 'favorites' || this.sheet === 'history' ? '70%' : '82%')
+      .height(this.sheet === 'pinEdit' || this.sheet === 'protoAuth' ? 440 : (this.sheet === 'claude' || this.sheet === 'favorites' || this.sheet === 'history' ? '70%' : '82%'))
       .borderRadius(16).backgroundColor(PANEL).border({ width: 1, color: HAIR2 })
       .shadow({ radius: 40, color: '#80000000', offsetY: 12 })
       .clip(true)
@@ -2805,6 +3687,22 @@ struct PadHome {
         }
         .width('100%').height('100%')
       }
+      // 浏览器：全屏盖住整个界面（同 iOS 模态）；首开后常驻，关掉只隐藏保住页面
+      if (this.browserOpened) {
+        Column() {
+          Row().width('100%').height(this.topInset).backgroundColor(PANEL2)
+          Column() {
+            this.browserView()
+          }
+          .layoutWeight(1).width('100%')
+          Row().width('100%').height(this.kbHeight > 0 ? 0 : this.botInset).backgroundColor(PANEL2)
+        }
+        .width('100%').height('100%').backgroundColor(PANEL2)
+        .visibility(this.mode === 'browser' ? Visibility.Visible : Visibility.Hidden)
+      }
+      if (this.storeReady) {
+        this.floatingSwitch()
+      }
       if (this.sheet !== 'none') {
         this.sheetDialog()
       }
@@ -2817,6 +3715,10 @@ struct PadHome {
       const w: number = n.width as number;
       if (w > 0 && Math.abs(w - this.winW) > 1) {
         this.winW = w;
+      }
+      const h: number = n.height as number;
+      if (h > 0 && Math.abs(h - this.winH) > 1) {
+        this.winH = h;
       }
     })
   }
