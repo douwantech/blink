@@ -2361,14 +2361,19 @@ extension SpaceController {
   private func _sortTabsByMachineAndDir() {
     let machineOrder = Dictionary(uniqueKeysWithValues:
       BlinkMachineStore.shared.machines.enumerated().map { ($0.element.id, $0.offset) })
-    let workDirOrder = Dictionary(uniqueKeysWithValues:
-      BlinkWorkDirStore.shared.workDirs.enumerated().map { ($0.element.id, $0.offset) })
-
     // 助手 workDir 永远排在每个机器组的最前面
     let assistantWdId = BlinkWorkDirStore.assistantWorkDirId
-    func dkey(_ wd: String?) -> Int {
-      if wd == assistantWdId { return -1 }
-      return wd.flatMap { workDirOrder[$0] } ?? Int.max
+
+    // 同一台机器内跟 macOS 版侧栏一致：按 cc 标题（员工-项目）的 (项目, 员工) 排序。
+    // owner = 第一个 "-" 之前，project = 之后（jack-talkai → jack / talkai），同 mac Session.owner/project。
+    let machinesById = Dictionary(uniqueKeysWithValues: BlinkMachineStore.shared.machines.map { ($0.id, $0) })
+    func projectOwner(_ p: MCPParams?) -> (String, String) {
+      guard let p, let mid = p.machineId, let m = machinesById[mid] else { return ("", "") }
+      let name = BlinkMachineStore.ccTitle(machine: m, workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+      let parts = name.split(separator: "-", maxSplits: 1)
+      let owner = parts.first.map(String.init) ?? name
+      let project = parts.count > 1 ? String(parts[1]) : name
+      return (project, owner)
     }
 
     let indexed = _viewportsKeys.enumerated().map { (offset: $0.offset, key: $0.element) }
@@ -2378,10 +2383,13 @@ extension SpaceController {
       let mka = ta.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
       let mkb = tb.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
       if mka != mkb { return mka < mkb }
-      let dka = dkey(ta.mcpParams?.workDirId)
-      let dkb = dkey(tb.mcpParams?.workDirId)
-      if dka != dkb { return dka < dkb }
-      return a.offset < b.offset  // 同组内保持原序
+      let assistA = ta.mcpParams?.workDirId == assistantWdId
+      let assistB = tb.mcpParams?.workDirId == assistantWdId
+      if assistA != assistB { return assistA }   // 助手 tab 仍钉在每台机器最前
+      let poa = projectOwner(ta.mcpParams)
+      let pob = projectOwner(tb.mcpParams)
+      if poa != pob { return poa < pob }
+      return a.offset < b.offset  // 完全同名时保持原序
     }.map { $0.key }
     if sorted == _viewportsKeys { return }
     _viewportsKeys = sorted
