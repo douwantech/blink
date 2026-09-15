@@ -1,11 +1,12 @@
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 
 // Tiny cross-process bridge. The VpnExtensionAbility (which owns the Go core)
 // writes the latest Tailscale status JSON to a file in the app sandbox; the UI
 // process reads it. They are separate processes, so they cannot share the Go
 // singleton directly — this file is the shared channel.
 //
-// JSON is ASCII (backend state, IPs, auth URL), so a byte→char decode is safe.
+// 状态里可能带中文失败原因（VPN 扩展写入），按 UTF-8 解码。
 const FILE = 'ts_status.json';
 // Small facts learned only after login are persisted separately so they survive
 // extension restarts and are never clobbered by a transient empty status. The
@@ -52,10 +53,7 @@ export class StatusStore {
       const len = fs.readSync(f.fd, buf);
       fs.closeSync(f);
       const bytes = new Uint8Array(buf, 0, len);
-      let s = '';
-      for (let i = 0; i < bytes.length; i++) {
-        s += String.fromCharCode(bytes[i]);
-      }
+      const s: string = util.TextDecoder.create('utf-8').decodeToString(bytes);
       return s.trim();
     } catch (e) {
       return '';
@@ -111,10 +109,7 @@ export class StatusStore {
       const len = fs.readSync(f.fd, buf);
       fs.closeSync(f);
       const bytes = new Uint8Array(buf, 0, len);
-      let s = '';
-      for (let i = 0; i < bytes.length; i++) {
-        s += String.fromCharCode(bytes[i]);
-      }
+      const s: string = util.TextDecoder.create('utf-8').decodeToString(bytes);
       return s;
     } catch (e) {
       return '{}';

@@ -58,7 +58,7 @@ const TS_V6_RANGE = 'fd7a:115c:a1e0::';
  *      TailscaleCore.updateTun(fd)  → restart the core onto the real system tun
  *      (login persists via the state dir, so no re-auth)
  */
-export default class TailscaleVpnAbility extends VpnExtensionAbility {
+export default class PadVpnAbility extends VpnExtensionAbility {
   async onCreate(want: Want): Promise<void> {
     hilog.info(DOMAIN, TAG, 'VpnExtensionAbility onCreate');
     const p = (want.parameters ?? {}) as Record<string, Object>;

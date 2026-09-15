@@ -78,6 +78,7 @@ struct BlinkTerminal {
   // tailscale transport
   @State tsState: string = '';
   @State tsIP: string = '';
+  private tsError: string = '';       // VPN 扩展写进状态文件的失败原因
   private lastTsNote: string = '';   // 上次写进终端的 tailscale 状态，去重防刷屏
   @State tsConnected: boolean = false;
   @State authKey: string = '';
@@ -307,6 +308,8 @@ struct BlinkTerminal {
       line = '\u001b[33m⚠ tailscale 已停止，正在重连…\u001b[0m';
     } else if (state === 'NeedsLogin' || state === 'NoState') {
       line = '\u001b[33m⚠ tailscale 需要登录，去设置里填 auth key\u001b[0m';
+    } else if (state === 'VpnFailed') {
+      line = '\u001b[31m✗ ' + (this.tsError.length > 0 ? this.tsError : 'VPN 启动失败') + '，正在重试…\u001b[0m';
     } else if (state === 'start failed') {
       line = '\u001b[31m✗ tailscale 启动失败\u001b[0m';
     } else {
@@ -463,6 +466,8 @@ struct BlinkTerminal {
         this.tsState = state ? state : 'Starting';
         const ips = j['tailscaleIPs'] as string[];
         this.tsIP = (ips && ips.length > 0) ? ips[0] : '';
+        const errS = j['error'] as string;
+        this.tsError = errS ? errS : '';
         // tailscale 状态变化时写一行到终端：VPN 没通时 blinkd 不会 attach，
         // 不提示的话用户根本不知道是卡在 VPN 还是卡在 blinkd。
         this.noteTsState(this.tsState);
@@ -742,12 +747,21 @@ struct BlinkTerminal {
     try {
       const st = fs.statSync(StatusStore.path(this.filesDir()));
       const age: number = Date.now() - st.mtime * 1000;
-      if (age > 8000 && Date.now() - this.lastVpnKick > 15000) {
+      // 扩展报告了启动失败（VpnFailed）时它自己在退避重试（最长 60s 一轮），别当成卡死去重拉
+      const staleMs: number = this.tsState === 'VpnFailed' ? 90000 : 8000;
+      if (age > staleMs && Date.now() - this.lastVpnKick > 15000) {
         this.lastVpnKick = Date.now();
         this.tsState = 'Restarting VPN';
         hilog.warn(DOMAIN, TAG, 'ts status stale %{public}d ms, restarting vpn ext', age);
-        vpnExtension.startVpnExtensionAbility(this.buildWant()).catch((e: Object) => {
-          hilog.error(DOMAIN, TAG, 'vpn rekick: %{public}s', JSON.stringify(e));
+        // 先 stop 再 start：扩展进程若还活着（比如 onCreate 里失败了），单纯 start 只会触发
+        // onRequest，onCreate 不会重跑，状态文件永远不更新 → 每 15s 误判一次死循环。
+        const want: Want = this.buildWant();
+        vpnExtension.stopVpnExtensionAbility(want).catch((): void => {}).finally((): void => {
+          setTimeout(() => {
+            vpnExtension.startVpnExtensionAbility(this.buildWant()).catch((e: Object) => {
+              hilog.error(DOMAIN, TAG, 'vpn rekick: %{public}s', JSON.stringify(e));
+            });
+          }, 800);
         });
         // 旧 tun 上的连接全成了半开死链（state 还挂着 connected 但永远收不到
         // 数据），attach 会以为活着而跳过。主动断开，让它们在新 tun 上重拨。

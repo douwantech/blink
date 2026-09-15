@@ -1,26 +1,24 @@
 {
   "module": {
-    "name": "entry",
+    "name": "pad",
     "type": "entry",
-    "description": "Tailscale for HarmonyOS Next",
-    "mainElement": "EntryAbility",
-    "deviceTypes": ["phone"],
+    "description": "Blink Pad — 平板大屏版",
+    "mainElement": "PadAbility",
+    "deviceTypes": ["tablet"],
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
     "abilities": [
       {
-        "name": "EntryAbility",
-        "srcEntry": "./ets/entryability/EntryAbility.ets",
-        "description": "Tailscale",
+        "name": "PadAbility",
+        "srcEntry": "./ets/padability/PadAbility.ets",
+        "description": "Blink Pad",
         "icon": "$media:layered_image",
-        "label": "$string:app_name",
+        "label": "$string:pad_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
-        // Continuous task keeps THIS (main UIAbility) process alive in the
-        // background; the VpnExtensionAbility's lifetime is anchored to it, so the
-        // VPN survives leaving the app. dataTransfer is the closest mode to a VPN.
+        // 同手机版：长时任务保住主进程，VPN 扩展的生命周期挂在它上面
         "backgroundModes": ["dataTransfer"],
         "skills": [
           {
@@ -32,8 +30,8 @@
     ],
     "extensionAbilities": [
       {
-        "name": "TailscaleVpnAbility",
-        "srcEntry": "./ets/vpnability/TailscaleVpnAbility.ets",
+        "name": "PadVpnAbility",
+        "srcEntry": "./ets/vpnability/PadVpnAbility.ets",
         "description": "Tailscale VPN tunnel",
         "type": "vpn",
         "exported": false
@@ -43,22 +41,22 @@
       {
         "name": "ohos.permission.INTERNET",
         "reason": "$string:perm_internet",
-        "usedScene": { "abilities": ["TailscaleVpnAbility"], "when": "always" }
+        "usedScene": { "abilities": ["PadVpnAbility"], "when": "always" }
       },
       {
         "name": "ohos.permission.GET_NETWORK_INFO",
         "reason": "$string:perm_netinfo",
-        "usedScene": { "abilities": ["TailscaleVpnAbility"], "when": "always" }
+        "usedScene": { "abilities": ["PadVpnAbility"], "when": "always" }
       },
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
         "reason": "$string:perm_internet",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+        "usedScene": { "abilities": ["PadAbility"], "when": "always" }
       },
       {
         "name": "ohos.permission.MICROPHONE",
         "reason": "$string:perm_mic",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+        "usedScene": { "abilities": ["PadAbility"], "when": "inuse" }
       }
     ]
   }
