@@ -3,20 +3,26 @@ import AppKit
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
+    /// 浏览器占满顶栏以下整块（和鸿蒙平板一样全屏），关掉回终端；⌘B / 顶栏地球按钮切换
+    @AppStorage("BrowserPanel.open") private var showBrowser = false
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar()
+            TopBar(showBrowser: $showBrowser)
             Divider().overlay(Theme.hair)
-            HStack(spacing: 0) {
-                MachineRail()
-                Divider().overlay(Theme.hair)
-                SessionSidebar()
-                Divider().overlay(Theme.hair)
-                TerminalColumn()
-                if state.showTeam {
+            if showBrowser {
+                BrowserPanel(onClose: { showBrowser = false })
+            } else {
+                HStack(spacing: 0) {
+                    MachineRail()
                     Divider().overlay(Theme.hair)
-                    TeamInspector()
+                    SessionSidebar()
+                    Divider().overlay(Theme.hair)
+                    TerminalColumn()
+                    if state.showTeam {
+                        Divider().overlay(Theme.hair)
+                        TeamInspector()
+                    }
                 }
             }
         }
@@ -30,6 +36,7 @@ struct RootView: View {
 
 struct TopBar: View {
     @EnvironmentObject var state: AppState
+    @Binding var showBrowser: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -59,6 +66,17 @@ struct TopBar: View {
             .background(RoundedRectangle(cornerRadius: 6).fill((AppBuild.isDev ? Theme.wait : Theme.work).opacity(0.14)))
 
             Spacer()
+
+            // 浏览器：后台清单 + 原型目录（BrowserPanel），⌘B
+            Button { showBrowser.toggle() } label: {
+                Image(systemName: "globe")
+                    .font(.system(size: 17))
+                    .foregroundColor(showBrowser ? Theme.teal : Theme.sub)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("b", modifiers: .command)
+            .help("浏览器（后台 / 原型）")
 
             IconButton(system: "person.2", iconSize: 17) { state.showTeam.toggle() }
             IconButton(system: "arrow.up.left.and.arrow.down.right", iconSize: 15) {
