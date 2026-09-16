@@ -473,19 +473,20 @@ struct HostView: View {
   }
 
 
+  // 普通存储属性先赋值，再动 @State：Xcode 27 的 Swift 要求 @State setter 之前 self 已完整初始化
   init(host: BKHosts?, iCloudVersion: Bool = false, reloadList: @escaping () -> ()) {
-    _host = host
     _iCloudVersion = iCloudVersion
-    _conflictedICloudHost = host?.iCloudConflictCopy
     _reloadList = reloadList
+    _host = host
+    _conflictedICloudHost = host?.iCloudConflictCopy
   }
 
   init(duplicatingHost host: BKHosts, reloadList: @escaping () -> ()) {
-    _host = nil
     _duplicatedHost = host
     _iCloudVersion = false
-    _conflictedICloudHost = nil
     _reloadList = reloadList
+    _host = nil
+    _conflictedICloudHost = nil
   }
 
   private func _usageHint() -> String {

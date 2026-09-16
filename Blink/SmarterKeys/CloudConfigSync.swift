@@ -472,7 +472,8 @@ final class ConfigSyncPull: NSObject {
 
   private func adopt(_ cfg: [String: Any]) {
     // 自己（或别的 iOS 设备）写的文件不采纳——iOS 之间走 iCloud，别绕道 Mac 文件回声。
-    guard (cfg["origin"] as? String) == "harmony" else { return }
+    // 鸿蒙手机写 origin=harmony，鸿蒙平板写 harmony-pad，都要采纳。
+    guard (cfg["origin"] as? String)?.hasPrefix("harmony") == true else { return }
     let stamp = (cfg["updatedAt"] as? Double) ?? 0
     let d = UserDefaults.standard
     guard stamp > d.double(forKey: Self.kStamp) else { return }
