@@ -71,6 +71,9 @@ struct Machine: Identifiable {
     var grad: [Color]
     var online: Bool = true
     var transport: Transport = .local
+    /// claude-code 是否跑在这台 Mac 上（本机 / isThisMac 的 blinkd）。true=本机贴图走原生
+    /// （claude 直接读本机剪贴板）；false=远程，贴图要上传图床再插 URL。
+    var isLocalMac: Bool = true
 }
 
 struct Session: Identifiable {

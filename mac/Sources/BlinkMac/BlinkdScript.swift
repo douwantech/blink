@@ -8,12 +8,6 @@ enum BlinkdScript {
 
     static let bootPath = "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
-    /// attach 到一个已存在的 tmux 会话（枚举出来的真实 cc-<TITLE>），不重跑 boot。
-    static func attach(_ tmuxName: String) -> String {
-        let q = "'" + tmuxName.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return "\(bootPath); exec tmux attach -t \(q)"
-    }
-
     /// 枚举本机所有 tmux 会话：name<TAB>active-pane-path，每行一个。
     static func listSessions() -> String {
         "\(bootPath); tmux list-sessions -F '#{session_name}\t#{pane_current_path}' 2>/dev/null"
