@@ -497,6 +497,18 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   private var canGoForwardObs: NSKeyValueObservation?
   private var emptyStateView: UIView?
 
+  // 左侧栏（后台 / 原型），实现在 BrowserSidebar.swift。窄屏（iPhone）时浮在网页上，
+  // 宽屏（iPad / Mac）时把网页挤到右边，和鸿蒙平板版一致。
+  private let sidebar = BrowserSidebar()
+  private let sidebarToggle = UIButton(type: .system)
+  private let sidebarDim = UIControl()
+  private var sidebarWidthC: NSLayoutConstraint!
+  private var webLeadingToSidebar: NSLayoutConstraint!
+  private var webLeadingToView: NSLayoutConstraint!
+  private var sidebarOpen = UserDefaults.standard.bool(forKey: "BrowserSidebar.open")
+  private var sidebarOverlay: Bool { traitCollection.horizontalSizeClass == .compact }
+  private let sidebarWidth: CGFloat = 270
+
   private var tabs: [BrowserTabItem] = []
   private var currentIndex: Int? = nil
   private var activeAuthUser: String?
@@ -592,6 +604,15 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       ])
     }
 
+    // 顶栏左上角：侧栏开关
+    sidebarToggle.setImage(UIImage(systemName: "sidebar.left"), for: .normal)
+    sidebarToggle.tintColor = .secondaryLabel
+    sidebarToggle.backgroundColor = .secondarySystemFill
+    sidebarToggle.layer.cornerRadius = 15
+    sidebarToggle.addTarget(self, action: #selector(sidebarToggleTapped), for: .touchUpInside)
+    sidebarToggle.translatesAutoresizingMaskIntoConstraints = false
+    topBar.addSubview(sidebarToggle)
+
     urlBar.translatesAutoresizingMaskIntoConstraints = false
     urlBar.backgroundColor = .secondarySystemFill
     urlBar.layer.cornerRadius = 16
@@ -646,6 +667,18 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     webView.allowsBackForwardNavigationGestures = true
     webView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(webView)
+
+    // 侧栏（+ 窄屏浮层模式下网页上的遮罩，点一下收起）
+    sidebarDim.translatesAutoresizingMaskIntoConstraints = false
+    sidebarDim.backgroundColor = UIColor.black.withAlphaComponent(0.25)
+    sidebarDim.alpha = 0
+    sidebarDim.isHidden = true
+    sidebarDim.addTarget(self, action: #selector(sidebarToggleTapped), for: .touchUpInside)
+    view.addSubview(sidebarDim)
+
+    sidebar.translatesAutoresizingMaskIntoConstraints = false
+    sidebar.clipsToBounds = true
+    view.addSubview(sidebar)
 
     bottomBar.translatesAutoresizingMaskIntoConstraints = false
     bottomBar.backgroundColor = .secondarySystemBackground
@@ -711,6 +744,11 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       topBar.heightAnchor.constraint(equalToConstant: 76),
 
+      sidebarToggle.topAnchor.constraint(equalTo: topBar.topAnchor),
+      sidebarToggle.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
+      sidebarToggle.widthAnchor.constraint(equalToConstant: 30),
+      sidebarToggle.heightAnchor.constraint(equalToConstant: 30),
+
       closeButton.topAnchor.constraint(equalTo: topBar.topAnchor),
       closeButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
       closeButton.widthAnchor.constraint(equalToConstant: 30),
@@ -766,9 +804,17 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       progressBar.heightAnchor.constraint(equalToConstant: 1.5),
 
       webView.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 6),
-      webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       webView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+
+      sidebar.topAnchor.constraint(equalTo: urlBar.bottomAnchor, constant: 6),
+      sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      sidebar.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+
+      sidebarDim.topAnchor.constraint(equalTo: sidebar.topAnchor),
+      sidebarDim.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+      sidebarDim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      sidebarDim.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
 
       bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -791,6 +837,13 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       forwardButton.heightAnchor.constraint(equalToConstant: 44),
     ])
 
+    // 侧栏宽度 0 = 收起；网页左边界要么贴着侧栏（宽屏推开），要么贴着窗口（窄屏浮层）
+    sidebarWidthC = sidebar.widthAnchor.constraint(equalToConstant: 0)
+    webLeadingToSidebar = webView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor)
+    webLeadingToView = webView.leadingAnchor.constraint(equalTo: view.leadingAnchor)
+    NSLayoutConstraint.activate([sidebarWidthC, webLeadingToSidebar])
+    setupSidebarCallbacks()
+
     // Mac 大屏：底部栏右侧放缩放控件（网页放大/缩小）。iPhone/iPad 触屏用系统 pinch，不占位置。
     if isMacBrowser {
       _setupBrowserZoomControls()
@@ -808,6 +861,138 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       selectTab(at: 0)
     } else {
       showEmptyHint()
+    }
+    applySidebar(animated: false)
+  }
+
+  // MARK: - 侧栏（后台 / 原型）
+
+  private func setupSidebarCallbacks() {
+    sidebar.onOpen = { [weak self] url, title in
+      guard let self else { return }
+      self.openFromSidebar(url: url, title: title)
+      if self.sidebarOverlay { self.setSidebar(open: false) }
+    }
+    sidebar.onAddPinned = { [weak self] in self?.presentEditor(forIndex: nil) }
+    sidebar.onEditPinned = { [weak self] i in
+      guard let self, let idx = self.pinnedTabIndex(i) else { return }
+      self.presentEditor(forIndex: idx)
+    }
+    sidebar.onDeletePinned = { [weak self] i in
+      guard let self, let idx = self.pinnedTabIndex(i) else { return }
+      self.deletePinnedTab(at: idx)
+    }
+    sidebar.onEditProtoAuth = { [weak self] in self?.presentProtoAuthEditor() }
+  }
+
+  /// 侧栏第 i 条「后台」对应 tabs 里的下标（tabs = pinned + transient，pinned 顺序一致）
+  private func pinnedTabIndex(_ i: Int) -> Int? {
+    let pinnedIdx = tabs.enumerated().filter { !$0.element.isTransient }.map { $0.offset }
+    return pinnedIdx.indices.contains(i) ? pinnedIdx[i] : nil
+  }
+
+  private func deletePinnedTab(at i: Int) {
+    guard tabs.indices.contains(i), !tabs[i].isTransient else { return }
+    let name = tabs[i].title.isEmpty ? tabs[i].url : tabs[i].title
+    let alert = UIAlertController(title: "删除后台", message: "删除「\(name)」？", preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+      guard let self, self.tabs.indices.contains(i) else { return }
+      self.tabs.remove(at: i)
+      self.persistPinned()
+      if let cur = self.currentIndex {
+        if cur == i { self.currentIndex = nil } else if cur > i { self.currentIndex = cur - 1 }
+      }
+      self.rebuildTabBar()
+      self.sidebar.reloadPinned()
+    })
+    present(alert, animated: true)
+  }
+
+  private func presentProtoAuthEditor() {
+    let (u, p) = ProtoCatalog.credentials()
+    let alert = UIAlertController(title: "原型站账号", message: kProtoHost, preferredStyle: .alert)
+    alert.addTextField { tf in
+      tf.placeholder = "用户名"; tf.text = u
+      tf.autocapitalizationType = .none; tf.autocorrectionType = .no
+    }
+    alert.addTextField { tf in
+      tf.placeholder = "密码"; tf.text = p; tf.isSecureTextEntry = true
+      tf.autocapitalizationType = .none; tf.autocorrectionType = .no
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+      let fs = alert.textFields ?? []
+      ProtoCatalog.setCredentials(user: fs.first?.text ?? "", pass: fs.count > 1 ? (fs[1].text ?? "") : "")
+      self?.sidebar.refreshProto()
+    })
+    present(alert, animated: true)
+  }
+
+  /// 侧栏点条目：直接在当前 WebView 里打开，不新建标签（和鸿蒙平板版一致）
+  private func openFromSidebar(url: String, title: String) {
+    hideEmptyHint()
+    if let i = tabs.firstIndex(where: { !$0.isTransient && $0.url == url }) {
+      selectTab(at: i)
+      return
+    }
+    currentIndex = nil
+    rebuildTabBar()
+    activeAuthUser = nil
+    activeAuthPassword = nil
+    urlField.text = url
+    updateLockIcon(forURLString: url)
+    sidebar.currentURL = url
+    if let u = Self.normalizeURL(url) {
+      lastLoadedURLString = url
+      webView.load(URLRequest(url: u))
+    }
+  }
+
+  @objc private func sidebarToggleTapped() {
+    setSidebar(open: !sidebarOpen)
+  }
+
+  private func setSidebar(open: Bool) {
+    sidebarOpen = open
+    UserDefaults.standard.set(open, forKey: "BrowserSidebar.open")
+    if open {
+      sidebar.reloadPinned()
+      sidebar.currentURL = webView.url?.absoluteString ?? (urlField.text ?? "")
+      sidebar.refreshProtoIfStale()
+    }
+    applySidebar(animated: true)
+  }
+
+  private func applySidebar(animated: Bool) {
+    let overlay = sidebarOverlay
+    sidebarWidthC.constant = sidebarOpen ? (overlay ? min(sidebarWidth + 20, view.bounds.width * 0.82) : sidebarWidth) : 0
+    webLeadingToSidebar.isActive = !(overlay && sidebarOpen)
+    webLeadingToView.isActive = overlay && sidebarOpen
+    sidebarToggle.tintColor = sidebarOpen ? .systemIndigo : .secondaryLabel
+    if sidebarOpen && overlay {
+      view.bringSubviewToFront(sidebarDim)
+      view.bringSubviewToFront(sidebar)
+      sidebarDim.isHidden = false
+    }
+    let animations = {
+      self.sidebarDim.alpha = (self.sidebarOpen && overlay) ? 1 : 0
+      self.view.layoutIfNeeded()
+    }
+    if animated {
+      UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut], animations: animations) { _ in
+        if !(self.sidebarOpen && overlay) { self.sidebarDim.isHidden = true }
+      }
+    } else {
+      animations()
+      if !(sidebarOpen && overlay) { sidebarDim.isHidden = true }
+    }
+  }
+
+  override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+    super.traitCollectionDidChange(previous)
+    if previous?.horizontalSizeClass != traitCollection.horizontalSizeClass {
+      applySidebar(animated: false)
     }
   }
 
@@ -1107,6 +1292,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     activeAuthPassword = (tab.authPassword?.isEmpty == false) ? tab.authPassword : nil
     urlField.text = tab.url
     updateLockIcon(forURLString: tab.url)
+    sidebar.currentURL = tab.url
     if tab.url == lastLoadedURLString {
       rebuildTabBar()
       return
@@ -1126,6 +1312,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       PinnedTab(title: $0.title, url: $0.url, authUser: $0.authUser, authPassword: $0.authPassword)
     }
     PinnedTabsStore.shared.tabs = pinned
+    sidebar.reloadPinned()
   }
 
   @objc private func manageTabsTapped() {
@@ -1148,6 +1335,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     let prevURL = currentIndex.flatMap { tabs.indices.contains($0) ? tabs[$0].url : nil }
     tabs = newPinned + transients
     rebuildTabBar()
+    sidebar.reloadPinned()
     if let url = prevURL, let i = tabs.firstIndex(where: { $0.url == url }) {
       currentIndex = i
       rebuildTabBar()
@@ -1245,11 +1433,26 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     let basicLike = method == NSURLAuthenticationMethodHTTPBasic
       || method == NSURLAuthenticationMethodHTTPDigest
       || method == NSURLAuthenticationMethodNTLM
-    if basicLike, challenge.previousFailureCount == 0,
-       let user = activeAuthUser, let pwd = activeAuthPassword {
-      let cred = URLCredential(user: user, password: pwd, persistence: .forSession)
-      completionHandler(.useCredential, cred)
-      return
+    if basicLike, challenge.previousFailureCount == 0 {
+      // 标签自带的账密优先；侧栏点开的（没有标签）按 host 找钉住的账密，原型站用原型账号
+      var user = activeAuthUser
+      var pwd = activeAuthPassword
+      if user == nil || pwd == nil {
+        let host = challenge.protectionSpace.host
+        if host == kProtoHost {
+          let c = ProtoCatalog.credentials()
+          user = c.0; pwd = c.1
+        } else if let t = PinnedTabsStore.shared.tabs.first(where: {
+          URL(string: $0.url)?.host == host && !($0.authUser ?? "").isEmpty
+        }) {
+          user = t.authUser; pwd = t.authPassword
+        }
+      }
+      if let user, let pwd {
+        let cred = URLCredential(user: user, password: pwd, persistence: .forSession)
+        completionHandler(.useCredential, cred)
+        return
+      }
     }
     completionHandler(.performDefaultHandling, nil)
   }
@@ -1277,6 +1480,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     if let u = webView.url?.absoluteString {
       urlField.text = u
       updateLockIcon(forURLString: u)
+      sidebar.currentURL = u
     }
     if let u = webView.url, u.isFileURL, u.path.contains("BlinkTranscripts") {
       let js = "window.scrollTo(0, document.documentElement.scrollHeight);"

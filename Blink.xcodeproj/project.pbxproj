@@ -437,6 +437,8 @@
 		D2BB5E142A1F718300BB0520 /* app-font-bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D2BB5E122A1F718300BB0520 /* app-font-bold.ttf */; };
 		D2BB5E152A1F718300BB0520 /* app-font-regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D2BB5E132A1F718300BB0520 /* app-font-regular.ttf */; };
 		D2BB880A2E45A12300000001 /* PinnedBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB880A2E45A12300000002 /* PinnedBrowser.swift */; };
+		D2BB88AB2E45A12300000001 /* ProtoCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB88AB2E45A12300000002 /* ProtoCatalog.swift */; };
+		D2BB88AA2E45A12300000001 /* BrowserSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB88AA2E45A12300000002 /* BrowserSidebar.swift */; };
 		D2BC514D2355C3AE0034FDD4 /* History.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BC514C2355C3AE0034FDD4 /* History.swift */; };
 		D2BF5F7F265BA0A80070F839 /* UserDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BF5F7E265BA0A80070F839 /* UserDefaults.swift */; };
 		D2C21F3920FCD7B800F125E0 /* blinkCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D2C21F3220FCD6CD00F125E0 /* blinkCommandsDictionary.plist */; };
@@ -1220,6 +1222,8 @@
 		D2BB5E122A1F718300BB0520 /* app-font-bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "app-font-bold.ttf"; sourceTree = "<group>"; };
 		D2BB5E132A1F718300BB0520 /* app-font-regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "app-font-regular.ttf"; sourceTree = "<group>"; };
 		D2BB880A2E45A12300000002 /* PinnedBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedBrowser.swift; sourceTree = "<group>"; };
+		D2BB88AB2E45A12300000002 /* ProtoCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtoCatalog.swift; sourceTree = "<group>"; };
+		D2BB88AA2E45A12300000002 /* BrowserSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSidebar.swift; sourceTree = "<group>"; };
 		D2BC514C2355C3AE0034FDD4 /* History.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = History.swift; sourceTree = "<group>"; };
 		D2BF5F6B2659522C0070F839 /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
 		D2BF5F7E265BA0A80070F839 /* UserDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaults.swift; sourceTree = "<group>"; };
@@ -1558,6 +1562,8 @@
 				0716B53C1CFFAB9300268B5B /* Info.plist */,
 				D29B4A8D274D1E9F00C66ED9 /* BrowserController.swift */,
 				D2BB880A2E45A12300000002 /* PinnedBrowser.swift */,
+				D2BB88AB2E45A12300000002 /* ProtoCatalog.swift */,
+				D2BB88AA2E45A12300000002 /* BrowserSidebar.swift */,
 				D2AD8E5D27A2BAD600DED28D /* StatusBarLessViewController.swift */,
 				0716B5291CFFAB9300268B5B /* AppDelegate.h */,
 				0716B52A1CFFAB9300268B5B /* AppDelegate.m */,
@@ -3634,6 +3640,8 @@
 				C94E9B631D6BA21C00DA4DD6 /* DismissSegue.m in Sources */,
 				D29B4A92274D206C00C66ED9 /* BrowserController.swift in Sources */,
 				D2BB880A2E45A12300000001 /* PinnedBrowser.swift in Sources */,
+				D2BB88AB2E45A12300000001 /* ProtoCatalog.swift in Sources */,
+				D2BB88AA2E45A12300000001 /* BrowserSidebar.swift in Sources */,
 				803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */,
 				D2C2441C238E44AB0082C69C /* NavButton.swift in Sources */,
 				0716B5721CFFAB9300268B5B /* AppDelegate.m in Sources */,

@@ -30,7 +30,8 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
-import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig } from '../model/BlinkStores';
+import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig, PinnedTab } from '../model/BlinkStores';
+import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
 
@@ -40,6 +41,52 @@ const BUNDLE: string = 'com.douwantech.blink';
 
 // palette
 const TEAL: string = '#3DD9C4';
+
+// 浏览器（侧栏「后台 / 原型」）配色，与平板版 PadHome 保持一致
+const B_PANEL: string = '#121418';
+const B_PANEL2: string = '#16191D';
+const B_PANEL3: string = '#1A1D23';
+const B_FG: string = '#D4DAE0';
+const B_SUB: string = '#8B95A5';
+const B_DIM: string = '#6B7683';
+const B_HAIR: string = '#14FFFFFF';
+const B_FILL: string = '#14FFFFFF';
+const B_REST: string = '#8F8CFF';
+const B_WAIT: string = '#F5A83D';
+const B_RED: string = '#FF5A5C';
+const MONO: string = 'monospace';
+const B_GRADS: string[][] = [
+  ['#4EA8FF', '#8F8CFF'],
+  ['#F5A83D', '#FF5A5C'],
+  ['#40D68C', '#63D3E8'],
+  ['#8F8CFF', '#5A57C9'],
+];
+
+/// 地址栏输入 → 可加载的网址（同 iOS PinnedBrowserViewController.normalizeURL）
+class BrowserUrl {
+  static normalize(raw: string): string {
+    const s: string = raw.trim();
+    if (s.length === 0) {
+      return '';
+    }
+    if (new RegExp('^(https?|about|file|data):', 'i').test(s)) {
+      return s;
+    }
+    if (new RegExp('^(localhost|\\d{1,3}(\\.\\d{1,3}){3})(:\\d+)?(/.*)?$').test(s)) {
+      return 'http://' + s;
+    }
+    if (s.indexOf('.') > 0 && s.indexOf(' ') < 0) {
+      return 'https://' + s;
+    }
+    return 'https://www.bing.com/search?q=' + encodeURIComponent(s);
+  }
+}
+
+// 原型列表「最近更新」排序用（ArkTS 不许在 sort 里用匿名对象字面量）
+interface ProtoSortRow {
+  it: ProtoItem;
+  i: number;
+}
 
 interface Theme {
   name: string;
@@ -60,7 +107,7 @@ const THEMES: Theme[] = [
 const FONT_SIZES: number[] = [8, 9, 10, 11, 12, 13, 14];
 
 // what the bottom sheet is currently showing
-type Sheet = 'none' | 'more' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel';
+type Sheet = 'none' | 'more' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel' | 'pinEdit' | 'protoAuth';
 
 class JsBridge {
   private cb: (op: string, data: string) => void;
@@ -107,8 +154,35 @@ struct BlinkTerminal {
   @State inputBuf: string = '';
   // overlays
   @State sheet: Sheet = 'none';
+  // 内置浏览器：showBrowser = 当前是否在浏览器界面；browserOpened = Web 是否已挂载
+  // （首开后常驻，关掉只隐藏，保住页面不重载）。侧栏分「后台」（钉住的管理后台，
+  // 与 iOS / 平板同步）和「原型」（prototype.douwantech.com 目录，ProtoCatalog）。
   @State showBrowser: boolean = false;
-  @State browserUrl: string = '';
+  @State browserOpened: boolean = false;
+  @State browserSide: boolean = false;          // 侧栏抽屉是否展开
+  @State browserSeg: string = 'admin';          // admin | proto
+  @State browserPinned: PinnedTab[] = [];
+  @State browserCurUrl: string = '';
+  @State browserUrlText: string = '';
+  @State browserEditing: boolean = false;
+  @State browserLoading: boolean = false;
+  @State browserProgress: number = 0;
+  @State browserCanBack: boolean = false;
+  @State browserCanFwd: boolean = false;
+  @State protoAll: ProtoItem[] = [];
+  @State protoSections: string[] = [];
+  @State protoFilter: string = '';              // '' = 最近更新
+  @State protoQuery: string = '';
+  @State protoState: string = 'idle';           // idle | loading | ok | noauth | error
+  @State protoMsg: string = '';
+  @State protoUser: string = '';
+  @State protoPass: string = '';
+  // 后台编辑器暂存
+  @State peIdx: number = -1;
+  @State peTitle: string = '';
+  @State peUrl: string = '';
+  @State peUser: string = '';
+  @State pePwd: string = '';
   @State showTranscript: boolean = false;
   @State chatName: string = '';
   @State chatRefreshing: boolean = false;
@@ -127,6 +201,11 @@ struct BlinkTerminal {
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
   private webCtl: webview.WebviewController = new webview.WebviewController();
+  private browserCtl: webview.WebviewController = new webview.WebviewController();
+  private browserStartUrl: string = 'about:blank';
+  private browserAttached: boolean = false;
+  private browserAuthTries: Map<string, number> = new Map();   // 每个 host 只自动应答一次，防死循环
+  private protoFetchedAt: number = 0;
   private jsBridge: JsBridge = new JsBridge((op: string, data: string): void => { this.onBridge(op, data); });
   private tsPrefs: preferences.Preferences | null = null;
   private uiPrefs: preferences.Preferences | null = null;
@@ -1968,6 +2047,34 @@ struct BlinkTerminal {
     .width('100%').height('100%')
   }
 
+  /// 系统返回手势：先收面板/侧栏，再退网页，最后才交还给系统（退出应用）
+  onBackPress(): boolean {
+    if (this.sheet !== 'none') {
+      this.sheet = 'none';
+      return true;
+    }
+    if (this.showBrowser) {
+      if (this.browserSide) {
+        this.browserSide = false;
+        return true;
+      }
+      try {
+        if (this.browserCtl.accessBackward()) {
+          this.browserCtl.backward();
+          return true;
+        }
+      } catch (e) {
+      }
+      this.closeBrowser();
+      return true;
+    }
+    if (this.showTranscript) {
+      this.showTranscript = false;
+      return true;
+    }
+    return false;
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
@@ -2019,7 +2126,8 @@ struct BlinkTerminal {
       if (this.sheet !== 'none') {
         this.sheetChrome()
       }
-      if (this.showBrowser) {
+      // 浏览器首开后常驻（关掉只隐藏，网页不重载），可见性在 browserOverlay 里自己判
+      if (this.browserOpened) {
         this.browserOverlay()
       }
       if (this.showTranscript) {
@@ -2131,9 +2239,305 @@ struct BlinkTerminal {
     this.sheet = 'newTab';
   }
 
+  // ===========================================================================
+  // 内置浏览器（与鸿蒙平板版 PadHome / iOS PinnedBrowser 同一套）
+  //   后台 = store.pinned（跟 iOS / 平板同步的管理后台清单）
+  //   原型 = prototype.douwantech.com 目录（ProtoCatalog），默认「最近更新」混排
+  // 手机屏窄，侧栏做成抽屉浮在网页上，点条目后自动收起。
+  // ===========================================================================
+
   private openBrowser(): void {
-    this.browserUrl = this.store.pinned.length > 0 ? this.store.pinned[0].url : 'https://www.baidu.com';
+    this.hideKeyboard();
+    this.browserPinned = this.store.pinned.slice();
+    if (!this.browserOpened) {
+      const p = this.uiPrefs;
+      if (p !== null) {
+        this.browserSeg = (p.getSync('browserSeg', 'admin') as string) === 'proto' ? 'proto' : 'admin';
+        this.protoUser = p.getSync('protoUser', '') as string;
+        this.protoPass = p.getSync('protoPass', '') as string;
+      }
+      const cache: ProtoCache | null = ProtoCatalog.load(this.protoCachePath());
+      if (cache !== null) {
+        this.applyProtoCache(cache);
+      }
+      let first: string = p !== null ? p.getSync('browserLast', '') as string : '';
+      if (first.length === 0 && this.browserPinned.length > 0) {
+        first = this.browserPinned[0].url;
+      }
+      this.browserOpened = true;
+      if (first.length > 0) {
+        this.openInBrowser(first);
+      } else {
+        this.browserSide = true;   // 没有上次的页面就先把侧栏摊开让人选
+      }
+    }
+    // 目录 10 分钟内拉过就不重拉（侧栏底部可手动刷新）
+    if (Date.now() - this.protoFetchedAt > 600000) {
+      this.refreshProto();
+    }
     this.showBrowser = true;
+  }
+
+  private closeBrowser(): void {
+    this.showBrowser = false;
+    this.browserEditing = false;
+  }
+
+  private setBrowserSeg(seg: string): void {
+    this.browserSeg = seg;
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('browserSeg', seg).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    if (seg === 'proto' && Date.now() - this.protoFetchedAt > 600000) {
+      this.refreshProto();
+    }
+  }
+
+  private protoCachePath(): string {
+    return this.filesDir() + '/proto_index.json';
+  }
+
+  private applyProtoCache(c: ProtoCache): void {
+    this.protoAll = c.items;
+    this.protoSections = c.sections;
+    this.protoFetchedAt = c.fetchedAt;
+    if (this.protoFilter.length > 0 && c.sections.indexOf(this.protoFilter) < 0) {
+      this.protoFilter = '';
+    }
+  }
+
+  private refreshProto(): void {
+    if (this.protoState === 'loading') {
+      return;
+    }
+    this.protoState = 'loading';
+    ProtoCatalog.fetch(this.protoUser, this.protoPass, (r: ProtoFetchResult, c: ProtoCache | null, msg: string) => {
+      if (r === 'ok' && c !== null) {
+        this.applyProtoCache(c);
+        ProtoCatalog.save(this.protoCachePath(), c);
+        this.protoState = 'ok';
+        this.protoMsg = '';
+      } else {
+        this.protoState = r;
+        this.protoMsg = msg;
+        hilog.warn(DOMAIN, TAG, 'proto fetch %{public}s: %{public}s', r, msg);
+      }
+    });
+  }
+
+  private saveProtoAuth(): void {
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('protoUser', this.protoUser).then((): Promise<void> => p.put('protoPass', this.protoPass))
+        .then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    this.sheet = 'none';
+    this.protoFetchedAt = 0;
+    this.refreshProto();
+    if (this.browserUrlText.indexOf(PROTO_HOST) >= 0) {
+      this.browserAuthTries.clear();
+      try { this.browserCtl.refresh(); } catch (e) { }
+    }
+  }
+
+  /// 侧栏「原型」当前要显示的列表：筛选分区 → 搜索 → 最近更新时按日期倒序
+  private protoVisible(): ProtoItem[] {
+    const q: string = this.protoQuery.trim().toLowerCase();
+    let arr: ProtoItem[] = this.protoAll.filter((it: ProtoItem) =>
+      (this.protoFilter.length === 0 || it.section === this.protoFilter) &&
+      (q.length === 0 || it.title.toLowerCase().indexOf(q) >= 0 || it.desc.toLowerCase().indexOf(q) >= 0 ||
+        it.section.toLowerCase().indexOf(q) >= 0));
+    if (this.protoFilter.length === 0) {
+      arr = arr.map((it: ProtoItem, i: number): ProtoSortRow => ({ it: it, i: i } as ProtoSortRow))
+        .sort((a: ProtoSortRow, b: ProtoSortRow) =>
+          a.it.updated === b.it.updated ? a.i - b.i : (a.it.updated < b.it.updated ? 1 : -1))
+        .map((r: ProtoSortRow): ProtoItem => r.it);
+    }
+    return arr;
+  }
+
+  /// 3 天内更新过的标「新」
+  private protoIsNew(updated: string): boolean {
+    if (updated.length < 10) {
+      return false;
+    }
+    const t: number = new Date(updated.substring(0, 10) + 'T00:00:00+08:00').getTime();
+    return !Number.isNaN(t) && Date.now() - t < 3 * 86400000;
+  }
+
+  private sameUrl(a: string, b: string): boolean {
+    const strip = (u: string): string => u.replace(new RegExp('^https?://'), '').replace(new RegExp('/$'), '');
+    return a.length > 0 && b.length > 0 && strip(a) === strip(b);
+  }
+
+  private hostOf(url: string): string {
+    const m = url.match(new RegExp('^https?://([^/]+)'));
+    return m !== null ? m[1] : url;
+  }
+
+  private openInBrowser(url: string): void {
+    const u: string = BrowserUrl.normalize(url);
+    if (u.length === 0) {
+      return;
+    }
+    this.browserEditing = false;
+    this.browserUrlText = u;
+    this.browserCurUrl = u;
+    this.browserSide = false;   // 手机上侧栏是抽屉，选完就收起看网页
+    this.browserAuthTries.clear();
+    const p = this.uiPrefs;
+    if (p !== null) {
+      p.put('browserLast', u).then((): Promise<void> => p.flush()).catch(() => {});
+    }
+    if (!this.browserAttached) {
+      this.browserStartUrl = u;   // Web 还没挂上：挂上时 onControllerAttached 补载
+      return;
+    }
+    try {
+      this.browserCtl.loadUrl(u);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'browser load: %{public}s', `${e}`);
+    }
+  }
+
+  private deletePinned(i: number): void {
+    if (i < 0 || i >= this.store.pinned.length) {
+      return;
+    }
+    const t: PinnedTab = this.store.pinned[i];
+    this.getUIContext().showAlertDialog({
+      title: '删除后台',
+      message: '删除「' + (t.title.length > 0 ? t.title : t.url) + '」？',
+      primaryButton: {
+        value: '删除', fontColor: B_RED, action: () => {
+          this.store.pinned.splice(i, 1);
+          this.store.savePinned();
+          this.browserPinned = this.store.pinned.slice();
+        },
+      },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
+  /// 后台编辑器：i = -1 新增（默认填当前网页）
+  private openPinEditor(i: number): void {
+    if (i >= 0 && i < this.store.pinned.length) {
+      const t: PinnedTab = this.store.pinned[i];
+      this.peIdx = i;
+      this.peTitle = t.title;
+      this.peUrl = t.url;
+      this.peUser = t.authUser !== undefined ? t.authUser : '';
+      this.pePwd = t.authPassword !== undefined ? t.authPassword : '';
+    } else {
+      this.peIdx = -1;
+      let title: string = '';
+      let url: string = this.browserUrlText;
+      try {
+        if (this.browserAttached) {
+          const u: string = this.browserCtl.getUrl();
+          if (u.length > 0 && u !== 'about:blank') {
+            url = u;
+            title = this.browserCtl.getTitle();
+          }
+        }
+      } catch (e) {
+      }
+      this.peTitle = title;
+      this.peUrl = url === 'about:blank' ? '' : url;
+      this.peUser = '';
+      this.pePwd = '';
+    }
+    this.sheet = 'pinEdit';
+  }
+
+  private savePinEditor(): void {
+    const url: string = this.peUrl.trim();
+    if (url.length === 0) {
+      this.toast('网址不能为空');
+      return;
+    }
+    const item: PinnedTab = { title: this.peTitle.trim(), url: url } as PinnedTab;
+    if (this.peUser.length > 0) {
+      item.authUser = this.peUser;
+    }
+    if (this.pePwd.length > 0) {
+      item.authPassword = this.pePwd;
+    }
+    if (this.peIdx >= 0 && this.peIdx < this.store.pinned.length) {
+      this.store.pinned[this.peIdx] = item;
+    } else {
+      this.store.pinned.push(item);
+    }
+    this.store.savePinned();
+    this.browserPinned = this.store.pinned.slice();
+    this.sheet = 'none';
+    this.setBrowserSeg('admin');
+    this.openInBrowser(url);
+  }
+
+  private onBrowserNav(url: string, begin: boolean): void {
+    this.browserLoading = begin;
+    if (!this.browserEditing && url.length > 0 && url !== 'about:blank') {
+      this.browserUrlText = url;
+      this.browserCurUrl = url;
+    }
+    if (!begin) {
+      this.browserAuthTries.clear();
+    }
+    try {
+      this.browserCanBack = this.browserCtl.accessBackward();
+      this.browserCanFwd = this.browserCtl.accessForward();
+    } catch (e) {
+    }
+  }
+
+  /// Basic Auth：原型站用原型账密；其它按 host 找后台里存的账密
+  private browserAuth(host: string): string[] | null {
+    const n: number = this.browserAuthTries.get(host) ?? 0;
+    if (n >= 1) {
+      return null;
+    }
+    this.browserAuthTries.set(host, n + 1);
+    if (host === PROTO_HOST) {
+      return this.protoUser.length > 0 ? [this.protoUser, this.protoPass] : null;
+    }
+    return this.pinnedAuthFor(host);
+  }
+
+  private browserReloadOrStop(): void {
+    try {
+      if (this.browserLoading) {
+        this.browserCtl.stop();
+        this.browserLoading = false;
+      } else {
+        this.browserCtl.refresh();
+      }
+    } catch (e) {
+    }
+  }
+
+  private browserLockIcon(): Resource {
+    const u: string = this.browserUrlText;
+    if (u.startsWith('https://')) {
+      return $r('sys.symbol.lock_fill');
+    } else if (u.startsWith('http://')) {
+      return $r('sys.symbol.exclamationmark_triangle_fill');
+    }
+    return $r('sys.symbol.discover');
+  }
+
+  private protoFooter(): string {
+    if (this.protoState === 'loading') {
+      return '更新中…';
+    }
+    if (this.protoFetchedAt <= 0) {
+      return '';
+    }
+    const d = new Date(this.protoFetchedAt);
+    const hm: string = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    const fail: string = (this.protoState === 'noauth' || this.protoState === 'error') ? ' · 刷新失败' : '';
+    return this.protoAll.length + ' 页 · ' + hm + ' 更新' + fail;
   }
 
   private confirmCloseTab(t: TabModel): void {
@@ -2186,6 +2590,10 @@ struct BlinkTerminal {
           this.aiConfigBody()
         } else if (this.sheet === 'restPanel') {
           this.restPanelBody()
+        } else if (this.sheet === 'pinEdit') {
+          this.pinEditBody()
+        } else if (this.sheet === 'protoAuth') {
+          this.protoAuthBody()
         }
       }
       .width('100%').height(this.sheetHeight()).backgroundColor('#0C0C0E')
@@ -2218,6 +2626,10 @@ struct BlinkTerminal {
       return 'AI 配置';
     } else if (this.sheet === 'restPanel') {
       return '员工在岗 / 休息';
+    } else if (this.sheet === 'pinEdit') {
+      return this.peIdx >= 0 ? '编辑后台' : '添加后台';
+    } else if (this.sheet === 'protoAuth') {
+      return '原型站账号';
     }
     return '';
   }
@@ -2233,8 +2645,62 @@ struct BlinkTerminal {
       return '82%';
     } else if (this.sheet === 'aiConfig') {
       return '70%';
+    } else if (this.sheet === 'pinEdit') {
+      return '64%';
+    } else if (this.sheet === 'protoAuth') {
+      return '52%';
     }
     return '70%';
+  }
+
+  @Builder
+  pinEditBody() {
+    Column() {
+      this.sectionHeader('名称（可空，会用网址）')
+      TextInput({ text: this.peTitle, placeholder: '名称' })
+        .fontSize(14).backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+        .onChange((v: string) => { this.peTitle = v; })
+      this.sectionHeader('网址')
+      TextInput({ text: this.peUrl, placeholder: '如 xxx-admin.douwantech.com/admin' })
+        .fontSize(14).type(InputType.URL).backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+        .onChange((v: string) => { this.peUrl = v; })
+      this.sectionHeader('HTTP Basic 账密（可空）')
+      Row({ space: 8 }) {
+        TextInput({ text: this.peUser, placeholder: '用户名' })
+          .layoutWeight(1).fontSize(14).backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+          .onChange((v: string) => { this.peUser = v; })
+        TextInput({ text: this.pePwd, placeholder: '密码' })
+          .layoutWeight(1).fontSize(14).type(InputType.Password)
+          .backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+          .onChange((v: string) => { this.pePwd = v; })
+      }.width('100%')
+      Blank()
+      Button('保存').fontSize(14).width('100%').height(40)
+        .backgroundColor(TEAL).fontColor('#0B0C0E').margin({ top: 16, bottom: 20 })
+        .onClick(() => this.savePinEditor())
+    }
+    .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  protoAuthBody() {
+    Column() {
+      Text('prototype.douwantech.com 整站有账号密码门禁。只存在这台手机上。')
+        .fontSize(12).fontColor(B_DIM).width('100%').margin({ top: 14 })
+      this.sectionHeader('用户名')
+      TextInput({ text: this.protoUser, placeholder: '用户名' })
+        .fontSize(14).backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+        .onChange((v: string) => { this.protoUser = v; })
+      this.sectionHeader('密码')
+      TextInput({ text: this.protoPass, placeholder: '密码' })
+        .fontSize(14).type(InputType.Password).backgroundColor(B_PANEL3).fontColor(B_FG).borderRadius(8)
+        .onChange((v: string) => { this.protoPass = v; })
+      Blank()
+      Button('保存并刷新目录').fontSize(14).width('100%').height(40)
+        .backgroundColor(TEAL).fontColor('#0B0C0E').margin({ top: 16, bottom: 20 })
+        .onClick(() => this.saveProtoAuth())
+    }
+    .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -2521,20 +2987,325 @@ struct BlinkTerminal {
     return m !== null ? this.store.machineDisplayName(m) : '其他';
   }
 
-  // ---- browser overlay ----
+  // ---- browser overlay：顶栏 + 网页 + 抽屉侧栏（后台 / 原型）----
+
+  @Builder
+  brIcon(sym: Resource, color: string, size: number, action: () => void) {
+    Stack() {
+      SymbolGlyph(sym).fontSize(size).fontColor([color])
+    }
+    .width(34).height(34).borderRadius(8)
+    .stateStyles({ pressed: { .backgroundColor(B_FILL) }, normal: { .backgroundColor(Color.Transparent) } })
+    .onClick(action)
+  }
+
+  @Builder
+  browserSegBtn(label: string, seg: string) {
+    Row({ space: 5 }) {
+      Text(label).fontSize(13)
+        .fontWeight(this.browserSeg === seg ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.browserSeg === seg ? '#F2F2F2' : B_SUB)
+      // 数量在里面直接读 @State（@Builder 基本类型参数按值传，不会跟着刷新）
+      Text((seg === 'admin' ? this.browserPinned.length : this.protoAll.length).toString())
+        .fontSize(11).fontFamily(MONO)
+        .fontColor(this.browserSeg === seg ? '#B0FFFFFF' : B_DIM)
+    }
+    .layoutWeight(1).height(30).justifyContent(FlexAlign.Center).borderRadius(8)
+    .backgroundColor(this.browserSeg === seg ? '#24FFFFFF' : Color.Transparent)
+    .onClick(() => this.setBrowserSeg(seg))
+  }
+
+  @Builder
+  adminMenu(i: number) {
+    Menu() {
+      MenuItem({ content: '编辑' }).onClick(() => this.openPinEditor(i))
+      MenuItem({ content: '删除' }).onClick(() => this.deletePinned(i))
+    }
+  }
+
+  @Builder
+  adminList() {
+    if (this.browserPinned.length === 0) {
+      Column({ space: 8 }) {
+        Text('还没有后台').fontSize(13).fontColor(B_SUB)
+        Text('打开网页后点右上角 + 钉住').fontSize(12).fontColor(B_DIM)
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List({ space: 2 }) {
+        ForEach(this.browserPinned, (t: PinnedTab, i: number) => {
+          ListItem() {
+            Row({ space: 10 }) {
+              Stack() {
+                Text((t.title.length > 0 ? t.title : this.hostOf(t.url)).substring(0, 1).toUpperCase())
+                  .fontSize(13).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+              }
+              .width(30).height(30).borderRadius(8)
+              .linearGradient({
+                angle: 135,
+                colors: [[B_GRADS[i % B_GRADS.length][0], 0], [B_GRADS[i % B_GRADS.length][1], 1]],
+              })
+              Column({ space: 1 }) {
+                Text(t.title.length > 0 ? t.title : this.hostOf(t.url)).fontSize(14).fontColor(B_FG)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(this.hostOf(t.url)).fontSize(10.5).fontFamily(MONO).fontColor(B_DIM)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (t.authUser !== undefined && t.authUser.length > 0) {
+                SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(10).fontColor(['#4A515C'])
+              }
+            }
+            .width('100%').height(50).padding({ left: 10, right: 10 }).borderRadius(10)
+            .backgroundColor(this.sameUrl(this.browserCurUrl, t.url) ? '#1F63D3E8' : Color.Transparent)
+            .onClick(() => this.openInBrowser(t.url))
+          }
+          .bindContextMenu(this.adminMenu(i), ResponseType.LongPress)
+        }, (t: PinnedTab, i: number) => i + '_' + t.url + '_' + t.title + '_' +
+          (this.sameUrl(this.browserCurUrl, t.url) ? 1 : 0))
+      }
+      .layoutWeight(1).width('100%').padding({ left: 8, right: 8, top: 4 }).scrollBar(BarState.Off)
+    }
+  }
+
+  @Builder
+  protoChip(label: string, filter: string) {
+    Text(label).fontSize(12).maxLines(1)
+      .fontColor(this.protoFilter === filter ? '#D9D8FF' : B_SUB)
+      .height(26).padding({ left: 11, right: 11 }).borderRadius(13)
+      .backgroundColor(this.protoFilter === filter ? '#388F8CFF' : '#0FFFFFFF')
+      .onClick(() => { this.protoFilter = filter; })
+  }
+
+  @Builder
+  protoList() {
+    Row({ space: 6 }) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(13).fontColor([B_DIM])
+      TextInput({ text: this.protoQuery, placeholder: '搜索原型' })
+        .id('protoSearch')
+        .layoutWeight(1).height(30).fontSize(13).fontColor(B_FG).placeholderColor(B_DIM)
+        .backgroundColor(Color.Transparent).caretColor(TEAL).padding({ left: 0, right: 0 })
+        .onChange((v: string) => { this.protoQuery = v; })
+      if (this.protoQuery.length > 0) {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(12).fontColor([B_DIM])
+          .onClick(() => { this.protoQuery = ''; })
+      }
+    }
+    .height(32).margin({ left: 10, right: 10, top: 2 }).padding({ left: 10, right: 8 })
+    .borderRadius(8).backgroundColor(B_PANEL3)
+
+    // 分区筛选：一行横滑，不换行挤成一坨
+    Scroll() {
+      Row({ space: 6 }) {
+        this.protoChip('最近更新', '')
+        ForEach(this.protoSections, (s: string) => {
+          this.protoChip(s, s)
+        }, (s: string) => s + '_' + (this.protoFilter === s ? 1 : 0))
+      }
+      .padding({ left: 10, right: 10 })
+    }
+    .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+    .width('100%').height(28).margin({ top: 10, bottom: 6 }).align(Alignment.Start)
+
+    if (this.protoAll.length === 0) {
+      Column({ space: 10 }) {
+        if (this.protoState === 'loading') {
+          LoadingProgress().width(22).height(22).color(B_DIM)
+          Text('正在拉取原型目录…').fontSize(12).fontColor(B_DIM)
+        } else if (this.protoState === 'noauth') {
+          SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(22).fontColor(['#4A515C'])
+          Text(this.protoMsg).fontSize(13).fontColor(B_SUB)
+          Text('填写原型站账号').fontSize(13).fontColor(TEAL)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
+            .border({ width: 1, color: '#663DD9C4' })
+            .onClick(() => { this.sheet = 'protoAuth'; })
+        } else {
+          Text(this.protoMsg.length > 0 ? this.protoMsg : '还没有原型目录').fontSize(12).fontColor(B_DIM)
+            .textAlign(TextAlign.Center).padding({ left: 16, right: 16 })
+          Text('重试').fontSize(13).fontColor(TEAL).onClick(() => this.refreshProto())
+        }
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List({ space: 4 }) {
+        ForEach(this.protoVisible(), (it: ProtoItem) => {
+          ListItem() {
+            Column({ space: 3 }) {
+              Text(it.title).fontSize(13).fontColor('#E3E8ED').maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              if (this.protoFilter.length > 0 && it.desc.length > 0) {
+                Text(it.desc).fontSize(11).fontColor(B_DIM).maxLines(2).lineHeight(16)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              Row({ space: 6 }) {
+                if (this.protoIsNew(it.updated)) {
+                  Text('新').fontSize(9).fontWeight(FontWeight.Bold).fontColor('#1A1206')
+                    .padding({ left: 4, right: 4 }).height(15).borderRadius(4).backgroundColor(B_WAIT)
+                }
+                Text((it.updated.length >= 10 ? it.updated.substring(5, 10) : '') +
+                  (this.protoFilter.length === 0 ? '  ·  ' + it.section : ''))
+                  .fontSize(10.5).fontFamily(MONO).fontColor('#5A636E')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+              }
+              .width('100%')
+            }
+            .alignItems(HorizontalAlign.Start).width('100%')
+            .padding({ left: 11, right: 11, top: 9, bottom: 9 }).borderRadius(9)
+            .backgroundColor(this.sameUrl(this.browserCurUrl, it.url) ? '#248F8CFF' : '#09FFFFFF')
+            .border(this.sameUrl(this.browserCurUrl, it.url)
+              ? { width: 1, color: '#738F8CFF' } : { width: 1, color: Color.Transparent })
+            .onClick(() => this.openInBrowser(it.url))
+          }
+        }, (it: ProtoItem) => it.url + '_' + it.updated + '_' + this.protoFilter + '_' +
+          (this.sameUrl(this.browserCurUrl, it.url) ? 1 : 0))
+      }
+      .layoutWeight(1).width('100%').padding({ left: 8, right: 8, top: 4 }).scrollBar(BarState.Off)
+    }
+  }
+
+  @Builder
+  browserSidebar() {
+    Column() {
+      Row({ space: 2 }) {
+        this.browserSegBtn('后台', 'admin')
+        this.browserSegBtn('原型', 'proto')
+      }
+      .padding(2).margin({ left: 10, right: 10, top: 10, bottom: 6 })
+      .borderRadius(10).backgroundColor('#0DFFFFFF')
+
+      if (this.browserSeg === 'admin') {
+        this.adminList()
+      } else {
+        this.protoList()
+      }
+
+      Row({ space: 6 }) {
+        if (this.browserSeg === 'proto') {
+          Text(this.protoFooter()).fontSize(11).fontFamily(MONO).fontColor(B_DIM).layoutWeight(1)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.brIcon($r('sys.symbol.person'), B_SUB, 14, () => { this.sheet = 'protoAuth'; })
+          this.brIcon($r('sys.symbol.arrow_clockwise'), B_SUB, 14, () => this.refreshProto())
+        } else {
+          Text('长按编辑 · 与 iOS / 平板同步').fontSize(11).fontColor(B_DIM).layoutWeight(1)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.brIcon($r('sys.symbol.plus'), TEAL, 15, () => this.openPinEditor(-1))
+        }
+      }
+      .width('100%').height(40).padding({ left: 14, right: 6 })
+      .border({ width: { top: 1 }, color: B_HAIR })
+    }
+    .width('84%').height('100%').backgroundColor(B_PANEL)
+    .border({ width: { right: 1 }, color: B_HAIR })
+  }
+
   @Builder
   browserOverlay() {
     Column() {
-      Row({ space: 10 }) {
-        Text('‹ 关闭').fontSize(15).fontColor(TEAL).onClick(() => { this.showBrowser = false; })
-        Text(this.browserUrl).fontSize(12).fontColor('#8E8E93').layoutWeight(1).maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }.width('100%').height(44).padding({ left: 14, right: 14 }).backgroundColor('#1C1C1E')
-      Web({ src: this.browserUrl, controller: new webview.WebviewController() })
-        .width('100%').layoutWeight(1)
+      // 顶栏：侧栏开关 ← → [锁 网址 刷新] + ×
+      Row({ space: 2 }) {
+        this.brIcon(this.browserSide ? $r('sys.symbol.close_sidebar') : $r('sys.symbol.open_sidebar'),
+          this.browserSide ? TEAL : B_SUB, 17, () => { this.browserSide = !this.browserSide; })
+        this.brIcon($r('sys.symbol.chevron_left'), this.browserCanBack ? B_FG : '#3A4048', 16, () => {
+          try { if (this.browserCtl.accessBackward()) { this.browserCtl.backward(); } } catch (e) { }
+        })
+        Row({ space: 6 }) {
+          if (this.browserLoading) {
+            LoadingProgress().width(14).height(14).color(B_DIM)
+          } else {
+            SymbolGlyph(this.browserLockIcon()).fontSize(12)
+              .fontColor([this.browserUrlText.startsWith('http://') ? B_WAIT : B_DIM])
+          }
+          TextInput({ text: this.browserUrlText, placeholder: '搜索或输入网址' })
+            .id('browserUrl')
+            .layoutWeight(1).height(32).fontSize(13).fontColor(B_FG).placeholderColor(B_DIM)
+            .backgroundColor(Color.Transparent).caretColor(TEAL).padding({ left: 0, right: 0 })
+            .type(InputType.URL).enterKeyType(EnterKeyType.Go)
+            .textAlign(this.browserEditing ? TextAlign.Start : TextAlign.Center)
+            .selectAll(true)
+            .onEditChange((editing: boolean) => { this.browserEditing = editing; })
+            .onChange((v: string) => { this.browserUrlText = v; })
+            .onSubmit(() => this.openInBrowser(this.browserUrlText))
+          Stack() {
+            SymbolGlyph(this.browserLoading ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_clockwise'))
+              .fontSize(13).fontColor([B_SUB])
+          }
+          .width(28).height(28).borderRadius(14)
+          .onClick(() => this.browserReloadOrStop())
+        }
+        .layoutWeight(1).height(34).padding({ left: 12, right: 4 }).margin({ left: 2, right: 2 })
+        .borderRadius(17).backgroundColor(B_PANEL3)
+        this.brIcon($r('sys.symbol.plus'), TEAL, 16, () => this.openPinEditor(-1))
+        this.brIcon($r('sys.symbol.xmark'), B_SUB, 16, () => this.closeBrowser())
+      }
+      .width('100%').height(48).padding({ left: 4, right: 4 })
+      .border({ width: { bottom: 1 }, color: B_HAIR })
+
+      // 网页 + 抽屉侧栏（手机屏窄，侧栏浮在网页上，点空白收起）
+      Stack({ alignContent: Alignment.TopStart }) {
+        Web({ src: this.browserStartUrl, controller: this.browserCtl })
+          .javaScriptAccess(true).domStorageAccess(true).fileAccess(true).imageAccess(true)
+          .mixedMode(MixedMode.All).zoomAccess(true).overviewModeAccess(true)
+          .multiWindowAccess(false)
+          .width('100%').height('100%').backgroundColor('#FFFFFF')
+          .onControllerAttached(() => {
+            this.browserAttached = true;
+            if (this.browserStartUrl !== 'about:blank') {
+              try {
+                if (this.browserCtl.getUrl() !== this.browserStartUrl) {
+                  this.browserCtl.loadUrl(this.browserStartUrl);
+                }
+              } catch (e) {
+              }
+            }
+          })
+          .onPageBegin((e) => { if (e) { this.onBrowserNav(e.url, true); } })
+          .onPageEnd((e) => { if (e) { this.onBrowserNav(e.url, false); } })
+          .onProgressChange((e) => {
+            if (e) {
+              this.browserProgress = e.newProgress;
+              if (e.newProgress >= 100) {
+                this.browserLoading = false;
+              }
+            }
+          })
+          .onHttpAuthRequest((event) => {
+            if (event) {
+              const cred: string[] | null = this.browserAuth(event.host);
+              if (cred !== null) {
+                event.handler.confirm(cred[0], cred[1]);
+              } else {
+                event.handler.cancel();
+                if (event.host === PROTO_HOST) {
+                  this.sheet = 'protoAuth';
+                }
+              }
+            }
+            return true;
+          })
+
+        if (this.browserLoading && this.browserProgress < 100) {
+          Row().width(`${Math.max(4, this.browserProgress)}%`).height(2).backgroundColor(TEAL)
+            .position({ x: 0, y: 0 })
+        }
+
+        if (this.browserCurUrl.length === 0) {
+          Column({ space: 12 }) {
+            SymbolGlyph($r('sys.symbol.rectangle_stack')).fontSize(38).fontColor(['#4A515C'])
+            Text('从侧栏选一个后台或原型').fontSize(14).fontColor(B_SUB)
+            Text('也可以在地址栏直接输入网址').fontSize(12).fontColor(B_DIM)
+          }
+          .width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor('#101216')
+        }
+
+        if (this.browserSide) {
+          Column().width('100%').height('100%').backgroundColor('#99000000')
+            .onClick(() => { this.browserSide = false; })
+          this.browserSidebar()
+        }
+      }
+      .layoutWeight(1).width('100%')
     }
-    .width('100%').height('100%').backgroundColor('#000000')
+    .width('100%').height('100%').backgroundColor(B_PANEL2)
     .padding({ top: this.topInset, bottom: this.botInset })
+    .visibility(this.showBrowser ? Visibility.Visible : Visibility.Hidden)
   }
 
   // ---- 对话记录页 overlay(D 卡片流,与 iOS 一致) ----
