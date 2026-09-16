@@ -243,5 +243,11 @@
 			<string>blink</string>
 		</dict>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>在同一局域网内发现并直连你 Mac 上的 blinkd，避免绕行 Tailscale，连接更快。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_blinkd._tcp</string>
+	</array>
 </dict>
 </plist>

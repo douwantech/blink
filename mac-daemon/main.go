@@ -350,22 +350,82 @@ func main() {
 	select {} // 阻塞 main,让各 accept goroutine 长活
 }
 
-// startBonjour 在局域网用 mDNS/Bonjour 广播本 daemon,让同网客户端自动发现 LAN IP:port。
-// 广播失败不致命(比如 5353 被占/无组播权限)——只记日志,客户端仍可走 tsnet 或手填。
+// startBonjour 在局域网用 mDNS/Bonjour 广播本 daemon,让同网客户端自动发现并 LAN 直连。
+// TXT 带 ts=<tailscaleIP>(客户端按此把这条 LAN 记录对上它已配置的机器)+ lan=<局域网IP>
+// (客户端直接读这个 IP 直连,免去各端各写一套 SRV/A 解析;端口用客户端已配置的 blinkdPort,
+// 与本 daemon 监听端口一致)。token 绝不进 TXT。广播失败不致命——只记日志,仍可走 tsnet/手填。
+// 起一条 goroutine 盯 LAN IP 变化(DHCP/换网),变了就重播,TXT 里的 lan= 始终是当前地址。
 func startBonjour(instance string, port int, tsIP string) {
-	txt := []string{"v=1"}
-	if tsIP != "" {
-		txt = append(txt, "ts="+tsIP) // 客户端按此把 LAN 记录对上已配置机器(Tailscale IP 相同即同一台)
+	register := func(lanIP string) {
+		if bonjourServer != nil {
+			bonjourServer.Shutdown()
+			bonjourServer = nil
+		}
+		txt := []string{"v=1"}
+		if tsIP != "" {
+			txt = append(txt, "ts="+tsIP)
+		}
+		if lanIP != "" {
+			txt = append(txt, "lan="+lanIP)
+		}
+		txt = append(txt, "host="+instance)
+		server, err := zeroconf.Register(instance, "_blinkd._tcp", "local.", port, txt, nil)
+		if err != nil {
+			log.Printf("bonjour register failed (LAN 自动发现不可用,仍可走 tsnet): %v", err)
+			return
+		}
+		bonjourServer = server
+		log.Printf("bonjour advertised: _blinkd._tcp %q port %d ts=%s lan=%s", instance, port, tsIP, lanIP)
 	}
-	txt = append(txt, "host="+instance)
-	server, err := zeroconf.Register(instance, "_blinkd._tcp", "local.", port, txt, nil)
-	if err != nil {
-		log.Printf("bonjour register failed (LAN 自动发现不可用,仍可走 tsnet): %v", err)
-		return
-	}
-	// 持有 server 引用直到进程退出(GC 掉会停止广播)。daemon 常驻,不显式 Shutdown。
-	bonjourServer = server
-	log.Printf("bonjour advertised: _blinkd._tcp %q port %d ts=%s", instance, port, tsIP)
+
+	lastIP := primaryLANIP()
+	register(lastIP)
+	go func() {
+		for range time.Tick(15 * time.Second) {
+			if ip := primaryLANIP(); ip != lastIP {
+				log.Printf("LAN IP 变化 %s → %s,重播 Bonjour", lastIP, ip)
+				lastIP = ip
+				register(ip)
+			}
+		}
+	}()
 }
 
 var bonjourServer *zeroconf.Server
+
+// primaryLANIP 返回本机主局域网 IPv4(跳过 loopback / 未启用 / Tailscale 的 100.64/10 / link-local)。
+// 用于放进 Bonjour TXT 的 lan=,让同网客户端直连。多网卡时取第一个符合的私有地址。
+func primaryLANIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			ip4 := ip.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+				continue
+			}
+			// 跳过 Tailscale 的 CGNAT 段 100.64.0.0/10(那不是真 LAN,客户端要的是本地直连地址)
+			if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+				continue
+			}
+			return ip4.String()
+		}
+	}
+	return ""
+}

@@ -18,6 +18,7 @@
 
 #import "BlinkdSession.h"
 #import "BlinkPaths.h"
+#import "Blink-Swift.h"   // BlinkdLAN（同网 Bonjour 发现，LAN 直连优先）
 
 #include <netdb.h>
 #include <poll.h>
@@ -212,8 +213,20 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
     return -1;
   }
 
-  // 解析 + 非阻塞 connect(8s 超时,tailscale IP 不通时不至于挂死)
-  _sock = [self connectTo:host.UTF8String port:port];
+  // 同网优先 LAN 直连:Bonjour 按 ts=<host> 发现到这台机器就先连它的 lan= 地址(1.5s 超时),
+  // 连不上再回落 Tailscale host(8s 超时,tailscale IP 不通时不至于挂死)。
+  _sock = -1;
+  NSString *lan = [[BlinkdLAN shared] lanHostForTailscaleHost:host];
+  if (lan.length > 0) {
+    fprintf(_stream.out, "blinkd: 同网直连 %s …\r\n", lan.UTF8String);
+    _sock = [self connectTo:lan.UTF8String port:port timeoutMs:1500];
+    if (_sock < 0) {
+      fprintf(_stream.out, "blinkd: LAN 直连不通,回落 Tailscale\r\n");
+    }
+  }
+  if (_sock < 0) {
+    _sock = [self connectTo:host.UTF8String port:port timeoutMs:8000];
+  }
   if (_sock < 0) {
     return -1;
   }
@@ -241,7 +254,7 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
   return 0;
 }
 
-- (int)connectTo:(const char *)host port:(int)port
+- (int)connectTo:(const char *)host port:(int)port timeoutMs:(int)timeoutMs
 {
   char strport[16];
   snprintf(strport, sizeof strport, "%d", port);
@@ -266,7 +279,7 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
     int r = connect(sock, ai->ai_addr, ai->ai_addrlen);
     if (r < 0 && errno == EINPROGRESS) {
       struct pollfd p = { .fd = sock, .events = POLLOUT };
-      if (poll(&p, 1, 8000) > 0) {
+      if (poll(&p, 1, timeoutMs) > 0) {
         int soerr = 0;
         socklen_t slen = sizeof soerr;
         getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &slen);

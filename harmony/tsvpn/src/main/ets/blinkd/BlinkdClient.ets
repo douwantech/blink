@@ -20,6 +20,7 @@ import { socket } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { BlinkdDiscovery } from './BlinkdDiscovery';
 
 const DOMAIN: number = 0x0BD1;
 const TAG: string = 'blinkd';
@@ -45,12 +46,25 @@ export class BlinkdClient {
   }
 
   // Connect, authenticate, size the tty, and start the shell (or run `cmd`).
+  // 同网优先 LAN 直连：Bonjour 按 ts=<host> 发现到这台机器就先连它的 lan= 地址（1.5s 超时），
+  // 连不上再回落 Tailscale host（8s 超时）。发现不到就只走 Tailscale，行为跟以前一致。
   public connect(host: string, port: number, token: string,
                  rows: number, cols: number, cmd: string): void {
+    const lan: string | undefined = BlinkdDiscovery.instance.lanHost(host);
+    const candidates: string[] = (lan !== undefined && lan !== host) ? [lan, host] : [host];
+    this.tryConnect(candidates, 0, port, token, rows, cols, cmd);
+  }
+
+  private tryConnect(candidates: string[], idx: number, port: number, token: string,
+                     rows: number, cols: number, cmd: string): void {
+    const host: string = candidates[idx];
+    const isLast: boolean = idx === candidates.length - 1;
+    const timeout: number = isLast ? 8000 : 1500;
     this.onState('connecting', host + ':' + port);
     const tcp: socket.TCPSocket = socket.constructTCPSocketInstance();
     this.tcp = tcp;
     this.authed = false;
+    let tcpConnected: boolean = false;   // connect 成功后置 true——之后的失败不再回落（那不是连不通）
 
     tcp.on('message', (v: socket.SocketMessageInfo) => {
       this.onData(new Uint8Array(v.message));
@@ -65,8 +79,11 @@ export class BlinkdClient {
 
     // OHOS TCPSocket requires bind() before connect().
     tcp.bind({ address: '0.0.0.0', port: 0 })
-      .then(() => tcp.connect({ address: { address: host, port: port }, timeout: 8000 }))
-      .then(() => this.sendFrame(FRAME_AUTH, this.enc.encodeInto(token)))          // 1. auth
+      .then(() => tcp.connect({ address: { address: host, port: port }, timeout: timeout }))
+      .then(() => {
+        tcpConnected = true;
+        return this.sendFrame(FRAME_AUTH, this.enc.encodeInto(token));             // 1. auth
+      })
       .then(() => this.sendResize(rows, cols))                                     // 2. size tty
       .then(() => {                                                                // 3. start shell
         const line: string = (cmd.length > 0) ? cmd : 'exec /bin/zsh -il';
@@ -78,6 +95,13 @@ export class BlinkdClient {
         hilog.info(DOMAIN, TAG, 'connected %{public}s:%{public}d', host, port);
       })
       .catch((e: Object) => {
+        // 连不上且还有下一个候选（即 LAN 失败、回落 Tailscale）→ 换下一个。
+        if (!tcpConnected && !isLast) {
+          hilog.warn(DOMAIN, TAG, 'LAN 直连失败,回落: %{public}s', JSON.stringify(e));
+          tcp.close().catch((): void => {});
+          this.tryConnect(candidates, idx + 1, port, token, rows, cols, cmd);
+          return;
+        }
         this.onState('error', JSON.stringify(e));
         hilog.error(DOMAIN, TAG, 'connect: %{public}s', JSON.stringify(e));
       });

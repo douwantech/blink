@@ -369,7 +369,8 @@ final class ConfigSyncPush: NSObject {
     return out
   }
 
-  private static func send(host: String, port: UInt16, token: String, script: String) {
+  private static func send(host rawHost: String, port rawPort: UInt16, token: String, script: String) {
+    let (host, port) = BlinkdLAN.preferred(host: rawHost, port: rawPort)   // 同网优先 LAN 直连
     guard let p = NWEndpoint.Port(rawValue: port) else { return }
     let conn = NWConnection(host: NWEndpoint.Host(host), port: p, using: .tcp)
     var out = frame(0x01, Data(token.utf8))
@@ -389,6 +390,60 @@ final class ConfigSyncPush: NSObject {
     }
     conn.start(queue: .global(qos: .utility))
     DispatchQueue.global().asyncAfter(deadline: .now() + 10) { conn.cancel() }   // 兜底超时
+  }
+}
+
+// MARK: - 局域网 Bonjour 发现（LAN 直连优先，绕开 Tailscale 中转）
+//
+// Mac 上的 blinkd 在同一局域网广播 _blinkd._tcp，TXT 带 ts=<tailscaleIP> + lan=<局域网IP>。
+// 客户端常驻 browse：把每条记录按 ts= 对上「我已配置的机器」（机器的 blinkdHost 就是那个
+// Tailscale IP），拿到它当前的 lan= 直连地址。同网时优先直连 LAN（更快、省电、不占 Tailscale），
+// 出门/换网发现不到就回落 Tailscale。端口用机器已配置的 blinkdPort（LAN daemon 同端口）。
+// 线程安全，供 Swift 与 ObjC（BlinkdSession）共用。
+@objc(BlinkdLAN)
+final class BlinkdLAN: NSObject {
+  @objc static let shared = BlinkdLAN()
+
+  private let q = DispatchQueue(label: "blinkd.lan.discovery")
+  private let lock = NSLock()
+  private var lanByTS: [String: String] = [:]   // tailscaleIP → 当前 LAN IP
+  private var browser: NWBrowser?
+
+  /// 启动常驻发现（幂等）。app 启动时调一次。
+  @objc func start() {
+    q.async { [weak self] in
+      guard let self, self.browser == nil else { return }
+      let params = NWParameters()
+      params.includePeerToPeer = false
+      let b = NWBrowser(for: .bonjourWithTXTRecord(type: "_blinkd._tcp", domain: nil), using: params)
+      b.browseResultsChangedHandler = { [weak self] results, _ in self?.rebuild(results) }
+      b.start(queue: self.q)
+      self.browser = b
+    }
+  }
+
+  private func rebuild(_ results: Set<NWBrowser.Result>) {
+    var map: [String: String] = [:]
+    for r in results {
+      guard case let .bonjour(txt) = r.metadata else { continue }
+      // ts= 是身份（对上已配置机器），lan= 是本地直连 IP；两者齐了才算一条可用 LAN 记录。
+      guard case let .string(ts) = txt.getEntry(for: "ts"), !ts.isEmpty,
+            case let .string(lan) = txt.getEntry(for: "lan"), !lan.isEmpty else { continue }
+      map[ts] = lan
+    }
+    lock.lock(); lanByTS = map; lock.unlock()
+  }
+
+  /// 该 Tailscale host/IP 对应的机器此刻在本局域网被发现→返回它的 LAN 直连 IP，否则 nil。
+  @objc func lanHost(forTailscaleHost host: String) -> String? {
+    lock.lock(); defer { lock.unlock() }
+    return lanByTS[host]
+  }
+
+  /// Swift 便捷：给定配置里的（Tailscale host, port），发现到 LAN 就换成 LAN 直连地址，否则原样返回。
+  static func preferred(host: String, port: UInt16) -> (host: String, port: UInt16) {
+    if let lan = shared.lanHost(forTailscaleHost: host) { return (lan, port) }
+    return (host, port)
   }
 }
 
@@ -584,9 +639,10 @@ final class ConfigSyncPull: NSObject {
   // MARK: 常驻 watcher（同鸿蒙端：Mac 上跑 stat 小循环，mtime 变了吐一行）
 
   private func ensureWatcher() {
-    guard watcher == nil, let ep = firstEndpoint(),
-          let port = NWEndpoint.Port(rawValue: UInt16(clamping: ep.port)) else { return }
-    let conn = NWConnection(host: NWEndpoint.Host(ep.host), port: port, using: .tcp)
+    guard watcher == nil, let ep = firstEndpoint() else { return }
+    let (h, pt) = BlinkdLAN.preferred(host: ep.host, port: UInt16(clamping: ep.port))   // 同网优先 LAN 直连
+    guard let port = NWEndpoint.Port(rawValue: pt) else { return }
+    let conn = NWConnection(host: NWEndpoint.Host(h), port: port, using: .tcp)
     watcher = conn
     watchBuf = Data()
     let script = "last=\"\"; while true; do cur=$(stat -f %m ~/.blink/sync/blink_config.json 2>/dev/null); "

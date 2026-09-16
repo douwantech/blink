@@ -85,6 +85,7 @@ void __setupProcessEnv(void) {
   // 把本地配置镜像到 iCloud Key-Value Store，并在重装后自动拉回。尽量早调，
   // 让后续代码读 UserDefaults 前先有机会从 iCloud 恢复。
   [CloudConfigSync start];
+  [[BlinkdLAN shared] start];   // 常驻 Bonjour 发现同网 blinkd，供 LAN 直连优先用
 
   [Migrator perform];
 
