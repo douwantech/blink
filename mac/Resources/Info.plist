@@ -26,5 +26,12 @@
 	<string>NSApplication</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
+	<!-- 局域网 Bonjour 发现同网 blinkd，优先 LAN 直连（macOS 15+ 需本地网络授权） -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>在同一局域网内发现并直连你的 Mac 上的 blinkd，避免绕行 Tailscale，连接更快。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_blinkd._tcp</string>
+	</array>
 </dict>
 </plist>

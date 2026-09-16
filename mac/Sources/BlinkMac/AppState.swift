@@ -154,6 +154,7 @@ final class AppState: ObservableObject {
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
         if chatShotIfNeeded() { return }
+        BlinkdDiscovery.shared.start()   // 常驻 Bonjour 发现同网 blinkd，供 LAN 优先直连用
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
             let a = BlinkAvatars.load()

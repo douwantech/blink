@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/libp2p/zeroconf/v2"
 	"tailscale.com/tsnet"
 )
 
@@ -264,7 +265,8 @@ func main() {
 		bind     = flag.String("bind", "127.0.0.1", "bind address (plain TCP mode)")
 		token    = flag.String("token", "", "auth token (empty = generate & print)")
 		useTsnet = flag.Bool("tsnet", false, "listen as an independent tailscale node (bypasses MDM firewall)")
-		hostname = flag.String("hostname", "blinkd", "tsnet node hostname")
+		useLan   = flag.Bool("lan", true, "also listen on LAN (0.0.0.0) and advertise via Bonjour, so same-LAN clients connect directly without Tailscale")
+		hostname = flag.String("hostname", "blinkd", "tsnet node hostname (also the Bonjour instance name)")
 		stateDir = flag.String("state", "", "tsnet state dir (default ~/.config/blinkd/tsnet)")
 		cmdline  = flag.String("cmd", "/bin/zsh", "default command when a connection sends no exec frame")
 	)
@@ -278,8 +280,11 @@ func main() {
 		*token = hex.EncodeToString(b)
 	}
 
-	var ln net.Listener
-	var err error
+	// 双模式:可能同时开两个 listener —— tsnet(远程/绕 MDM/出门在外) + 纯 TCP(同一局域网直连,不经 Tailscale)。
+	// 同网时客户端优先走 LAN 直连(更快、省电、不占 Tailscale),连不上再回落 tsnet;两个 listener 喂同一个 handleConn。
+	var listeners []net.Listener
+	var tsIP string
+
 	if *useTsnet {
 		dir := *stateDir
 		if dir == "" {
@@ -290,29 +295,77 @@ func main() {
 		srv := &tsnet.Server{Hostname: *hostname, Dir: dir}
 		// 先等 tsnet 真正上线(连上 tailnet 并分配到 IP),再 Listen ——
 		// 否则 Listen 可能在 tsnet 没就绪时建立、监听无效,客户端 connect failed(之前 "invalid IP" bug)。
-		if _, err = srv.Up(context.Background()); err != nil {
+		if _, err := srv.Up(context.Background()); err != nil {
 			log.Fatal("tsnet up: ", err)
 		}
-		ln, err = srv.Listen("tcp", fmt.Sprintf(":%d", *port))
+		ln, err := srv.Listen("tcp", fmt.Sprintf(":%d", *port))
 		if err != nil {
 			log.Fatal(err)
 		}
-		ip4, _ := srv.TailscaleIPs()
-		log.Printf("tsnet ready: %s port %d", ip4, *port)
-	} else {
-		ln, err = net.Listen("tcp", fmt.Sprintf("%s:%d", *bind, *port))
+		if ip4, _ := srv.TailscaleIPs(); ip4.IsValid() {
+			tsIP = ip4.String()
+		}
+		log.Printf("tsnet ready: %s port %d", tsIP, *port)
+		listeners = append(listeners, ln)
+	}
+
+	// LAN 纯 TCP:tsnet 模式下绑 0.0.0.0 让同网可达(否则同网也被迫走 tsnet);
+	// 非 tsnet 模式沿用 --bind(默认 127.0.0.1),行为跟以前一致。
+	if *useLan || !*useTsnet {
+		bindAddr := *bind
+		if *useTsnet {
+			bindAddr = "0.0.0.0"
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bindAddr, *port))
 		if err != nil {
 			log.Fatal(err)
+		}
+		log.Printf("lan ready: %s", ln.Addr())
+		listeners = append(listeners, ln)
+		// Bonjour 广播(仅局域网):同网客户端 browse _blinkd._tcp 就能拿到当前 LAN IP,
+		// DHCP 换 IP 也自动跟上,零配置。TXT 带 ts=<tailscaleIP> 让客户端把这条 LAN 记录
+		// 对上它已配置的机器(按 Tailscale IP 匹配);token 不进 TXT(局域网明文,绝不广播密钥)。
+		if *useLan {
+			startBonjour(*hostname, *port, tsIP)
 		}
 	}
 
-	log.Printf("blinkd ready on %s | token=%s | default cmd=%s", ln.Addr(), *token, *cmdline)
+	log.Printf("blinkd ready | token=%s | default cmd=%s | listeners=%d", *token, *cmdline, len(listeners))
 	go watchChildren(50)
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			log.Fatal(err)
-		}
-		go handleConn(c, *token, *cmdline)
+
+	// 每个 listener 各跑一条 accept 循环,喂同一个 handleConn。某个 listener 挂了只记日志,
+	// 不再 log.Fatal 拖垮整个进程(比如 LAN 网络切换导致 accept 出错,tsnet 那条还该继续)。
+	for _, ln := range listeners {
+		go func(l net.Listener) {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					log.Printf("accept on %s: %v", l.Addr(), err)
+					return
+				}
+				go handleConn(c, *token, *cmdline)
+			}
+		}(ln)
 	}
+	select {} // 阻塞 main,让各 accept goroutine 长活
 }
+
+// startBonjour 在局域网用 mDNS/Bonjour 广播本 daemon,让同网客户端自动发现 LAN IP:port。
+// 广播失败不致命(比如 5353 被占/无组播权限)——只记日志,客户端仍可走 tsnet 或手填。
+func startBonjour(instance string, port int, tsIP string) {
+	txt := []string{"v=1"}
+	if tsIP != "" {
+		txt = append(txt, "ts="+tsIP) // 客户端按此把 LAN 记录对上已配置机器(Tailscale IP 相同即同一台)
+	}
+	txt = append(txt, "host="+instance)
+	server, err := zeroconf.Register(instance, "_blinkd._tcp", "local.", port, txt, nil)
+	if err != nil {
+		log.Printf("bonjour register failed (LAN 自动发现不可用,仍可走 tsnet): %v", err)
+		return
+	}
+	// 持有 server 引用直到进程退出(GC 掉会停止广播)。daemon 常驻,不显式 Shutdown。
+	bonjourServer = server
+	log.Printf("bonjour advertised: _blinkd._tcp %q port %d ts=%s", instance, port, tsIP)
+}
+
+var bonjourServer *zeroconf.Server
