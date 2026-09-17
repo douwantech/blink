@@ -216,11 +216,14 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
   // 同网优先 LAN 直连:Bonjour 按 ts=<host> 发现到这台机器就先连它的 lan= 地址(1.5s 超时),
   // 连不上再回落 Tailscale host(8s 超时,tailscale IP 不通时不至于挂死)。
   _sock = -1;
+  BOOL usedLan = NO;
   NSString *lan = [[BlinkdLAN shared] lanHostForTailscaleHost:host];
   if (lan.length > 0) {
     fprintf(_stream.out, "blinkd: 同网直连 %s …\r\n", lan.UTF8String);
     _sock = [self connectTo:lan.UTF8String port:port timeoutMs:1500];
-    if (_sock < 0) {
+    if (_sock >= 0) {
+      usedLan = YES;
+    } else {
       fprintf(_stream.out, "blinkd: LAN 直连不通,回落 Tailscale\r\n");
     }
   }
@@ -229,6 +232,12 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
   }
   if (_sock < 0) {
     return -1;
+  }
+  // 明确标出当前连接方式，方便一眼分辨走的是 LAN 直连还是 Tailscale。
+  if (usedLan) {
+    fprintf(_stream.out, "blinkd: ✓ 已连接 · LAN 直连 %s\r\n", lan.UTF8String);
+  } else {
+    fprintf(_stream.out, "blinkd: ✓ 已连接 · Tailscale %s\r\n", host.UTF8String);
   }
 
   // 握手:token → (可选)exec 远端脚本 → 上报窗口尺寸

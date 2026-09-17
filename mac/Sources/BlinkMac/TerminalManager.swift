@@ -67,12 +67,15 @@ final class RemoteBackend: TerminalBackend {
     private let token: String
     private let execCmd: String
     private var client: BlinkdClient?
+    private let onTransport: ((String) -> Void)?
     var view: TerminalView { tv }
 
     init(host: String, port: UInt16, token: String, exec: String,
-         uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil) {
+         uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil,
+         onTransport: ((String) -> Void)? = nil) {
         self.host = host; self.port = port; self.token = token
         execCmd = exec
+        self.onTransport = onTransport
         tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(tv)
@@ -84,6 +87,7 @@ final class RemoteBackend: TerminalBackend {
 
     private func connect() {
         let c = BlinkdClient(host: host, port: port, token: token, exec: execCmd, terminal: tv)
+        c.onTransport = onTransport   // 把实际通道（LAN/Tailscale）回报给 UI
         tv.client = c
         client = c
         c.start()
@@ -166,6 +170,8 @@ final class TerminalManager {
     private var backends: [String: TerminalBackend] = [:]
     /// 远程贴图上传图床时冒 toast（AppState 注入）。
     var onToast: ((String) -> Void)?
+    /// blinkd 连上后回报该会话实际用的通道（sessionID, "LAN 直连"/"Tailscale"），AppState 注入。
+    var onTransport: ((String, String) -> Void)?
 
     func backend(for session: Session, machine: Machine) -> TerminalBackend {
         if let b = backends[session.id] { return b }
@@ -179,7 +185,8 @@ final class TerminalManager {
             let exec = BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
             // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
             b = RemoteBackend(host: h, port: p, token: t, exec: exec,
-                              uploadImageOnPaste: !machine.isLocalMac, onToast: onToast)
+                              uploadImageOnPaste: !machine.isLocalMac, onToast: onToast,
+                              onTransport: { [weak self, sid = session.id] kind in self?.onTransport?(sid, kind) })
         case .ssh(let user, let host):
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
             // 空/~ 时用 "."（ssh 登录落点就是远端 $HOME），别用会被单引号挡住展开的 $HOME。

@@ -31,6 +31,8 @@ final class BlinkdClient {
     private var stopped = false
 
     var onStatus: ((String) -> Void)?
+    /// 连上后回报实际用的通道标签（"LAN 直连" / "Tailscale"），UI 拿去显示当前连接方式。
+    var onTransport: ((String) -> Void)?
 
     init(host: String, port: UInt16, token: String, exec: String?, terminal: TerminalView) {
         self.host = host
@@ -70,6 +72,7 @@ final class BlinkdClient {
                 case .ready:
                     self.connectTimeout?.cancel(); self.connectTimeout = nil
                     self.onStatus?("已连接 blinkd（\(cand.label)）")
+                    self.onTransport?(cand.label)
                     self.startReceive()
                     self.handshake()
                 case .failed:

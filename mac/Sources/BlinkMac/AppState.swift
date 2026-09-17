@@ -55,6 +55,9 @@ final class AppState: ObservableObject {
     /// Real local PTY terminals (SwiftTerm), one per session.
     let term = TerminalManager()
 
+    /// 每个 blinkd 会话实际用的连接通道（sessionID → "LAN 直连" / "Tailscale"），状态栏据此标记。
+    @Published var transportBySession: [String: String] = [:]
+
     private var toastTask: Task<Void, Never>?
 
     init() {
@@ -80,6 +83,7 @@ final class AppState: ObservableObject {
         }
         // 远程会话贴图上传图床时，把进度/结果 toast 冒出来（需 self 全初始化后再接）。
         term.onToast = { [weak self] m in Task { @MainActor in self?.showToast(m) } }
+        term.onTransport = { [weak self] sid, kind in Task { @MainActor in self?.transportBySession[sid] = kind } }
     }
 
     /// 读 blinkd 配置：环境变量 BLINKD_TOKEN/HOST/PORT，其次 ~/.config/blinkmac/config.json。

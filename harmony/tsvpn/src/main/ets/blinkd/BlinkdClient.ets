@@ -60,7 +60,9 @@ export class BlinkdClient {
     const host: string = candidates[idx];
     const isLast: boolean = idx === candidates.length - 1;
     const timeout: number = isLast ? 8000 : 1500;
-    this.onState('connecting', host + ':' + port);
+    // candidates 为 [lan, host] 时 idx=0 是 LAN 直连，其余走 Tailscale；只有 [host] 时也是 Tailscale。
+    const via: string = (candidates.length > 1 && idx === 0) ? 'LAN 直连' : 'Tailscale';
+    this.onState('connecting', via + ' ' + host + ':' + port);
     const tcp: socket.TCPSocket = socket.constructTCPSocketInstance();
     this.tcp = tcp;
     this.authed = false;
@@ -91,8 +93,8 @@ export class BlinkdClient {
       })
       .then(() => {
         this.authed = true;
-        this.onState('connected', '已连上 blinkd');
-        hilog.info(DOMAIN, TAG, 'connected %{public}s:%{public}d', host, port);
+        this.onState('connected', via + ' ' + host);   // detail 带连接方式，UI 标出来
+        hilog.info(DOMAIN, TAG, 'connected via %{public}s %{public}s:%{public}d', via, host, port);
       })
       .catch((e: Object) => {
         // 连不上且还有下一个候选（即 LAN 失败、回落 Tailscale）→ 换下一个。
