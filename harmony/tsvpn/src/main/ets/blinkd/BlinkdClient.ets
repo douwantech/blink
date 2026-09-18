@@ -61,8 +61,10 @@ export class BlinkdClient {
     const isLast: boolean = idx === candidates.length - 1;
     const timeout: number = isLast ? 8000 : 1500;
     // candidates 为 [lan, host] 时 idx=0 是 LAN 直连，其余走 Tailscale；只有 [host] 时也是 Tailscale。
-    const via: string = (candidates.length > 1 && idx === 0) ? 'LAN 直连' : 'Tailscale';
-    this.onState('connecting', via + ' ' + host + ':' + port);
+    const via: string = (candidates.length > 1 && idx === 0) ? 'LAN 直连' : 'Tailscale';   // 仅日志用
+    // UI 标记统一显示「SSH · <实际 IP>」：LAN 直连就是 192.168.x、Tailscale 是 100.x，
+    // 用 IP 区分链路，字样跟平板/手机上习惯的 SSH 一致。
+    this.onState('connecting', 'SSH · ' + host + ':' + port);
     const tcp: socket.TCPSocket = socket.constructTCPSocketInstance();
     this.tcp = tcp;
     this.authed = false;
@@ -93,7 +95,7 @@ export class BlinkdClient {
       })
       .then(() => {
         this.authed = true;
-        this.onState('connected', via + ' ' + host);   // detail 带连接方式，UI 标出来
+        this.onState('connected', 'SSH · ' + host);   // detail 带 SSH · IP，UI 标出来
         hilog.info(DOMAIN, TAG, 'connected via %{public}s %{public}s:%{public}d', via, host, port);
       })
       .catch((e: Object) => {
