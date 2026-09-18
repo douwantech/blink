@@ -100,7 +100,6 @@ struct TeamInspector: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                statusLabel(s.status)
                 agentGear(s)
                 Button { state.toggleRest(sessionID: s.id) } label: {
                     Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
@@ -153,13 +152,8 @@ struct TeamInspector: View {
         }
     }
 
-    // 状态：圆点 + 文字（替代重胶囊）
-    private func statusLabel(_ st: WorkStatus) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(st.color).frame(width: 7, height: 7)
-            Text(st.label).font(Theme.ui(11, .semibold)).foregroundColor(st.color)
-        }
-    }
+    // 行里不再显示 等你/干活中/空闲/休息 —— 探测出来的档位不准，看了误导。
+    // 休息与否仍看行尾月亮（手动开关，那个是准的）。
 
     private func statChip(_ n: Int, _ label: String, _ color: Color) -> some View {
         HStack(spacing: 5) {

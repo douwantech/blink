@@ -115,7 +115,7 @@ struct SessionRow: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                StatusPill(status: session.status)
+                // 状态胶囊（等你/干活中/空闲）去掉：探测不准，看了误导
             }
             .padding(.leading, 14).padding(.trailing, 12).padding(.vertical, 11)
             .background(

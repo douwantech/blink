@@ -732,11 +732,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   // MARK: 视图数据（按员工 = 状态分段；按项目 = 项目分段）
 
+  /// 原来按 等你拍板/干活中/空闲/休息中 分四段——探测出来的档位不准，分段等于把人乱放，
+  /// 现在一段列全，顺序就是 groups 的顺序。
   private var employeeSections: [(status: TeamWorkStatus, items: [Group])] {
-    [TeamWorkStatus.wait, .work, .idle, .rest].compactMap { st in
-      let items = groups.filter { $0.status == st }
-      return items.isEmpty ? nil : (st, items)
-    }
+    groups.isEmpty ? [] : [(.work, groups)]
   }
 
   private struct MemberEntry { let group: Group; let row: ProjectRow }
@@ -803,9 +802,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   func tableView(_ tv: UITableView, viewForHeaderInSection section: Int) -> UIView? {
     switch mode {
     case .employee:
-      let s = employeeSections[section]
-      return SectionHeader(symbol: s.status.symbol, color: s.status.color,
-                           title: s.status.sectionTitle, hint: s.status.sectionHint)
+      return nil
     case .project:
       let s = projectSections[section]
       let waitCount = s.items.filter { memberStatus($0) == .wait }.count
@@ -821,7 +818,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
-  func tableView(_ tv: UITableView, heightForHeaderInSection section: Int) -> CGFloat { 34 }
+  func tableView(_ tv: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+    mode == .employee ? 0 : 34
+  }
   func tableView(_ tv: UITableView, heightForFooterInSection section: Int) -> CGFloat { 6 }
   func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
     let v = UIView(); v.backgroundColor = .clear; return v
@@ -1095,7 +1094,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       machineLabel.text = restCount > 0 && restCount < g.rows.count
         ? "\(g.rows.count - restCount) 在岗 · \(restCount) 休息"
         : "\(g.rows.count) 个会话"
-      pill.apply(st)
+      pill.isHidden = true   // 等你/干活中/空闲 探测不准，不显示
 
       projStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
       // 在岗的排前面（按紧急度），休息的沉底；组内保持原顺序
@@ -1119,8 +1118,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
           line.backgroundColor = UIColor.white.withAlphaComponent(0.02)
           line.alpha = 0.55
         } else {
-          // 在岗：按自己的状态上彩色底（橙=等你 绿=干活 灰=空闲）
-          line.backgroundColor = r.status.color.withAlphaComponent(0.13)
+          line.backgroundColor = UIColor.white.withAlphaComponent(0.05)
         }
         let pn = UILabel()
         pn.font = .monospacedSystemFont(ofSize: 12, weight: .bold)
@@ -1253,8 +1251,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let (g, r) = entry
       card.backgroundColor = status == .rest
         ? UIColor.white.withAlphaComponent(0.02)
-        : status.color.withAlphaComponent(0.13)
+        : UIColor.white.withAlphaComponent(0.05)
       card.alpha = status == .rest ? 0.55 : 1
+      dot.isHidden = true   // 状态圆点去掉：探测不准
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
       // 一组里混着好几台机器，名字前面带上机器名才分得清
       nameLabel.text = "\(g.machineName) · \(g.employee)"
@@ -1351,7 +1350,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       // 开关要保持全亮可点，休息态只压暗文字/底色，不动整卡 alpha
       card.backgroundColor = status == .rest
         ? UIColor.white.withAlphaComponent(0.02)
-        : status.color.withAlphaComponent(0.13)
+        : UIColor.white.withAlphaComponent(0.05)
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
       avatarView.alpha = status == .rest ? 0.45 : 1
       nameLabel.textColor = status == .rest ? UIColor.white.withAlphaComponent(0.45) : .white
@@ -1362,8 +1361,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         descLabel.textColor = TeamWorkStatus.rest.color.withAlphaComponent(0.8)
         descLabel.text = "休息中 · 打开开关叫回来"
       } else {
-        descLabel.textColor = status.color
-        descLabel.text = status.label
+        // 状态文字（等你/干活中/空闲）去掉，这行改写「在做什么」，没探到就留空
+        descLabel.textColor = sub
+        descLabel.text = r.probed ? r.desc : ""
       }
       toggle.setOn(!r.resting, animated: false)
     }

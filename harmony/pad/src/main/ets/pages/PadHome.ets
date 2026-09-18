@@ -2395,7 +2395,7 @@ struct PadHome {
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).ellipsisMode(EllipsisMode.CENTER)
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
-      this.statusPill(r.status, r.statusLabel)
+      // 状态胶囊（等你/干活中/空闲）去掉：探测不准，看了误导
     }
     .width('100%').height(52).padding({ right: 10 }).borderRadius(10)
     .backgroundColor(r.tabId === this.activeTabId ? this.tint(TEAL, '1A') : Color.Transparent)
@@ -3322,8 +3322,6 @@ struct PadHome {
           .fontSize(13).fontColor(FG)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Row({ space: 4 }) {
-          Circle().width(5).height(5).fill(PadProbe.color(r.status))
-          Text(r.statusLabel).fontSize(11).fontColor(PadProbe.color(r.status))
           Text(r.cc).fontSize(10).fontFamily(MONO).fontColor(DIM).maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         }
