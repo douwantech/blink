@@ -35,7 +35,7 @@ import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS } from '../model/GlmVoice';
 import { CfgSync } from '../model/CfgSync';
 import { PadExec, Endpoint } from '../model/PadExec';
-import { PadProbe, PROBE_SCRIPT, WorkStatus } from '../model/PadProbe';
+import { PadProbe, PROBE_SCRIPT, WorkStatus, ProbeInfo, agoText } from '../model/PadProbe';
 import { buildChatHtml, ChatBridge, TranscriptCacheH } from '../model/ChatHtml';
 import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 
@@ -117,6 +117,8 @@ interface SessRow {
   unread: boolean;
   agent: string;       // 打开时进哪个 CLI：claude（默认）/ codex / deepseek
   machineName: string; // 按项目时一组里混着好几台机器，行里要显示
+  doing: string;       // 在干嘛：读 claude 的 jsonl 得来（正在 Edit · xxx / 它最后说的话）
+  doingAgo: string;    // 上面那条距今多久（「3 分钟前」），拿不到就是空串
 }
 
 interface TeamGroupVM {
@@ -266,7 +268,7 @@ struct PadHome {
   private avatarCache: Map<string, image.PixelMap> = new Map();
   private avatarB64Cache: Map<string, string> = new Map();
   // 状态探测
-  private probeByMachine: Map<string, Map<string, WorkStatus>> = new Map();
+  private probeByMachine: Map<string, Map<string, ProbeInfo>> = new Map();
   private lastProbe: number = 0;
   private probeBusy: boolean = false;
   // 对话记录
@@ -449,13 +451,15 @@ struct PadHome {
     if (mm === undefined) {
       return 'none';
     }
-    const st = mm.get(this.ccFor(t));
-    return st !== undefined ? st : 'none';
+    const info = mm.get(this.ccFor(t));
+    return info !== undefined ? info.status : 'none';
   }
 
   private rowFor(t: TabModel): SessRow {
     const w = this.store.workDirById(t.workDirId);
     const mForName = this.store.machineById(t.machineId);
+    const pm = this.probeByMachine.get(t.machineId);
+    const info: ProbeInfo | undefined = pm !== undefined ? pm.get(this.ccFor(t)) : undefined;
     const st: WorkStatus = this.tabStatus(t);
     let project: string = t.tmuxSession;
     const idx: number = project.lastIndexOf('-');
@@ -486,6 +490,8 @@ struct PadHome {
       unread: conn !== null && conn.unread && t.id !== this.activeTabId,
       agent: this.store.agentFor(t.machineId, this.ccFor(t).substring(3)),
       machineName: mForName !== null ? this.store.machineDisplayName(mForName) : t.machineId,
+      doing: info !== undefined ? info.doing : '',
+      doingAgo: info !== undefined ? agoText(info.ago) : '',
     };
     return r;
   }
@@ -928,7 +934,7 @@ struct PadHome {
       const mid: string = m.id;
       jobs.push(PadExec.run(ep, PadExec.wrapForMachine(m, PROBE_SCRIPT), 20000, '@TSB64E@')
         .then((raw: string): void => {
-          const map = PadProbe.parse(raw);
+          const map = PadProbe.parseInfo(raw);
           if (map !== null) {
             this.probeByMachine.set(mid, map);
           }
@@ -3309,7 +3315,7 @@ struct PadHome {
             Row().width('100%').height(1).backgroundColor(HAIR)
           }
           this.teamRow(r)
-        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.agent + '_' +
+        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.agent + '_' + r.doing + '_' +
           (r.tabId === this.activeTabId ? 1 : 0))
       }
       .width('100%').borderRadius(12).backgroundColor(PANEL2).border({ width: 1, color: HAIR }).clip(true)
@@ -3338,9 +3344,15 @@ struct PadHome {
           : (this.inspector === 'project' ? r.machineName + ' · ' + r.name : r.name))
           .fontSize(13).fontColor(FG)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Row({ space: 4 }) {
+        if (r.doing.length > 0) {
+          Text(r.doing).fontSize(11).fontColor(SUB).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          if (r.doingAgo.length > 0) {
+            Text(r.doingAgo).fontSize(9).fontFamily(MONO).fontColor(DIM)
+          }
+        } else {
           Text(r.cc).fontSize(10).fontFamily(MONO).fontColor(DIM).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         }
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)

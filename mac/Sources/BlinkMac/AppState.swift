@@ -276,7 +276,7 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
-        await withTaskGroup(of: (String, [String: WorkStatus]).self) { group in
+        await withTaskGroup(of: (String, [String: ProbeInfo]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
                 group.addTask {
@@ -286,10 +286,11 @@ final class AppState: ObservableObject {
             }
             for await (mid, map) in group where !map.isEmpty {
                 for i in sessions.indices where sessions[i].machineID == mid {
-                    guard let name = sessions[i].tmuxName else { continue }
-                    let probed = map[name] ?? .idle
-                    sessions[i].probed = probed
-                    sessions[i].status = isResting(name) ? .rest : probed
+                    guard let name = sessions[i].tmuxName, let info = map[name] else { continue }
+                    sessions[i].probed = info.status
+                    sessions[i].status = isResting(name) ? .rest : info.status
+                    sessions[i].doing = info.doing
+                    sessions[i].doingAgo = info.ago
                 }
             }
         }
@@ -325,10 +326,11 @@ final class AppState: ObservableObject {
         let out2 = await AppState.exec(machine.transport, AppState.probeScript, timeout: 20, marker: "@TSB64E@")
         let map = AppState.parseProbe(out2)
         for i in sessions.indices where sessions[i].machineID == machine.id {
-            guard let name = sessions[i].tmuxName else { continue }
-            let probed = map[name] ?? .idle
-            sessions[i].probed = probed
-            sessions[i].status = isResting(name) ? .rest : probed
+            guard let name = sessions[i].tmuxName, let info = map[name] else { continue }
+            sessions[i].probed = info.status
+            sessions[i].status = isResting(name) ? .rest : info.status
+            sessions[i].doing = info.doing
+            sessions[i].doingAgo = info.ago
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
@@ -385,16 +387,72 @@ final class AppState: ObservableObject {
 
     // MARK: 真实状态探测（干活中/等你/空闲）
 
-    /// 一条 blinkd exec 遍历所有 cc-* 会话：pane_current_command + 底部有没有
-    /// "esc to interrupt"(busy)。分类同 iOS：裸 shell→空闲、busy→干活、否则→等你。
+    /// 一条 blinkd exec 遍历所有 cc-* 会话，每个会话回一行：
+    ///   session \t pane_current_command \t busy \t 多久没动(秒) \t 在干嘛
+    ///
+    /// 「在干嘛」不刮终端屏幕（渲染残缺、框线杂质、刮到的常是上一轮的东西），
+    /// 改读 claude 自己写的 ~/.claude/projects/<cwd>/<uuid>.jsonl —— 里面是结构化的
+    /// 工具调用和消息，准。按 customTitle 对到本 tab 的那份（跟 sshCommand 里
+    /// /rename 注入的 TITLE 一致），取最后一条有意义的记录：
+    ///   tool_use → 「正在 Edit · TeamInspector.swift」
+    ///   text     → 它最后说的话（多半就是在等你回）
+    ///   用户消息 → 「你说：…」（它还没开口）
+    /// 没装 jq 的机器降级：这一列留空，状态判断照旧。
+    ///
+    /// 定位那份 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：
+    /// 这些文件动辄几十 MB，全目录 grep 一轮是几十 GB 的读，探测会直接卡死
+    /// （实测 2 分钟没回来）；头 3 行 + 尾 200 行足够覆盖「开局就命名」和
+    /// 「跑一半才 /rename」两种情况，一台机器一轮下来是毫秒级。
     nonisolated static let probeScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+now=$(date +%s)
+HAVEJQ=0; command -v jq >/dev/null 2>&1 && HAVEJQ=1
+JQP='.message as $m
+| if (.type=="assistant") and ($m.content|type=="array") then
+    ($m.content[]
+     | if .type=="tool_use" then
+         "正在 " + .name
+         + (if (.input.description|type)=="string" then " · " + .input.description
+            elif (.input.file_path|type)=="string" then " · " + (.input.file_path|sub("^.*/";""))
+            elif (.input.pattern|type)=="string" then " · " + .input.pattern
+            elif (.input.command|type)=="string" then " · " + (.input.command|gsub("\n";" "))
+            else "" end)
+       elif (.type=="text") and ((.text|ltrimstr(" ")|length) > 1) then
+         (.text|gsub("\n";" ")|gsub("[*#`>]";"")|gsub("  +";" "))
+       else empty end)
+  elif (.type=="user") and ($m.content|type=="string")
+       and ((.isMeta // false)|not) and ($m.content|startswith("<")|not) then
+    "你说：" + ($m.content|gsub("\n";" ")|gsub("  +";" "))
+  else empty end'
 BODY=$(
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
+tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
   pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
   busy=0
   tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-  printf '%s\t%s\t%s\n' "$s" "$pc" "$busy"
+  ago=""
+  doing=""
+  if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
+    enc=$(printf '%s' "$cwd" | sed 's:[/.]:-:g')
+    D="$HOME/.claude/projects/$enc"
+    title=${s#cc-}
+    PAT="\"customTitle\":\"$title\""
+    F=""
+    CANDS=$(ls -t "$D"/*.jsonl 2>/dev/null | head -8)
+    for f in $CANDS; do
+      head -n 3 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
+    done
+    if [ -z "$F" ]; then
+      for f in $CANDS; do
+        tail -n 200 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
+      done
+    fi
+    if [ -n "$F" ]; then
+      mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
+      ago=$(( now - ${mt:-$now} ))
+      doing=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\t\r' | cut -c1-160)
+    fi
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$ago" "$doing"
 done
 )
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
@@ -422,11 +480,16 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                                       AppState.probeOneScript(session: name),
                                       timeout: 15, marker: "@TSB64E@")
         let map = AppState.parseProbe(out)
-        guard let st = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
+        guard let info = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
             showToast("刷新失败或会话已不存在"); return
         }
-        sessions[i].probed = st
-        sessions[i].status = isResting(name) ? .rest : st
+        sessions[i].probed = info.status
+        sessions[i].status = isResting(name) ? .rest : info.status
+        // 单会话刷新脚本不查 jsonl（省一次 grep），拿不到就保留上次的「在干嘛」
+        if !info.doing.isEmpty {
+            sessions[i].doing = info.doing
+            sessions[i].doingAgo = info.ago
+        }
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
@@ -446,20 +509,29 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         """#
     }
 
-    nonisolated static func parseProbe(_ out: String) -> [String: WorkStatus] {
+    struct ProbeInfo {
+        var status: WorkStatus
+        var doing: String = ""      // 「正在 Edit · xxx.swift」/ 它最后说的话 / 「你说：…」
+        var ago: Int = -1           // jsonl 多久没写了（秒），-1 = 不知道
+    }
+
+    nonisolated static func parseProbe(_ out: String) -> [String: ProbeInfo] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
         guard let data = Data(base64Encoded: String(b64)),
               let body = String(data: data, encoding: .utf8) else { return [:] }
         let shells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
-        var map: [String: WorkStatus] = [:]
+        var map: [String: ProbeInfo] = [:]
         for line in body.split(whereSeparator: { $0.isNewline }) {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard f.count >= 3 else { continue }
             let pc = f[1].trimmingCharacters(in: .whitespaces)
             let busy = f[2].trimmingCharacters(in: .whitespaces) == "1"
-            map[String(f[0])] = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
+            let st: WorkStatus = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
+            let ago = f.count >= 4 ? Int(f[3].trimmingCharacters(in: .whitespaces)) ?? -1 : -1
+            let doing = f.count >= 5 ? f[4].trimmingCharacters(in: .whitespaces) : ""
+            map[String(f[0])] = ProbeInfo(status: st, doing: doing, ago: ago)
         }
         return map
     }

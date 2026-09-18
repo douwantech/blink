@@ -318,27 +318,64 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   /// 滤掉，但 `· Working… (5m · ↓ 13k tokens)` 计时行保留——它就是干活实况。
   /// 输出整体 base64 包在 @TSB64@…@TSB64E@ 里（跟 transcriptDeltaScript 同款）：
   /// blinkd 走 PTY 会混进 \r 和回显噪音，裸文本没法按行解析，两种 transport 统一按标记捞。
+  /// 每个 cc-* 会话回一行：session、pane 前台进程、闲置秒数、在干嘛、(留空)、busy
+  ///
+  /// 「在干嘛」原来是刮 tmux 屏幕 + 丢给 GLM 总结 —— 屏幕刮到的常是框线残渣和上一轮的
+  /// 内容，GLM 还要钱、还会编，结果一直不准。改读 claude 自己写的 jsonl（结构化的
+  /// 工具调用和消息），取最后一条有意义的记录：tool_use → 「正在 Edit · xxx.swift」，
+  /// text → 它最后说的话，用户消息 → 「你说：…」。第 5 列（原来塞 GLM 用的屏幕文本）
+  /// 保持空，applyMachine 那边 tail 为空就不会再去调 GLM。
+  ///
+  /// 定位 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：这些文件动辄几十
+  /// MB，全目录 grep 一轮是几十 GB 的读，探测会直接卡死（实测 2 分钟没回来）。
+  /// 没装 jq 的机器降级：这一列留空。
   private static let probeScript = """
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
   now=$(date +%s)
+  HAVEJQ=0; command -v jq >/dev/null 2>&1 && HAVEJQ=1
+  JQP='.message as $m
+  | if (.type=="assistant") and ($m.content|type=="array") then
+      ($m.content[]
+       | if .type=="tool_use" then
+           "正在 " + .name
+           + (if (.input.description|type)=="string" then " · " + .input.description
+              elif (.input.file_path|type)=="string" then " · " + (.input.file_path|sub("^.*/";""))
+              elif (.input.pattern|type)=="string" then " · " + .input.pattern
+              elif (.input.command|type)=="string" then " · " + (.input.command|gsub("\\n";" "))
+              else "" end)
+         elif (.type=="text") and ((.text|ltrimstr(" ")|length) > 1) then
+           (.text|gsub("\\n";" ")|gsub("[*#`>]";"")|gsub("  +";" "))
+         else empty end)
+    elif (.type=="user") and ($m.content|type=="string")
+         and ((.isMeta // false)|not) and ($m.content|startswith("<")|not) then
+      "你说：" + ($m.content|gsub("\\n";" ")|gsub("  +";" "))
+    else empty end'
   BODY=$(
-  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc-' | while IFS= read -r s; do
+  tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
     pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
     act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
     idle=$(( now - ${act:-0} ))
-    cap=$(tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | sed -e 's/[[:space:]]*$//')
-    content=$(printf '%s\n' "$cap" | grep -E '[[:alnum:]]' \\
-        | grep -vE 'shift\\+tab to cycle|\\? for shortcuts|bypass permissions|esc to interrupt\\)|new task\\? /clear' \\
-        | grep -vE '^[[:space:]]*(⏵|⧉|❯|╭|╰|│|✻|✽|👾|─)' \\
-        | grep -vE '▰|▱')
-    line=$(printf '%s\n' "$cap" | grep -E '^[[:space:]]*📋' | tail -1 | sed -E 's/^[[:space:]]*📋[[:space:]]*//' | cut -c1-160)
-    if [ -z "$line" ]; then
-      line=$(printf '%s\n' "$content" | grep -vE '^[[:space:]]*(---)?📁|^[[:space:]]*🌿|^[[:space:]]*📋' | tail -1 | cut -c1-160)
-    fi
-    tb64=$(printf '%s\n' "$content" | tail -120 | tail -c 6000 | base64 | tr -d '\n')
     busy=0
-    printf '%s\n' "$cap" | tail -15 | grep -q 'esc to interrupt' && busy=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$pc" "$idle" "$line" "$tb64" "$busy"
+    tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+    line=""
+    if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
+      enc=$(printf '%s' "$cwd" | sed 's:[/.]:-:g')
+      D="$HOME/.claude/projects/$enc"
+      title=${s#cc-}
+      PAT="\\"customTitle\\":\\"$title\\""
+      F=""
+      CANDS=$(ls -t "$D"/*.jsonl 2>/dev/null | head -8)
+      for f in $CANDS; do
+        head -n 3 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
+      done
+      if [ -z "$F" ]; then
+        for f in $CANDS; do
+          tail -n 200 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
+        done
+      fi
+      [ -n "$F" ] && line=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\\t\\r' | cut -c1-160)
+    fi
+    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$s" "$pc" "$idle" "$line" "" "$busy"
   done
   echo '===ORG==='
   grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true
