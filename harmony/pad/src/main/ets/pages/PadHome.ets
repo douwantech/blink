@@ -514,10 +514,7 @@ struct PadHome {
     const avatars: Map<string, string> = new Map();
     for (let i = 0; i < this.store.tabs.length; i++) {
       const t = this.store.tabs[i];
-      // 按项目只看当前机器；按员工/按机器都跨所有机器列全
-      if (this.inspector === 'project' && t.machineId !== this.activeMachineId) {
-        continue;
-      }
+      // 三档都跨机器列全（团队栏是「看所有人在干嘛」，不该被当前机器挡住）
       const row: SessRow = this.rowFor(t);
       let key: string;
       if (this.inspector === 'employee') {
@@ -529,7 +526,12 @@ struct PadHome {
           titles.set(key, (em !== null ? this.store.machineDisplayName(em) : t.machineId) + ' · ' + row.owner);
         }
       } else if (this.inspector === 'project') {
-        key = row.project;
+        // 同名项目在不同机器上分开成组，标题带机器名
+        key = t.machineId + '|' + row.project;
+        if (!titles.has(key)) {
+          const pm = this.store.machineById(t.machineId);
+          titles.set(key, (pm !== null ? this.store.machineDisplayName(pm) : t.machineId) + ' · ' + row.project);
+        }
       } else {
         key = t.machineId;
         const m = this.store.machineById(t.machineId);

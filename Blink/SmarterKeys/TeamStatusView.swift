@@ -743,10 +743,17 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private var projectSections: [(project: String, items: [MemberEntry])] {
     var order: [String] = []
     var map: [String: [MemberEntry]] = [:]
+    var titles: [String: String] = [:]
     for g in groups {
       for r in g.rows {
-        if map[r.project] == nil { order.append(r.project); map[r.project] = [] }
-        map[r.project]?.append(MemberEntry(group: g, row: r))
+        // 项目也跨机器列全：同名项目在不同机器上分开成组，标题带机器名
+        let k = "\(g.machineId)|\(r.project)"
+        if map[k] == nil {
+          order.append(k)
+          map[k] = []
+          titles[k] = "\(g.machineName) · \(r.project)"
+        }
+        map[k]?.append(MemberEntry(group: g, row: r))
       }
     }
     // 每个项目组内按紧急度排；有等你的项目整组置顶
@@ -756,8 +763,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     return order.sorted { a, b in
       let sa = map[a]?.map { memberStatus($0).rawValue }.min() ?? 9
       let sb = map[b]?.map { memberStatus($0).rawValue }.min() ?? 9
-      return sa != sb ? sa < sb : a < b
-    }.map { ($0, map[$0] ?? []) }
+      return sa != sb ? sa < sb : (titles[a] ?? a) < (titles[b] ?? b)
+    }.map { (titles[$0] ?? $0, map[$0] ?? []) }
   }
   private func memberStatus(_ e: MemberEntry) -> TeamWorkStatus {
     e.row.effective
