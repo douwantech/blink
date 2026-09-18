@@ -22,30 +22,58 @@ final class BrowserWeb: NSObject, ObservableObject, WKNavigationDelegate {
     /// 地址栏文本（正在编辑时不被导航回调顶掉）
     @Published var urlText = ""
     @Published var editing = false
+    /// 当前显示的 WebView（切页时换一个，SwiftUI 那边跟着换子视图）
+    @Published private(set) var webView: WKWebView
 
-    let webView: WKWebView
+    /// 一页一个 WebView 的缓存池：切回去时旧页面还在（滚动位置、登录态都在），
+    /// 先把它显示出来，再后台 reload 刷新 —— 不用每次白屏等加载。
+    private var pool: [String: WKWebView] = [:]
+    private var order: [String] = []          // LRU，最后一个是最近用的
+    private let poolLimit = 6
     private var obs: [NSKeyValueObservation] = []
     /// 每个 host 只自动应答一次 Basic Auth，账密错了也不会死循环
     private var authTries: [String: Int] = [:]
+    /// 冷启动先吃磁盘缓存那一趟：加载完再回网络校验一次
+    private var pendingRevalidate: Set<ObjectIdentifier> = []
 
     override init() {
-        let cfg = WKWebViewConfiguration()
-        cfg.websiteDataStore = .default()
-        webView = WKWebView(frame: .zero, configuration: cfg)
+        // 磁盘缓存开大点，冷启动时这些后台页能直接从缓存先画出来
+        URLCache.shared = URLCache(memoryCapacity: 32 << 20, diskCapacity: 512 << 20)
+        webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         super.init()
-        webView.navigationDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
-        webView.allowsMagnification = true
+        configure(webView)
+        bind(webView)
+    }
+
+    private func configure(_ w: WKWebView) {
+        w.navigationDelegate = self
+        w.allowsBackForwardNavigationGestures = true
+        w.allowsMagnification = true
+    }
+
+    /// KVO 跟着当前 WebView 走
+    private func bind(_ w: WKWebView) {
+        obs.forEach { $0.invalidate() }
         obs = [
-            webView.observe(\.canGoBack) { [weak self] w, _ in self?.canGoBack = w.canGoBack },
-            webView.observe(\.canGoForward) { [weak self] w, _ in self?.canGoForward = w.canGoForward },
-            webView.observe(\.isLoading) { [weak self] w, _ in self?.isLoading = w.isLoading },
-            webView.observe(\.url) { [weak self] w, _ in
-                guard let self, let u = w.url?.absoluteString else { return }
+            w.observe(\.canGoBack) { [weak self] w, _ in self?.canGoBack = w.canGoBack },
+            w.observe(\.canGoForward) { [weak self] w, _ in self?.canGoForward = w.canGoForward },
+            w.observe(\.isLoading) { [weak self] w, _ in self?.isLoading = w.isLoading },
+            w.observe(\.url) { [weak self] w, _ in
+                guard let self, w === self.webView, let u = w.url?.absoluteString else { return }
                 self.currentURL = u
                 if !self.editing { self.urlText = u }
             },
         ]
+        canGoBack = w.canGoBack
+        canGoForward = w.canGoForward
+        isLoading = w.isLoading
+    }
+
+    private static func key(_ url: String) -> String {
+        var s = url
+        if let i = s.firstIndex(of: "#") { s = String(s[s.startIndex..<i]) }   // 锚点不算另一页
+        if s.hasSuffix("/") { s.removeLast() }
+        return s
     }
 
     func load(_ raw: String) {
@@ -54,7 +82,49 @@ final class BrowserWeb: NSObject, ObservableObject, WKNavigationDelegate {
         editing = false
         urlText = u.absoluteString
         currentURL = u.absoluteString
-        webView.load(URLRequest(url: u))
+        let k = Self.key(u.absoluteString)
+        touch(k)
+
+        if let cached = pool[k] {
+            // 缓存里有这一页：先亮出来（旧内容留着），再后台刷新
+            show(cached)
+            cached.reload()
+            return
+        }
+        let w = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        configure(w)
+        pool[k] = w
+        show(w)
+        var req = URLRequest(url: u)
+        // 磁盘缓存里有这一页（上次开过）就先吃缓存把画面画出来，加载完再回网络刷一次；
+        // 没缓存就正常走网络，别白白拉两遍。
+        if URLCache.shared.cachedResponse(for: req) != nil {
+            req.cachePolicy = .returnCacheDataElseLoad
+            pendingRevalidate.insert(ObjectIdentifier(w))
+        }
+        w.load(req)
+        trimPool()
+    }
+
+    private func show(_ w: WKWebView) {
+        guard w !== webView else { return }
+        webView = w
+        bind(w)
+    }
+
+    private func touch(_ k: String) {
+        order.removeAll { $0 == k }
+        order.append(k)
+    }
+
+    private func trimPool() {
+        while order.count > poolLimit {
+            let k = order.removeFirst()
+            if let w = pool.removeValue(forKey: k), w === webView {
+                pool[k] = w              // 当前这页不丢
+                order.append(k)
+            }
+        }
     }
 
     func reloadOrStop() {
@@ -91,12 +161,44 @@ final class BrowserWeb: NSObject, ObservableObject, WKNavigationDelegate {
         }
         completionHandler(.performDefaultHandling, nil)
     }
+
+    /// 缓存优先那一趟加载完之后，回网络校验一次（先缓存、后刷新）
+    func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
+        let id = ObjectIdentifier(w)
+        guard pendingRevalidate.contains(id) else { return }
+        pendingRevalidate.remove(id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak w] in
+            w?.reloadFromOrigin()
+        }
+    }
 }
 
+/// 容器里只放一个 WebView，换页时换子视图（池子里的旧 WebView 不销毁）
 private struct WebViewHost: NSViewRepresentable {
-    let web: BrowserWeb
-    func makeNSView(context: Context) -> WKWebView { web.webView }
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+    @ObservedObject var web: BrowserWeb
+
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView()
+        attach(web.webView, to: container)
+        return container
+    }
+
+    func updateNSView(_ container: NSView, context: Context) {
+        guard container.subviews.first !== web.webView else { return }
+        container.subviews.forEach { $0.removeFromSuperview() }
+        attach(web.webView, to: container)
+    }
+
+    private func attach(_ w: WKWebView, to container: NSView) {
+        w.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(w)
+        NSLayoutConstraint.activate([
+            w.topAnchor.constraint(equalTo: container.topAnchor),
+            w.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            w.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            w.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+    }
 }
 
 // MARK: - 侧栏数据（后台 / 原型）
@@ -422,6 +524,7 @@ struct BrowserPanel: View {
                         .padding(.horizontal, 10).frame(height: 46)
                         .background(RoundedRectangle(cornerRadius: 10)
                             .fill(on ? Theme.teal.opacity(0.12) : .clear))
+                        .contentShape(Rectangle())   // 整行可点，别只认文字那一小块
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -489,6 +592,7 @@ struct BrowserPanel: View {
                                 .fill(on ? Theme.rest.opacity(0.16) : Color.white.opacity(0.035)))
                             .overlay(RoundedRectangle(cornerRadius: 9)
                                 .stroke(on ? Theme.rest.opacity(0.45) : .clear))
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
