@@ -216,7 +216,7 @@ final class AppState: ObservableObject {
     /// 套用手机上给它起的显示名，不重复列。KV 空（dev / 未同步）→ 保持本地单机不动。
     func loadCloudMachines() {
         let cloud = MacMachineStore.machines()
-        guard !cloud.isEmpty, case .blinkd(let lh, let lp, let lt) = machines.first?.transport else { return }
+        guard !cloud.isEmpty, case .blinkd(_, let lp, let lt) = machines.first?.transport else { return }
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple, Grad.slate]
         var out: [Machine] = []
         var thisMacId: String? = nil
@@ -227,10 +227,12 @@ final class AppState: ObservableObject {
             let isLocalMac: Bool
             if let b = cm.blinkd {
                 let isThisMac = (b.token == lt)
-                // 这台 Mac 走本地直连（config.json 那台），其余 blinkd 机器走 KV 里的地址（tsnet）。
-                transport = isThisMac ? .blinkd(host: lh, port: lp, token: lt)
+                // 这台 Mac 连自己的 daemon 走 127.0.0.1 回环（daemon 双模式在 0.0.0.0 也监听），
+                // 不绕 Tailscale/tsnet；其余 blinkd 机器才走 KV 里的地址（tsnet）。
+                let loopback = "127.0.0.1"
+                transport = isThisMac ? .blinkd(host: loopback, port: lp, token: lt)
                                       : .blinkd(host: b.host, port: b.port, token: b.token)
-                hostLabel = isThisMac ? "本机 · \(b.host):\(b.port)" : "blinkd \(b.host):\(b.port)"
+                hostLabel = isThisMac ? "本机 · \(loopback):\(lp)" : "blinkd \(b.host):\(b.port)"
                 isLocalMac = isThisMac
                 if isThisMac { thisMacId = cm.id }
             } else {

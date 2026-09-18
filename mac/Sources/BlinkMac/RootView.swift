@@ -42,8 +42,8 @@ struct TopBar: View {
 
             HStack(spacing: 5) {
                 Circle().fill(Theme.teal).frame(width: 6, height: 6)
-                // 连本机 Mac 自己的 blinkd 时标「本地」，跟连别的机器区分开
-                Text(state.activeMachine.isLocalMac ? "blinkd · 本地" : "blinkd").font(Theme.ui(11, .semibold))
+                // 直接显示实际连接 IP（本机 127.0.0.1 / 远程对应 IP），比「本地」更明确
+                Text(state.activeMachine.transport.badge).font(Theme.ui(11, .semibold))
             }
             .foregroundColor(Theme.teal)
             .padding(.horizontal, 8).padding(.vertical, 2)
