@@ -121,6 +121,18 @@ final class BrowserCatalog: ObservableObject {
 
     func reloadLinks() { links = PinnedLinksStore.links() }
 
+    /// 新增（index = nil）或改写一条后台，落盘同步文件 + iCloud KV
+    func upsert(_ l: PinnedLink, at index: Int?) {
+        if let i = index, links.indices.contains(i) { links[i] = l } else { links.append(l) }
+        PinnedLinksStore.save(links)
+    }
+
+    func remove(at index: Int) {
+        guard links.indices.contains(index) else { return }
+        links.remove(at: index)
+        PinnedLinksStore.save(links)
+    }
+
     /// 目录 10 分钟内拉过就不重拉（侧栏底部可手动刷新）
     func refreshIfStale() {
         if let at = fetchedAt, Date().timeIntervalSince(at) < 600 { return }
@@ -171,6 +183,73 @@ final class BrowserCatalog: ObservableObject {
     }
 }
 
+// MARK: - 后台编辑器
+
+/// 正在编辑的一条后台（index = nil 表示新增）
+struct PinnedDraft: Identifiable {
+    let id = UUID()
+    var index: Int?
+    var title = ""
+    var url = ""
+    var user = ""
+    var pass = ""
+}
+
+private struct PinnedEditor: View {
+    @State var draft: PinnedDraft
+    var onSave: (PinnedLink, Int?) -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(draft.index == nil ? "添加后台" : "编辑后台")
+                .font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
+            field("名称（可空，会用网址）", text: $draft.title)
+            field("网址", text: $draft.url)
+            Text("HTTP Basic 账密（可空）").font(Theme.ui(11)).foregroundColor(Theme.dim)
+            HStack(spacing: 8) {
+                field("用户名", text: $draft.user, label: false)
+                SecureField("密码", text: $draft.pass)
+                    .textFieldStyle(.plain).font(Theme.ui(12)).foregroundColor(Theme.fg)
+                    .padding(.horizontal, 10).frame(height: 28)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel3))
+            }
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel).buttonStyle(.plain)
+                    .font(Theme.ui(12)).foregroundColor(Theme.sub)
+                    .padding(.horizontal, 14).frame(height: 28)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.fill2))
+                Button("保存") {
+                    let u = draft.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !u.isEmpty else { return }
+                    onSave(PinnedLink(title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                                      url: u.contains("://") ? u : "https://" + u,
+                                      authUser: draft.user.isEmpty ? nil : draft.user,
+                                      authPassword: draft.pass.isEmpty ? nil : draft.pass),
+                           draft.index)
+                }
+                .buttonStyle(.plain)
+                .font(Theme.ui(12, .semibold)).foregroundColor(Theme.bg)
+                .padding(.horizontal, 16).frame(height: 28)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Theme.teal))
+            }
+            .padding(.top, 4)
+        }
+        .padding(18)
+        .frame(width: 420)
+        .background(Theme.panel2)
+    }
+
+    @ViewBuilder
+    private func field(_ placeholder: String, text: Binding<String>, label: Bool = true) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain).font(Theme.ui(12)).foregroundColor(Theme.fg)
+            .padding(.horizontal, 10).frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel3))
+    }
+}
+
 // MARK: - 面板
 
 struct BrowserPanel: View {
@@ -179,6 +258,8 @@ struct BrowserPanel: View {
     @StateObject private var cat = BrowserCatalog()
     @AppStorage("BrowserPanel.sidebar") private var showSidebar = true
     @AppStorage("BrowserPanel.last") private var lastURL = ""
+    @State private var draft: PinnedDraft?      // 正在添加/编辑的后台
+    @State private var deleting: Int?           // 待确认删除的后台下标
     var onClose: () -> Void = {}
 
     var body: some View {
@@ -279,16 +360,41 @@ struct BrowserPanel: View {
 
             Divider().overlay(Theme.hair)
             HStack(spacing: 6) {
-                Text(cat.seg == 1 ? cat.footer : "在手机/平板上编辑 · 自动同步")
+                Text(cat.seg == 1 ? cat.footer : "右键编辑 · 与手机 / 平板同步")
                     .font(Theme.mono(10.5)).foregroundColor(Theme.dim).lineLimit(1)
                 Spacer()
                 if cat.seg == 1 {
                     IconButton(system: "arrow.clockwise", size: 26, iconSize: 13) { cat.refresh() }
+                } else {
+                    IconButton(system: "plus", color: Theme.teal, size: 26, iconSize: 14) {
+                        // 默认填当前网页，直接钉住看着的这一页
+                        draft = PinnedDraft(index: nil,
+                                            title: web.webView.title ?? "",
+                                            url: web.currentURL)
+                    }
                 }
             }
             .padding(.horizontal, 12).frame(height: 34)
         }
         .background(Theme.panel)
+        .sheet(item: $draft) { d in
+            PinnedEditor(draft: d, onSave: { link, idx in
+                cat.upsert(link, at: idx)
+                draft = nil
+                open(link.url, title: link.title)
+            }, onCancel: { draft = nil })
+        }
+        .alert("删除后台", isPresented: Binding(get: { deleting != nil },
+                                             set: { if !$0 { deleting = nil } })) {
+            Button("取消", role: .cancel) { deleting = nil }
+            Button("删除", role: .destructive) {
+                if let i = deleting { cat.remove(at: i) }
+                deleting = nil
+            }
+        } message: {
+            Text(deleting.flatMap { cat.links.indices.contains($0) ? cat.links[$0] : nil }
+                .map { "删除「\($0.title.isEmpty ? $0.host : $0.title)」？" } ?? "")
+        }
     }
 
     private var adminList: some View {
@@ -318,6 +424,13 @@ struct BrowserPanel: View {
                             .fill(on ? Theme.teal.opacity(0.12) : .clear))
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button("编辑") {
+                            draft = PinnedDraft(index: i, title: l.title, url: l.url,
+                                                user: l.authUser ?? "", pass: l.authPassword ?? "")
+                        }
+                        Button("删除", role: .destructive) { deleting = i }
+                    }
                 }
                 if cat.links.isEmpty {
                     Text("还没有后台\n在手机或平板上钉一个网址，会同步过来")
