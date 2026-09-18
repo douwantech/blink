@@ -84,12 +84,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var status: TeamWorkStatus   // 探测前默认 .idle
     var probed = false
     var resting = false          // 休息按 tab（员工×项目）粒度，来自 TabRestStore
-    var summary: TeamSummary?    // GLM 总结：在做/等你/上次（没回来前先显示最后一行）
     var agent: AgentKind = .claude   // 这个 tab 开起来进哪个 CLI（行尾齿轮改）
+    var ago: Int = -1                // 上面那条距今多少秒（jsonl mtime），-1 = 不知道
     /// 行的展示状态：休息优先，其余用探测结果
     var effective: TeamWorkStatus { resting ? .rest : status }
   }
-  fileprivate struct TeamSummary { let doing: String; let waiting: String; let last: String }
   fileprivate struct Group {
     let employee: String
     let machineId: String
@@ -125,7 +124,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   init(tabs: [TeamStatusTab]) {
     self.tabs = tabs
-    self.statTiles = [.wait, .work, .idle, .rest].map { StatTile(status: $0) }
+    // 等你/干活/空闲 三个格子跟着探测一起去掉了（那三档本来就不准），只留「休息」
+    self.statTiles = [StatTile(status: .rest)]
     super.init(nibName: nil, bundle: nil)
   }
   required init?(coder: NSCoder) { fatalError() }
@@ -184,7 +184,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     header.backgroundColor = bg
     header.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(header)
-    let stats = UIStackView(arrangedSubviews: statTiles)
+    let stats = UIStackView(arrangedSubviews: statTiles + [UIView()])
     stats.axis = .horizontal
     stats.distribution = .fillEqually
     stats.spacing = 8
@@ -203,7 +203,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     subtitleLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
     subtitleLabel.textColor = sub
     subtitleLabel.textAlignment = .center
-    subtitleLabel.text = "正在探测各机器…"
+    subtitleLabel.text = "正在读取各机器…"
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(subtitleLabel)
 
@@ -288,6 +288,22 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.reloadData()
   }
 
+  /// 读取日志落 Documents/teamstatus.log，真机排查用（afc 可拉）
+  private static func log(_ s: String) {
+    let f = DateFormatter()
+    f.dateFormat = "MM-dd HH:mm:ss"
+    let line = "[\(f.string(from: Date()))] \(s)\n"
+    guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+    let url = dir.appendingPathComponent("teamstatus.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+      h.seekToEndOfFile()
+      h.write(Data(line.utf8))
+      try? h.close()
+    } else {
+      try? Data(line.utf8).write(to: url)
+    }
+  }
+
   /// machineId → 在机器列表里的位次（团队面板各档的排序都以它为准）
   private static func machineRanks() -> [String: Int] {
     var r: [String: Int] = [:]
@@ -301,9 +317,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   }
 
   private func updateStats() {
-    var n: [TeamWorkStatus: Int] = [:]
-    for g in groups { n[g.status, default: 0] += 1 }
-    for tile in statTiles { tile.setCount(n[tile.status] ?? 0) }
+    var resting = 0
+    for g in groups { resting += g.rows.filter(\.resting).count }
+    for tile in statTiles { tile.setCount(resting) }
   }
 
   // MARK: 远端探测
@@ -318,13 +334,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   /// 滤掉，但 `· Working… (5m · ↓ 13k tokens)` 计时行保留——它就是干活实况。
   /// 输出整体 base64 包在 @TSB64@…@TSB64E@ 里（跟 transcriptDeltaScript 同款）：
   /// blinkd 走 PTY 会混进 \r 和回显噪音，裸文本没法按行解析，两种 transport 统一按标记捞。
-  /// 每个 cc-* 会话回一行：session、pane 前台进程、闲置秒数、在干嘛、(留空)、busy
+  /// 每个 cc-* 会话回一行：session \t 多久没动(秒) \t 在干嘛
   ///
-  /// 「在干嘛」原来是刮 tmux 屏幕 + 丢给 GLM 总结 —— 屏幕刮到的常是框线残渣和上一轮的
-  /// 内容，GLM 还要钱、还会编，结果一直不准。改读 claude 自己写的 jsonl（结构化的
-  /// 工具调用和消息），取最后一条有意义的记录：tool_use → 「正在 Edit · xxx.swift」，
-  /// text → 它最后说的话，用户消息 → 「你说：…」。第 5 列（原来塞 GLM 用的屏幕文本）
-  /// 保持空，applyMachine 那边 tail 为空就不会再去调 GLM。
+  /// 只读 claude 自己写的 jsonl（结构化的工具调用和消息），取最后一条有意义的记录：
+  /// tool_use → 「正在 Edit · xxx.swift」，text → 它最后说的话，用户消息 → 「你说：…」。
+  /// 不再「探测」状态（pane 前台进程 + 屏幕有没有 spinner 那一套）：分出来的
+  /// 等你/干活中/空闲 本来就不准，界面上也早不显示了；GLM 总结也一并停用。
   ///
   /// 定位 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：这些文件动辄几十
   /// MB，全目录 grep 一轮是几十 GB 的读，探测会直接卡死（实测 2 分钟没回来）。
@@ -352,11 +367,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     else empty end'
   BODY=$(
   tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
-    pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-    act=$(tmux display-message -p -t "$s" '#{window_activity}' 2>/dev/null)
-    idle=$(( now - ${act:-0} ))
-    busy=0
-    tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
+    ago=""
     line=""
     if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
       enc=$(printf '%s' "$cwd" | sed 's:[/.]:-:g')
@@ -373,9 +384,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
           tail -n 200 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
         done
       fi
-      [ -n "$F" ] && line=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\\t\\r' | cut -c1-160)
+      if [ -n "$F" ]; then
+        mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
+        ago=$(( now - ${mt:-$now} ))
+        line=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\\t\\r' | cut -c1-160)
+      fi
     fi
-    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$s" "$pc" "$idle" "$line" "" "$busy"
+    printf '%s\\t%s\\t%s\\n' "$s" "$ago" "$line"
   done
   echo '===ORG==='
   grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true
@@ -413,7 +428,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   }
 
   /// 并行探测：每台机器各自一个 Task + 20s 硬超时，谁先回来先刷谁的行。
-  /// 串行会被一台挂起的 ssh（Tailscale 节点离线时 TCP 黑洞）卡住整页「探测中」。
+  /// 串行会被一台挂起的 ssh（Tailscale 节点离线时 TCP 黑洞）卡住整页「读取中」。
   private var probeGeneration = 0
   private var pendingMachines: Set<String> = []
   private var probeMachinesTotal = 0
@@ -429,10 +444,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     pendingMachines = Set(machines.map(\.id))
     probeMachinesTotal = machines.count
     probeReachedCount = 0
-    subtitleLabel.text = "正在探测 \(machines.count) 台机器…"
+    subtitleLabel.text = "正在读取 \(machines.count) 台机器…"
     for m in machines {
       Task { [weak self] in
-        var sessions: [String: (pc: String, idle: Int, line: String, tail: String, busy: Bool)] = [:]
+        var sessions: [String: (line: String, ago: Int)] = [:]
         var roles: [String: String] = [:]
         var failure: String?
         do {
@@ -452,14 +467,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                 if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
               }
             } else {
-              let f = lineStr.split(separator: "\t", maxSplits: 5, omittingEmptySubsequences: false)
-              guard f.count >= 3 else { continue }
-              var tail = ""
-              if f.count >= 5, let d = Data(base64Encoded: String(f[4])),
-                 let t = String(data: d, encoding: .utf8) { tail = t }
-              sessions[String(f[0])] = (pc: String(f[1]), idle: Int(f[2]) ?? 0,
-                                        line: f.count >= 4 ? String(f[3]) : "", tail: tail,
-                                        busy: f.count >= 6 && String(f[5]).hasPrefix("1"))
+              let f = lineStr.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+              guard f.count >= 2, !f[0].isEmpty else { continue }
+              sessions[String(f[0])] = (line: f.count >= 3 ? String(f[2]) : "",
+                                        ago: Int(f[1].trimmingCharacters(in: .whitespaces)) ?? -1)
             }
           }
         } catch {
@@ -490,170 +501,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
-  // MARK: GLM 总结（在做/等你/上次）
-
-  /// 同一段尾部内容只总结一次。持久化到 UserDefaults("TeamStatus.summaryCache")并进
-  /// CloudConfigSync 的 iCloud 同步清单——重启/换设备都不用重新花钱总结。
-  private static var summaryCache: [String: TeamSummary] = loadSummaryCache()
-  private static var summaryCacheTS: [String: Double] = loadSummaryCacheTS()
-  private static let kSummaryCache = "TeamStatus.summaryCache"
-
-  /// FNV-1a：Swift 的 hashValue 每次启动换种子，持久化 key 必须用稳定哈希
-  fileprivate static func stableHash(_ text: String) -> String {
-    var h: UInt64 = 0xcbf29ce484222325
-    for b in text.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
-    return String(h, radix: 16)
-  }
-
-  private static func loadSummaryCache() -> [String: TeamSummary] {
-    guard let d = UserDefaults.standard.dictionary(forKey: kSummaryCache) as? [String: [String: String]] else { return [:] }
-    var out: [String: TeamSummary] = [:]
-    for (k, v) in d {
-      out[k] = TeamSummary(doing: v["doing"] ?? "", waiting: v["waiting"] ?? "", last: v["last"] ?? "")
-    }
-    return out
-  }
-  private static func loadSummaryCacheTS() -> [String: Double] {
-    guard let d = UserDefaults.standard.dictionary(forKey: kSummaryCache) as? [String: [String: String]] else { return [:] }
-    return d.mapValues { Double($0["ts"] ?? "") ?? 0 }
-  }
-  private static func persistSummaryCache() {
-    // 裁到最近 300 条，防 iCloud KV 撑爆
-    if summaryCache.count > 300 {
-      let keep = Set(summaryCacheTS.sorted { $0.value > $1.value }.prefix(300).map(\.key))
-      summaryCache = summaryCache.filter { keep.contains($0.key) }
-      summaryCacheTS = summaryCacheTS.filter { keep.contains($0.key) }
-    }
-    var d: [String: [String: String]] = [:]
-    for (k, v) in summaryCache {
-      d[k] = ["doing": v.doing, "waiting": v.waiting, "last": v.last,
-              "ts": String(summaryCacheTS[k] ?? 0)]
-    }
-    UserDefaults.standard.set(d, forKey: kSummaryCache)
-  }
-
-  /// 复用语音清理的 GLM 配置（key/model/endpoint 都在 AITextPolisher）
-  private func summarize(tabKey: UUID, session: String, tail: String, gen: Int) {
-    // v 前缀=总结样式版本:提示词改了就升版,否则持久化的旧措辞永远刷不掉
-    let cacheKey = "v3|\(session)|\(Self.stableHash(tail))"
-    if let hit = Self.summaryCache[cacheKey] {
-      applySummary(tabKey: tabKey, hit, gen: gen)
-      return
-    }
-    let apiKey = AITextPolisher.shared.apiKey
-    guard !apiKey.isEmpty, let url = URL(string: AITextPolisher.shared.baseURL) else { return }
-    let system = """
-    你是终端里 Claude Code 员工会话的状态总结器。输入是会话屏幕最近的输出（已滤掉界面元素）。
-    只输出严格 JSON（不要 markdown 代码块），格式：
-    {"doing":"现在正在做的事","waiting":"正在等用户拍板/回复的具体事项，没有则空字符串","last":"当前任务开始之前、已经完成的上一件事，没有则空字符串"}
-    硬性格式要求（三个字段都一样）：必须以书名号包住的功能名开头（2~8 字），后面紧跟一句进展/等的事，
-    整个字段不超过 22 字，不允许没有书名号的裸句子。
-    书名号里必须是能定位到具体业务的功能/模块名，例：「会员gating」「语音延迟」「团队状态页」「输入命令条」。
-    严禁用动作泛词当功能名：「提交代码」「代码提交」「修复bug」「优化」「测试」「调整」这类一律不合格——
-    看到这种就去上下文里找它对应的具体功能名替换。
-    例：doing=「会员gating」确定拦放口径中；waiting=「会员gating」等你定口径；last=「刷新自愈」已完成。
-    注意：last 必须是和 doing 不同的另一件事（更早完成的那件）；输出里看不到更早的任务就把 last 留空，
-    绝不要把当前任务换个说法填进 last。每个字段中文、不超过 22 字、口语直白、能让老板一眼看懂。
-    分不清就把最后一段话概括进 doing。
-    """
-    let payload: [String: Any] = [
-      "model": AITextPolisher.shared.model,
-      "messages": [
-        ["role": "system", "content": system],
-        ["role": "user", "content": String(tail.suffix(3500))],
-      ],
-      "temperature": 0.2,
-      "stream": false,
-    ]
-    var req = URLRequest(url: url)
-    req.httpMethod = "POST"
-    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-    req.timeoutInterval = 20
-    req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-      guard let data,
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = obj["choices"] as? [[String: Any]],
-            let content = (choices.first?["message"] as? [String: Any])?["content"] as? String else { return }
-      var text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-      if text.hasPrefix("```") {
-        text = text.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "")
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-      }
-      guard let jd = text.data(using: .utf8),
-            let j = try? JSONSerialization.jsonObject(with: jd) as? [String: String] else { return }
-      var last = j["last"] ?? ""
-      let doing = j["doing"] ?? ""
-      // 模型偷懒把当前任务复述进 last 时直接丢掉——上次必须是另一件事
-      if !last.isEmpty, !doing.isEmpty,
-         last == doing || last.contains(doing) || doing.contains(last) { last = "" }
-      let sm = TeamSummary(doing: doing, waiting: j["waiting"] ?? "", last: last)
-      guard !(sm.doing.isEmpty && sm.waiting.isEmpty && sm.last.isEmpty) else { return }
-      DispatchQueue.main.async {
-        Self.summaryCache[cacheKey] = sm
-        Self.summaryCacheTS[cacheKey] = Date().timeIntervalSince1970
-        Self.persistSummaryCache()
-        self?.applySummary(tabKey: tabKey, sm, gen: gen)
-      }
-    }.resume()
-  }
-
-  private func applySummary(tabKey: UUID, _ sm: TeamSummary, gen: Int) {
-    guard gen == probeGeneration else { return }
-    for gi in groups.indices {
-      for ri in groups[gi].rows.indices where groups[gi].rows[ri].tabKey == tabKey {
-        groups[gi].rows[ri].summary = sm
-        // claude 停在提示符且总结说没有在等的事 → 其实是闲置,别赖在「等你」里
-        if groups[gi].rows[ri].status == .wait, sm.waiting.isEmpty {
-          groups[gi].rows[ri].status = .idle
-        }
-      }
-    }
-    updateStats()
-    tableView.reloadData()
-  }
-
-  /// 「等你 xx / 在做 xx / 上次 xx」的富文本（等你排最前、橙色；上次灰字）
-  fileprivate static func summaryAttributed(_ sm: TeamSummary) -> NSAttributedString {
-    let out = NSMutableAttributedString()
-    let font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    let boldFont = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
-    func append(_ tag: String, _ body: String, tagColor: UIColor, bodyColor: UIColor, bold: Bool = false) {
-      guard !body.isEmpty else { return }
-      if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: [.font: font])) }
-      out.append(NSAttributedString(string: tag + " ", attributes: [.font: boldFont, .foregroundColor: tagColor]))
-      out.append(NSAttributedString(string: body, attributes: [.font: bold ? boldFont : font, .foregroundColor: bodyColor]))
-    }
-    let wait = TeamWorkStatus.wait.color
-    append("等你", sm.waiting, tagColor: wait, bodyColor: wait, bold: true)
-    append("在做", sm.doing, tagColor: UIColor.white.withAlphaComponent(0.45),
-           bodyColor: UIColor.white.withAlphaComponent(0.85))
-    append("上次", sm.last, tagColor: UIColor.white.withAlphaComponent(0.3),
-           bodyColor: UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1))
-    return out
-  }
-
-  /// 探测日志落 Documents/teamstatus.log，真机排查用（afc 可拉）
-  private static func log(_ s: String) {
-    let f = DateFormatter()
-    f.dateFormat = "MM-dd HH:mm:ss"
-    let line = "[\(f.string(from: Date()))] \(s)\n"
-    guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-    let url = dir.appendingPathComponent("teamstatus.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-      h.seekToEndOfFile()
-      h.write(Data(line.utf8))
-      try? h.close()
-    } else {
-      try? Data(line.utf8).write(to: url)
-    }
-  }
-
-  private static let shellNames: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
-
-  /// 单台机器结果落地：只动这台机器的行，别台照旧（可能还在探测中）
-  private func applyMachine(machineId: String, sessions: [String: (pc: String, idle: Int, line: String, tail: String, busy: Bool)],
+  /// 单台机器结果落地：只动这台机器的行，别台照旧（可能还在读取中）
+  private func applyMachine(machineId: String, sessions: [String: (line: String, ago: Int)],
                             roles: [String: String], failure: String?, gen: Int) {
     guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
     pendingMachines.remove(machineId)
@@ -667,33 +516,18 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         guard let tab = tabs.first(where: { $0.tabKey == groups[gi].rows[ri].tabKey }) else { continue }
         // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」；带上具体报错好排查
         if let err = failure {
-          groups[gi].rows[ri].status = .idle
-          groups[gi].rows[ri].desc = "探测失败: \(String(err.prefix(90)))"
+          groups[gi].rows[ri].desc = "读取失败: \(String(err.prefix(90)))"
           groups[gi].rows[ri].probed = true
           continue
         }
         guard let s = sessions[tab.outerSession] else {
-          groups[gi].rows[ri].status = .idle
           groups[gi].rows[ri].desc = "会话未启动"
           groups[gi].rows[ri].probed = true
           continue
         }
-        let st: TeamWorkStatus
-        if s.pc.isEmpty || Self.shellNames.contains(s.pc) {
-          st = .idle
-        } else if s.busy {
-          st = .work   // 底部有 spinner(esc to interrupt)=真在干活;statusline 自刷新骗不了这个
-        } else {
-          st = .wait   // claude 停在提示符:暂判等你,GLM 总结说没在等事就降级成空闲
-        }
-        groups[gi].rows[ri].status = st
-        groups[gi].rows[ri].desc = st == .idle && Self.shellNames.contains(s.pc)
-          ? "掉到 shell，点进去看报错" : s.line
+        groups[gi].rows[ri].desc = s.line.isEmpty ? "读不到这个会话的记录" : s.line
+        groups[gi].rows[ri].ago = s.ago
         groups[gi].rows[ri].probed = true
-        // claude 活着且没休息的行,后台让 GLM 总结「在做/等你/上次」(同尾部内容有缓存)
-        if st != .idle, !groups[gi].rows[ri].resting, !s.tail.isEmpty {
-          summarize(tabKey: tab.tabKey, session: tab.outerSession, tail: s.tail, gen: gen)
-        }
       }
     }
 
@@ -705,7 +539,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         : "更新 \(f.string(from: Date())) · \(probeReachedCount)/\(probeMachinesTotal) 台机器可达"
       tableView.refreshControl?.endRefreshing()
     } else {
-      subtitleLabel.text = "已回 \(probeMachinesTotal - pendingMachines.count)/\(probeMachinesTotal) 台，其余探测中…"
+      subtitleLabel.text = "已回 \(probeMachinesTotal - pendingMachines.count)/\(probeMachinesTotal) 台，其余读取中…"
     }
     updateStats()
     tableView.reloadData()
@@ -1186,10 +1020,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                                  : UIColor.white.withAlphaComponent(0.72)
         if r.resting {
           pd.text = "休息中"
-        } else if let sm = r.summary {
-          pd.attributedText = TeamStatusViewController.summaryAttributed(sm)
         } else {
-          pd.text = r.probed ? r.desc : "探测中…"
+          pd.text = r.probed ? r.desc : "读取中…"
         }
         pd.lineBreakMode = .byTruncatingTail
         let sw = UIButton(type: .system)
@@ -1316,10 +1148,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       descLabel.numberOfLines = 0
       if status == .rest {
         descLabel.text = "休息中"
-      } else if let sm = r.summary {
-        descLabel.attributedText = TeamStatusViewController.summaryAttributed(sm)
       } else {
-        descLabel.text = r.probed ? r.desc : "探测中…"
+        descLabel.text = r.probed ? r.desc : "读取中…"
       }
       dot.backgroundColor = status.color
     }

@@ -89,8 +89,7 @@ struct Session: Identifiable {
     var dir: String
     var initials: String
     var grad: [Color]
-    var status: WorkStatus       // 显示状态（休息叠加后的 effective）
-    var probed: WorkStatus = .work  // 探测到的原始状态（休息取消后回到这个）
+    var status: WorkStatus       // 只剩 休息 / 空闲 两档：不再探测「等你/干活中」那一套
     var lines: [TermLine]
     var chat: [ChatBlock] = []
     /// 真实的 tmux session 名（如 "cc-jack-talkai"）。设了就 attach 它，而不是新建。

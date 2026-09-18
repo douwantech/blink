@@ -189,8 +189,6 @@ struct PadHome {
   @State machinesVM: MachineVM[] = [];
   @State sideRows: SessRow[] = [];
   @State teamGroups: TeamGroupVM[] = [];
-  @State statWait: number = 0;
-  @State statWork: number = 0;
   @State statIdle: number = 0;
   @State statRest: number = 0;
   @State showTeam: boolean = false;   // 团队栏默认关，顶栏人像按钮打开
@@ -451,8 +449,8 @@ struct PadHome {
     if (mm === undefined) {
       return 'none';
     }
-    const info = mm.get(this.ccFor(t));
-    return info !== undefined ? info.status : 'none';
+    // 只剩「有没有这个会话」：探测已经去掉，等你/干活中/空闲 不再判
+    return mm.has(this.ccFor(t)) ? 'idle' : 'none';
   }
 
   private rowFor(t: TabModel): SessRow {
@@ -622,8 +620,6 @@ struct PadHome {
       side.push(this.rowFor(tabs[i]));
     }
     this.sideRows = side;
-    let w: number = 0;
-    let k: number = 0;
     let d: number = 0;
     let r: number = 0;
     for (let i = 0; i < this.store.tabs.length; i++) {
@@ -631,19 +627,12 @@ struct PadHome {
       if (t.machineId !== this.activeMachineId) {
         continue;
       }
-      const st: WorkStatus = this.tabStatus(t);
-      if (st === 'wait') {
-        w++;
-      } else if (st === 'work') {
-        k++;
-      } else if (st === 'rest') {
+      // 「等你/干活/空闲」跟着探测一起去掉了，只数会话总数和休息数
+      d++;
+      if (this.store.isResting(t.id)) {
         r++;
-      } else {
-        d++;
       }
     }
-    this.statWait = w;
-    this.statWork = k;
     this.statIdle = d;
     this.statRest = r;
     this.teamGroups = this.buildGroups();
@@ -3226,14 +3215,7 @@ struct PadHome {
   // ===========================================================================
 
   private statValue(which: string): number {
-    if (which === 'wait') {
-      return this.statWait;
-    } else if (which === 'work') {
-      return this.statWork;
-    } else if (which === 'rest') {
-      return this.statRest;
-    }
-    return this.statIdle;
+    return which === 'rest' ? this.statRest : this.statIdle;
   }
 
   // 注意：@Builder 的基本类型参数按值传，状态变了不会刷新——数值在里面直接读 @State
@@ -3267,9 +3249,7 @@ struct PadHome {
       .width('100%').padding({ left: 16, right: 8, top: 10 })
 
       Row() {
-        this.statCell('wait', '等你', C_WAIT)
-        this.statCell('work', '干活', C_WORK)
-        this.statCell('idle', '空闲', '#757F8F')
+        this.statCell('idle', '会话', FG)
         this.statCell('rest', '休息', C_REST)
       }
       .width('100%').padding({ top: 10, bottom: 10 }).margin({ top: 8, left: 12, right: 12 })

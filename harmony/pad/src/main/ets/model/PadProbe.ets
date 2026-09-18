@@ -1,8 +1,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
-// PadProbe — 会话状态探测（干活中 / 等你 / 空闲），与 macOS 版 AppState.probeScript 同一份 shell：
-// 一条 exec 遍历所有 cc-* tmux 会话，取 pane_current_command + 底部是否有 "esc to interrupt"。
-// 分类同 iOS：裸 shell → 空闲；busy → 干活中；否则（claude 在前台等输入）→ 等你。
+// PadProbe — 读每个会话「在干嘛」，与 macOS 版 AppState.readScript 同一份 shell：
+// 一条 exec 遍历所有 cc-* tmux 会话，读 claude 自己写的 jsonl 里最后一条有意义的记录。
+// 不再探测状态（pane 前台进程 + 屏幕有没有 spinner 那一套）：分出来的 等你/干活中/空闲
+// 本来就不准，界面上也早不显示了。剩下的 WorkStatus 只用来区分「休息 / 其它」。
 //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -11,7 +12,6 @@ import { PadExec } from './PadExec';
 export type WorkStatus = 'work' | 'wait' | 'idle' | 'rest' | 'none';
 
 export interface ProbeInfo {
-  status: WorkStatus;
   doing: string;   // 「正在 Edit · xxx.ets」/ 它最后说的话 / 「你说：…」
   ago: number;     // jsonl 多久没写了（秒），-1 = 不知道
 }
@@ -58,9 +58,6 @@ export const PROBE_SCRIPT: string = [
   "  else empty end'",
   'BODY=$(',
   "tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do",
-  "  pc=$(tmux display-message -p -t \"$s\" '#{pane_current_command}' 2>/dev/null)",
-  '  busy=0',
-  "  tmux capture-pane -p -S -250 -t \"$s\" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1",
   '  ago=""; doing=""',
   '  if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then',
   "    enc=$(printf '%s' \"$cwd\" | sed 's:[/.]:-:g')",
@@ -84,18 +81,17 @@ export const PROBE_SCRIPT: string = [
   '      doing=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d \'\\t\\r\' | cut -c1-160)',
   '    fi',
   '  fi',
-  "  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$s\" \"$pc\" \"$busy\" \"$ago\" \"$doing\"",
+  "  printf '%s\\t%s\\t%s\\n' \"$s\" \"$ago\" \"$doing\"",
   'done',
   ')',
   "EB64=$(printf '%s' \"$BODY\" | base64 | tr -d '\\n')",
   "printf '@TSB64@%s@TSB64E@\\n' \"$EB64\"",
 ].join('\n');
 
-const SHELLS: string[] = ['zsh', 'bash', 'sh', 'dash', 'ksh', 'fish', '-zsh', '-bash'];
-
 export class PadProbe {
   /// 解析探测输出 → { cc-<title>: 状态 }。解不出包裹返回 null（区分「没有会话」和「探测失败」）。
-  /// 一个会话探到的东西：状态 + 在干嘛 + 距今多久（秒，-1=不知道）
+  /// 一个会话读到的东西：在干嘛 + 距今多久（秒，-1=不知道）。
+  /// 解不出包裹返回 null（区分「没有会话」和「读取失败」）。
   static parseInfo(raw: string): Map<string, ProbeInfo> | null {
     const body: string | null = PadExec.decodeTsb64(raw);
     if (body === null) {
@@ -105,49 +101,12 @@ export class PadProbe {
     const lines: string[] = body.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const f: string[] = lines[i].replace(new RegExp('\\r', 'g'), '').split('\t');
-      if (f.length < 3 || f[0].length === 0) {
+      if (f.length < 2 || f[0].length === 0) {
         continue;
       }
-      const pc: string = f[1].trim();
-      const busy: boolean = f[2].trim() === '1';
-      let st: WorkStatus;
-      if (pc.length === 0 || SHELLS.indexOf(pc) >= 0) {
-        st = 'idle';
-      } else if (busy) {
-        st = 'work';
-      } else {
-        st = 'wait';
-      }
-      const agoStr: string = f.length >= 4 ? f[3].trim() : '';
+      const agoStr: string = f[1].trim();
       const ago: number = agoStr.length > 0 ? parseInt(agoStr, 10) : -1;
-      map.set(f[0], { status: st, doing: f.length >= 5 ? f[4].trim() : '', ago: isNaN(ago) ? -1 : ago });
-    }
-    return map;
-  }
-
-  static parse(raw: string): Map<string, WorkStatus> | null {
-    const body: string | null = PadExec.decodeTsb64(raw);
-    if (body === null) {
-      return null;
-    }
-    const map: Map<string, WorkStatus> = new Map();
-    const lines: string[] = body.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const f: string[] = lines[i].replace(new RegExp('\\r', 'g'), '').split('\t');
-      if (f.length < 3 || f[0].length === 0) {
-        continue;
-      }
-      const pc: string = f[1].trim();
-      const busy: boolean = f[2].trim() === '1';
-      let st: WorkStatus;
-      if (pc.length === 0 || SHELLS.indexOf(pc) >= 0) {
-        st = 'idle';
-      } else if (busy) {
-        st = 'work';
-      } else {
-        st = 'wait';
-      }
-      map.set(f[0], st);
+      map.set(f[0], { doing: f.length >= 3 ? f[2].trim() : '', ago: isNaN(ago) ? -1 : ago });
     }
     return map;
   }

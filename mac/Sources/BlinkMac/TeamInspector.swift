@@ -16,11 +16,9 @@ struct TeamInspector: View {
             .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
             Divider().overlay(Theme.hair)
 
-            // 紧凑统计条（替代 2×2 大块）
+            // 「等你/干活/空闲」的计数跟着探测一起去掉了，只留会话总数和休息数
             HStack(spacing: 16) {
-                statChip(state.count(.wait), "等你", Theme.wait)
-                statChip(state.count(.work), "干活", Theme.work)
-                statChip(state.count(.idle), "空闲", Theme.idle)
+                statChip(state.sessionCount, "会话", Theme.fg)
                 statChip(state.count(.rest), "休息", Theme.rest)
                 Spacer()
             }

@@ -206,7 +206,7 @@ final class AppState: ObservableObject {
                 built.append(Session(id: "\(m.id)/\(full)", machineID: m.id, name: t.ccName,
                                      dir: t.dir.isEmpty ? "~" : t.dir, initials: initials,
                                      grad: grads[built.count % grads.count],
-                                     status: .idle, probed: .idle, lines: [], tmuxName: full))
+                                     status: .idle, lines: [], tmuxName: full))
             }
             sessions.append(contentsOf: built)
         }
@@ -276,21 +276,19 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
-        await withTaskGroup(of: (String, [String: ProbeInfo]).self) { group in
+        await withTaskGroup(of: (String, [String: SessionRead]).self) { group in
             for m in machines {
                 let mid = m.id, tr = m.transport
                 group.addTask {
-                    let out = await AppState.exec(tr, AppState.probeScript, timeout: 20, marker: "@TSB64E@")
-                    return (mid, AppState.parseProbe(out))
+                    let out = await AppState.exec(tr, AppState.readScript, timeout: 20, marker: "@TSB64E@")
+                    return (mid, AppState.parseRead(out))
                 }
             }
             for await (mid, map) in group where !map.isEmpty {
                 for i in sessions.indices where sessions[i].machineID == mid {
-                    guard let name = sessions[i].tmuxName, let info = map[name] else { continue }
-                    sessions[i].probed = info.status
-                    sessions[i].status = isResting(name) ? .rest : info.status
-                    sessions[i].doing = info.doing
-                    sessions[i].doingAgo = info.ago
+                    guard let name = sessions[i].tmuxName, let r = map[name] else { continue }
+                    sessions[i].doing = r.doing
+                    sessions[i].doingAgo = r.ago
                 }
             }
         }
@@ -323,14 +321,12 @@ final class AppState: ObservableObject {
         }
         sessions.removeAll { $0.machineID == machine.id }
         sessions.append(contentsOf: real)
-        let out2 = await AppState.exec(machine.transport, AppState.probeScript, timeout: 20, marker: "@TSB64E@")
-        let map = AppState.parseProbe(out2)
+        let out2 = await AppState.exec(machine.transport, AppState.readScript, timeout: 20, marker: "@TSB64E@")
+        let map = AppState.parseRead(out2)
         for i in sessions.indices where sessions[i].machineID == machine.id {
-            guard let name = sessions[i].tmuxName, let info = map[name] else { continue }
-            sessions[i].probed = info.status
-            sessions[i].status = isResting(name) ? .rest : info.status
-            sessions[i].doing = info.doing
-            sessions[i].doingAgo = info.ago
+            guard let name = sessions[i].tmuxName, let r = map[name] else { continue }
+            sessions[i].doing = r.doing
+            sessions[i].doingAgo = r.ago
         }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
@@ -374,7 +370,7 @@ final class AppState: ObservableObject {
     func recomputeRestStatuses() {
         for i in sessions.indices {
             let name = sessions[i].tmuxName ?? sessions[i].id
-            sessions[i].status = isResting(name) ? .rest : sessions[i].probed
+            sessions[i].status = isResting(name) ? .rest : .idle
         }
     }
 
@@ -387,23 +383,21 @@ final class AppState: ObservableObject {
 
     // MARK: 真实状态探测（干活中/等你/空闲）
 
-    /// 一条 blinkd exec 遍历所有 cc-* 会话，每个会话回一行：
-    ///   session \t pane_current_command \t busy \t 多久没动(秒) \t 在干嘛
+    /// 一条 blinkd exec 遍历所有 cc-* 会话，每个回一行：session \t 多久没动(秒) \t 在干嘛
     ///
-    /// 「在干嘛」不刮终端屏幕（渲染残缺、框线杂质、刮到的常是上一轮的东西），
-    /// 改读 claude 自己写的 ~/.claude/projects/<cwd>/<uuid>.jsonl —— 里面是结构化的
-    /// 工具调用和消息，准。按 customTitle 对到本 tab 的那份（跟 sshCommand 里
-    /// /rename 注入的 TITLE 一致），取最后一条有意义的记录：
+    /// 只读 claude 自己写的 ~/.claude/projects/<cwd>/<uuid>.jsonl —— 那是结构化的工具调用和
+    /// 消息，准。不再「探测」状态（pane 前台进程 + 屏幕上有没有 spinner 那一套）：
+    /// 那玩意分出来的 等你/干活中/空闲 本来就不准，界面上也早不显示了。
+    ///
+    /// 取最后一条有意义的记录：
     ///   tool_use → 「正在 Edit · TeamInspector.swift」
     ///   text     → 它最后说的话（多半就是在等你回）
     ///   用户消息 → 「你说：…」（它还没开口）
-    /// 没装 jq 的机器降级：这一列留空，状态判断照旧。
     ///
-    /// 定位那份 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：
-    /// 这些文件动辄几十 MB，全目录 grep 一轮是几十 GB 的读，探测会直接卡死
-    /// （实测 2 分钟没回来）；头 3 行 + 尾 200 行足够覆盖「开局就命名」和
-    /// 「跑一半才 /rename」两种情况，一台机器一轮下来是毫秒级。
-    nonisolated static let probeScript = #"""
+    /// 定位那份 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：这些文件动辄
+    /// 几十 MB，全目录 grep 一轮是几十 GB 的读，会直接卡死（实测 2 分钟没回来）。
+    /// 没装 jq 的机器降级：这一列留空。
+    nonisolated static let readScript = #"""
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 now=$(date +%s)
 HAVEJQ=0; command -v jq >/dev/null 2>&1 && HAVEJQ=1
@@ -426,9 +420,6 @@ JQP='.message as $m
   else empty end'
 BODY=$(
 tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
-  pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-  busy=0
-  tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
   ago=""
   doing=""
   if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
@@ -452,7 +443,7 @@ tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep 
       doing=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\t\r' | cut -c1-160)
     fi
   fi
-  printf '%s\t%s\t%s\t%s\t%s\n' "$s" "$pc" "$busy" "$ago" "$doing"
+  printf '%s\t%s\t%s\n' "$s" "$ago" "$doing"
 done
 )
 EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
@@ -460,12 +451,12 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 """#
 
     func probe() {
-        showToast("正在探测各机器…")
+        showToast("正在读取各机器…")
         Task { @MainActor in
             await self.enumerateAll()
             self.loadCloudTabs()      // 并回没在跑 tmux 的配置标签
             self.loadClosed()
-            self.showToast("状态已更新")
+            self.showToast("已更新")
         }
     }
 
@@ -476,62 +467,37 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             showToast("当前没有可刷新的会话"); return
         }
         showToast("刷新「\(s.name)」…")
-        let out = await AppState.exec(activeMachine.transport,
-                                      AppState.probeOneScript(session: name),
+        let out = await AppState.exec(activeMachine.transport, AppState.readScript,
                                       timeout: 15, marker: "@TSB64E@")
-        let map = AppState.parseProbe(out)
-        guard let info = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
-            showToast("刷新失败或会话已不存在"); return
+        let map = AppState.parseRead(out)
+        guard let r = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
+            showToast("读不到这个会话的记录"); return
         }
-        sessions[i].probed = info.status
-        sessions[i].status = isResting(name) ? .rest : info.status
-        // 单会话刷新脚本不查 jsonl（省一次 grep），拿不到就保留上次的「在干嘛」
-        if !info.doing.isEmpty {
-            sessions[i].doing = info.doing
-            sessions[i].doingAgo = info.ago
-        }
+        sessions[i].doing = r.doing
+        sessions[i].doingAgo = r.ago
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
-        showToast("已刷新「\(s.name)」· \(sessions[i].status.label)")
+        showToast("已刷新「\(s.name)」")
     }
 
-    /// 只探测单个会话的探测脚本（同 probeScript 但只跑一个 session）。
-    static func probeOneScript(session: String) -> String {
-        #"""
-        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        s='\#(session)'
-        pc=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-        busy=0
-        tmux capture-pane -p -S -250 -t "$s" 2>/dev/null | tail -15 | grep -q 'esc to interrupt' && busy=1
-        BODY=$(printf '%s\t%s\t%s\n' "$s" "$pc" "$busy")
-        EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-        printf '@TSB64@%s@TSB64E@\n' "$EB64"
-        """#
-    }
-
-    struct ProbeInfo {
-        var status: WorkStatus
+    struct SessionRead {
         var doing: String = ""      // 「正在 Edit · xxx.swift」/ 它最后说的话 / 「你说：…」
         var ago: Int = -1           // jsonl 多久没写了（秒），-1 = 不知道
     }
 
-    nonisolated static func parseProbe(_ out: String) -> [String: ProbeInfo] {
+    nonisolated static func parseRead(_ out: String) -> [String: SessionRead] {
         guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
               a.upperBound <= b.lowerBound else { return [:] }
         let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
         guard let data = Data(base64Encoded: String(b64)),
               let body = String(data: data, encoding: .utf8) else { return [:] }
-        let shells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh", "fish"]
-        var map: [String: ProbeInfo] = [:]
+        var map: [String: SessionRead] = [:]
         for line in body.split(whereSeparator: { $0.isNewline }) {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard f.count >= 3 else { continue }
-            let pc = f[1].trimmingCharacters(in: .whitespaces)
-            let busy = f[2].trimmingCharacters(in: .whitespaces) == "1"
-            let st: WorkStatus = (pc.isEmpty || shells.contains(pc)) ? .idle : (busy ? .work : .wait)
-            let ago = f.count >= 4 ? Int(f[3].trimmingCharacters(in: .whitespaces)) ?? -1 : -1
-            let doing = f.count >= 5 ? f[4].trimmingCharacters(in: .whitespaces) : ""
-            map[String(f[0])] = ProbeInfo(status: st, doing: doing, ago: ago)
+            guard f.count >= 2, !f[0].isEmpty else { continue }
+            let ago = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? -1
+            let doing = f.count >= 3 ? f[2].trimmingCharacters(in: .whitespaces) : ""
+            map[String(f[0])] = SessionRead(doing: doing, ago: ago)
         }
         return map
     }
@@ -552,7 +518,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             result.append(Session(id: "\(machineID)/\(full)", machineID: machineID, name: title,
                                   dir: path.isEmpty ? "~" : path, initials: initials,
                                   grad: grads[result.count % grads.count],
-                                  status: resting ? .rest : .work, probed: .work,
+                                  status: resting ? .rest : .idle,
                                   lines: [], tmuxName: full))
         }
         return result
@@ -579,6 +545,11 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
 
     var restingCount: Int {
         sessions.filter { $0.machineID == activeMachineID && resting($0) && !isClosed($0) }.count
+    }
+
+    /// 团队面板里列出来的会话总数（跨机器，含休息的）
+    var sessionCount: Int {
+        sessions.filter { $0.tmuxName != nil && !isClosed($0) }.count
     }
 
     func count(_ s: WorkStatus) -> Int {
@@ -733,7 +704,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             _ = MacRestStore.toggle(name)
         }
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
-            sessions[i].status = now ? .rest : sessions[i].probed
+            sessions[i].status = now ? .rest : .idle
         }
     }
 
