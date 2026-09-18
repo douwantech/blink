@@ -116,6 +116,7 @@ interface SessRow {
   resting: boolean;
   unread: boolean;
   agent: string;       // 打开时进哪个 CLI：claude（默认）/ codex / deepseek
+  machineName: string; // 按项目时一组里混着好几台机器，行里要显示
 }
 
 interface TeamGroupVM {
@@ -454,6 +455,7 @@ struct PadHome {
 
   private rowFor(t: TabModel): SessRow {
     const w = this.store.workDirById(t.workDirId);
+    const mForName = this.store.machineById(t.machineId);
     const st: WorkStatus = this.tabStatus(t);
     let project: string = t.tmuxSession;
     const idx: number = project.lastIndexOf('-');
@@ -483,6 +485,7 @@ struct PadHome {
       resting: this.store.isResting(t.id),
       unread: conn !== null && conn.unread && t.id !== this.activeTabId,
       agent: this.store.agentFor(t.machineId, this.ccFor(t).substring(3)),
+      machineName: mForName !== null ? this.store.machineDisplayName(mForName) : t.machineId,
     };
     return r;
   }
@@ -526,12 +529,8 @@ struct PadHome {
           titles.set(key, (em !== null ? this.store.machineDisplayName(em) : t.machineId) + ' · ' + row.owner);
         }
       } else if (this.inspector === 'project') {
-        // 同名项目在不同机器上分开成组，标题带机器名
-        key = t.machineId + '|' + row.project;
-        if (!titles.has(key)) {
-          const pm = this.store.machineById(t.machineId);
-          titles.set(key, (pm !== null ? this.store.machineDisplayName(pm) : t.machineId) + ' · ' + row.project);
-        }
+        // 项目按名字合并：不同机器上的同一个项目放一组（行里带机器名区分）
+        key = row.project;
       } else {
         key = t.machineId;
         const m = this.store.machineById(t.machineId);
@@ -3318,7 +3317,9 @@ struct PadHome {
     Row({ space: 9 }) {
       this.wdAvatar(r.workDirId, r.owner, 26, 8)
       Column({ space: 2 }) {
-        Text(this.inspector === 'employee' ? r.project : r.name).fontSize(13).fontColor(FG)
+        Text(this.inspector === 'employee' ? r.project
+          : (this.inspector === 'project' ? r.machineName + ' · ' + r.name : r.name))
+          .fontSize(13).fontColor(FG)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Row({ space: 4 }) {
           Circle().width(5).height(5).fill(PadProbe.color(r.status))

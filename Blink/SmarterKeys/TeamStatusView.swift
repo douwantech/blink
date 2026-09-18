@@ -743,16 +743,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private var projectSections: [(project: String, items: [MemberEntry])] {
     var order: [String] = []
     var map: [String: [MemberEntry]] = [:]
-    var titles: [String: String] = [:]
     for g in groups {
       for r in g.rows {
-        // 项目也跨机器列全：同名项目在不同机器上分开成组，标题带机器名
-        let k = "\(g.machineId)|\(r.project)"
-        if map[k] == nil {
-          order.append(k)
-          map[k] = []
-          titles[k] = "\(g.machineName) · \(r.project)"
-        }
+        // 项目按名字合并：不同机器上的同一个项目放一组（成员行里带机器名区分）
+        let k = r.project
+        if map[k] == nil { order.append(k); map[k] = [] }
         map[k]?.append(MemberEntry(group: g, row: r))
       }
     }
@@ -763,8 +758,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     return order.sorted { a, b in
       let sa = map[a]?.map { memberStatus($0).rawValue }.min() ?? 9
       let sb = map[b]?.map { memberStatus($0).rawValue }.min() ?? 9
-      return sa != sb ? sa < sb : (titles[a] ?? a) < (titles[b] ?? b)
-    }.map { (titles[$0] ?? $0, map[$0] ?? []) }
+      return sa != sb ? sa < sb : a < b
+    }.map { ($0, map[$0] ?? []) }
   }
   private func memberStatus(_ e: MemberEntry) -> TeamWorkStatus {
     e.row.effective
@@ -1261,7 +1256,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         : status.color.withAlphaComponent(0.13)
       card.alpha = status == .rest ? 0.55 : 1
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
-      nameLabel.text = g.employee
+      // 一组里混着好几台机器，名字前面带上机器名才分得清
+      nameLabel.text = "\(g.machineName) · \(g.employee)"
       roleChip.text = g.role
       roleChip.isHidden = (g.role ?? "").isEmpty
       descLabel.textColor = sub

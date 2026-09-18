@@ -94,7 +94,9 @@ struct TeamInspector: View {
                 Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.name).font(Theme.ui(12.5, .semibold)).foregroundColor(Theme.fg)
-                    Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
+                    // 按项目时一组里混着好几台机器，行里补上机器名才分得清谁是谁
+                    Text(state.inspector == .project ? "\(state.machineName(s.machineID)) · \(s.dir)" : s.dir)
+                        .font(Theme.mono(10)).foregroundColor(Theme.sub)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)

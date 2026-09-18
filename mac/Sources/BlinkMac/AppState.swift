@@ -513,6 +513,11 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !isClosed($0) && $0.status == s }.count
     }
 
+    /// 机器显示名（查不到就退回 id）
+    func machineName(_ machineID: String) -> String {
+        machines.first { $0.id == machineID }?.name ?? machineID
+    }
+
     /// 员工列表分组（真实会话）：按员工/项目/机器分组，含休息中的会话（在这里唤醒）。
     var teamGroups: [TeamGroup] {
         // 三档都跨机器列全（团队面板是「看所有人在干嘛」，不该被当前机器挡住）
@@ -534,15 +539,15 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             }.sorted { $0.title < $1.title }
         }
         // 机器名（按员工/按机器都要拿）
-        let nameOf: (String) -> String = { mid in self.machines.first { $0.id == mid }?.name ?? mid }
+        let nameOf: (String) -> String = { [self] mid in machineName(mid) }
         switch inspector {
         case .employee:
             // 同名员工在不同机器上是两个人，所以 key 带机器，标题前缀机器名
             // （「tom · talkai」）。点行仍会切到对应机器的会话。
             return build(all.map { ("\(nameOf($0.machineID)) · \($0.owner)", $0) })
         case .project:
-            // 项目同理：同名项目在不同机器上分开成组，标题也带机器名
-            return build(all.map { ("\(nameOf($0.machineID)) · \($0.project)", $0) })
+            // 项目按名字合并：不同机器上的同一个项目放一组（行里带机器名区分）
+            return build(all.map { ($0.project, $0) })
         case .machine:
             var order: [String] = []; var map: [String: [Session]] = [:]
             for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
