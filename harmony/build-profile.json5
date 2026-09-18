@@ -32,6 +32,18 @@
       ]
     },
     {
+      "name": "pad",
+      "srcPath": "./pad",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
       "name": "tsvpn",
       "srcPath": "./tsvpn"
     }
