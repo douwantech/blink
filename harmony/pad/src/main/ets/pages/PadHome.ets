@@ -529,7 +529,13 @@ struct PadHome {
     for (let i = 0; i < order.length; i++) {
       const k: string = order[i];
       const rows: SessRow[] = map.get(k)!;
-      rows.sort((a: SessRow, b: SessRow) => a.name.localeCompare(b.name));
+      // 在岗的排前面，休息的沉底；同一档按名字
+      rows.sort((a: SessRow, b: SessRow) => {
+        if (a.resting !== b.resting) {
+          return a.resting ? 1 : -1;
+        }
+        return a.name.localeCompare(b.name);
+      });
       const title: string = titles.has(k) ? titles.get(k)! : k;
       out.push({
         key: k,

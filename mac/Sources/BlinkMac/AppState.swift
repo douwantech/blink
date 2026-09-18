@@ -465,7 +465,11 @@ final class AppState: ObservableObject {
             var order: [String] = []; var map: [String: [Session]] = [:]
             for (k, s) in keyed { if map[k] == nil { order.append(k) }; map[k, default: []].append(s) }
             return order.map { k in
-                let ss = (map[k] ?? []).sorted { $0.name < $1.name }
+                // 在岗的排前面，休息的沉底；同一档按名字
+                let ss = (map[k] ?? []).sorted {
+                    let ra = $0.status == .rest, rb = $1.status == .rest
+                    return ra != rb ? !ra : $0.name < $1.name
+                }
                 return TeamGroup(id: k, title: k, sub: summary(ss), sessions: ss)
             }.sorted { a, b in
                 let ra = a.sessions.map { machineRank($0.machineID) }.min() ?? Int.max
@@ -488,7 +492,10 @@ final class AppState: ObservableObject {
             for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
             order.sort { machineRank($0) < machineRank($1) }   // 跟左边机器列表同序
             return order.map { mid in
-                let ss = (map[mid] ?? []).sorted { $0.name < $1.name }
+                let ss = (map[mid] ?? []).sorted {
+                    let ra = $0.status == .rest, rb = $1.status == .rest
+                    return ra != rb ? !ra : $0.name < $1.name
+                }
                 return TeamGroup(id: mid, title: nameOf(mid), sub: summary(ss), sessions: ss)
             }
         }
