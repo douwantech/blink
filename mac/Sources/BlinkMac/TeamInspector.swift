@@ -60,9 +60,10 @@ struct TeamInspector: View {
     // 分组头：小头像 + 名 + 汇总（右对齐）
     private func groupHeader(_ g: TeamGroup) -> some View {
         HStack(spacing: 8) {
-            Avatar(text: initials(g.title),
+            // 按员工时标题是「机器 · 员工」，头像/首字母要用员工名本身去查
+            Avatar(text: initials(state.inspector == .employee ? (g.sessions.first?.owner ?? g.title) : g.title),
                    grad: headerGrad(g), size: 20, corner: 10, fontSize: 9,
-                   image: state.inspector == .employee ? state.avatar(g.title) : nil)
+                   image: state.inspector == .employee ? state.avatar(g.sessions.first?.owner ?? g.title) : nil)
             Text(g.title).font(Theme.ui(13, .bold)).foregroundColor(Theme.fg)
             Spacer()
             Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)

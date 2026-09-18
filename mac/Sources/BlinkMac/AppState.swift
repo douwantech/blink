@@ -532,13 +532,18 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
                 return TeamGroup(id: k, title: k, sub: summary(ss), sessions: ss)
             }.sorted { $0.title < $1.title }
         }
+        // 机器名（按员工/按机器都要拿）
+        let nameOf: (String) -> String = { mid in self.machines.first { $0.id == mid }?.name ?? mid }
         switch inspector {
-        case .employee: return build(mine.map { ($0.owner, $0) })
+        case .employee:
+            // 员工跨所有机器列全：同名员工在不同机器上是两个人，所以 key 带机器，
+            // 标题前缀机器名（「tom · talkai」）。点行仍会切到对应机器的会话。
+            let all = sessions.filter { $0.tmuxName != nil && !isClosed($0) }
+            return build(all.map { ("\(nameOf($0.machineID)) · \($0.owner)", $0) })
         case .project:  return build(mine.map { ($0.project, $0) })
         case .machine:
             // 「按机器」跨所有机器分组，这样其它机器也一眼看到（点行会切到对应机器的会话）。
             let all = sessions.filter { $0.tmuxName != nil && !isClosed($0) }
-            let nameOf: (String) -> String = { mid in self.machines.first { $0.id == mid }?.name ?? mid }
             var order: [String] = []; var map: [String: [Session]] = [:]
             for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
             return order.map { mid in

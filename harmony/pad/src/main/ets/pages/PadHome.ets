@@ -514,15 +514,19 @@ struct PadHome {
     const avatars: Map<string, string> = new Map();
     for (let i = 0; i < this.store.tabs.length; i++) {
       const t = this.store.tabs[i];
-      if (this.inspector !== 'machine' && t.machineId !== this.activeMachineId) {
+      // 按项目只看当前机器；按员工/按机器都跨所有机器列全
+      if (this.inspector === 'project' && t.machineId !== this.activeMachineId) {
         continue;
       }
       const row: SessRow = this.rowFor(t);
       let key: string;
       if (this.inspector === 'employee') {
-        key = row.owner;
+        // 同名员工在不同机器上是两个人：key 带机器，标题前缀机器名（「tom · talkai」）
+        key = t.machineId + '|' + row.owner;
         if (!avatars.has(key)) {
           avatars.set(key, row.workDirId);
+          const em = this.store.machineById(t.machineId);
+          titles.set(key, (em !== null ? this.store.machineDisplayName(em) : t.machineId) + ' · ' + row.owner);
         }
       } else if (this.inspector === 'project') {
         key = row.project;

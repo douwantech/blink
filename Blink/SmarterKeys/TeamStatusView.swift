@@ -1085,13 +1085,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         card.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
       }
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 34)
-      nameLabel.text = g.employee
+      // 跨机器一起列，名字前面带上机器名（「tom · talkai」）好区分
+      nameLabel.text = "\(g.machineName) · \(g.employee)"
       roleChip.text = g.role
       roleChip.isHidden = (g.role ?? "").isEmpty
       let restCount = g.rows.filter(\.resting).count
       machineLabel.text = restCount > 0 && restCount < g.rows.count
-        ? "\(g.machineName) · \(g.rows.count - restCount) 在岗 · \(restCount) 休息"
-        : "\(g.machineName) · \(g.rows.count) 个会话"
+        ? "\(g.rows.count - restCount) 在岗 · \(restCount) 休息"
+        : "\(g.rows.count) 个会话"
       pill.apply(st)
 
       projStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
