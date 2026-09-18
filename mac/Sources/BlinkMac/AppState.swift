@@ -55,6 +55,9 @@ final class AppState: ObservableObject {
     /// Real local PTY terminals (SwiftTerm), one per session.
     let term = TerminalManager()
 
+    /// 每个 blinkd 会话实际用的连接通道（sessionID → "LAN 直连" / "Tailscale"），状态栏据此标记。
+    @Published var transportBySession: [String: String] = [:]
+
     private var toastTask: Task<Void, Never>?
 
     init() {
@@ -80,6 +83,7 @@ final class AppState: ObservableObject {
         }
         // 远程会话贴图上传图床时，把进度/结果 toast 冒出来（需 self 全初始化后再接）。
         term.onToast = { [weak self] m in Task { @MainActor in self?.showToast(m) } }
+        term.onTransport = { [weak self] sid, kind in Task { @MainActor in self?.transportBySession[sid] = kind } }
     }
 
     /// 读 blinkd 配置：环境变量 BLINKD_TOKEN/HOST/PORT，其次 ~/.config/blinkmac/config.json。
@@ -154,6 +158,7 @@ final class AppState: ObservableObject {
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
         if chatShotIfNeeded() { return }
+        BlinkdDiscovery.shared.start()   // 常驻 Bonjour 发现同网 blinkd，供 LAN 优先直连用
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
             let a = BlinkAvatars.load()
@@ -211,7 +216,7 @@ final class AppState: ObservableObject {
     /// 套用手机上给它起的显示名，不重复列。KV 空（dev / 未同步）→ 保持本地单机不动。
     func loadCloudMachines() {
         let cloud = MacMachineStore.machines()
-        guard !cloud.isEmpty, case .blinkd(let lh, let lp, let lt) = machines.first?.transport else { return }
+        guard !cloud.isEmpty, case .blinkd(_, let lp, let lt) = machines.first?.transport else { return }
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple, Grad.slate]
         var out: [Machine] = []
         var thisMacId: String? = nil
@@ -222,10 +227,12 @@ final class AppState: ObservableObject {
             let isLocalMac: Bool
             if let b = cm.blinkd {
                 let isThisMac = (b.token == lt)
-                // 这台 Mac 走本地直连（config.json 那台），其余 blinkd 机器走 KV 里的地址（tsnet）。
-                transport = isThisMac ? .blinkd(host: lh, port: lp, token: lt)
+                // 这台 Mac 连自己的 daemon 走 127.0.0.1 回环（daemon 双模式在 0.0.0.0 也监听），
+                // 不绕 Tailscale/tsnet；其余 blinkd 机器才走 KV 里的地址（tsnet）。
+                let loopback = "127.0.0.1"
+                transport = isThisMac ? .blinkd(host: loopback, port: lp, token: lt)
                                       : .blinkd(host: b.host, port: b.port, token: b.token)
-                hostLabel = isThisMac ? "本机 · \(b.host):\(b.port)" : "blinkd \(b.host):\(b.port)"
+                hostLabel = isThisMac ? "本机 · \(loopback):\(lp)" : "blinkd \(b.host):\(b.port)"
                 isLocalMac = isThisMac
                 if isThisMac { thisMacId = cm.id }
             } else {

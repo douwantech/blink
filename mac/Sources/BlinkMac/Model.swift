@@ -61,6 +61,12 @@ enum Transport {
     var isRemote: Bool { if case .blinkd = self { return true }; return false }
     /// Mac 端能否真正建连接（只有 blinkd / 本地能）。
     var connectable: Bool { if case .ssh = self { return false }; return true }
+    /// 顶栏徽标文案：blinkd 连接直接带上实际 IP（本机 127.0.0.1 / 远程对应 IP），
+    /// 一眼看清走的是哪台/哪条链路，不再只写「本地」这种模糊词。
+    var badge: String {
+        if case .blinkd(let host, _, _) = self { return "blinkd · \(host)" }
+        return "blinkd"
+    }
 }
 
 struct Machine: Identifiable {

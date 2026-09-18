@@ -2,5 +2,6 @@
 export { TailscaleCore } from './src/main/ets/core/TailscaleCore';
 export { BlinkdClient } from './src/main/ets/blinkd/BlinkdClient';
 export type { BlinkdState } from './src/main/ets/blinkd/BlinkdClient';
+export { BlinkdDiscovery } from './src/main/ets/blinkd/BlinkdDiscovery';
 export { Terminal } from './src/main/ets/blinkd/Terminal';
 export { StatusStore } from './src/main/ets/common/StatusStore';

@@ -909,7 +909,7 @@ struct BlinkTerminal {
       conn.state = 'connected';
       conn.connectedAt = Date.now();
       conn.everConnected = true;
-      this.note(tabId, conn, '\u001b[32m✓ 已连接\u001b[0m', false);
+      this.note(tabId, conn, '\u001b[32m✓ 已连接\u001b[0m' + (detail.length > 0 ? ' \u001b[2m· ' + detail + '\u001b[0m' : ''), false);
     } else if (st === 'closed' || st === 'error') {
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;

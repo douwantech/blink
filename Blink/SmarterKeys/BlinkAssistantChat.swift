@@ -495,9 +495,12 @@ struct AssistantChatCache: Codable {
 /// 对 blinkd 机器直接跑脚本收输出:0x01 auth + 0x04 exec,daemon 把 PTY 原始字节写回,进程退出连接关闭。
 /// 输出里用 @TSB64@…@TSB64E@ 标记捞 payload,PTY 的 \r 噪音不影响。
 enum BlinkdExecOnce {
-  static func run(host: String, port: Int, token: String, script: String,
+  static func run(host rawHost: String, port rawPort: Int, token: String, script: String,
                   timeout: TimeInterval = 25,
                   completion: @escaping (Result<String, Error>) -> Void) {
+    // 同网优先 LAN 直连（这是团队状态探测/枚举的高频路径，占 Tailscale 最多）
+    let (host, portU16) = BlinkdLAN.preferred(host: rawHost, port: UInt16(clamping: rawPort))
+    let port = Int(portU16)
     guard port > 0, port <= 65535, let p = NWEndpoint.Port(rawValue: UInt16(port)) else {
       completion(.failure(NSError(domain: "BlinkdExec", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "端口不合法: \(port)"])))

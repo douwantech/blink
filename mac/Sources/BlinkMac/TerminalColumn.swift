@@ -136,7 +136,7 @@ struct TerminalColumn: View {
     private var statusBar: some View {
         HStack(spacing: 14) {
             Text("cc-\(state.activeSession.name)")
-            Text("·"); Text("blinkd").foregroundColor(Theme.teal); Text("·"); Text("UTF-8")
+            Text("·"); transportBadge; Text("·"); Text("UTF-8")
             Spacer()
             Text("⌘R 重连"); Text("⌘K 清屏"); Text("⌘⇧V 语音")
         }
@@ -144,6 +144,31 @@ struct TerminalColumn: View {
         .padding(.horizontal, 16).frame(height: 24)
         .background(Color.white.opacity(0.03))
         .overlay(alignment: .top) { Rectangle().fill(Theme.hair).frame(height: 1) }
+    }
+
+    /// 当前会话的连接方式标记：本机 PTY / SSH / blinkd（再细分 LAN 直连 vs Tailscale）。
+    @ViewBuilder
+    private var transportBadge: some View {
+        switch state.activeMachine.transport {
+        case .local:
+            badge("本机", Theme.sub)
+        case .ssh:
+            badge("SSH", Theme.teal)
+        case .blinkd:
+            switch state.transportBySession[state.activeSessionID] {
+            case "LAN 直连": badge("LAN 直连", Theme.green2)   // 同网 IP 直连（不经 Tailscale）
+            case "Tailscale": badge("Tailscale", Theme.blue)  // 经 Tailscale
+            default:          badge("连接中…", Theme.dim)
+            }
+        }
+    }
+
+    private func badge(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(Theme.mono(10))
+            .foregroundColor(color)
+            .padding(.horizontal, 6).padding(.vertical, 1.5)
+            .background(Capsule().fill(color.opacity(0.15)))
     }
 
     // MARK: Toast
