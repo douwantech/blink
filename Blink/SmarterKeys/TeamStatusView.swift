@@ -80,13 +80,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   fileprivate struct ProjectRow {
     let tabKey: UUID
     let project: String
-    var desc: String
-    var status: TeamWorkStatus   // 探测前默认 .idle
-    var probed = false
+    var status: TeamWorkStatus   // 只剩 休息 / 空闲 两档
     var resting = false          // 休息按 tab（员工×项目）粒度，来自 TabRestStore
     var agent: AgentKind = .claude   // 这个 tab 开起来进哪个 CLI（行尾齿轮改）
-    var ago: Int = -1                // 上面那条距今多少秒（jsonl mtime），-1 = 不知道
-    /// 行的展示状态：休息优先，其余用探测结果
+    /// 行的展示状态：休息优先
     var effective: TeamWorkStatus { resting ? .rest : status }
   }
   fileprivate struct Group {
@@ -203,7 +200,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     subtitleLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
     subtitleLabel.textColor = sub
     subtitleLabel.textAlignment = .center
-    subtitleLabel.text = "正在读取各机器…"
+    subtitleLabel.text = "正在读取角色表…"
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(subtitleLabel)
 
@@ -272,8 +269,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let agent = TabAgentStore.shared.agent(
         machineId: t.machineId, title: TabAgentStore.title(fromOuterSession: t.outerSession))
       map[k]?.rows.append(ProjectRow(tabKey: t.tabKey, project: t.project,
-                                     desc: old?.desc ?? "", status: old?.status ?? .idle,
-                                     probed: old?.probed ?? false, resting: t.resting,
+                                     status: old?.status ?? .idle, resting: t.resting,
                                      agent: agent))
       if !t.resting { map[k]?.resting = false }   // 全部 tab 都休息才算员工休息
     }
@@ -334,69 +330,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   /// 滤掉，但 `· Working… (5m · ↓ 13k tokens)` 计时行保留——它就是干活实况。
   /// 输出整体 base64 包在 @TSB64@…@TSB64E@ 里（跟 transcriptDeltaScript 同款）：
   /// blinkd 走 PTY 会混进 \r 和回显噪音，裸文本没法按行解析，两种 transport 统一按标记捞。
-  /// 每个 cc-* 会话回一行：session \t 多久没动(秒) \t 在干嘛
-  ///
-  /// 只读 claude 自己写的 jsonl（结构化的工具调用和消息），取最后一条有意义的记录：
-  /// tool_use → 「正在 Edit · xxx.swift」，text → 它最后说的话，用户消息 → 「你说：…」。
-  /// 不再「探测」状态（pane 前台进程 + 屏幕有没有 spinner 那一套）：分出来的
-  /// 等你/干活中/空闲 本来就不准，界面上也早不显示了；GLM 总结也一并停用。
-  ///
-  /// 定位 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：这些文件动辄几十
-  /// MB，全目录 grep 一轮是几十 GB 的读，探测会直接卡死（实测 2 分钟没回来）。
-  /// 没装 jq 的机器降级：这一列留空。
+  /// 只读 ~/.blink/org.md 里的角色表（员工卡上那个小职位标签）。
+  /// 会话状态探测、读 claude 记录都拿掉了：前者分档不准，后者用户不要。
   private static let probeScript = """
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-  now=$(date +%s)
-  HAVEJQ=0; command -v jq >/dev/null 2>&1 && HAVEJQ=1
-  JQP='.message as $m
-  | if (.type=="assistant") and ($m.content|type=="array") then
-      ($m.content[]
-       | if .type=="tool_use" then
-           "正在 " + .name
-           + (if (.input.description|type)=="string" then " · " + .input.description
-              elif (.input.file_path|type)=="string" then " · " + (.input.file_path|sub("^.*/";""))
-              elif (.input.pattern|type)=="string" then " · " + .input.pattern
-              elif (.input.command|type)=="string" then " · " + (.input.command|gsub("\\n";" "))
-              else "" end)
-         elif (.type=="text") and ((.text|ltrimstr(" ")|length) > 1) then
-           (.text|gsub("\\n";" ")|gsub("[*#`>]";"")|gsub("  +";" "))
-         else empty end)
-    elif (.type=="user") and ($m.content|type=="string")
-         and ((.isMeta // false)|not) and ($m.content|startswith("<")|not) then
-      "你说：" + ($m.content|gsub("\\n";" ")|gsub("  +";" "))
-    else empty end'
-  BODY=$(
-  tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
-    ago=""
-    line=""
-    if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
-      enc=$(printf '%s' "$cwd" | sed 's:[/.]:-:g')
-      D="$HOME/.claude/projects/$enc"
-      title=${s#cc-}
-      PAT="\\"customTitle\\":\\"$title\\""
-      F=""
-      CANDS=$(ls -t "$D"/*.jsonl 2>/dev/null | head -8)
-      for f in $CANDS; do
-        head -n 3 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
-      done
-      if [ -z "$F" ]; then
-        for f in $CANDS; do
-          tail -n 200 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
-        done
-      fi
-      if [ -n "$F" ]; then
-        mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-        ago=$(( now - ${mt:-$now} ))
-        line=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\\t\\r' | cut -c1-160)
-      fi
-    fi
-    printf '%s\\t%s\\t%s\\n' "$s" "$ago" "$line"
-  done
-  echo '===ORG==='
-  grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true
-  )
+  BODY=$(grep -E '^\\| \\*\\*' "$HOME/.blink/org.md" 2>/dev/null || true)
   EB64=$(printf '%s' "$BODY" | base64 | tr -d '\\n')
-  printf '@TSB64@%s@TSB64E@\n' "$EB64"
+  printf '@TSB64@%s@TSB64E@\\n' "$EB64"
   """
 
   /// 按机器 transport 执行探测脚本：blinkd 机器走 BlinkdExecOnce（远程登录关着也通），
@@ -447,7 +387,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     subtitleLabel.text = "正在读取 \(machines.count) 台机器…"
     for m in machines {
       Task { [weak self] in
-        var sessions: [String: (line: String, ago: Int)] = [:]
+
         var roles: [String: String] = [:]
         var failure: String?
         do {
@@ -455,31 +395,21 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
             try await Self.exec(script: Self.probeScript, machine: m)
           }
           Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
-          var inOrg = false
           for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-            let lineStr = String(raw)
-            if lineStr == "===ORG===" { inOrg = true; continue }
-            if inOrg {
-              // | **tom** | CTO |
-              let parts = lineStr.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-              if parts.count >= 2 {
-                let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
-                if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
-              }
-            } else {
-              let f = lineStr.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-              guard f.count >= 2, !f[0].isEmpty else { continue }
-              sessions[String(f[0])] = (line: f.count >= 3 ? String(f[2]) : "",
-                                        ago: Int(f[1].trimmingCharacters(in: .whitespaces)) ?? -1)
+            // | **tom** | CTO |
+            let parts = String(raw).split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count >= 2 {
+              let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
+              if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
             }
           }
         } catch {
           failure = error.localizedDescription
           Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
         }
-        let s = sessions, r = roles, f = failure
+        let r = roles, f = failure
         await MainActor.run { [weak self] in
-          self?.applyMachine(machineId: m.id, sessions: s, roles: r, failure: f, gen: gen)
+          self?.applyMachine(machineId: m.id, roles: r, failure: f, gen: gen)
         }
       }
     }
@@ -501,34 +431,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
-  /// 单台机器结果落地：只动这台机器的行，别台照旧（可能还在读取中）
-  private func applyMachine(machineId: String, sessions: [String: (line: String, ago: Int)],
-                            roles: [String: String], failure: String?, gen: Int) {
+  /// 单台机器结果落地：只并这台机器带回来的角色表
+  private func applyMachine(machineId: String, roles: [String: String], failure: String?, gen: Int) {
     guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
     pendingMachines.remove(machineId)
     if failure == nil { probeReachedCount += 1 }
     if !roles.isEmpty { roleMap.merge(roles) { _, new in new } }
-
-    for gi in groups.indices {
-      if groups[gi].role == nil { groups[gi].role = roleMap[groups[gi].employee.lowercased()] }
-      guard groups[gi].machineId == machineId else { continue }
-      for ri in groups[gi].rows.indices {
-        guard let tab = tabs.first(where: { $0.tabKey == groups[gi].rows[ri].tabKey }) else { continue }
-        // 机器没够着（不同网/不在线）≠ 会话不存在，别误报「会话未启动」；带上具体报错好排查
-        if let err = failure {
-          groups[gi].rows[ri].desc = "读取失败: \(String(err.prefix(90)))"
-          groups[gi].rows[ri].probed = true
-          continue
-        }
-        guard let s = sessions[tab.outerSession] else {
-          groups[gi].rows[ri].desc = "会话未启动"
-          groups[gi].rows[ri].probed = true
-          continue
-        }
-        groups[gi].rows[ri].desc = s.line.isEmpty ? "读不到这个会话的记录" : s.line
-        groups[gi].rows[ri].ago = s.ago
-        groups[gi].rows[ri].probed = true
-      }
+    for gi in groups.indices where groups[gi].role == nil {
+      groups[gi].role = roleMap[groups[gi].employee.lowercased()]
     }
 
     let f = DateFormatter()
@@ -1018,11 +928,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         pd.numberOfLines = 0
         pd.textColor = r.resting ? TeamWorkStatus.rest.color.withAlphaComponent(0.75)
                                  : UIColor.white.withAlphaComponent(0.72)
-        if r.resting {
-          pd.text = "休息中"
-        } else {
-          pd.text = r.probed ? r.desc : "读取中…"
-        }
+        pd.text = r.resting ? "休息中" : ""
+        pd.isHidden = !r.resting
         pd.lineBreakMode = .byTruncatingTail
         let sw = UIButton(type: .system)
         sw.tag = i
@@ -1146,11 +1053,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       roleChip.isHidden = (g.role ?? "").isEmpty
       descLabel.textColor = sub
       descLabel.numberOfLines = 0
-      if status == .rest {
-        descLabel.text = "休息中"
-      } else {
-        descLabel.text = r.probed ? r.desc : "读取中…"
-      }
+      descLabel.text = status == .rest ? "休息中" : ""
+      descLabel.isHidden = status != .rest
       dot.backgroundColor = status.color
     }
   }
@@ -1244,9 +1148,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         descLabel.textColor = TeamWorkStatus.rest.color.withAlphaComponent(0.8)
         descLabel.text = "休息中 · 打开开关叫回来"
       } else {
-        // 状态文字（等你/干活中/空闲）去掉，这行改写「在做什么」，没探到就留空
         descLabel.textColor = sub
-        descLabel.text = r.probed ? r.desc : ""
+        descLabel.text = ""
       }
       toggle.setOn(!r.resting, animated: false)
     }

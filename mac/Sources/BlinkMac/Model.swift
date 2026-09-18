@@ -96,10 +96,6 @@ struct Session: Identifiable {
     var tmuxName: String? = nil
     /// 枚举完成前的占位会话，不建终端后端。
     var placeholder: Bool = false
-    /// 这个员工现在在干嘛：读 claude 自己的 jsonl 得来（正在 Edit · xxx / 它最后说的话 / 你说：…）
-    var doing: String = ""
-    /// 上面那条距今多少秒（jsonl 的 mtime），-1 = 不知道
-    var doingAgo: Int = -1
 
     /// owner = 会话名第一段（jack-talkai → jack），用来对上 iOS 配的头像。
     var owner: String { name.split(separator: "-").first.map(String.init) ?? name }

@@ -276,22 +276,6 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
-        await withTaskGroup(of: (String, [String: SessionRead]).self) { group in
-            for m in machines {
-                let mid = m.id, tr = m.transport
-                group.addTask {
-                    let out = await AppState.exec(tr, AppState.readScript, timeout: 20, marker: "@TSB64E@")
-                    return (mid, AppState.parseRead(out))
-                }
-            }
-            for await (mid, map) in group where !map.isEmpty {
-                for i in sessions.indices where sessions[i].machineID == mid {
-                    guard let name = sessions[i].tmuxName, let r = map[name] else { continue }
-                    sessions[i].doing = r.doing
-                    sessions[i].doingAgo = r.ago
-                }
-            }
-        }
         recomputeRestStatuses()
     }
 
@@ -321,13 +305,6 @@ final class AppState: ObservableObject {
         }
         sessions.removeAll { $0.machineID == machine.id }
         sessions.append(contentsOf: real)
-        let out2 = await AppState.exec(machine.transport, AppState.readScript, timeout: 20, marker: "@TSB64E@")
-        let map = AppState.parseRead(out2)
-        for i in sessions.indices where sessions[i].machineID == machine.id {
-            guard let name = sessions[i].tmuxName, let r = map[name] else { continue }
-            sessions[i].doing = r.doing
-            sessions[i].doingAgo = r.ago
-        }
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
     }
@@ -383,75 +360,9 @@ final class AppState: ObservableObject {
 
     // MARK: 真实状态探测（干活中/等你/空闲）
 
-    /// 一条 blinkd exec 遍历所有 cc-* 会话，每个回一行：session \t 多久没动(秒) \t 在干嘛
-    ///
-    /// 只读 claude 自己写的 ~/.claude/projects/<cwd>/<uuid>.jsonl —— 那是结构化的工具调用和
-    /// 消息，准。不再「探测」状态（pane 前台进程 + 屏幕上有没有 spinner 那一套）：
-    /// 那玩意分出来的 等你/干活中/空闲 本来就不准，界面上也早不显示了。
-    ///
-    /// 取最后一条有意义的记录：
-    ///   tool_use → 「正在 Edit · TeamInspector.swift」
-    ///   text     → 它最后说的话（多半就是在等你回）
-    ///   用户消息 → 「你说：…」（它还没开口）
-    ///
-    /// 定位那份 jsonl 只看目录里最近改过的 8 份，且只扫头 3 行 + 尾 200 行：这些文件动辄
-    /// 几十 MB，全目录 grep 一轮是几十 GB 的读，会直接卡死（实测 2 分钟没回来）。
-    /// 没装 jq 的机器降级：这一列留空。
-    nonisolated static let readScript = #"""
-export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-now=$(date +%s)
-HAVEJQ=0; command -v jq >/dev/null 2>&1 && HAVEJQ=1
-JQP='.message as $m
-| if (.type=="assistant") and ($m.content|type=="array") then
-    ($m.content[]
-     | if .type=="tool_use" then
-         "正在 " + .name
-         + (if (.input.description|type)=="string" then " · " + .input.description
-            elif (.input.file_path|type)=="string" then " · " + (.input.file_path|sub("^.*/";""))
-            elif (.input.pattern|type)=="string" then " · " + .input.pattern
-            elif (.input.command|type)=="string" then " · " + (.input.command|gsub("\n";" "))
-            else "" end)
-       elif (.type=="text") and ((.text|ltrimstr(" ")|length) > 1) then
-         (.text|gsub("\n";" ")|gsub("[*#`>]";"")|gsub("  +";" "))
-       else empty end)
-  elif (.type=="user") and ($m.content|type=="string")
-       and ((.isMeta // false)|not) and ($m.content|startswith("<")|not) then
-    "你说：" + ($m.content|gsub("\n";" ")|gsub("  +";" "))
-  else empty end'
-BODY=$(
-tmux list-sessions -F '#{session_name}|#{pane_current_path}' 2>/dev/null | grep '^cc-' | while IFS='|' read -r s cwd; do
-  ago=""
-  doing=""
-  if [ "$HAVEJQ" = 1 ] && [ -n "$cwd" ]; then
-    enc=$(printf '%s' "$cwd" | sed 's:[/.]:-:g')
-    D="$HOME/.claude/projects/$enc"
-    title=${s#cc-}
-    PAT="\"customTitle\":\"$title\""
-    F=""
-    CANDS=$(ls -t "$D"/*.jsonl 2>/dev/null | head -8)
-    for f in $CANDS; do
-      head -n 3 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
-    done
-    if [ -z "$F" ]; then
-      for f in $CANDS; do
-        tail -n 200 "$f" 2>/dev/null | grep -qF "$PAT" && { F="$f"; break; }
-      done
-    fi
-    if [ -n "$F" ]; then
-      mt=$(stat -f %m "$F" 2>/dev/null || stat -c %Y "$F" 2>/dev/null)
-      ago=$(( now - ${mt:-$now} ))
-      doing=$(tail -n 120 "$F" | jq -rc "$JQP" 2>/dev/null | tail -1 | tr -d '\t\r' | cut -c1-160)
-    fi
-  fi
-  printf '%s\t%s\t%s\n' "$s" "$ago" "$doing"
-done
-)
-EB64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
-printf '@TSB64@%s@TSB64E@\n' "$EB64"
-"""#
 
     func probe() {
-        showToast("正在读取各机器…")
+        showToast("正在刷新…")
         Task { @MainActor in
             await self.enumerateAll()
             self.loadCloudTabs()      // 并回没在跑 tmux 的配置标签
@@ -467,40 +378,12 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             showToast("当前没有可刷新的会话"); return
         }
         showToast("刷新「\(s.name)」…")
-        let out = await AppState.exec(activeMachine.transport, AppState.readScript,
-                                      timeout: 15, marker: "@TSB64E@")
-        let map = AppState.parseRead(out)
-        guard let r = map[name], let i = sessions.firstIndex(where: { $0.tmuxName == name }) else {
-            showToast("读不到这个会话的记录"); return
-        }
-        sessions[i].doing = r.doing
-        sessions[i].doingAgo = r.ago
+        await loadSessions(for: activeMachine)
         await loadCloudRest()   // 顺带重拉云端休息状态
         loadFavorites()
         showToast("已刷新「\(s.name)」")
     }
 
-    struct SessionRead {
-        var doing: String = ""      // 「正在 Edit · xxx.swift」/ 它最后说的话 / 「你说：…」
-        var ago: Int = -1           // jsonl 多久没写了（秒），-1 = 不知道
-    }
-
-    nonisolated static func parseRead(_ out: String) -> [String: SessionRead] {
-        guard let a = out.range(of: "@TSB64@"), let b = out.range(of: "@TSB64E@"),
-              a.upperBound <= b.lowerBound else { return [:] }
-        let b64 = out[a.upperBound..<b.lowerBound].filter { !$0.isWhitespace }
-        guard let data = Data(base64Encoded: String(b64)),
-              let body = String(data: data, encoding: .utf8) else { return [:] }
-        var map: [String: SessionRead] = [:]
-        for line in body.split(whereSeparator: { $0.isNewline }) {
-            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard f.count >= 2, !f[0].isEmpty else { continue }
-            let ago = Int(f[1].trimmingCharacters(in: .whitespaces)) ?? -1
-            let doing = f.count >= 3 ? f[2].trimmingCharacters(in: .whitespaces) : ""
-            map[String(f[0])] = SessionRead(doing: doing, ago: ago)
-        }
-        return map
-    }
 
     nonisolated static func parseSessions(_ out: String, machineID: String) -> [Session] {
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]

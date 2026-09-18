@@ -12,7 +12,7 @@
 //   • 每 tab 一条 blinkd 连接（ConnPool），hterm 多图层终端（rawfile/term）
 //   • 配置经 Mac 文件双向同步（CfgSync）
 //   • 对话记录增量拉取 + 本地缓存（ChatHtml，暗色皮肤）
-// 平板新增：会话状态探测（PadProbe，同 macOS probeScript）、团队分组、外接键盘按键映射。
+// 平板新增：团队分组、外接键盘按键映射。（会话状态探测已整套拿掉）
 //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -35,7 +35,7 @@ import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS } from '../model/GlmVoice';
 import { CfgSync } from '../model/CfgSync';
 import { PadExec, Endpoint } from '../model/PadExec';
-import { PadProbe, PROBE_SCRIPT, WorkStatus, ProbeInfo, agoText } from '../model/PadProbe';
+import { PadProbe, WorkStatus } from '../model/PadProbe';
 import { buildChatHtml, ChatBridge, TranscriptCacheH } from '../model/ChatHtml';
 import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 
@@ -117,8 +117,6 @@ interface SessRow {
   unread: boolean;
   agent: string;       // 打开时进哪个 CLI：claude（默认）/ codex / deepseek
   machineName: string; // 按项目时一组里混着好几台机器，行里要显示
-  doing: string;       // 在干嘛：读 claude 的 jsonl 得来（正在 Edit · xxx / 它最后说的话）
-  doingAgo: string;    // 上面那条距今多久（「3 分钟前」），拿不到就是空串
 }
 
 interface TeamGroupVM {
@@ -195,7 +193,6 @@ struct PadHome {
   @State inspector: Inspector = 'employee';
   @State mode: Mode = 'terminal';
   @State sheet: Sheet = 'none';
-  @State probing: boolean = false;
   // 终端
   @State cols: number = 80;
   @State rows: number = 24;
@@ -266,9 +263,6 @@ struct PadHome {
   private avatarCache: Map<string, image.PixelMap> = new Map();
   private avatarB64Cache: Map<string, string> = new Map();
   // 状态探测
-  private probeByMachine: Map<string, Map<string, ProbeInfo>> = new Map();
-  private lastProbe: number = 0;
-  private probeBusy: boolean = false;
   // 对话记录
   private chatWebCtl: webview.WebviewController = new webview.WebviewController();
   private chatUrl: string = 'about:blank';
@@ -316,7 +310,6 @@ struct PadHome {
 
   onPageShow(): void {
     this.sync.forcePull();
-    this.lastProbe = 0;
   }
 
   private async boot(): Promise<void> {
@@ -442,22 +435,13 @@ struct PadHome {
   }
 
   private tabStatus(t: TabModel): WorkStatus {
-    if (this.store.isResting(t.id)) {
-      return 'rest';
-    }
-    const mm = this.probeByMachine.get(t.machineId);
-    if (mm === undefined) {
-      return 'none';
-    }
-    // 只剩「有没有这个会话」：探测已经去掉，等你/干活中/空闲 不再判
-    return mm.has(this.ccFor(t)) ? 'idle' : 'none';
+    // 探测已经整套拿掉，状态只剩「休息 / 在岗」两档
+    return this.store.isResting(t.id) ? 'rest' : 'idle';
   }
 
   private rowFor(t: TabModel): SessRow {
     const w = this.store.workDirById(t.workDirId);
     const mForName = this.store.machineById(t.machineId);
-    const pm = this.probeByMachine.get(t.machineId);
-    const info: ProbeInfo | undefined = pm !== undefined ? pm.get(this.ccFor(t)) : undefined;
     const st: WorkStatus = this.tabStatus(t);
     let project: string = t.tmuxSession;
     const idx: number = project.lastIndexOf('-');
@@ -469,10 +453,7 @@ struct PadHome {
       project = owner;
     }
     const conn = this.pool.get(t.id);
-    let label: string = PadProbe.label(st);
-    if (st === 'none' && !this.probeByMachine.has(t.machineId)) {
-      label = '—';
-    }
+    const label: string = PadProbe.label(st);
     const r: SessRow = {
       tabId: t.id,
       machineId: t.machineId,
@@ -488,8 +469,6 @@ struct PadHome {
       unread: conn !== null && conn.unread && t.id !== this.activeTabId,
       agent: this.store.agentFor(t.machineId, this.ccFor(t).substring(3)),
       machineName: mForName !== null ? this.store.machineDisplayName(mForName) : t.machineId,
-      doing: info !== undefined ? info.doing : '',
-      doingAgo: info !== undefined ? agoText(info.ago) : '',
     };
     return r;
   }
@@ -858,9 +837,6 @@ struct PadHome {
             this.attach(this.activeTabId, false);
           }
           this.sync.tick();
-          if (Date.now() - this.lastProbe > 12000) {
-            this.probeAll();
-          }
         }
       } catch (e) {
       }
@@ -906,47 +882,6 @@ struct PadHome {
   // 状态探测
   // ===========================================================================
 
-  private probeAll(): void {
-    if (this.probeBusy || this.tsState !== 'Running') {
-      return;
-    }
-    this.probeBusy = true;
-    this.probing = true;
-    this.lastProbe = Date.now();
-    const jobs: Promise<void>[] = [];
-    for (let i = 0; i < this.store.machines.length; i++) {
-      const m: Machine = this.store.machines[i];
-      const ep: Endpoint | null = PadExec.endpointFor(this.store, m);
-      if (ep === null) {
-        continue;
-      }
-      const mid: string = m.id;
-      jobs.push(PadExec.run(ep, PadExec.wrapForMachine(m, PROBE_SCRIPT), 20000, '@TSB64E@')
-        .then((raw: string): void => {
-          const map = PadProbe.parseInfo(raw);
-          if (map !== null) {
-            this.probeByMachine.set(mid, map);
-          }
-        }));
-    }
-    Promise.all(jobs).then((): void => {
-      this.probeBusy = false;
-      this.probing = false;
-      this.refreshAll();
-    }).catch((): void => {
-      this.probeBusy = false;
-      this.probing = false;
-    });
-  }
-
-  private probeNow(): void {
-    if (this.tsState !== 'Running') {
-      this.toast('tailscale 还没连上');
-      return;
-    }
-    this.lastProbe = 0;
-    this.probeAll();
-  }
 
   // ===========================================================================
   // 连接
@@ -2246,9 +2181,6 @@ struct PadHome {
       .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(6)
       .backgroundColor(this.tint(this.tsState === 'Running' ? TEAL : C_WAIT, '1F'))
       Blank()
-      if (this.probing) {
-        LoadingProgress().width(16).height(16).color(DIM)
-      }
       this.iconBtn($r('sys.symbol.person_2'), this.showTeam ? TEAL : SUB, 17, () => this.toggleTeam())
       this.iconBtn($r('sys.symbol.arrow_clockwise'), C_WORK, 16, () => this.reconnectActive())
       this.iconBtn($r('sys.symbol.gearshape'), SUB, 17, () => { this.sheet = 'settings'; })
@@ -3241,7 +3173,7 @@ struct PadHome {
     Column() {
       Row() {
         Text('团队').fontSize(17).fontWeight(FontWeight.Bold).fontColor(FG).layoutWeight(1)
-        this.iconBtn($r('sys.symbol.arrow_clockwise'), SUB, 15, () => this.probeNow())
+        this.iconBtn($r('sys.symbol.arrow_clockwise'), SUB, 15, () => this.refreshAll())
         if (overlay) {
           this.iconBtn($r('sys.symbol.xmark'), SUB, 15, () => this.toggleTeam())
         }
@@ -3295,7 +3227,7 @@ struct PadHome {
             Row().width('100%').height(1).backgroundColor(HAIR)
           }
           this.teamRow(r)
-        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.agent + '_' + r.doing + '_' +
+        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.agent + '_' +
           (r.tabId === this.activeTabId ? 1 : 0))
       }
       .width('100%').borderRadius(12).backgroundColor(PANEL2).border({ width: 1, color: HAIR }).clip(true)
@@ -3324,16 +3256,8 @@ struct PadHome {
           : (this.inspector === 'project' ? r.machineName + ' · ' + r.name : r.name))
           .fontSize(13).fontColor(FG)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (r.doing.length > 0) {
-          Text(r.doing).fontSize(11).fontColor(SUB).maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          if (r.doingAgo.length > 0) {
-            Text(r.doingAgo).fontSize(9).fontFamily(MONO).fontColor(DIM)
-          }
-        } else {
-          Text(r.cc).fontSize(10).fontFamily(MONO).fontColor(DIM).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-        }
+        Text(r.cc).fontSize(10).fontFamily(MONO).fontColor(DIM).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (r.agent !== 'claude') {

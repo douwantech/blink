@@ -99,18 +99,8 @@ struct TeamInspector: View {
                                 .font(Theme.mono(9)).foregroundColor(Theme.dim)
                         }
                     }
-                    // 在干嘛：读 claude 的 jsonl 拿到的最后一步动作，后面跟距今多久
-                    if s.doing.isEmpty {
-                        Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
-                            .lineLimit(1).truncationMode(.middle)
-                    } else {
-                        Text(s.doing).font(Theme.ui(10.5)).foregroundColor(Theme.sub)
-                            .lineLimit(2).truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let t = Self.agoText(s.doingAgo) {
-                            Text(t).font(Theme.mono(9)).foregroundColor(Theme.dim)
-                        }
-                    }
+                    Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
+                        .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
                 agentGear(s)
@@ -163,15 +153,6 @@ struct TeamInspector: View {
             .frame(width: 22)
             .help("打开时进哪个 CLI：\(cur.label)")
         }
-    }
-
-    /// 「3 分钟前」这种相对时间；不知道就不显示
-    static func agoText(_ sec: Int) -> String? {
-        guard sec >= 0 else { return nil }
-        if sec < 60 { return "刚刚" }
-        if sec < 3600 { return "\(sec / 60) 分钟前" }
-        if sec < 86400 { return "\(sec / 3600) 小时前" }
-        return "\(sec / 86400) 天前"
     }
 
     // 行里不再显示 等你/干活中/空闲/休息 —— 探测出来的档位不准，看了误导。
