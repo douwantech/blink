@@ -266,6 +266,7 @@ func main() {
 		token    = flag.String("token", "", "auth token (empty = generate & print)")
 		useTsnet = flag.Bool("tsnet", false, "listen as an independent tailscale node (bypasses MDM firewall)")
 		useLan   = flag.Bool("lan", true, "also listen on LAN (0.0.0.0) and advertise via Bonjour, so same-LAN clients connect directly without Tailscale")
+		advLan   = flag.Bool("advertise-lan", true, "put lan=<IP> in the Bonjour TXT so same-LAN clients try LAN 直连; set false on MDM Macs where LAN incoming is firewall-blocked (blinkd 未签名→防火墙锁死 Block,LAN 握手完即被踢),让客户端只走 tsnet")
 		hostname = flag.String("hostname", "blinkd", "tsnet node hostname (also the Bonjour instance name)")
 		stateDir = flag.String("state", "", "tsnet state dir (default ~/.config/blinkd/tsnet)")
 		cmdline  = flag.String("cmd", "/bin/zsh", "default command when a connection sends no exec frame")
@@ -326,7 +327,7 @@ func main() {
 		// DHCP 换 IP 也自动跟上,零配置。TXT 带 ts=<tailscaleIP> 让客户端把这条 LAN 记录
 		// 对上它已配置的机器(按 Tailscale IP 匹配);token 不进 TXT(局域网明文,绝不广播密钥)。
 		if *useLan {
-			startBonjour(*hostname, *port, tsIP)
+			startBonjour(*hostname, *port, tsIP, *advLan)
 		}
 	}
 
@@ -355,7 +356,7 @@ func main() {
 // (客户端直接读这个 IP 直连,免去各端各写一套 SRV/A 解析;端口用客户端已配置的 blinkdPort,
 // 与本 daemon 监听端口一致)。token 绝不进 TXT。广播失败不致命——只记日志,仍可走 tsnet/手填。
 // 起一条 goroutine 盯 LAN IP 变化(DHCP/换网),变了就重播,TXT 里的 lan= 始终是当前地址。
-func startBonjour(instance string, port int, tsIP string) {
+func startBonjour(instance string, port int, tsIP string, advLan bool) {
 	register := func(lanIP string) {
 		if bonjourServer != nil {
 			bonjourServer.Shutdown()
@@ -365,7 +366,9 @@ func startBonjour(instance string, port int, tsIP string) {
 		if tsIP != "" {
 			txt = append(txt, "ts="+tsIP)
 		}
-		if lanIP != "" {
+		// advLan=false(MDM Mac,LAN 入站被防火墙 Block):不广播 lan=,客户端拿不到 LAN 候选→只走 tsnet,
+		// 不会再卡在「同网直连→握手完被踢→死循环重连」。仍广播 ts=,mDNS 发现照常。
+		if advLan && lanIP != "" {
 			txt = append(txt, "lan="+lanIP)
 		}
 		txt = append(txt, "host="+instance)
@@ -375,7 +378,11 @@ func startBonjour(instance string, port int, tsIP string) {
 			return
 		}
 		bonjourServer = server
-		log.Printf("bonjour advertised: _blinkd._tcp %q port %d ts=%s lan=%s", instance, port, tsIP, lanIP)
+		advLanIP := lanIP
+		if !advLan {
+			advLanIP = "(off)"
+		}
+		log.Printf("bonjour advertised: _blinkd._tcp %q port %d ts=%s lan=%s", instance, port, tsIP, advLanIP)
 	}
 
 	lastIP := primaryLANIP()
