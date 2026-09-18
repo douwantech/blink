@@ -616,10 +616,11 @@ enum HostReachability {
     else { m = currentMachine }
     guard let m else { return nil }
     let r = Self.resolveHost(for: m)
-    let lan = (m.lanHost ?? "").trimmingCharacters(in: .whitespaces)
-    let h2 = (m.host2 ?? "").trimmingCharacters(in: .whitespaces)
-    let cfg = "LAN=\(lan.isEmpty ? "-" : lan) 外网1=\(m.host) 外网2=\(h2.isEmpty ? "-" : h2)"
-    var line = "[blink] 选用 \(r.host) (\(r.source))  ·  \(cfg)"
+    // 干净的连接标记：传输方式 · 实际连接 IP（LAN 直连=192.168.x，外网/Tailscale=对应 IP），
+    // 一眼看清走哪条链路，替代原先啰嗦的「选用 X (LAN) · LAN=… 外网1=…」调试串。
+    // 跟 Mac 顶栏「blinkd · 127.0.0.1」同一风格。
+    let transport = (m.blinkdConfig != nil) ? "blinkd" : "SSH"
+    var line = "[blink] \(transport) · \(r.host)"
     let warns = Self.hostWarnings(for: m)
     if !warns.isEmpty {
       line += "\r\n[blink] ⚠️  " + warns.joined(separator: "；")
