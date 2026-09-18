@@ -556,10 +556,27 @@ struct PadHome {
         rows: rows,
       });
     }
-    if (this.inspector !== 'machine') {
-      out.sort((a: TeamGroupVM, b: TeamGroupVM) => a.title.localeCompare(b.title));
-    }
+    // 分组顺序跟左边机器列表一致：先按机器在 store.machines 里的位次，再按标题。
+    // 按项目那档一组里混着几台机器，用组里最靠前的那台定位次。
+    out.sort((a: TeamGroupVM, b: TeamGroupVM) => {
+      const ra: number = this.groupMachineRank(a);
+      const rb: number = this.groupMachineRank(b);
+      return ra !== rb ? ra - rb : a.title.localeCompare(b.title);
+    });
     return out;
+  }
+
+  // 这一组排在第几：取组里最靠前的那台机器在机器列表里的位次
+  private groupMachineRank(g: TeamGroupVM): number {
+    let best: number = this.store.machines.length;
+    for (let i = 0; i < g.rows.length; i++) {
+      const idx: number = this.store.machines.findIndex((m: Machine) => m.id === g.rows[i].machineId);
+      const r: number = idx < 0 ? this.store.machines.length : idx;
+      if (r < best) {
+        best = r;
+      }
+    }
+    return best;
   }
 
   private machineInitials(name: string): string {

@@ -530,13 +530,22 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
             if r > 0 { parts.append("\(r) 休息") }
             return parts.joined(separator: " · ")
         }
+        // 分组顺序跟左边机器列表一致：先按机器在 machines 里的位次，再按标题。
+        // 按项目那档一组里混着几台机器，用组里最靠前的那台定位次。
+        let machineRank: (String) -> Int = { [self] mid in
+            machines.firstIndex { $0.id == mid } ?? machines.count
+        }
         func build(_ keyed: [(String, Session)]) -> [TeamGroup] {
             var order: [String] = []; var map: [String: [Session]] = [:]
             for (k, s) in keyed { if map[k] == nil { order.append(k) }; map[k, default: []].append(s) }
             return order.map { k in
                 let ss = (map[k] ?? []).sorted { $0.name < $1.name }
                 return TeamGroup(id: k, title: k, sub: summary(ss), sessions: ss)
-            }.sorted { $0.title < $1.title }
+            }.sorted { a, b in
+                let ra = a.sessions.map { machineRank($0.machineID) }.min() ?? Int.max
+                let rb = b.sessions.map { machineRank($0.machineID) }.min() ?? Int.max
+                return ra != rb ? ra < rb : a.title < b.title
+            }
         }
         // 机器名（按员工/按机器都要拿）
         let nameOf: (String) -> String = { [self] mid in machineName(mid) }
@@ -551,6 +560,7 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
         case .machine:
             var order: [String] = []; var map: [String: [Session]] = [:]
             for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
+            order.sort { machineRank($0) < machineRank($1) }   // 跟左边机器列表同序
             return order.map { mid in
                 let ss = (map[mid] ?? []).sorted { $0.name < $1.name }
                 return TeamGroup(id: mid, title: nameOf(mid), sub: summary(ss), sessions: ss)

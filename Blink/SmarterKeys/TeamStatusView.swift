@@ -277,9 +277,22 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                                      agent: agent))
       if !t.resting { map[k]?.resting = false }   // 全部 tab 都休息才算员工休息
     }
-    groups = order.compactMap { map[$0] }
+    // 顺序跟机器列表一致：先按机器在 BlinkMachineStore.machines 里的位次，再按员工名
+    let ranks = Self.machineRanks()
+    groups = order.compactMap { map[$0] }.sorted { a, b in
+      let ra = ranks[a.machineId] ?? Int.max
+      let rb = ranks[b.machineId] ?? Int.max
+      return ra != rb ? ra < rb : a.employee < b.employee
+    }
     updateStats()
     tableView.reloadData()
+  }
+
+  /// machineId → 在机器列表里的位次（团队面板各档的排序都以它为准）
+  private static func machineRanks() -> [String: Int] {
+    var r: [String: Int] = [:]
+    for (i, m) in BlinkMachineStore.shared.machines.enumerated() { r[m.id] = i }
+    return r
   }
 
   private func statusFor(tabKey: UUID) -> ProjectRow? {
@@ -754,10 +767,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     for k in map.keys {
       map[k]?.sort { memberStatus($0).rawValue < memberStatus($1).rawValue }
     }
+    // 一组里混着几台机器，用组里最靠前的那台定位次，跟机器列表同序
+    let ranks = Self.machineRanks()
     return order.sorted { a, b in
-      let sa = map[a]?.map { memberStatus($0).rawValue }.min() ?? 9
-      let sb = map[b]?.map { memberStatus($0).rawValue }.min() ?? 9
-      return sa != sb ? sa < sb : a < b
+      let ra = map[a]?.map { ranks[$0.group.machineId] ?? Int.max }.min() ?? Int.max
+      let rb = map[b]?.map { ranks[$0.group.machineId] ?? Int.max }.min() ?? Int.max
+      return ra != rb ? ra < rb : a < b
     }.map { ($0, map[$0] ?? []) }
   }
   private func memberStatus(_ e: MemberEntry) -> TeamWorkStatus {
@@ -768,6 +783,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private var machineSections: [(machine: String, items: [MemberEntry])] {
     var order: [String] = []
     var map: [String: [MemberEntry]] = [:]
+    // groups 已经按机器列表排过序，这里照它的顺序收就行
     for g in groups {
       if map[g.machineName] == nil { order.append(g.machineName); map[g.machineName] = [] }
       for r in g.rows { map[g.machineName]?.append(MemberEntry(group: g, row: r)) }
