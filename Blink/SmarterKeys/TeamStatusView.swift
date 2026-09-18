@@ -85,6 +85,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var probed = false
     var resting = false          // 休息按 tab（员工×项目）粒度，来自 TabRestStore
     var summary: TeamSummary?    // GLM 总结：在做/等你/上次（没回来前先显示最后一行）
+    var agent: AgentKind = .claude   // 这个 tab 开起来进哪个 CLI（行尾齿轮改）
     /// 行的展示状态：休息优先，其余用探测结果
     var effective: TeamWorkStatus { resting ? .rest : status }
   }
@@ -268,9 +269,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                        rows: [], resting: true)
       }
       let old = statusFor(tabKey: t.tabKey)
+      let agent = TabAgentStore.shared.agent(
+        machineId: t.machineId, title: TabAgentStore.title(fromOuterSession: t.outerSession))
       map[k]?.rows.append(ProjectRow(tabKey: t.tabKey, project: t.project,
                                      desc: old?.desc ?? "", status: old?.status ?? .idle,
-                                     probed: old?.probed ?? false, resting: t.resting))
+                                     probed: old?.probed ?? false, resting: t.resting,
+                                     agent: agent))
       if !t.resting { map[k]?.resting = false }   // 全部 tab 都休息才算员工休息
     }
     groups = order.compactMap { map[$0] }
@@ -657,6 +661,43 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.reloadData()
   }
 
+  // MARK: CLI 选择（行尾齿轮）
+
+  /// 这个员工（机器 × tab）下次开会话进 claude / codex / deepseek。
+  /// 只改配置，不动已经跑着的 tmux 会话——那里面 claude 的上下文还在，
+  /// 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+  private func pickAgent(tabKey: UUID, anchor: UIView) {
+    guard let t = tabs.first(where: { $0.tabKey == tabKey }) else { return }
+    let title = TabAgentStore.title(fromOuterSession: t.outerSession)
+    let cur = TabAgentStore.shared.agent(machineId: t.machineId, title: title)
+    let ac = UIAlertController(title: "\(t.employee) · \(t.project)",
+                               message: "下次打开这个会话时进哪个 CLI", preferredStyle: .actionSheet)
+    for k in AgentKind.allCases {
+      let a = UIAlertAction(title: k == cur ? "\(k.label)（当前）" : k.label, style: .default) { [weak self] _ in
+        guard let self, k != cur else { return }
+        TabAgentStore.shared.setAgent(k, machineId: t.machineId, title: title)
+        for gi in self.groups.indices {
+          for ri in self.groups[gi].rows.indices where self.groups[gi].rows[ri].tabKey == tabKey {
+            self.groups[gi].rows[ri].agent = k
+          }
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        self.tableView.reloadData()
+        let tip = UIAlertController(title: nil,
+                                    message: "已设为 \(k.label)。当前会话还跑着旧的，关掉这个 tab 重开才生效。",
+                                    preferredStyle: .alert)
+        tip.addAction(UIAlertAction(title: "知道了", style: .default))
+        self.present(tip, animated: true)
+      }
+      if k == cur { a.setValue(true, forKey: "checked") }
+      ac.addAction(a)
+    }
+    ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+    ac.popoverPresentationController?.sourceView = anchor
+    ac.popoverPresentationController?.sourceRect = anchor.bounds
+    present(ac, animated: true)
+  }
+
   // MARK: 休息切换
 
   /// 单行（员工×项目）切换：只动这一个 tab 的休息状态
@@ -792,6 +833,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
       cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
       cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
+      cell.onRowAgent = { [weak self] key, anchor in self?.pickAgent(tabKey: key, anchor: anchor) }
       return cell
     case .project:
       let e = projectSections[indexPath.section].items[indexPath.row]
@@ -940,6 +982,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var onPillTap: (() -> Void)?
     var onRowTap: ((UUID) -> Void)?
     var onRowToggle: ((UUID, Bool) -> Void)?     // (tabKey, 切到休息?) 行尾月亮开关
+    var onRowAgent: ((UUID, UIView) -> Void)?    // 行尾齿轮：这个员工进 claude / codex / deepseek
     private var rowInfoByTag: [Int: (key: UUID, resting: Bool)] = [:]
     private let card = UIView()
     private let avatarView = UIImageView()
@@ -1025,6 +1068,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       onRowToggle?(info.key, !info.resting)
     }
 
+    @objc private func rowAgentTapped(_ b: UIButton) {
+      guard let info = rowInfoByTag[b.tag] else { return }
+      onRowAgent?(info.key, b)
+    }
+
     fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor) {
       card.backgroundColor = panel
       let st = g.status
@@ -1098,7 +1146,27 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         sw.addTarget(self, action: #selector(rowToggleTapped(_:)), for: .touchUpInside)
         sw.setContentHuggingPriority(.required, for: .horizontal)
         sw.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let h = UIStackView(arrangedSubviews: [pn, pd, sw])
+        // 行尾齿轮：配这个员工开起来进哪个 CLI；不是默认 claude 就在齿轮前挂个名字小标签
+        let gear = UIButton(type: .system)
+        gear.tag = i
+        gear.setImage(UIImage(systemName: "gearshape",
+          withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)), for: .normal)
+        gear.tintColor = r.agent == .claude ? UIColor.white.withAlphaComponent(0.4)
+                                            : TeamWorkStatus.work.color
+        gear.addTarget(self, action: #selector(rowAgentTapped(_:)), for: .touchUpInside)
+        gear.setContentHuggingPriority(.required, for: .horizontal)
+        gear.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let agentChip = PaddedLabel()
+        agentChip.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
+        agentChip.textColor = TeamWorkStatus.work.color
+        agentChip.backgroundColor = TeamWorkStatus.work.color.withAlphaComponent(0.14)
+        agentChip.layer.cornerRadius = 5
+        agentChip.clipsToBounds = true
+        agentChip.text = r.agent.label
+        agentChip.isHidden = r.agent == .claude
+        agentChip.setContentHuggingPriority(.required, for: .horizontal)
+        agentChip.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let h = UIStackView(arrangedSubviews: [pn, pd, agentChip, gear, sw])
         h.axis = .horizontal
         h.spacing = 8
         h.alignment = .center

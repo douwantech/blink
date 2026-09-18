@@ -89,6 +89,7 @@ export interface SeedConfig {
   tabs: TabModel[];
   currentId: string;
   pinned: PinnedTab[];
+  agents?: Record<string, string>;   // "<machineId>|<title>" -> claude|codex|deepseek
   favorites: string[];
   history: string[];
   terms: Record<string, Record<string, number>>;
@@ -118,6 +119,8 @@ export class BlinkStore {
   currentTabId: string = '';
   filterMachineId: string = '';        // '' = all machines
   pinned: PinnedTab[] = [];
+  // 每个员工（机器 × tab）开会话进哪个 CLI；只存非默认的那几个，默认 claude
+  agents: Record<string, string> = {};
   favorites: string[] = [];
   favoriteCounts: Record<string, number> = {};
   history: string[] = [];
@@ -159,6 +162,7 @@ export class BlinkStore {
     this.presets = this.readJson<SessionPreset[]>('presets', []);
     this.tabs = this.readJson<TabModel[]>('tabs', []);
     this.pinned = this.readJson<PinnedTab[]>('pinned', []);
+    this.agents = this.readJson<Record<string, string>>('agents', {});
     this.favorites = this.readJson<string[]>('favorites', []);
     this.favoriteCounts = this.readJson<Record<string, number>>('favoriteCounts', {});
     this.history = this.readJson<string[]>('history', []);
@@ -189,6 +193,8 @@ export class BlinkStore {
       this.tabs = s.tabs;
       this.currentTabId = s.currentId;
       this.pinned = s.pinned;
+      const ag0: Record<string, string> | undefined = s.agents;
+      this.agents = ag0 !== undefined ? ag0 : {};
       this.favorites = s.favorites;
       this.favoriteCounts = s.favoriteCounts;
       this.history = s.history;
@@ -266,6 +272,10 @@ export class BlinkStore {
     this.presets = s.presets;
     this.tabs = s.tabs.filter((t: TabModel) => merged.indexOf(t.id) < 0);
     this.pinned = s.pinned;
+    const ag: Record<string, string> | undefined = s.agents;
+    if (ag !== undefined) {
+      this.agents = ag;
+    }
     this.favorites = s.favorites;
     this.favoriteCounts = s.favoriteCounts;
     // 学习类大头可能被发端瘦身成空（帧上限），空的不覆盖本地积累
@@ -305,6 +315,7 @@ export class BlinkStore {
       tabs: this.tabs,
       currentId: this.currentTabId,
       pinned: this.pinned,
+      agents: this.agents,
       favorites: this.favorites,
       history: slim ? [] : this.history,
       terms: slim ? {} : this.terms,
@@ -334,6 +345,7 @@ export class BlinkStore {
     await p.put('presets', JSON.stringify(this.presets));
     await p.put('tabs', JSON.stringify(this.tabs));
     await p.put('pinned', JSON.stringify(this.pinned));
+    await p.put('agents', JSON.stringify(this.agents));
     await p.put('favorites', JSON.stringify(this.favorites));
     await p.put('favoriteCounts', JSON.stringify(this.favoriteCounts));
     await p.put('history', JSON.stringify(this.history));
@@ -355,6 +367,29 @@ export class BlinkStore {
   savePresets(): void { this.putJson('presets', this.presets); }
   saveTabs(): void { this.putJson('tabs', this.tabs); }
   savePinned(): void { this.putJson('pinned', this.pinned); }
+  saveAgents(): void { this.putJson('agents', this.agents); }
+
+  // 这个员工（机器 × tab）配的 CLI；title 就是 cc-<TITLE> 去掉前缀那截
+  agentFor(machineId: string, title: string): string {
+    const v: string | undefined = this.agents[machineId + '|' + title.toLowerCase()];
+    return v !== undefined ? v : 'claude';
+  }
+
+  setAgent(machineId: string, title: string, kind: string): void {
+    const k: string = machineId + '|' + title.toLowerCase();
+    const next: Record<string, string> = {};
+    const keys: string[] = Object.keys(this.agents);
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i] !== k) {
+        next[keys[i]] = this.agents[keys[i]];
+      }
+    }
+    if (kind !== 'claude') {
+      next[k] = kind;
+    }
+    this.agents = next;
+    this.saveAgents();
+  }
   saveFavorites(): void {
     this.putJson('favorites', this.favorites);
     this.putJson('favoriteCounts', this.favoriteCounts);
@@ -513,7 +548,32 @@ export class BlinkStore {
   }
 
   // The inner claude resume-or-new script (iOS resumeOrNew, :205).
-  private static innerScript(cdTarget: string, title: string): string {
+  // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
+  // 直接在工作目录里裸起；tab 的身份仍由外层 tmux session 名 cc-<TITLE> 保证。
+  static agentLabel(agent: string): string {
+    if (agent === 'codex') {
+      return 'Codex';
+    }
+    if (agent === 'deepseek') {
+      return 'DeepSeek';
+    }
+    return 'Claude Code';
+  }
+
+  static agentCommand(agent: string): string {
+    if (agent === 'codex') {
+      return 'codex';
+    }
+    if (agent === 'deepseek') {
+      return 'deepseek';
+    }
+    return 'claude --dangerously-skip-permissions';
+  }
+
+  private static innerScript(cdTarget: string, title: string, agent: string): string {
+    if (agent !== 'claude') {
+      return 'cd ' + cdTarget + ' && ' + BlinkStore.agentCommand(agent);
+    }
     return 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
     '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
@@ -521,12 +581,14 @@ export class BlinkStore {
 
   // Full remote script for a (machine, workDir, session) triple — identical to
   // what iOS generates, so both devices attach the same cc-<TITLE> session.
-  static remoteScript(workPath: string, session: string, fallbackUser: string, useTmux: boolean): string {
+  static remoteScript(workPath: string, session: string, fallbackUser: string, useTmux: boolean,
+                      agent: string = 'claude'): string {
     const title: string = BlinkStore.titleFor(workPath, session, fallbackUser);
     const outerSession: string = 'cc-' + title;
     const pathArg: string = workPath.length > 0 ? workPath : '$HOME';
-    const inner: string = BlinkStore.innerScript(pathArg, title);
-    const tail: string = '; echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il';
+    const inner: string = BlinkStore.innerScript(pathArg, title, agent);
+    const tail: string = '; echo "[blink] ' + agent + ' 已退出，掉到 shell（上方有报错即原因，敲 ' +
+      agent + ' 重试）"; exec $SHELL -il';
     if (!useTmux) {
       return "exec $SHELL -lic '" + inner + tail + "'";
     }
@@ -563,7 +625,9 @@ export class BlinkStore {
     const w = this.workDirById(t.workDirId);
     const path: string = w !== null ? w.path : '';
     const user: string = m !== null ? m.user : '';
-    const script: string = BlinkStore.remoteScript(path, t.tmuxSession, user, t.useTmux);
+    const title: string = BlinkStore.titleFor(path, t.tmuxSession, user);
+    const agent: string = this.agentFor(t.machineId, title);
+    const script: string = BlinkStore.remoteScript(path, t.tmuxSession, user, t.useTmux, agent);
     const b64: string = buffer.from(script, 'utf-8').toString('base64');
     const tmpName: string = t.useTmux ? '/tmp/.blink-tmux-$$.sh' : '/tmp/.blink-cc-$$.sh';
     const unpack: string = 'echo ' + b64 + ' | base64 -d > ' + tmpName + ' && exec bash ' + tmpName;

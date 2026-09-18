@@ -182,7 +182,9 @@ final class TerminalManager {
         case .blinkd(let h, let p, let t):
             // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
             // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
-            let exec = BlinkdScript.tmuxClaude(title: session.name, workDir: expandDir(session.dir))
+            let exec = BlinkdScript.tmuxClaude(
+                title: session.name, workDir: expandDir(session.dir),
+                agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
             // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
             b = RemoteBackend(host: h, port: p, token: t, exec: exec,
                               uploadImageOnPaste: !machine.isLocalMac, onToast: onToast,
@@ -191,7 +193,9 @@ final class TerminalManager {
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
             // 空/~ 时用 "."（ssh 登录落点就是远端 $HOME），别用会被单引号挡住展开的 $HOME。
             let workDir = (session.dir.isEmpty || session.dir == "~") ? "." : session.dir
-            let script = BlinkdScript.tmuxClaude(title: session.name, workDir: workDir)
+            let script = BlinkdScript.tmuxClaude(
+                title: session.name, workDir: workDir,
+                agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
             // SSH 一定是远程机器，贴图上传图床。
             b = SSHBackend(user: user, host: host, remoteScript: script,
                            uploadImageOnPaste: true, onToast: onToast)

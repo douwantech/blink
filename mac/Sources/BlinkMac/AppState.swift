@@ -17,6 +17,8 @@ final class AppState: ObservableObject {
     @Published var reconnecting = false
     @Published var toast: String?
     @Published var showTeam = true
+    /// 员工 CLI 配置改动计数：TabAgentStore 现读磁盘，靠它触发列表重画
+    @Published var agentTick = 0
 
     // 跨设备休息（正式版）：cloudAvailable=有共享 KV；cloudResting=休息中的 cc-title；
     // cloudMapping=cc-title↔tab UUID。dev 版 cloudAvailable=false → 回退本地 MacRestStore。
@@ -611,6 +613,23 @@ printf '@TSB64@%s@TSB64E@\n' "$EB64"
     }
 
     /// 切换某个会话的休息（隐藏/唤醒）。正式版写 iCloud KV（同步到手机），否则写本地。
+    // MARK: 每个员工进哪个 CLI（团队列表行尾齿轮）
+
+    /// 读这个会话配的 CLI。agentTick 参与 body 计算，改完列表才会重画。
+    func agent(for s: Session) -> AgentKind {
+        _ = agentTick
+        return TabAgentStore.agent(machineId: s.machineID, title: s.name)
+    }
+
+    /// 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
+    /// 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+    func setAgent(_ kind: AgentKind, for s: Session) {
+        guard agent(for: s) != kind else { return }
+        TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
+        agentTick &+= 1
+        showToast("\(s.name) 改为 \(kind.label)，关掉这个 tab 重开才生效")
+    }
+
     func toggleRest(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
         let name = s.tmuxName ?? s.id

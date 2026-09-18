@@ -14,13 +14,16 @@ enum BlinkdScript {
     }
 
     /// blinkd exec 帧的 payload（daemon 会 `/bin/bash -c "<payload>"`）。
-    static func tmuxClaude(title: String, workDir: String) -> String {
+    /// agent = 这个员工配的 CLI（团队列表行尾齿轮，见 TabAgentStore）；默认 claude。
+    static func tmuxClaude(title: String, workDir: String, agent: AgentKind = .claude) -> String {
         let outerSession = "cc-\(title)"
         let cd = "'" + workDir.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
 
         // inner 被外层 `$SHELL -lic '...'` 单引号包裹，里面只能用双引号；TITLE 预先算好。
-        let inner = #"cd \#(cd) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+        // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
+        // 直接在工作目录里裸起；tab 的身份仍由外层 tmux session 名 cc-<TITLE> 保证。
+        let inner = !agent.supportsResume ? #"cd \#(cd) && \#(agent.command)"# : #"cd \#(cd) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
 
         // SSH agent socket 探测（tmux 继承，便于远端 git 等）。
         let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
@@ -37,7 +40,7 @@ cat > \#(bootFile) <<'BLINKBOOT'
 \#(inner)
 BLINKBOOT
 \#(heal)
-exec tmux new-session -A -s \#(outerSession) $SHELL -lic 'source \#(bootFile); echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il'
+exec tmux new-session -A -s \#(outerSession) $SHELL -lic 'source \#(bootFile); echo "[blink] \#(agent.rawValue) 已退出，掉到 shell（上方有报错即原因，敲 \#(agent.rawValue) 重试）"; exec $SHELL -il'
 """#
     }
 }

@@ -186,6 +186,10 @@ enum HostReachability {
     // 助手 cc 可以 `tmux send-keys -t cc-<TITLE>` 直接往任意 tab 注入。
     let outerSession = "cc-\(title)"
 
+    // 这个员工（机器 × tab）配的是哪个 CLI：claude（默认）/ codex / deepseek。
+    // 团队状态页行尾的齿轮改的就是它，见 TabAgentStore。
+    let agent = TabAgentStore.shared.agent(machineId: m.id, title: title)
+
     // cc --resume <name> 找不到 customTitle 时会弹 cc 自己的 resume 选择器（光标停在那等输入），
     // 不会以非零退出，所以 || cc 兜不住。改成先在 jsonl 里查 customTitle 拿 UUID 直接 resume，
     // 找不到就起新会话并 send-keys 注入 /title <name> 自动命名（这样下次开能直接 resume）。
@@ -197,7 +201,11 @@ enum HostReachability {
       // 见到 trust 弹窗先回车放行，见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，
       // 20s 兜底。_snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
       // （claude 都带 --dangerously-skip-permissions：多数情况下 trust 弹窗被自动跳过，轮询是双保险。）
-      #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+      //
+      // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
+      // 直接在工作目录里裸起；tab 的身份仍由外层 tmux session 名 cc-<TITLE> 保证。
+      if !agent.supportsResume { return #"cd \#(cdTarget) && \#(agent.command)"# }
+      return #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -226,7 +234,7 @@ enum HostReachability {
       \(inner)
       BLINKBOOT
       \(heal)
-      exec tmux new-session -A -s \(outerSession) $SHELL -lic 'source \(bootFile); echo "[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）"; exec $SHELL -il'
+      exec tmux new-session -A -s \(outerSession) $SHELL -lic 'source \(bootFile); echo "[blink] \(agent.id) 已退出，掉到 shell（上方有报错即原因，敲 \(agent.id) 重试）"; exec $SHELL -il'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
         // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析
@@ -239,7 +247,7 @@ enum HostReachability {
     // 非 tmux 分支也要用 base64 包裹，否则 Blink 本地 shell 会把 $HOME / $(pwd) 等先在
     // iOS 沙箱里展开掉再传给远端，导致 inner 里全是空值或 iOS 路径。
     let inner = resumeOrNew(workPath)
-    let remoteScript = "exec $SHELL -lic '\(inner); echo \"[blink] claude 已退出，掉到 shell（上方有报错即原因，敲 claude 重试）\"; exec $SHELL -il'"
+    let remoteScript = "exec $SHELL -lic '\(inner); echo \"[blink] \(agent.id) 已退出，掉到 shell（上方有报错即原因，敲 \(agent.id) 重试）\"; exec $SHELL -il'"
     let encoded = Data(remoteScript.utf8).base64EncodedString()
     return "ssh -t \(m.user)@\(host) -- \"echo \(encoded) | base64 -d > /tmp/.blink-cc-$$.sh && exec bash /tmp/.blink-cc-$$.sh\""
   }

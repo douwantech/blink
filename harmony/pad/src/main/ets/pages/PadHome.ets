@@ -115,6 +115,7 @@ interface SessRow {
   statusLabel: string;
   resting: boolean;
   unread: boolean;
+  agent: string;       // 打开时进哪个 CLI：claude（默认）/ codex / deepseek
 }
 
 interface TeamGroupVM {
@@ -481,6 +482,7 @@ struct PadHome {
       statusLabel: label,
       resting: this.store.isResting(t.id),
       unread: conn !== null && conn.unread && t.id !== this.activeTabId,
+      agent: this.store.agentFor(t.machineId, this.ccFor(t).substring(3)),
     };
     return r;
   }
@@ -2314,6 +2316,19 @@ struct PadHome {
     }
   }
 
+  // 行尾齿轮菜单：这个员工下次开会话进哪个 CLI
+  @Builder
+  agentMenu(r: SessRow) {
+    Menu() {
+      MenuItem({ content: r.agent === 'claude' ? 'Claude Code（当前）' : 'Claude Code' })
+        .onClick(() => this.setAgent(r, 'claude'))
+      MenuItem({ content: r.agent === 'codex' ? 'Codex（当前）' : 'Codex' })
+        .onClick(() => this.setAgent(r, 'codex'))
+      MenuItem({ content: r.agent === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
+        .onClick(() => this.setAgent(r, 'deepseek'))
+    }
+  }
+
   @Builder
   sessionSidebar(width: number) {
     Column() {
@@ -3272,11 +3287,24 @@ struct PadHome {
             Row().width('100%').height(1).backgroundColor(HAIR)
           }
           this.teamRow(r)
-        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + (r.tabId === this.activeTabId ? 1 : 0))
+        }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.agent + '_' +
+          (r.tabId === this.activeTabId ? 1 : 0))
       }
       .width('100%').borderRadius(12).backgroundColor(PANEL2).border({ width: 1, color: HAIR }).clip(true)
     }
     .width('100%')
+  }
+
+  // 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
+  // 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+  private setAgent(r: SessRow, kind: string): void {
+    if (r.agent === kind) {
+      return;
+    }
+    this.store.setAgent(r.machineId, r.cc.substring(3), kind);
+    this.teamGroups = this.buildGroups();
+    this.tick++;
+    this.toast('已设为 ' + BlinkStore.agentLabel(kind) + '，关掉这个会话重开才生效');
   }
 
   @Builder
@@ -3294,6 +3322,17 @@ struct PadHome {
         }
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (r.agent !== 'claude') {
+        Text(BlinkStore.agentLabel(r.agent)).fontSize(9).fontColor(C_WORK)
+          .padding({ left: 5, right: 5, top: 2, bottom: 2 })
+          .borderRadius(5).backgroundColor(this.tint(C_WORK, '24'))
+      }
+      Stack() {
+        SymbolGlyph($r('sys.symbol.gearshape')).fontSize(14)
+          .fontColor([r.agent === 'claude' ? DIM : C_WORK])
+      }
+      .width(28).height(30).borderRadius(8)
+      .bindMenu(this.agentMenu(r))
       Stack() {
         SymbolGlyph(r.resting ? $r('sys.symbol.moon_z_fill') : $r('sys.symbol.moon')).fontSize(15)
           .fontColor([r.resting ? C_REST : DIM])

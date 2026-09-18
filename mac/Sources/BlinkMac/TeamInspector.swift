@@ -98,6 +98,7 @@ struct TeamInspector: View {
                 }
                 Spacer(minLength: 4)
                 statusLabel(s.status)
+                agentGear(s)
                 Button { state.toggleRest(sessionID: s.id) } label: {
                     Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
                         .font(.system(size: 13))
@@ -118,6 +119,34 @@ struct TeamInspector: View {
             Button(role: .destructive) { state.closeTab(sessionID: s.id) } label: {
                 Label("关闭标签", systemImage: "xmark")
             }
+        }
+    }
+
+    /// 行尾齿轮：配这个员工打开时进 claude / codex / deepseek。
+    /// 不是默认 claude 时齿轮点亮并在前面挂个名字小标签，一眼看出这行不走 claude。
+    private func agentGear(_ s: Session) -> some View {
+        let cur = state.agent(for: s)
+        return HStack(spacing: 4) {
+            if cur != .claude {
+                Text(cur.label).font(Theme.ui(9.5, .semibold)).foregroundColor(Theme.work)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.work.opacity(0.14)))
+            }
+            Menu {
+                ForEach(AgentKind.allCases) { k in
+                    Button { state.setAgent(k, for: s) } label: {
+                        Label(k == cur ? "\(k.label)（当前）" : k.label, systemImage: k.symbol)
+                    }
+                }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12))
+                    .foregroundColor(cur == .claude ? Theme.dim : Theme.work)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 22)
+            .help("打开时进哪个 CLI：\(cur.label)")
         }
     }
 

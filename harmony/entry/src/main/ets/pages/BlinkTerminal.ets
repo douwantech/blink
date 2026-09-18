@@ -2970,6 +2970,17 @@ struct BlinkTerminal {
               Text(this.machineNameForTab(t) + ' · ' + (this.store.isResting(t.id) ? '😴 休息中' : '在岗'))
                 .fontSize(11).fontColor(this.store.isResting(t.id) ? '#B0A8FF' : '#8E8E93')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.agentOf(t) !== 'claude') {
+              Text(BlinkStore.agentLabel(this.agentOf(t))).fontSize(9).fontColor('#40D68C')
+                .padding({ left: 5, right: 5, top: 2, bottom: 2 })
+                .borderRadius(5).backgroundColor('#1A40D68C')
+            }
+            Stack() {
+              SymbolGlyph($r('sys.symbol.gearshape')).fontSize(15)
+                .fontColor([this.agentOf(t) === 'claude' ? '#8E8E93' : '#40D68C'])
+            }
+            .width(30).height(30).borderRadius(8)
+            .bindMenu(this.agentMenu(t))
             Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(t.id) })
               .selectedColor('#34C759')
               .onChange((on: boolean) => { this.store.setResting(t.id, !on); this.refreshTabs(); })
@@ -2980,6 +2991,41 @@ struct BlinkTerminal {
     .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
     Text('开关打开＝在岗（显示在标签栏），关闭＝休息（从标签栏隐藏）。休息中的员工也能在这里随时改回在岗。')
       .fontSize(11).fontColor('#6A6A6E').width('100%').padding({ left: 16, right: 16, top: 8, bottom: 16 })
+  }
+
+  // 这个员工（机器 × tab）开起来进哪个 CLI；title 同远端 tmux 外层会话 cc-<TITLE> 那截
+  private ccTitleOf(t: TabModel): string {
+    const m = this.store.machineById(t.machineId);
+    const w = this.store.workDirById(t.workDirId);
+    return BlinkStore.titleFor(w !== null ? w.path : '', t.tmuxSession, m !== null ? m.user : '');
+  }
+
+  private agentOf(t: TabModel): string {
+    return this.store.agentFor(t.machineId, this.ccTitleOf(t));
+  }
+
+  // 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
+  // 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+  private setAgent(t: TabModel, kind: string): void {
+    if (this.agentOf(t) === kind) {
+      return;
+    }
+    this.store.setAgent(t.machineId, this.ccTitleOf(t), kind);
+    this.refreshTabs();
+    this.toast('已设为 ' + BlinkStore.agentLabel(kind) + '，关掉这个会话重开才生效');
+  }
+
+  // 行尾齿轮菜单：这个员工下次开会话进哪个 CLI
+  @Builder
+  agentMenu(t: TabModel) {
+    Menu() {
+      MenuItem({ content: this.agentOf(t) === 'claude' ? 'Claude Code（当前）' : 'Claude Code' })
+        .onClick(() => this.setAgent(t, 'claude'))
+      MenuItem({ content: this.agentOf(t) === 'codex' ? 'Codex（当前）' : 'Codex' })
+        .onClick(() => this.setAgent(t, 'codex'))
+      MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
+        .onClick(() => this.setAgent(t, 'deepseek'))
+    }
   }
 
   private machineNameForTab(t: TabModel): string {
