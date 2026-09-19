@@ -555,7 +555,7 @@ export class BlinkStore {
       return 'Codex';
     }
     if (agent === 'deepseek') {
-      return 'DeepSeek';
+      return 'Codewhale';
     }
     return 'Claude Code';
   }
@@ -570,11 +570,30 @@ export class BlinkStore {
     return 'claude --dangerously-skip-permissions';
   }
 
-  // 没装时自动装的命令；空串 = 不自动装（没有可信的官方包，乱装有供应链风险）
+  // 可执行名候选（按顺序 command -v，第一个找得到的就用它起）。
+  // 「deepseek tui」实际是 Codewhale（github.com/Hmbown/Codewhale）：自己装了叫
+  // deepseek 的就用它，否则用 codewhale。
+  static agentBins(agent: string): string[] {
+    if (agent === 'codex') {
+      return ['codex'];
+    }
+    if (agent === 'deepseek') {
+      return ['deepseek', 'codewhale'];
+    }
+    return ['claude'];
+  }
+
+  // 没装时自动装的命令；空串 = 不自动装
   static agentInstall(agent: string): string {
     if (agent === 'codex') {
       return 'if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; ' +
         'elif command -v brew >/dev/null 2>&1; then brew install codex; fi';
+    }
+    if (agent === 'deepseek') {
+      // 官方安装脚本装到 ~/.local/bin；装不上再退 npm 包
+      return 'if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi; ' +
+        'if [ ! -x "$HOME/.local/bin/codewhale" ] && ! command -v codewhale >/dev/null 2>&1 ' +
+        '&& command -v npm >/dev/null 2>&1; then npm i -g codewhale; fi';
     }
     return '';
   }
@@ -584,22 +603,33 @@ export class BlinkStore {
       return '手动装：npm i -g @openai/codex 或 brew install codex';
     }
     if (agent === 'deepseek') {
-      return 'deepseek 没有官方 CLI，自己装好后把可执行名设成 deepseek';
+      return '手动装：curl -fsSL https://codewhale.net/install.sh | sh';
     }
     return '装一下 claude code';
   }
 
   // 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
-  // 外层是 `$SHELL -lic '...'`，里面只能用双引号。
+  // 外层是 `$SHELL -lic '...'`，里面只能用双引号——别引入单引号。
   static agentLaunch(agent: string, cdTarget: string): string {
-    const bin: string = agent;
+    const bins: string[] = BlinkStore.agentBins(agent);
     const ins: string = BlinkStore.agentInstall(agent);
+    let has: string = '';
+    for (let i = 0; i < bins.length; i++) {
+      has += (i > 0 ? ' || ' : '') + 'command -v ' + bins[i] + ' >/dev/null 2>&1';
+    }
+    // 官方安装脚本装到 ~/.local/bin，登录 shell 未必带它
+    const path: string = 'case ":$PATH:" in *:"$HOME/.local/bin":*) ;; *) PATH="$HOME/.local/bin:$PATH";; esac; ';
     const miss: string = ins.length === 0 ? '' :
-      'if ! command -v ' + bin + ' >/dev/null 2>&1; then echo "[blink] 这台机器没装 ' + bin +
-      '，正在装…"; ' + ins + '; hash -r 2>/dev/null; fi; ';
-    return 'cd ' + cdTarget + ' && { ' + miss + 'if command -v ' + bin + ' >/dev/null 2>&1; then ' +
-      BlinkStore.agentCommand(agent) + '; else echo "[blink] 没有 ' + bin + '：' +
-      BlinkStore.agentHint(agent) + '"; fi; }';
+      'if ! { ' + has + '; }; then echo "[blink] 这台机器没装 ' + bins[0] + '，正在装…"; ' +
+      ins + '; hash -r 2>/dev/null; fi; ';
+    let run: string = '';
+    for (let i = 0; i < bins.length; i++) {
+      const cmd: string = i === 0 ? BlinkStore.agentCommand(agent) : bins[i];
+      run += 'if command -v ' + bins[i] + ' >/dev/null 2>&1; then ' + cmd + '; el';
+    }
+    run += 'se echo "[blink] 没有 ' + bins.join('/') + '：' + BlinkStore.agentHint(agent) + '"; ';
+    run += 'fi; ';   // elif 串起来的整条只收一个 fi
+    return 'cd ' + cdTarget + ' && { ' + path + miss + run + '}';
   }
 
   private static innerScript(cdTarget: string, title: string, agent: string): string {

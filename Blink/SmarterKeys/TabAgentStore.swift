@@ -42,7 +42,7 @@ enum AgentKind: Int, CaseIterable {
     switch self {
     case .claude: return "Claude Code"
     case .codex: return "Codex"
-    case .deepseek: return "DeepSeek"
+    case .deepseek: return "Codewhale"
     }
   }
 
@@ -58,15 +58,27 @@ enum AgentKind: Int, CaseIterable {
   /// 只有 claude 有 ~/.claude/projects 里的 customTitle → resume 那套；其余直接起
   var supportsResume: Bool { self == .claude }
 
-  /// 可执行名（command -v 拿它判有没有装）
-  var bin: String { id }
+  /// 可执行名候选（按顺序 command -v，第一个找得到的就用它起）
+  var bins: [String] {
+    switch self {
+    case .claude: return ["claude"]
+    case .codex: return ["codex"]
+    // 用户要的「deepseek tui」实际是 Codewhale（github.com/Hmbown/Codewhale）：
+    // 机器上自己装了叫 deepseek 的就用它，否则用 codewhale。
+    case .deepseek: return ["deepseek", "codewhale"]
+    }
+  }
 
-  /// 没装时自动装的命令；nil = 不自动装（没有可信的官方包，乱装有供应链风险）
+  /// 没装时自动装的命令；nil = 不自动装
   var installCommand: String? {
     switch self {
     case .claude: return nil   // 能开会话说明本来就装着
-    case .codex: return "if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; elif command -v brew >/dev/null 2>&1; then brew install codex; fi"
-    case .deepseek: return nil
+    case .codex:
+      return "if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; elif command -v brew >/dev/null 2>&1; then brew install codex; fi"
+    case .deepseek:
+      // 官方安装脚本装到 ~/.local/bin；装不上再退 npm 包
+      return "if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi; "
+        + "if [ ! -x \"$HOME/.local/bin/codewhale\" ] && ! command -v codewhale >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then npm i -g codewhale; fi"
     }
   }
 
@@ -75,18 +87,27 @@ enum AgentKind: Int, CaseIterable {
     switch self {
     case .claude: return "装一下 claude code"
     case .codex: return "手动装：npm i -g @openai/codex 或 brew install codex"
-    case .deepseek: return "deepseek 没有官方 CLI，自己装好后把可执行名设成 deepseek"
+    case .deepseek: return "手动装：curl -fsSL https://codewhale.net/install.sh | sh"
     }
   }
 
   /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
-  /// 外层是 `$SHELL -lic '...'`，里面只能用双引号。
+  /// 外层是 `$SHELL -lic '...'`，里面只能用双引号——别引入单引号。
   func launchSnippet(cdTarget: String) -> String {
+    let has = bins.map { "command -v \($0) >/dev/null 2>&1" }.joined(separator: " || ")
+    // 官方安装脚本装到 ~/.local/bin，登录 shell 未必带它
+    let path = "case \":$PATH:\" in *:\"$HOME/.local/bin\":*) ;; *) PATH=\"$HOME/.local/bin:$PATH\";; esac; "
     let miss = installCommand.map {
-      "if ! command -v \(bin) >/dev/null 2>&1; then echo \"[blink] 这台机器没装 \(bin)，正在装…\"; \($0); hash -r 2>/dev/null; fi; "
+      "if ! { \(has); }; then echo \"[blink] 这台机器没装 \(bins[0])，正在装…\"; \($0); hash -r 2>/dev/null; fi; "
     } ?? ""
-    return "cd \(cdTarget) && { \(miss)if command -v \(bin) >/dev/null 2>&1; then \(command); "
-      + "else echo \"[blink] 没有 \(bin)：\(installHint)\"; fi; }"
+    var run = ""
+    for b in bins {
+      let cmd = (b == bins[0]) ? command : b
+      run += "if command -v \(b) >/dev/null 2>&1; then \(cmd); el"
+    }
+    run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
+    run += "fi; "   // elif 串起来的整条只收一个 fi
+    return "cd \(cdTarget) && { \(path)\(miss)\(run)}"
   }
 
   /// UI 图标（禁 emoji，统一 SF Symbols）

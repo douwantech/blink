@@ -3023,7 +3023,7 @@ struct BlinkTerminal {
         .onClick(() => this.setAgent(t, 'claude'))
       MenuItem({ content: this.agentOf(t) === 'codex' ? 'Codex（当前）' : 'Codex' })
         .onClick(() => this.setAgent(t, 'codex'))
-      MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
+      MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'Codewhale（当前）' : 'Codewhale' })
         .onClick(() => this.setAgent(t, 'deepseek'))
     }
   }

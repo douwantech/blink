@@ -2279,7 +2279,7 @@ struct PadHome {
         .onClick(() => this.setAgent(r, 'claude'))
       MenuItem({ content: r.agent === 'codex' ? 'Codex（当前）' : 'Codex' })
         .onClick(() => this.setAgent(r, 'codex'))
-      MenuItem({ content: r.agent === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
+      MenuItem({ content: r.agent === 'deepseek' ? 'Codewhale（当前）' : 'Codewhale' })
         .onClick(() => this.setAgent(r, 'deepseek'))
     }
   }
