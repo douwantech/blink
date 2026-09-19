@@ -132,6 +132,7 @@ struct BlinkTerminal {
   @State hostname: string = 'harmony';
   // ui reactivity: bump `tick` after any store/pool mutation to force re-render
   @State tick: number = 0;
+  @State deepseekKey: string = '';   // 设置页里填的 DeepSeek key（Codewhale 用）
   @State storeReady: boolean = false;
   @State activeTabId: string = '';
   @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
@@ -1175,6 +1176,7 @@ struct BlinkTerminal {
     this.visTabs = this.store.visibleTabs();
     this.restCount = this.store.restingCount();
     this.filterLabel = this.machineFilterLabel();
+    this.deepseekKey = this.store.deepseekKey;   // 同步拉回来的 key 也要回填到输入框
     this.tick++;
   }
 
@@ -2817,6 +2819,19 @@ struct BlinkTerminal {
           this.navRow('工作目录', this.store.workDirs.length + ' 个', () => { this.sheet = 'workDirs'; })
           this.navRow('员工头像', this.store.people.length + ' 人', () => this.toast('员工：' + this.store.people.join('、')))
         }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('员工 CLI')
+        Column({ space: 6 }) {
+          TextInput({ text: this.deepseekKey, placeholder: 'DeepSeek Key（sk-…）' })
+            .fontSize(13).type(InputType.Password).backgroundColor('#2C2C2E').fontColor('#FFFFFF').borderRadius(8)
+            .onChange((v: string) => {
+              this.deepseekKey = v;
+              this.store.deepseekKey = v;
+              this.store.saveDeepseekKey();
+            })
+          Text('配成 Codewhale 的员工开会话时，这个 key 会以 DEEPSEEK_API_KEY 传过去。')
+            .fontSize(11).fontColor('#8E8E93').width('100%')
+        }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
 
         this.sectionHeader('识别 & AI 整理')
         Column({ space: 2 }) {

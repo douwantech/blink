@@ -37,6 +37,7 @@ final class CloudConfigSync: NSObject {
     "TabRestStore.resting",      // 「休息」😴 标记跨设备同步（否则各设备各藏各的，tab 列表看着不一致）
     "TeamStatus.summaryCache",   // 团队状态页的 GLM 总结缓存：换设备/重装不用重新总结
     "TabAgentStore.agents",      // 每个员工（机器×tab）进哪个 CLI：claude / codex / deepseek
+    "TabAgentStore.deepseekKey", // Codewhale 用的 DeepSeek key
     // 人员
     "BlinkPeopleStore.avatars",
     "BlinkPeopleStore.styles",
@@ -339,6 +340,7 @@ final class ConfigSyncPush: NSObject {
       "closedIds": closedIds,
       "pinned": decoded("PinnedTabsStore.tabs"),
       "agents": d.dictionary(forKey: "TabAgentStore.agents") as? [String: String] ?? [:],
+      "deepseekKey": d.string(forKey: "TabAgentStore.deepseekKey") ?? "",
       "favorites": d.stringArray(forKey: "VoiceInputView.aiFavorites") ?? [],
       "favoriteCounts": d.dictionary(forKey: "VoiceInputView.aiFavoriteCounts") ?? [:],
       "history": slim ? [] : (d.stringArray(forKey: "VoiceInputView.aiHistory") ?? []),
@@ -598,6 +600,7 @@ final class ConfigSyncPull: NSObject {
     if let presets = cfg["presets"] as? [Any] { setJSON(presets, forKey: "BlinkSessionPresetStore.presets") }
     if let pinned = cfg["pinned"] as? [Any] { setJSON(pinned, forKey: "PinnedTabsStore.tabs") }
     if let agents = cfg["agents"] as? [String: String] { d.set(agents, forKey: "TabAgentStore.agents") }
+    if let dk = cfg["deepseekKey"] as? String { d.set(dk, forKey: "TabAgentStore.deepseekKey") }
 
     if let fav = cfg["favorites"] as? [String] { d.set(fav, forKey: "VoiceInputView.aiFavorites") }
     if let counts = cfg["favoriteCounts"] as? [String: Any] { d.set(counts, forKey: "VoiceInputView.aiFavoriteCounts") }

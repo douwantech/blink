@@ -91,6 +91,14 @@ enum AgentKind: Int, CaseIterable {
     }
   }
 
+  /// 起这个 CLI 前要带的环境变量：DeepSeek key 交给 Codewhale
+  var envPrefix: String {
+    guard self == .deepseek else { return "" }
+    let k = TabAgentStore.shared.deepseekKey
+    guard !k.isEmpty else { return "" }
+    return "export DEEPSEEK_API_KEY=\"\(k)\"; "
+  }
+
   /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
   /// 外层是 `$SHELL -lic '...'`，里面只能用双引号——别引入单引号。
   func launchSnippet(cdTarget: String) -> String {
@@ -107,7 +115,7 @@ enum AgentKind: Int, CaseIterable {
     }
     run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
     run += "fi; "   // elif 串起来的整条只收一个 fi
-    return "cd \(cdTarget) && { \(path)\(miss)\(run)}"
+    return "cd \(cdTarget) && { \(path)\(envPrefix)\(miss)\(run)}"
   }
 
   /// UI 图标（禁 emoji，统一 SF Symbols）
@@ -125,6 +133,7 @@ final class TabAgentStore: NSObject {
   @objc static let shared = TabAgentStore()
 
   static let key = "TabAgentStore.agents"
+  static let deepseekKeyKey = "TabAgentStore.deepseekKey"
   /// 改了之后发一下，团队页/侧栏可以刷新行尾的标记
   static let didChangeNotification = Notification.Name("TabAgentStore.didChange")
 
@@ -138,6 +147,16 @@ final class TabAgentStore: NSObject {
   /// 从 cc-<TITLE> 反推 title
   static func title(fromOuterSession s: String) -> String {
     s.hasPrefix("cc-") ? String(s.dropFirst(3)) : s
+  }
+
+  /// DeepSeek 的 API key：起 Codewhale 时作为 DEEPSEEK_API_KEY 带过去。
+  /// 跟 agents 一样进配置同步，三端共用一份。
+  var deepseekKey: String {
+    get { d.string(forKey: Self.deepseekKeyKey) ?? "" }
+    set {
+      d.set(newValue, forKey: Self.deepseekKeyKey)
+      NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    }
   }
 
   var all: [String: String] {

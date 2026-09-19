@@ -59,6 +59,14 @@ enum AgentKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 起这个 CLI 前要带的环境变量：DeepSeek key 交给 Codewhale
+    var envPrefix: String {
+        guard self == .deepseek else { return "" }
+        let k = TabAgentStore.deepseekKey()
+        guard !k.isEmpty else { return "" }
+        return "export DEEPSEEK_API_KEY=\"\(k)\"; "
+    }
+
     /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
     func launchSnippet(cdTarget: String) -> String {
         let has = bins.map { "command -v \($0) >/dev/null 2>&1" }.joined(separator: " || ")
@@ -74,7 +82,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
         }
         run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
         run += "fi; "   // elif 串起来的整条只收一个 fi
-        return "cd \(cdTarget) && { \(path)\(miss)\(run)}"
+        return "cd \(cdTarget) && { \(path)\(envPrefix)\(miss)\(run)}"
     }
 
     /// SF Symbols（禁 emoji）
@@ -93,6 +101,15 @@ enum AgentKind: String, CaseIterable, Identifiable {
 /// key = `<machineId>|<title>`，title 就是 tmux 外层会话名 `cc-<TITLE>` 去掉前缀那截。
 enum TabAgentStore {
     private static let kAgents = "TabAgentStore.agents"
+    private static let kDeepSeekKey = "TabAgentStore.deepseekKey"
+
+    /// DeepSeek 的 API key（手机设置页里填的，经配置同步过来）
+    static func deepseekKey() -> String {
+        if let v = SyncConfig.read()?["deepseekKey"] as? String, !v.isEmpty { return v }
+        let kv = NSUbiquitousKeyValueStore.default
+        kv.synchronize()
+        return kv.string(forKey: kDeepSeekKey) ?? ""
+    }
 
     static func storeKey(machineId: String, title: String) -> String {
         "\(machineId)|\(title.lowercased())"
