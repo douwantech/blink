@@ -58,6 +58,37 @@ enum AgentKind: Int, CaseIterable {
   /// 只有 claude 有 ~/.claude/projects 里的 customTitle → resume 那套；其余直接起
   var supportsResume: Bool { self == .claude }
 
+  /// 可执行名（command -v 拿它判有没有装）
+  var bin: String { id }
+
+  /// 没装时自动装的命令；nil = 不自动装（没有可信的官方包，乱装有供应链风险）
+  var installCommand: String? {
+    switch self {
+    case .claude: return nil   // 能开会话说明本来就装着
+    case .codex: return "if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; elif command -v brew >/dev/null 2>&1; then brew install codex; fi"
+    case .deepseek: return nil
+    }
+  }
+
+  /// 装不上时屏幕上给的提示
+  var installHint: String {
+    switch self {
+    case .claude: return "装一下 claude code"
+    case .codex: return "手动装：npm i -g @openai/codex 或 brew install codex"
+    case .deepseek: return "deepseek 没有官方 CLI，自己装好后把可执行名设成 deepseek"
+    }
+  }
+
+  /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
+  /// 外层是 `$SHELL -lic '...'`，里面只能用双引号。
+  func launchSnippet(cdTarget: String) -> String {
+    let miss = installCommand.map {
+      "if ! command -v \(bin) >/dev/null 2>&1; then echo \"[blink] 这台机器没装 \(bin)，正在装…\"; \($0); hash -r 2>/dev/null; fi; "
+    } ?? ""
+    return "cd \(cdTarget) && { \(miss)if command -v \(bin) >/dev/null 2>&1; then \(command); "
+      + "else echo \"[blink] 没有 \(bin)：\(installHint)\"; fi; }"
+  }
+
   /// UI 图标（禁 emoji，统一 SF Symbols）
   var symbol: String {
     switch self {

@@ -570,9 +570,41 @@ export class BlinkStore {
     return 'claude --dangerously-skip-permissions';
   }
 
+  // 没装时自动装的命令；空串 = 不自动装（没有可信的官方包，乱装有供应链风险）
+  static agentInstall(agent: string): string {
+    if (agent === 'codex') {
+      return 'if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; ' +
+        'elif command -v brew >/dev/null 2>&1; then brew install codex; fi';
+    }
+    return '';
+  }
+
+  static agentHint(agent: string): string {
+    if (agent === 'codex') {
+      return '手动装：npm i -g @openai/codex 或 brew install codex';
+    }
+    if (agent === 'deepseek') {
+      return 'deepseek 没有官方 CLI，自己装好后把可执行名设成 deepseek';
+    }
+    return '装一下 claude code';
+  }
+
+  // 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
+  // 外层是 `$SHELL -lic '...'`，里面只能用双引号。
+  static agentLaunch(agent: string, cdTarget: string): string {
+    const bin: string = agent;
+    const ins: string = BlinkStore.agentInstall(agent);
+    const miss: string = ins.length === 0 ? '' :
+      'if ! command -v ' + bin + ' >/dev/null 2>&1; then echo "[blink] 这台机器没装 ' + bin +
+      '，正在装…"; ' + ins + '; hash -r 2>/dev/null; fi; ';
+    return 'cd ' + cdTarget + ' && { ' + miss + 'if command -v ' + bin + ' >/dev/null 2>&1; then ' +
+      BlinkStore.agentCommand(agent) + '; else echo "[blink] 没有 ' + bin + '：' +
+      BlinkStore.agentHint(agent) + '"; fi; }';
+  }
+
   private static innerScript(cdTarget: string, title: string, agent: string): string {
     if (agent !== 'claude') {
-      return 'cd ' + cdTarget + ' && ' + BlinkStore.agentCommand(agent);
+      return BlinkStore.agentLaunch(agent, cdTarget);
     }
     return 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
