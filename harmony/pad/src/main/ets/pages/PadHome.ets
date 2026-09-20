@@ -2282,7 +2282,7 @@ struct PadHome {
         .onClick(() => this.setAgent(r, 'claude'))
       MenuItem({ content: r.agent === 'codex' ? 'Codex（当前）' : 'Codex' })
         .onClick(() => this.setAgent(r, 'codex'))
-      MenuItem({ content: r.agent === 'deepseek' ? 'Codewhale（当前）' : 'Codewhale' })
+      MenuItem({ content: r.agent === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
         .onClick(() => this.setAgent(r, 'deepseek'))
     }
   }
@@ -3466,7 +3466,7 @@ struct PadHome {
               this.store.deepseekKey = v;
               this.store.saveDeepseekKey();
             })
-          Text('配成 Codewhale 的员工开会话时，这个 key 会以 DEEPSEEK_API_KEY 传过去。')
+          Text('配成 DeepSeek 的员工，开会话时跑的还是 claude，只是后端指到 api.deepseek.com。')
             .fontSize(11).fontColor(DIM).width('100%')
         }.padding(14).backgroundColor(PANEL2).borderRadius(12)
 

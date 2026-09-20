@@ -2225,7 +2225,7 @@ final class VoiceSettingsViewController: UITableViewController {
   }
 
   override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    section == 5 ? "配成 Codewhale 的员工开会话时，这个 key 会以 DEEPSEEK_API_KEY 传过去。" : nil
+    section == 5 ? "配成 DeepSeek 的员工，开会话时跑的还是 claude，只是后端指到 api.deepseek.com。" : nil
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -2326,7 +2326,7 @@ final class VoiceSettingsViewController: UITableViewController {
   /// DeepSeek key：存本地 + 进配置同步，三端共用（Codewhale 起的时候当环境变量带过去）
   private func presentDeepSeekKey() {
     let ac = UIAlertController(title: "DeepSeek Key",
-                               message: "配成 Codewhale 的员工开会话时，以 DEEPSEEK_API_KEY 传给它",
+                               message: "配成 DeepSeek 的员工跑的是 claude，后端指到 api.deepseek.com",
                                preferredStyle: .alert)
     ac.addTextField { tf in
       tf.placeholder = "sk-…"

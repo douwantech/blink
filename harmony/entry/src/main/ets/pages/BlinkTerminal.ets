@@ -2829,7 +2829,7 @@ struct BlinkTerminal {
               this.store.deepseekKey = v;
               this.store.saveDeepseekKey();
             })
-          Text('配成 Codewhale 的员工开会话时，这个 key 会以 DEEPSEEK_API_KEY 传过去。')
+          Text('配成 DeepSeek 的员工，开会话时跑的还是 claude，只是后端指到 api.deepseek.com。')
             .fontSize(11).fontColor('#8E8E93').width('100%')
         }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
 
@@ -3038,7 +3038,7 @@ struct BlinkTerminal {
         .onClick(() => this.setAgent(t, 'claude'))
       MenuItem({ content: this.agentOf(t) === 'codex' ? 'Codex（当前）' : 'Codex' })
         .onClick(() => this.setAgent(t, 'codex'))
-      MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'Codewhale（当前）' : 'Codewhale' })
+      MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
         .onClick(() => this.setAgent(t, 'deepseek'))
     }
   }

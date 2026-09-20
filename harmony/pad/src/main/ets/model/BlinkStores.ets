@@ -111,6 +111,11 @@ export interface SeedConfig {
 
 const P_KEY: string = 'blink_store';   // preferences file name
 
+// DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
+const DEEPSEEK_BASE_URL: string = 'https://api.deepseek.com/anthropic';
+const DEEPSEEK_MODEL: string = 'deepseek-v4-pro';
+const DEEPSEEK_SMALL_MODEL: string = 'deepseek-flash';
+
 export class BlinkStore {
   machines: Machine[] = [];
   workDirs: WorkDir[] = [];
@@ -569,7 +574,7 @@ export class BlinkStore {
       return 'Codex';
     }
     if (agent === 'deepseek') {
-      return 'Codewhale';
+      return 'DeepSeek';
     }
     return 'Claude Code';
   }
@@ -578,9 +583,7 @@ export class BlinkStore {
     if (agent === 'codex') {
       return 'codex';
     }
-    if (agent === 'deepseek') {
-      return 'deepseek';
-    }
+    // DeepSeek 档跑的也是 claude，只是 ANTHROPIC_* 指到 DeepSeek 的兼容端点
     return 'claude --dangerously-skip-permissions';
   }
 
@@ -595,7 +598,7 @@ export class BlinkStore {
       return ['codex'];
     }
     if (agent === 'deepseek') {
-      return ['deepseek', 'codewhale'];
+      return ['claude'];
     }
     return ['claude'];
   }
@@ -606,12 +609,6 @@ export class BlinkStore {
       return 'if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; ' +
         'elif command -v brew >/dev/null 2>&1; then brew install codex; fi';
     }
-    if (agent === 'deepseek') {
-      // 官方安装脚本装到 ~/.local/bin；装不上再退 npm 包
-      return 'if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi; ' +
-        'if [ ! -x "$HOME/.local/bin/codewhale" ] && ! command -v codewhale >/dev/null 2>&1 ' +
-        '&& command -v npm >/dev/null 2>&1; then npm i -g codewhale; fi';
-    }
     return '';
   }
 
@@ -620,7 +617,7 @@ export class BlinkStore {
       return '手动装：npm i -g @openai/codex 或 brew install codex';
     }
     if (agent === 'deepseek') {
-      return '手动装：curl -fsSL https://codewhale.net/install.sh | sh';
+      return '装一下 claude code';
     }
     return '装一下 claude code';
   }
@@ -646,18 +643,31 @@ export class BlinkStore {
     }
     run += 'se echo "[blink] 没有 ' + bins.join('/') + '：' + BlinkStore.agentHint(agent) + '"; ';
     run += 'fi; ';   // elif 串起来的整条只收一个 fi
-    // DeepSeek key 走环境变量交给 Codewhale
+    // DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认
     const k: string = BlinkStore.deepseekKeyForScript;
     const env: string = (agent === 'deepseek' && k.length > 0)
-      ? 'export DEEPSEEK_API_KEY="' + k + '"; ' : '';
+      ? 'export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
+        'export ANTHROPIC_AUTH_TOKEN="' + k + '"; ' +
+        'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
+        'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; '
+      : '';
     return 'cd ' + cdTarget + ' && { ' + path + env + miss + run + '}';
   }
 
   private static innerScript(cdTarget: string, title: string, agent: string): string {
-    if (agent !== 'claude') {
+    if (agent === 'codex') {
       return BlinkStore.agentLaunch(agent, cdTarget);
     }
-    return 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
+    // claude 和 DeepSeek（也是 claude）都走下面这条 resume-or-new；
+    // DeepSeek 只是前面多几个 ANTHROPIC_* 环境变量。
+    const k0: string = BlinkStore.deepseekKeyForScript;
+    const env0: string = (agent === 'deepseek' && k0.length > 0)
+      ? 'export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
+        'export ANTHROPIC_AUTH_TOKEN="' + k0 + '"; ' +
+        'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
+        'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; '
+      : '';
+    return env0 + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
     '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
   }

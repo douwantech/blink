@@ -10,7 +10,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
-        case .deepseek: return "Codewhale"
+        case .deepseek: return "DeepSeek"
         }
     }
 
@@ -19,21 +19,20 @@ enum AgentKind: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return "claude --dangerously-skip-permissions"
         case .codex: return "codex"
-        case .deepseek: return "deepseek"
+        // DeepSeek 档跑的也是 claude，只是 ANTHROPIC_* 指到 DeepSeek 的兼容端点
+        case .deepseek: return "claude --dangerously-skip-permissions"
         }
     }
 
-    /// 只有 claude 有 ~/.claude/projects 里 customTitle → resume 那套
-    var supportsResume: Bool { self == .claude }
+    /// claude / DeepSeek（也是 claude，只是换了后端）都有 customTitle → resume 那套；codex 没有
+    var supportsResume: Bool { self != .codex }
 
     /// 可执行名候选（按顺序 command -v，第一个找得到的就用它起）
     var bins: [String] {
         switch self {
         case .claude: return ["claude"]
         case .codex: return ["codex"]
-        // 「deepseek tui」实际是 Codewhale（github.com/Hmbown/Codewhale）：
-        // 机器上自己装了叫 deepseek 的就用它，否则用 codewhale。
-        case .deepseek: return ["deepseek", "codewhale"]
+        case .deepseek: return ["claude"]
         }
     }
 
@@ -43,10 +42,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
         case .claude: return nil   // 能开会话说明本来就装着
         case .codex:
             return "if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; elif command -v brew >/dev/null 2>&1; then brew install codex; fi"
-        case .deepseek:
-            // 官方安装脚本装到 ~/.local/bin；装不上再退 npm 包
-            return "if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi; "
-                + "if [ ! -x \"$HOME/.local/bin/codewhale\" ] && ! command -v codewhale >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then npm i -g codewhale; fi"
+        case .deepseek: return nil   // 跑的就是 claude，本来就装着
         }
     }
 
@@ -55,16 +51,21 @@ enum AgentKind: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return "装一下 claude code"
         case .codex: return "手动装：npm i -g @openai/codex 或 brew install codex"
-        case .deepseek: return "手动装：curl -fsSL https://codewhale.net/install.sh | sh"
+        case .deepseek: return "装一下 claude code"
         }
     }
 
-    /// 起这个 CLI 前要带的环境变量：DeepSeek key 交给 Codewhale
+    /// 起这个 CLI 前要带的环境变量。
+    /// DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认，
+    /// 换掉后端和模型，其余（resume / rename / 工具）跟平时一模一样。
     var envPrefix: String {
         guard self == .deepseek else { return "" }
         let k = TabAgentStore.deepseekKey()
         guard !k.isEmpty else { return "" }
-        return "export DEEPSEEK_API_KEY=\"\(k)\"; "
+        return "export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
+            + "export ANTHROPIC_AUTH_TOKEN=\"\(k)\"; "
+            + "export ANTHROPIC_MODEL=\"\(TabAgentStore.deepseekModel)\"; "
+            + "export ANTHROPIC_SMALL_FAST_MODEL=\"\(TabAgentStore.deepseekSmallModel)\"; "
     }
 
     /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
@@ -102,6 +103,10 @@ enum AgentKind: String, CaseIterable, Identifiable {
 enum TabAgentStore {
     private static let kAgents = "TabAgentStore.agents"
     private static let kDeepSeekKey = "TabAgentStore.deepseekKey"
+    /// DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
+    static let deepseekBaseURL = "https://api.deepseek.com/anthropic"
+    static let deepseekModel = "deepseek-v4-pro"
+    static let deepseekSmallModel = "deepseek-flash"
 
     /// DeepSeek 的 API key（手机设置页里填的，经配置同步过来）
     static func deepseekKey() -> String {
