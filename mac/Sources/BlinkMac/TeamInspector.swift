@@ -121,6 +121,18 @@ struct TeamInspector: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Button { state.toggleRest(sessionID: s.id) } label: {
+                Label(s.status == .rest ? "唤醒（在岗）" : "让 TA 休息",
+                      systemImage: s.status == .rest ? "moon.zzz.fill" : "moon")
+            }
+            Menu("打开时进…") {
+                ForEach(AgentKind.allCases) { k in
+                    Button { state.setAgent(k, for: s) } label: {
+                        Label(k == state.agent(for: s) ? "\(k.label)（当前）" : k.label, systemImage: k.symbol)
+                    }
+                }
+            }
+            Divider()
             Button(role: .destructive) { state.closeTab(sessionID: s.id) } label: {
                 Label("关闭标签", systemImage: "xmark")
             }

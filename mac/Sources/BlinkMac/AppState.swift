@@ -415,7 +415,7 @@ final class AppState: ObservableObject {
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
                        initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
     }
-    private func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
+    func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
 
     /// 该会话是否被「关闭」（本地记录 + KV 墓碑，且手机没重新开同名 → 见 loadClosed）。
     func isClosed(_ s: Session) -> Bool { closedCC.contains((s.tmuxName ?? s.id).lowercased()) }

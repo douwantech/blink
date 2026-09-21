@@ -2269,9 +2269,35 @@ struct PadHome {
     Menu() {
       MenuItem({ content: this.store.isResting(tabId) ? '唤醒（在岗）' : '让 TA 休息' })
         .onClick(() => this.toggleRest(tabId))
+      // 打开时进哪个 CLI（跟团队栏行尾齿轮同一份配置）
+      MenuItem({ content: this.agentOfTab(tabId) === 'claude' ? 'Claude Code（当前）' : '打开时进 Claude Code' })
+        .onClick(() => this.setAgentByTab(tabId, 'claude'))
+      MenuItem({ content: this.agentOfTab(tabId) === 'codex' ? 'Codex（当前）' : '打开时进 Codex' })
+        .onClick(() => this.setAgentByTab(tabId, 'codex'))
+      MenuItem({ content: this.agentOfTab(tabId) === 'deepseek' ? 'DeepSeek（当前）' : '打开时进 DeepSeek' })
+        .onClick(() => this.setAgentByTab(tabId, 'deepseek'))
       MenuItem({ content: '关闭标签' })
         .onClick(() => this.confirmClose(tabId))
     }
+  }
+
+  // 长按菜单里按 tabId 查/改 CLI（团队栏那套按 SessRow，这里只有 id）
+  private agentOfTab(tabId: string): string {
+    const t = this.store.tabById(tabId);
+    if (t === null) {
+      return 'claude';
+    }
+    return this.store.agentFor(t.machineId, this.ccFor(t).substring(3));
+  }
+
+  private setAgentByTab(tabId: string, kind: string): void {
+    const t = this.store.tabById(tabId);
+    if (t === null || this.agentOfTab(tabId) === kind) {
+      return;
+    }
+    this.store.setAgent(t.machineId, this.ccFor(t).substring(3), kind);
+    this.refreshAll();
+    this.toast('已设为 ' + BlinkStore.agentLabel(kind) + '，关掉这个会话重开才生效');
   }
 
   // 行尾齿轮菜单：这个员工下次开会话进哪个 CLI

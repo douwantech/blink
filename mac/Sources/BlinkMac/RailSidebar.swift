@@ -134,6 +134,20 @@ struct SessionRow: View {
         .onHover { hovering = $0 }
         // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
         .contextMenu {
+            Button { state.toggleRest(sessionID: session.id) } label: {
+                Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
+                      systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
+            }
+            // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
+            Menu("打开时进…") {
+                ForEach(AgentKind.allCases) { k in
+                    Button { state.setAgent(k, for: session) } label: {
+                        Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
+                              systemImage: k.symbol)
+                    }
+                }
+            }
+            Divider()
             Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
                 Label("关闭标签", systemImage: "xmark")
             }
