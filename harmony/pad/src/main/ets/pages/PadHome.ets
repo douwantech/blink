@@ -3273,13 +3273,7 @@ struct PadHome {
   // 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
   // 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
   private setAgent(r: SessRow, kind: string): void {
-    if (r.agent === kind) {
-      return;
-    }
-    this.store.setAgent(r.machineId, r.cc.substring(3), kind);
-    this.teamGroups = this.buildGroups();
-    this.tick++;
-    this.toast('已设为 ' + BlinkStore.agentLabel(kind) + '，关掉这个会话重开才生效');
+    this.setAgentByTab(r.tabId, kind);   // 走同一条：存配置 → 杀会话 → 重连
   }
 
   @Builder

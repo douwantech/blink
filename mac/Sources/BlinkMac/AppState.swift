@@ -576,11 +576,30 @@ final class AppState: ObservableObject {
 
     /// 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
     /// 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+    /// 换 CLI：存配置 → 把远端那个 tmux 会话杀掉 → 重连。
+    ///
+    /// 不杀会话的话 `tmux new-session -A` 只会 attach 回原来那个，里面跑的还是旧 CLI，
+    /// 环境变量也是旧的。杀掉后重连会重跑一遍启动脚本，新 CLI 立刻起来。
+    /// claude / DeepSeek 那两档杀了不心疼：启动脚本会按 customTitle 把上一轮的
+    /// 会话 resume 回来，上下文还在；codex 没有这套，等于开个新的。
     func setAgent(_ kind: AgentKind, for s: Session) {
         guard agent(for: s) != kind else { return }
         TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
         agentTick &+= 1
-        showToast("\(s.name) 改为 \(kind.label)，关掉这个 tab 重开才生效")
+        let m = machines.first { $0.id == s.machineID } ?? activeMachine
+        guard let name = s.tmuxName, m.transport.connectable else {
+            showToast("\(s.name) 改为 \(kind.label)")
+            return
+        }
+        showToast("\(s.name) 切到 \(kind.label)，正在重开…")
+        let tr = m.transport
+        Task { @MainActor in
+            _ = await AppState.exec(tr, "\(BlinkdScript.bootPath); tmux kill-session -t \(name) 2>/dev/null; echo done",
+                                    timeout: 10, marker: nil)
+            self.term.restart(s.id)
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            self.showToast("\(s.name) 已用 \(kind.label) 重开")
+        }
     }
 
     func toggleRest(sessionID: String) {

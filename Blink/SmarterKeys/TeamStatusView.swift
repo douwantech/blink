@@ -477,11 +477,20 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         self.tableView.reloadData()
-        let tip = UIAlertController(title: nil,
-                                    message: "已设为 \(k.label)。当前会话还跑着旧的，关掉这个 tab 重开才生效。",
-                                    preferredStyle: .alert)
-        tip.addAction(UIAlertAction(title: "知道了", style: .default))
-        self.present(tip, animated: true)
+        // 直接切：把远端那个 tmux 会话杀掉，终端那边自动重连时就会用新 CLI 重跑启动脚本。
+        // 不杀的话 `tmux new-session -A` 只 attach 回原来那个，里面跑的还是旧的。
+        guard let m = BlinkMachineStore.shared.machines.first(where: { $0.id == t.machineId }) else { return }
+        let kill = """
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        tmux kill-session -t \(t.outerSession) 2>/dev/null
+        printf '@TSB64@@TSB64E@\\n'
+        """
+        Task { [weak self] in
+          _ = try? await Self.exec(script: kill, machine: m)
+          await MainActor.run {
+            self?.toast("已切到 \(k.label)，会话正在用它重开")
+          }
+        }
       }
       if k == cur { a.setValue(true, forKey: "checked") }
       ac.addAction(a)
@@ -490,6 +499,30 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     ac.popoverPresentationController?.sourceView = anchor
     ac.popoverPresentationController?.sourceRect = anchor.bounds
     present(ac, animated: true)
+  }
+
+  /// 一闪而过的提示条（切 CLI 这类操作用，不打断操作）
+  private func toast(_ msg: String) {
+    let lb = PaddedLabel()
+    lb.insets = UIEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
+    lb.text = msg
+    lb.font = .systemFont(ofSize: 13, weight: .medium)
+    lb.textColor = .white
+    lb.backgroundColor = UIColor.black.withAlphaComponent(0.85)
+    lb.layer.cornerRadius = 10
+    lb.clipsToBounds = true
+    lb.numberOfLines = 0
+    lb.textAlignment = .center
+    lb.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(lb)
+    NSLayoutConstraint.activate([
+      lb.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+      lb.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
+      lb.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+    ])
+    UIView.animate(withDuration: 0.2, delay: 1.6, options: []) { lb.alpha = 0 } completion: { _ in
+      lb.removeFromSuperview()
+    }
   }
 
   // MARK: 休息切换
