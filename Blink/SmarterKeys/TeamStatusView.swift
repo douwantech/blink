@@ -115,17 +115,19 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private let sub = UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1)     // #8b95a5
 
   private let tableView = UITableView(frame: .zero, style: .grouped)
-  private let statTiles: [StatTile]
   private let segmented = UISegmentedControl(items: ["按员工", "按项目", "按机器"])
   private let subtitleLabel = UILabel()
 
   init(tabs: [TeamStatusTab]) {
     self.tabs = tabs
-    // 等你/干活/空闲 三个格子跟着探测一起去掉了（那三档本来就不准），只留「休息」
-    self.statTiles = [StatTile(status: .rest)]
+    // 顶部统计条整条去掉：等你/干活/空闲 三档本来就不准早删了，剩「休息中」
+    // 一个格子占 58pt 只为显示一个数字，每行行尾的月亮已经说清谁在休息。
     super.init(nibName: nil, bundle: nil)
   }
   required init?(coder: NSCoder) { fatalError() }
+
+  /// 这页是近黑底，系统状态栏（时间/信号/电量）得走浅色，不然默认黑字看不见
+  override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -150,6 +152,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       image: UIImage(systemName: "arrow.clockwise"), style: .plain, target: self, action: #selector(refreshTapped))
     navigationItem.leftBarButtonItem?.tintColor = .white
     navigationItem.rightBarButtonItem?.tintColor = .white
+    // 状态栏样式由外层 UINavigationController 说了算，子页的 preferredStatusBarStyle
+    // 它不看；barStyle 调成 black，时间/信号/电量才跟着变白。
+    navigationController?.navigationBar.barStyle = .black
   }
 
   private func setupTable() {
@@ -181,13 +186,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     header.backgroundColor = bg
     header.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(header)
-    let stats = UIStackView(arrangedSubviews: statTiles + [UIView()])
-    stats.axis = .horizontal
-    stats.distribution = .fillEqually
-    stats.spacing = 8
-    stats.translatesAutoresizingMaskIntoConstraints = false
-    header.addSubview(stats)
-
     segmented.selectedSegmentIndex = 0
     segmented.selectedSegmentTintColor = panel2
     segmented.backgroundColor = panel
@@ -208,13 +206,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      header.heightAnchor.constraint(equalToConstant: 132),
+      header.heightAnchor.constraint(equalToConstant: 64),
 
-      stats.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
-      stats.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-      stats.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-      stats.heightAnchor.constraint(equalToConstant: 58),
-      segmented.topAnchor.constraint(equalTo: stats.bottomAnchor, constant: 10),
+      segmented.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
       segmented.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
       segmented.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
       subtitleLabel.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 8),
@@ -312,11 +306,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     return nil
   }
 
-  private func updateStats() {
-    var resting = 0
-    for g in groups { resting += g.rows.filter(\.resting).count }
-    for tile in statTiles { tile.setCount(resting) }
-  }
+  private func updateStats() {}   // 顶部统计条去掉后没东西要更新了
 
   // MARK: 远端探测
 
