@@ -374,7 +374,7 @@ final class AppState: ObservableObject {
     /// 刷新当前选中会话的状态（Cmd-R）。只探测当前这一个，不动其它会话。
     func refreshActive() async {
         let s = activeSession
-        guard !s.placeholder, let name = s.tmuxName, activeMachine.transport.connectable else {
+        guard !s.placeholder, s.tmuxName != nil else {
             showToast("当前没有可刷新的会话"); return
         }
         showToast("刷新「\(s.name)」…")
@@ -587,15 +587,17 @@ final class AppState: ObservableObject {
         TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
         agentTick &+= 1
         let m = machines.first { $0.id == s.machineID } ?? activeMachine
-        guard let name = s.tmuxName, m.transport.connectable else {
-            showToast("\(s.name) 改为 \(kind.label)")
-            return
-        }
+        // 这里不能拿 transport.connectable 当门槛：SSH 机器照样能跑命令（AppState.exec
+        // 走系统 /usr/bin/ssh），之前挡在外面的结果是只改了配置、会话没重开，
+        // 看着就像「切了没反应」。真正的前提只有一条：得知道 tmux 会话名。
         showToast("\(s.name) 切到 \(kind.label)，正在重开…")
         let tr = m.transport
+        let name = s.tmuxName
         Task { @MainActor in
-            _ = await AppState.exec(tr, "\(BlinkdScript.bootPath); tmux kill-session -t \(name) 2>/dev/null; echo done",
-                                    timeout: 10, marker: nil)
+            if let name {
+                _ = await AppState.exec(tr, "\(BlinkdScript.bootPath); tmux kill-session -t \(name) 2>/dev/null; echo done",
+                                        timeout: 12, marker: nil)
+            }
             // 必须 rebuild 不能 restart：后端里存的是建它时拼好的启动脚本，
             // restart 会拿旧脚本（旧 CLI）重跑，看着就像"切了没反应"。
             self.term.rebuild(s.id)

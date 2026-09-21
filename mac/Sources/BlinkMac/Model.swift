@@ -55,11 +55,14 @@ struct ChatBlock: Identifiable {
 enum Transport {
     case local
     case blinkd(host: String, port: UInt16, token: String)
-    /// 手机上配成 SSH 的机器：Mac 版没有 SSH 客户端，只能列出来、点开给提示，连不了。
+    /// 手机上配成 SSH 的机器：Mac 端用系统 /usr/bin/ssh 连（开会话走 SSHBackend，
+    /// 跑单条命令走 SSHExec），要免密才行。
     case ssh(user: String, host: String)
 
     var isRemote: Bool { if case .blinkd = self { return true }; return false }
-    /// Mac 端能否真正建连接（只有 blinkd / 本地能）。
+    /// 能否「自动」枚举/探测：SSH 要免密且每次最多等 8 秒，批量拉会话时跳过它，
+    /// 改用 iCloud KV 里手机配的标签。**不要拿它当「能不能跑命令」的门槛** ——
+    /// SSH 跑单条命令是通的，误用会让切 CLI、刷新这类动作在 SSH 机器上静默失效。
     var connectable: Bool { if case .ssh = self { return false }; return true }
     /// 顶栏徽标文案：blinkd 连接直接带上实际 IP（本机 127.0.0.1 / 远程对应 IP），
     /// 一眼看清走的是哪台/哪条链路，不再只写「本地」这种模糊词。
