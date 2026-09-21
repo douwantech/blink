@@ -89,7 +89,8 @@ struct TeamInspector: View {
     private func teamRow(_ s: Session) -> some View {
         Button { state.selectSession(s.id) } label: {
             HStack(spacing: 9) {
-                Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner))
+                Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner),
+                       agent: state.agent(for: s), ring: Theme.panel3)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(s.name).font(Theme.ui(12.5, .semibold)).foregroundColor(Theme.fg)
@@ -140,15 +141,10 @@ struct TeamInspector: View {
     }
 
     /// 行尾齿轮：配这个员工打开时进 claude / codex / deepseek。
-    /// 不是默认 claude 时齿轮点亮并在前面挂个名字小标签，一眼看出这行不走 claude。
+    /// 是哪个 CLI 看头像右下角那颗 mark，这里只管「能改」——齿轮染成当前品牌色呼应一下。
     private func agentGear(_ s: Session) -> some View {
         let cur = state.agent(for: s)
         return HStack(spacing: 4) {
-            if cur != .claude {
-                Text(cur.label).font(Theme.ui(9.5, .semibold)).foregroundColor(Theme.work)
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.work.opacity(0.14)))
-            }
             Menu {
                 ForEach(AgentKind.allCases) { k in
                     Button { state.setAgent(k, for: s) } label: {
@@ -158,7 +154,7 @@ struct TeamInspector: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 12))
-                    .foregroundColor(cur == .claude ? Theme.dim : Theme.work)
+                    .foregroundColor(cur == .claude ? Theme.dim : cur.brand)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)

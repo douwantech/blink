@@ -9,8 +9,26 @@ struct Avatar: View {
     var corner: CGFloat = 9
     var fontSize: CGFloat = 12
     var image: NSImage? = nil   // 真实头像（iOS Blink 配置的 workDir 图标）
+    /// 右下角挂哪个 CLI 的 mark；nil = 不挂（分组头像这种一个人好几档的地方）
+    var agent: AgentKind? = nil
+    /// 这颗角标压在什么底色上（描边用它，把标识从头像上抠出来）
+    var ring: Color = Theme.panel
+
+    /// 角标直径：跟着头像等比缩，26/30/40 分别是 13/15/20，再小就认不出图形了
+    private var badgeSize: CGFloat { max(13, size * 0.5) }
 
     var body: some View {
+        face
+            .overlay(alignment: .bottomTrailing) {
+                if let agent {
+                    AgentBadge(kind: agent, size: badgeSize, ring: ring)
+                        .offset(x: size * 0.13, y: size * 0.13)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var face: some View {
         if let image {
             Image(nsImage: image)
                 .resizable()

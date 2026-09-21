@@ -817,6 +817,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     private var rowInfoByTag: [Int: (key: UUID, resting: Bool)] = [:]
     private let card = UIView()
     private let avatarView = UIImageView()
+    /// 头像右下角的 CLI mark；这个人名下几个 tab 配的不一样时不挂（挂了也代表不了谁）
+    private let agentBadge = UIImageView()
     private let nameLabel = UILabel()
     private let roleChip = PaddedLabel()
     private let machineLabel = UILabel()
@@ -871,6 +873,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       col.spacing = 8
       col.translatesAutoresizingMaskIntoConstraints = false
       card.addSubview(col)
+      agentBadge.translatesAutoresizingMaskIntoConstraints = false
+      card.addSubview(agentBadge)
 
       NSLayoutConstraint.activate([
         card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
@@ -879,6 +883,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         avatarView.widthAnchor.constraint(equalToConstant: 34),
         avatarView.heightAnchor.constraint(equalToConstant: 34),
+        // 圆标压在头像右下角，往外探出头像边长的 13%
+        agentBadge.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 34 * 0.13),
+        agentBadge.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 34 * 0.13),
         col.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
         col.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
         col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
@@ -916,6 +923,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         card.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
       }
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 34)
+      // 名下几个 tab 配的 CLI 一致才挂 mark；混着配就留空，具体看下面每一行
+      let kinds = Set(g.rows.map(\.agent))
+      if kinds.count == 1, let k = kinds.first {
+        agentBadge.image = AgentMark.badge(k, size: 17, ring: panel)
+        agentBadge.isHidden = false
+      } else {
+        agentBadge.isHidden = true
+      }
       // 跨机器一起列，名字前面带上机器名（「tom · talkai」）好区分
       nameLabel.text = "\(g.machineName) · \(g.employee)"
       roleChip.text = g.role
@@ -978,21 +993,15 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         gear.setImage(UIImage(systemName: "gearshape",
           withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)), for: .normal)
         gear.tintColor = r.agent == .claude ? UIColor.white.withAlphaComponent(0.4)
-                                            : TeamWorkStatus.work.color
+                                            : AgentMark.brand(r.agent)
         gear.addTarget(self, action: #selector(rowAgentTapped(_:)), for: .touchUpInside)
         gear.setContentHuggingPriority(.required, for: .horizontal)
         gear.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let agentChip = PaddedLabel()
-        agentChip.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
-        agentChip.textColor = TeamWorkStatus.work.color
-        agentChip.backgroundColor = TeamWorkStatus.work.color.withAlphaComponent(0.14)
-        agentChip.layer.cornerRadius = 5
-        agentChip.clipsToBounds = true
-        agentChip.text = r.agent.label
-        agentChip.isHidden = r.agent == .claude
-        agentChip.setContentHuggingPriority(.required, for: .horizontal)
-        agentChip.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let h = UIStackView(arrangedSubviews: [pn, pd, agentChip, gear, sw])
+        // 这行没头像，就把同一颗 mark 直接摆在齿轮前面，跟上面的头像角标是一套东西
+        let agentMark = UIImageView(image: AgentMark.badge(r.agent, size: 13, ring: panel))
+        agentMark.setContentHuggingPriority(.required, for: .horizontal)
+        agentMark.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let h = UIStackView(arrangedSubviews: [pn, pd, agentMark, gear, sw])
         h.axis = .horizontal
         h.spacing = 8
         h.alignment = .center
@@ -1014,6 +1023,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   final class MemberRowCell: UITableViewCell {
     private let card = UIView()
     private let avatarView = UIImageView()
+    private let agentBadge = UIImageView()
     private let nameLabel = UILabel()
     private let roleChip = PaddedLabel()
     private let descLabel = UILabel()
@@ -1054,6 +1064,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       row.alignment = .center
       row.translatesAutoresizingMaskIntoConstraints = false
       card.addSubview(row)
+      agentBadge.translatesAutoresizingMaskIntoConstraints = false
+      card.addSubview(agentBadge)
 
       NSLayoutConstraint.activate([
         card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 3),
@@ -1062,6 +1074,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         avatarView.widthAnchor.constraint(equalToConstant: 24),
         avatarView.heightAnchor.constraint(equalToConstant: 24),
+        agentBadge.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 24 * 0.13),
+        agentBadge.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 24 * 0.13),
         dot.widthAnchor.constraint(equalToConstant: 7),
         dot.heightAnchor.constraint(equalToConstant: 7),
         row.topAnchor.constraint(equalTo: card.topAnchor, constant: 7),
@@ -1080,6 +1094,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       card.alpha = status == .rest ? 0.55 : 1
       dot.isHidden = true   // 状态圆点去掉：探测不准
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
+      agentBadge.image = AgentMark.badge(r.agent, size: 13, ring: panel)
       // 一组里混着好几台机器，名字前面带上机器名才分得清
       nameLabel.text = "\(g.machineName) · \(g.employee)"
       roleChip.text = g.role
@@ -1098,6 +1113,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var onToggle: ((UUID, Bool) -> Void)?   // (tabKey, 切换后是否休息)
     private let card = UIView()
     private let avatarView = UIImageView()
+    private let agentBadge = UIImageView()
     private let nameLabel = UILabel()
     private let projectChip = PaddedLabel()
     private let descLabel = UILabel()
@@ -1143,6 +1159,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       row.alignment = .center
       row.translatesAutoresizingMaskIntoConstraints = false
       card.addSubview(row)
+      agentBadge.translatesAutoresizingMaskIntoConstraints = false
+      card.addSubview(agentBadge)
 
       NSLayoutConstraint.activate([
         card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 3),
@@ -1151,6 +1169,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         avatarView.widthAnchor.constraint(equalToConstant: 24),
         avatarView.heightAnchor.constraint(equalToConstant: 24),
+        agentBadge.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 24 * 0.13),
+        agentBadge.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 24 * 0.13),
         row.topAnchor.constraint(equalTo: card.topAnchor, constant: 7),
         row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -7),
         row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 9),
@@ -1173,6 +1193,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         : UIColor.white.withAlphaComponent(0.05)
       avatarView.image = g.avatar ?? TeamStatusViewController.initialAvatar(for: g.employee, size: 24)
       avatarView.alpha = status == .rest ? 0.45 : 1
+      agentBadge.image = AgentMark.badge(r.agent, size: 13, ring: panel)
+      agentBadge.alpha = avatarView.alpha
       nameLabel.textColor = status == .rest ? UIColor.white.withAlphaComponent(0.45) : .white
       nameLabel.text = g.employee
       projectChip.text = r.project

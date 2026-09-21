@@ -108,7 +108,8 @@ struct SessionRow: View {
         } label: {
             HStack(spacing: 10) {
                 Avatar(text: session.initials, grad: session.grad, size: 30, corner: 9,
-                       image: state.avatar(session.owner))
+                       image: state.avatar(session.owner),
+                       agent: state.agent(for: session), ring: Theme.panel2)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
                     Text(session.dir).font(Theme.mono(11)).foregroundColor(Theme.sub)

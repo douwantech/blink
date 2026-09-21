@@ -1704,6 +1704,30 @@ struct BlinkTerminal {
     }
   }
 
+  // 头像 + 右下角 CLI 角标（方案 A）：品牌色圆盘 + 官方 mark，外圈底色描边抠出来。
+  // 角标直径跟着头像等比缩（26/30 → 13/15），再小图形就认不出来了。
+  @Builder
+  avatarMark(w: WorkDir | null, active: boolean, size: number, agent: string, ring: string) {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      this.avatar(w, active, size)
+      Stack() {
+        Stack() {
+          Image(BlinkStore.agentMark(agent))
+            .width(Math.max(13, size * 0.5) * 0.62).height(Math.max(13, size * 0.5) * 0.62)
+            .fillColor(BlinkStore.agentInk(agent)).draggable(false)
+        }
+        .width(Math.max(13, size * 0.5)).height(Math.max(13, size * 0.5))
+        .borderRadius(Math.max(13, size * 0.5) / 2)
+        .backgroundColor(BlinkStore.agentBrand(agent))
+      }
+      .width(Math.max(13, size * 0.5) + 3).height(Math.max(13, size * 0.5) + 3)
+      .borderRadius((Math.max(13, size * 0.5) + 3) / 2)
+      .backgroundColor(ring)
+      .offset({ x: size * 0.13, y: size * 0.13 })
+    }
+    .width(size).height(size)
+  }
+
   // 截图样式的单行顶栏：tab 胶囊横滑 + 右侧 ⋯ 更多（原 ⚙/机器/🌙/＋ 都在里面）
   @Builder
   tabBar() {
@@ -1715,7 +1739,7 @@ struct BlinkTerminal {
           ListItem() {
             this.sessionTab(t)
           }
-        }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : '') + '_' + this.avatarCache.size)
+        }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : '') + '_' + this.agentOf(t) + '_' + this.avatarCache.size)
         ListItem() {
           Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
             .onClick(() => this.openNewTab())
@@ -1749,7 +1773,8 @@ struct BlinkTerminal {
   @Builder
   sessionTab(t: TabModel) {
     Row({ space: 7 }) {
-      this.avatar(this.store.workDirById(t.workDirId), t.id === this.activeTabId, 26)
+      this.avatarMark(this.store.workDirById(t.workDirId), t.id === this.activeTabId, 26,
+        this.agentOf(t), t.id === this.activeTabId ? '#2A2A2E' : '#161618')
       Text(this.store.tabTitle(t))
         .fontSize(15)
         .fontWeight(t.id === this.activeTabId ? FontWeight.Medium : FontWeight.Normal)
@@ -2979,20 +3004,15 @@ struct BlinkTerminal {
       ForEach(this.store.tabs, (t: TabModel) => {
         ListItem() {
           Row({ space: 10 }) {
-            this.avatar(this.store.workDirById(t.workDirId), false, 30)
+            this.avatarMark(this.store.workDirById(t.workDirId), false, 30, this.agentOf(t), '#1C1C1E')
             Column({ space: 2 }) {
               Text(this.store.tabTitle(t)).fontSize(15).fontColor('#FFFFFF')
               Text(this.machineNameForTab(t) + ' · ' + (this.store.isResting(t.id) ? '😴 休息中' : '在岗'))
                 .fontSize(11).fontColor(this.store.isResting(t.id) ? '#B0A8FF' : '#8E8E93')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            if (this.agentOf(t) !== 'claude') {
-              Text(BlinkStore.agentLabel(this.agentOf(t))).fontSize(9).fontColor('#40D68C')
-                .padding({ left: 5, right: 5, top: 2, bottom: 2 })
-                .borderRadius(5).backgroundColor('#1A40D68C')
-            }
             Stack() {
               SymbolGlyph($r('sys.symbol.gearshape')).fontSize(15)
-                .fontColor([this.agentOf(t) === 'claude' ? '#8E8E93' : '#40D68C'])
+                .fontColor([this.agentOf(t) === 'claude' ? '#8E8E93' : BlinkStore.agentBrand(this.agentOf(t))])
             }
             .width(30).height(30).borderRadius(8)
             .bindMenu(this.agentMenu(t))

@@ -2134,6 +2134,30 @@ struct PadHome {
     }
   }
 
+  /// 头像 + 右下角 CLI 角标（方案 A）：品牌色圆盘 + 官方 mark，外面一圈底色描边抠出来。
+  /// 角标直径跟着头像等比缩（26/30 → 13/15），再小图形就认不出来了。
+  @Builder
+  wdAvatarMark(workDirId: string, label: string, size: number, radius: number, agent: string, ring: string) {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      this.wdAvatar(workDirId, label, size, radius)
+      Stack() {
+        Stack() {
+          Image(BlinkStore.agentMark(agent))
+            .width(Math.max(13, size * 0.5) * 0.62).height(Math.max(13, size * 0.5) * 0.62)
+            .fillColor(BlinkStore.agentInk(agent)).draggable(false)
+        }
+        .width(Math.max(13, size * 0.5)).height(Math.max(13, size * 0.5))
+        .borderRadius(Math.max(13, size * 0.5) / 2)
+        .backgroundColor(BlinkStore.agentBrand(agent))
+      }
+      .width(Math.max(13, size * 0.5) + 3).height(Math.max(13, size * 0.5) + 3)
+      .borderRadius((Math.max(13, size * 0.5) + 3) / 2)
+      .backgroundColor(ring)
+      .offset({ x: size * 0.13, y: size * 0.13 })
+    }
+    .width(size).height(size)
+  }
+
   @Builder
   statusPill(st: WorkStatus, label: string) {
     Row({ space: 5 }) {
@@ -2337,7 +2361,8 @@ struct PadHome {
             }
             .bindContextMenu(this.sessionMenu(r.tabId), ResponseType.LongPress)
           }, (r: SessRow) => r.tabId + '_' + r.status + '_' + r.statusLabel + '_' + r.unread + '_' +
-            (r.tabId === this.activeTabId ? 1 : 0) + '_' + this.connState(r.tabId) + '_' + this.avatarCache.size)
+            (r.tabId === this.activeTabId ? 1 : 0) + '_' + this.connState(r.tabId) + '_' +
+            this.agentOfTab(r.tabId) + '_' + this.avatarCache.size)
         }
         .layoutWeight(1).width('100%').padding({ left: 8, right: 8 }).scrollBar(BarState.Off)
       }
@@ -2361,7 +2386,7 @@ struct PadHome {
     Row({ space: 10 }) {
       Row().width(3).height(30).borderRadius(2)
         .backgroundColor(r.tabId === this.activeTabId ? TEAL : Color.Transparent)
-      this.wdAvatar(r.workDirId, r.owner, 30, 9)
+      this.wdAvatarMark(r.workDirId, r.owner, 30, 9, this.agentOfTab(r.tabId), FILL)
       Column({ space: 2 }) {
         Row({ space: 5 }) {
           Text(r.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor(FG)
@@ -3279,7 +3304,7 @@ struct PadHome {
   @Builder
   teamRow(r: SessRow) {
     Row({ space: 9 }) {
-      this.wdAvatar(r.workDirId, r.owner, 26, 8)
+      this.wdAvatarMark(r.workDirId, r.owner, 26, 8, r.agent, PANEL2)
       Column({ space: 2 }) {
         Text(this.inspector === 'employee' ? r.project
           : (this.inspector === 'project' ? r.machineName + ' · ' + r.name : r.name))
@@ -3289,14 +3314,9 @@ struct PadHome {
           .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (r.agent !== 'claude') {
-        Text(BlinkStore.agentLabel(r.agent)).fontSize(9).fontColor(C_WORK)
-          .padding({ left: 5, right: 5, top: 2, bottom: 2 })
-          .borderRadius(5).backgroundColor(this.tint(C_WORK, '24'))
-      }
       Stack() {
         SymbolGlyph($r('sys.symbol.gearshape')).fontSize(14)
-          .fontColor([r.agent === 'claude' ? DIM : C_WORK])
+          .fontColor([r.agent === 'claude' ? DIM : BlinkStore.agentBrand(r.agent)])
       }
       .width(28).height(30).borderRadius(8)
       .bindMenu(this.agentMenu(r))

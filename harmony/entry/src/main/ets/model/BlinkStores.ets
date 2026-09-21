@@ -579,6 +579,33 @@ export class BlinkStore {
     return 'Claude Code';
   }
 
+  /// 三家的官方 mark（media/mark_*.svg，跟 iOS/macOS 的 AgentMark 是同一份路径数据）
+  static agentMark(agent: string): Resource {
+    if (agent === 'codex') {
+      return $r('app.media.mark_codex');
+    }
+    if (agent === 'deepseek') {
+      return $r('app.media.mark_deepseek');
+    }
+    return $r('app.media.mark_claude');
+  }
+
+  /// 品牌色（角标的实心底）
+  static agentBrand(agent: string): string {
+    if (agent === 'codex') {
+      return '#FFFFFF';
+    }
+    if (agent === 'deepseek') {
+      return '#4D6BFE';
+    }
+    return '#D97757';
+  }
+
+  /// 压在品牌色上的图形色
+  static agentInk(agent: string): string {
+    return agent === 'codex' ? '#0B0C0E' : '#FFFFFF';
+  }
+
   static agentCommand(agent: string): string {
     if (agent === 'codex') {
       return 'codex';
