@@ -307,6 +307,10 @@ class SpaceController: UIViewController {
     _voiceDock.delegate = KBTracker.shared.input
   }
 
+  @objc private func _agentConfigChanged() {
+    DispatchQueue.main.async { [weak self] in self?._reloadTabBar() }
+  }
+
   @objc private func _voiceInputAutoShowChanged() {
     DispatchQueue.main.async { [weak self] in self?._updateFloatingMicVisibility() }
   }
@@ -701,6 +705,9 @@ class SpaceController: UIViewController {
         name: BlinkMachineStore.showMachineBarChanged, object: nil)
     }
     NotificationCenter.default.addObserver(self, selector: #selector(_voiceInputAutoShowChanged), name: .voiceInputAutoShowChanged, object: nil)
+    // 团队页/长按菜单改了某个 tab 的 CLI，tab 条上的角标得跟着换
+    NotificationCenter.default.addObserver(self, selector: #selector(_agentConfigChanged),
+                                           name: TabAgentStore.didChangeNotification, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidShowForMic), name: UIResponder.keyboardDidShowNotification, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(_keyboardDidHideForMic), name: UIResponder.keyboardDidHideNotification, object: nil)
     _updateFloatingMicVisibility()
@@ -1810,6 +1817,7 @@ extension SpaceController {
   fileprivate func _reloadTabBar() {
     var titles: [String] = []
     var icons: [UIImage?] = []
+    var agents: [AgentKind?] = []        // 头像右下角的 CLI 角标
     var unread: [Bool] = []
     var tags: [Int] = []
     var sidebarSubs: [String] = []       // Mac 三栏：每行副标题（工作目录路径）
@@ -1893,6 +1901,15 @@ extension SpaceController {
         icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
       }
       icons.append(icon)
+      // 这个 tab 配的是哪个 CLI：跟团队页、长按菜单查的是同一份 agents 配置
+      if let mid = term.mcpParams?.machineId,
+         let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) {
+        let t = BlinkMachineStore.ccTitle(machine: m, workDirId: term.mcpParams?.workDirId,
+                                          tmuxSession: term.mcpParams?.tmuxSession)
+        agents.append(TabAgentStore.shared.agent(machineId: mid, title: t))
+      } else {
+        agents.append(nil)
+      }
       unread.append(term.meta.hasUnread)
       tags.append(idx)
       if _macLayoutEnabled {
@@ -1910,7 +1927,8 @@ extension SpaceController {
     } else {
       chipTitle = "全部"
     }
-    _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags, filterTitle: chipTitle, currentTag: curIndex)
+    _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags,
+                   filterTitle: chipTitle, currentTag: curIndex, agents: agents)
     _syncSleepButton()
 
     if _macLayoutEnabled {

@@ -1383,8 +1383,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
            filterTitle: filterTitle, currentTag: currentTag)
   }
 
-  /// 主入口：可选传 icons 给每个 tab 加前置头像图
-  func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
+  /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标
+  func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int],
+              filterTitle: String?, currentTag: Int, agents: [AgentKind?]? = nil) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
     self.filterTitle = filterTitle ?? "全部"
@@ -1395,7 +1396,8 @@ final class HorizontalOnlyScrollView: UIScrollView {
       let isUnread = i < unread.count && unread[i]
       let tag = i < tags.count ? tags[i] : i
       let icon: UIImage? = (icons.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
-      let btn = makeTabButton(title: title, icon: icon, index: tag,
+      let agent: AgentKind? = (agents.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
+      let btn = makeTabButton(title: title, icon: icon, agent: agent, index: tag,
                               isCurrent: tag == currentTag, hasUnread: isUnread)
       if tag == currentTag { visibleIndexOfCurrent = i }
       stack.addArrangedSubview(btn)
@@ -1454,12 +1456,23 @@ final class HorizontalOnlyScrollView: UIScrollView {
     return img.withRenderingMode(.alwaysOriginal)
   }
 
-  private func makeTabButton(title: String, icon: UIImage?, index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
+  private func makeTabButton(title: String, icon: UIImage?, agent: AgentKind?,
+                             index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
     var cfg = UIButton.Configuration.plain()
     var at = AttributedString(title)
     at.font = UIFont.systemFont(ofSize: 14, weight: isCurrent ? .semibold : .regular)
     cfg.attributedTitle = at
-    cfg.image = icon ?? initialAvatar(for: title)
+    let face = icon ?? initialAvatar(for: title)
+    // 头像是 configuration 的一张图，挂不了子 view，角标只能画进图里；
+    // 描边取 tab 胶囊自己的底色（选中态多一层 7% 白）。
+    if let agent {
+      let ring = isCurrent
+        ? UIColor(red: 0.109, green: 0.113, blue: 0.120, alpha: 1)
+        : UIColor(red: 0.043, green: 0.047, blue: 0.055, alpha: 1)
+      cfg.image = AgentMark.avatar(face, size: 26, kind: agent, ring: ring)
+    } else {
+      cfg.image = face
+    }
     cfg.imagePadding = 7
     cfg.imagePlacement = .leading
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
