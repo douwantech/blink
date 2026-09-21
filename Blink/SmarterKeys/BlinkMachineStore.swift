@@ -1138,6 +1138,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   func tabBarDidRequestRestPanel()
   /// ⋯ 菜单「团队状态」→ 打开团队状态页（谁在忙哪个项目/等拍板/休息）
   func tabBarDidRequestTeamStatus()
+  /// 长按标签 → 弹菜单（休息 / 换 CLI / 关闭），anchor 给 iPad 上的 popover 定位
+  func tabBarDidRequestTabMenu(index: Int, anchor: UIView)
 }
 
 // MARK: - 手动「休息」标记（「只显示工作中」过滤用）
@@ -1514,9 +1516,11 @@ final class HorizontalOnlyScrollView: UIScrollView {
     delegate?.tabBarDidSelect(index: sender.tag)
   }
 
+  /// 长按不再直接关标签（太容易误关），改弹菜单：休息 / 换 CLI / 关闭
   @objc private func tabLongPressed(_ rec: UILongPressGestureRecognizer) {
     guard rec.state == .began, let btn = rec.view as? UIButton else { return }
-    delegate?.tabBarDidRequestClose(index: btn.tag)
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    delegate?.tabBarDidRequestTabMenu(index: btn.tag, anchor: btn)
   }
 
 }

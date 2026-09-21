@@ -2669,6 +2669,61 @@ extension SpaceController: BlinkTabBarDelegate {
     closeShellAction()
   }
 
+  /// 长按标签弹的菜单：休息/唤醒 · 打开时进哪个 CLI · 关闭标签。
+  /// 换 CLI 会把远端那个 tmux 会话 kill 掉，重连时按新配置重跑启动脚本，不用手动退出。
+  public func tabBarDidRequestTabMenu(index: Int, anchor: UIView) {
+    guard _viewportsKeys.indices.contains(index) else { return }
+    let key = _viewportsKeys[index]
+    let term: TermController = SessionRegistry.shared[key]
+    let p = term.mcpParams
+    let machine = p?.machineId.flatMap { id in BlinkMachineStore.shared.machines.first { $0.id == id } }
+    let title = machine.map {
+      BlinkMachineStore.ccTitle(machine: $0, workDirId: p?.workDirId, tmuxSession: p?.tmuxSession)
+    }
+    let name = title ?? "这个标签"
+
+    let ac = UIAlertController(title: name, message: nil, preferredStyle: .actionSheet)
+    let resting = TabRestStore.shared.isResting(key.uuidString)
+    ac.addAction(UIAlertAction(title: resting ? "唤醒（在岗）" : "让 TA 休息", style: .default) { _ in
+      TabRestStore.shared.setResting(!resting, key: key.uuidString)
+      NotificationCenter.default.post(name: NSNotification.Name("BlinkTabRestChanged"), object: nil)
+    })
+    if let m = machine, let t = title {
+      let cur = TabAgentStore.shared.agent(machineId: m.id, title: t)
+      for k in AgentKind.allCases where k != cur {
+        ac.addAction(UIAlertAction(title: "打开时进 \(k.label)", style: .default) { [weak self] _ in
+          TabAgentStore.shared.setAgent(k, machineId: m.id, title: t)
+          self?._restartTabWithNewAgent(outerSession: "cc-\(t)", machine: m, label: k.label)
+        })
+      }
+    }
+    ac.addAction(UIAlertAction(title: "关闭标签", style: .destructive) { [weak self] _ in
+      self?.tabBarDidRequestClose(index: index)
+    })
+    ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+    ac.popoverPresentationController?.sourceView = anchor
+    ac.popoverPresentationController?.sourceRect = anchor.bounds
+    present(ac, animated: true)
+  }
+
+  /// 把远端 tmux 会话杀掉 —— `tmux new-session -A` 碰到已存在的会话只会 attach，
+  /// 里面跑的还是旧 CLI；杀掉后自动重连会重跑启动脚本，新 CLI 就起来了。
+  private func _restartTabWithNewAgent(outerSession: String, machine: BlinkMachine, label: String) {
+    let script = """
+    export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+    tmux kill-session -t \(outerSession) 2>/dev/null
+    echo done
+    """
+    if let cfg = machine.blinkdConfig {
+      BlinkdExecOnce.run(host: cfg.host, port: cfg.port, token: cfg.token, script: script) { _ in }
+    } else {
+      Task { _ = try? await BlinkAssistantBackend.shared.execRemote(script: script, machine: machine) }
+    }
+    let hud = UIAlertController(title: nil, message: "已切到 \(label)，会话正在用它重开", preferredStyle: .alert)
+    present(hud, animated: true)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { hud.dismiss(animated: true) }
+  }
+
   public func tabBarDidRequestRestPanel() {
     // 旧的「员工在岗/休息」列表已并入团队状态页（每行行尾就是月亮开关），入口统一开新页。
     tabBarDidRequestTeamStatus()
