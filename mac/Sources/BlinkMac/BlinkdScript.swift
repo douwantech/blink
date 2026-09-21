@@ -13,6 +13,11 @@ enum BlinkdScript {
         "\(bootPath); tmux list-sessions -F '#{session_name}\t#{pane_current_path}' 2>/dev/null"
     }
 
+    /// 枚举本机 tmux 会话 + 创建时间：name<TAB>session_created(epoch 秒)，每行一个。补孤儿标签用。
+    static func listSessionsCreated() -> String {
+        "\(bootPath); tmux list-sessions -F '#{session_name}\t#{session_created}' 2>/dev/null"
+    }
+
     /// blinkd exec 帧的 payload（daemon 会 `/bin/bash -c "<payload>"`）。
     /// agent = 这个员工配的 CLI（团队列表行尾齿轮，见 TabAgentStore）；默认 claude。
     static func tmuxClaude(title: String, workDir: String, agent: AgentKind = .claude) -> String {

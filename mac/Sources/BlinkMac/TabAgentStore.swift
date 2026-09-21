@@ -161,16 +161,21 @@ enum SyncConfig {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
-    static func patch(_ mutate: (inout [String: Any]) -> Void) {
+    /// 同步文件可用：存在且 machines 非空（空的多半是半截文件）。
+    static var available: Bool { (read()?["machines"] as? [Any])?.isEmpty == false }
+
+    /// 返回是否真的写回了文件。
+    @discardableResult
+    static func patch(_ mutate: (inout [String: Any]) -> Void) -> Bool {
         // machines 为空的多半是半截文件，别在上面盖配置
-        guard var obj = read(), (obj["machines"] as? [Any])?.isEmpty == false else { return }
+        guard var obj = read(), (obj["machines"] as? [Any])?.isEmpty == false else { return false }
         mutate(&obj)
         obj["origin"] = "harmony-mac"
         obj["updatedAt"] = Date().timeIntervalSince1970
-        guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return false }
         let tmp = path + ".tmp"
-        guard (try? out.write(to: URL(fileURLWithPath: tmp), options: .atomic)) != nil else { return }
-        _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path),
-                                                   withItemAt: URL(fileURLWithPath: tmp))
+        guard (try? out.write(to: URL(fileURLWithPath: tmp), options: .atomic)) != nil else { return false }
+        return (try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path),
+                                                       withItemAt: URL(fileURLWithPath: tmp))) != nil
     }
 }

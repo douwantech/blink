@@ -37,23 +37,35 @@ enum CloudTabStore {
         return all.subtracting(open)
     }
 
-    /// 解析 KV 全部 tab，带 closed 标记（不提前丢弃墓碑）。
-    private static func rawEntries() -> [(tab: CloudTab, closed: Bool)] {
+    /// 标签数据源：优先本机同步文件 `~/.blink/sync/blink_config.json`（iOS / 鸿蒙手机 / 平板都在读写它，
+    /// 是三端共同的那份）；文件不可用再退回 iCloud KV。返回 (workDirs, tabs, closedIds)。
+    private static func source() -> (workDirs: [[String: Any]], tabs: [[String: Any]], closedIds: [String])? {
+        if let f = SyncConfig.read(), (f["machines"] as? [Any])?.isEmpty == false {
+            return ((f["workDirs"] as? [[String: Any]]) ?? [],
+                    (f["tabs"] as? [[String: Any]]) ?? [],
+                    (f["closedIds"] as? [String]) ?? [])
+        }
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
-
-        var dirOf: [String: String] = [:]
-        if let wd = dataForKey(kv, kWorkDirs),
-           let arr = try? JSONSerialization.jsonObject(with: wd) as? [[String: Any]] {
-            for w in arr {
-                if let id = w["id"] as? String, let path = w["path"] as? String { dirOf[id] = path }
-            }
-        }
-
         guard let td = dataForKey(kv, kTabs),
               let obj = try? JSONSerialization.jsonObject(with: td) as? [String: Any],
-              let rawTabs = obj["tabs"] as? [[String: Any]] else { return [] }
-        let closedIds = Set((obj["closedIds"] as? [String] ?? []).map { $0.uppercased() })
+              let rawTabs = obj["tabs"] as? [[String: Any]] else { return nil }
+        let wds = dataForKey(kv, kWorkDirs)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+        return (wds, rawTabs, (obj["closedIds"] as? [String]) ?? [])
+    }
+
+    /// 解析全部 tab，带 closed 标记（不提前丢弃墓碑）。
+    private static func rawEntries() -> [(tab: CloudTab, closed: Bool)] {
+        guard let src = source() else { return [] }
+
+        var dirOf: [String: String] = [:]
+        for w in src.workDirs {
+            if let id = w["id"] as? String, let path = w["path"] as? String { dirOf[id] = path }
+        }
+
+        let rawTabs = src.tabs
+        let closedIds = Set(src.closedIds.map { $0.uppercased() })
 
         var out: [(CloudTab, Bool)] = []
         for t in rawTabs {
@@ -75,7 +87,7 @@ enum CloudTabStore {
     static func mapping() -> CloudRestStore.Mapping {
         var m = CloudRestStore.Mapping()
         for t in tabs() {
-            m.ccToUUIDs["cc-" + t.ccName, default: []].append(t.id)
+            m.ccToUUIDs[CloudRestStore.key(machineId: t.machineId, cc: "cc-" + t.ccName), default: []].append(t.id)
         }
         return m
     }
@@ -86,12 +98,34 @@ enum CloudTabStore {
     /// 返回是否真的动了（KV 里没这个 tab → false）。
     @discardableResult
     static func closeTab(id: String) -> Bool {
-        guard let obj = mutateSyncState(closingId: id) else { return false }
-        let kv = NSUbiquitousKeyValueStore.default
-        guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return false }
-        kv.set(out, forKey: kTabs)
-        kv.synchronize()
-        return true
+        let fileDone = closeTabInSyncFile(id: id)
+        // iCloud KV 暂时保留，照旧写一份
+        var kvDone = false
+        if let obj = mutateSyncState(closingId: id),
+           let out = try? JSONSerialization.data(withJSONObject: obj) {
+            let kv = NSUbiquitousKeyValueStore.default
+            kv.set(out, forKey: kTabs)
+            kv.synchronize()
+            kvDone = true
+        }
+        return fileDone || kvDone
+    }
+
+    /// 在三端共用的同步文件里关掉一个 tab：从 tabs 移除 + 加进 closedIds 墓碑（没墓碑各端删不掉）。
+    /// 文件里没这个 tab → 不写，返回 false。
+    private static func closeTabInSyncFile(id: String) -> Bool {
+        let upper = id.uppercased()
+        guard let f = SyncConfig.read(),
+              ((f["tabs"] as? [[String: Any]]) ?? []).contains(where: { ($0["id"] as? String)?.uppercased() == upper })
+        else { return false }
+        return SyncConfig.patch { obj in
+            var tabs = (obj["tabs"] as? [[String: Any]]) ?? []
+            tabs.removeAll { ($0["id"] as? String)?.uppercased() == upper }
+            var closed = (obj["closedIds"] as? [String]) ?? []
+            if !closed.contains(where: { $0.uppercased() == upper }) { closed.append(id) }
+            obj["tabs"] = tabs
+            obj["closedIds"] = closed
+        }
     }
 
     /// 纯计算（不写 KV）：读 KV 整份 syncState，产出「关闭 id 后」的新对象；没这个 tab → nil。

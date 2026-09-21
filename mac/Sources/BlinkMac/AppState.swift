@@ -174,6 +174,7 @@ final class AppState: ObservableObject {
         loadClosed()                 // 已关闭标签（本地 + KV 墓碑），显示时过滤
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
         await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
+        await adoptOrphanSessions()  // 本机没标签的会话补成标签（三端一致）
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
@@ -185,6 +186,45 @@ final class AppState: ObservableObject {
         let open = CloudTabStore.openCC()
         MacClosedStore.remove(open)   // 手机又开了同名 → 本地解封
         closedCC = MacClosedStore.all.union(CloudTabStore.fullyClosedCC()).subtracting(open)
+        computeOrphanHidden()
+    }
+
+    /// 本机上「有 tmux 会话但同步文件里没标签」的会话 id（<machineID>/cc-…）。
+    /// 手机、平板只显示同步文件里的标签，Mac 也照这个来，三端看到的一样（tmux 不动，只是不显示）。
+    @Published var orphanHidden: Set<String> = []
+
+    func computeOrphanHidden() {
+        guard SyncConfig.available, let local = machines.first(where: { $0.isLocalMac }) else {
+            orphanHidden = []; return
+        }
+        let mine = Set(CloudTabStore.tabs().filter { $0.machineId == local.id }.map { "cc-" + $0.ccName.lowercased() })
+        guard !mine.isEmpty else { orphanHidden = []; return }   // 读不到本机标签时别把会话全藏了
+        orphanHidden = Set(sessions.filter {
+            $0.machineID == local.id && $0.tmuxName != nil && !mine.contains($0.tmuxName!.lowercased())
+        }.map(\.id))
+    }
+
+    /// 本机 Mac：把没标签的 tmux 会话补成同步文件里的标签（三端一致），规则见 OrphanTabAdopter。
+    func adoptOrphanSessions() async {
+        guard SyncConfig.available,
+              let m = machines.first(where: { $0.isLocalMac }), m.transport.connectable else { return }
+        let out = await AppState.exec(m.transport, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
+        // PTY 输出行尾是 \r\n，Swift 里它是一个 Character，按 "\n" 切不开，要用 isNewline
+        let live: [(title: String, created: Double)] = out.split(whereSeparator: \.isNewline).compactMap { line in
+            let p = line.split(separator: "\t")
+            guard p.count >= 2, p[0].hasPrefix("cc-"),
+                  let t = Double(p[1].trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+            return (String(p[0].dropFirst(3)).lowercased(), t)
+        }
+        guard !live.isEmpty else { return }
+        let mid = m.id
+        let r = await Task.detached(priority: .utility) { OrphanTabAdopter.adopt(machineId: mid, live: live) }.value
+        NSLog("[adopt] 本机会话=%d 补成标签=%@ 跳过(无三端一致的工作目录)=%@", live.count, r.adopted.joined(separator: ","), r.skipped.joined(separator: ","))
+        guard !r.adopted.isEmpty else { return }
+        await loadCloudRest()
+        loadCloudTabs()
+        loadClosed()
+        showToast("已把 \(r.adopted.joined(separator: "、")) 补成标签，手机和平板也能看到")
     }
 
     /// 把 iCloud KV 里手机配置的标签并进来（所有机器），跟 iOS 显示同一份标签列表。
@@ -277,6 +317,7 @@ final class AppState: ObservableObject {
             }
         }
         recomputeRestStatuses()
+        computeOrphanHidden()
     }
 
     /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。
@@ -307,6 +348,7 @@ final class AppState: ObservableObject {
         sessions.append(contentsOf: real)
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
+        computeOrphanHidden()
     }
 
     private var observingCloud = false
@@ -318,7 +360,10 @@ final class AppState: ObservableObject {
         observingCloud = true
         NSUbiquitousKeyValueStore.default.synchronize()
         let reload: (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor in self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed() }
+            Task { @MainActor in
+                self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed()
+                await self?.adoptOrphanSessions()
+            }
         }
         NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -326,6 +371,38 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main, using: reload)
+        watchSyncFile()
+    }
+
+    private var syncDirSource: DispatchSourceFileSystemObject?
+    private var syncReloadPending = false
+
+    /// 盯三端共用的同步目录 `~/.blink/sync`：手机 / 平板改了标签、关闭、休息会整份换掉 blink_config.json
+    /// （写临时文件再 rename，文件 inode 会变，所以盯目录而不是文件）。变了就重载标签、关闭、休息。
+    private func watchSyncFile() {
+        let dir = (SyncConfig.path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let fd = open(dir, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self, !self.syncReloadPending else { return }
+            self.syncReloadPending = true
+            // 一次换文件会连着触发几次，攒 0.5s 再重载
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self else { return }
+                self.syncReloadPending = false
+                Task { @MainActor in
+                    self.loadFavorites()
+                    await self.loadCloudRest()
+                    self.loadCloudTabs()
+                    self.loadClosed()
+                }
+            }
+        }
+        src.setCancelHandler { close(fd) }
+        src.resume()
+        syncDirSource = src
     }
 
     /// 从 iCloud KV + Blink 容器读跨设备休息状态（off-main），再重算各会话状态。
@@ -346,16 +423,19 @@ final class AppState: ObservableObject {
     /// 按当前休息判定重算所有会话的 status（休息优先，否则用探测值）。
     func recomputeRestStatuses() {
         for i in sessions.indices {
-            let name = sessions[i].tmuxName ?? sessions[i].id
-            sessions[i].status = isResting(name) ? .rest : .idle
+            sessions[i].status = isResting(sessions[i]) ? .rest : .idle
         }
     }
 
+    /// 会话键：`<machineId>/cc-<title>` 小写（按机器区分同名会话，见 CloudRestStore.Mapping）。
+    func restKey(_ s: Session) -> String { CloudRestStore.key(machineId: s.machineID, cc: s.tmuxName ?? s.id) }
+
     /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
-    func isResting(_ tmuxName: String) -> Bool {
-        if cloudResting.contains(tmuxName) { return true }
-        if cloudAvailable, cloudMapping.ccToUUIDs[tmuxName.lowercased()] != nil { return false }
-        return MacRestStore.isResting(tmuxName)
+    func isResting(_ s: Session) -> Bool {
+        let key = restKey(s)
+        if cloudResting.contains(key) { return true }
+        if cloudAvailable, cloudMapping.ccToUUIDs[key] != nil { return false }
+        return MacRestStore.isResting(s.tmuxName ?? s.id)
     }
 
     // MARK: 真实状态探测（干活中/等你/空闲）
@@ -415,10 +495,12 @@ final class AppState: ObservableObject {
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
                        initials: "", grad: Grad.slate, status: .idle, lines: [], placeholder: true)
     }
-    func resting(_ s: Session) -> Bool { isResting(s.tmuxName ?? s.id) }
+    func resting(_ s: Session) -> Bool { isResting(s) }
 
     /// 该会话是否被「关闭」（本地记录 + KV 墓碑，且手机没重新开同名 → 见 loadClosed）。
-    func isClosed(_ s: Session) -> Bool { closedCC.contains((s.tmuxName ?? s.id).lowercased()) }
+    func isClosed(_ s: Session) -> Bool {
+        closedCC.contains((s.tmuxName ?? s.id).lowercased()) || orphanHidden.contains(s.id)
+    }
 
     /// 侧栏只显示在岗会话，休息/已关闭的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
     var sidebarSessions: [Session] {
@@ -610,10 +692,11 @@ final class AppState: ObservableObject {
     func toggleRest(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
         let name = s.tmuxName ?? s.id
-        let now = !isResting(name)
-        // 有云映射 → 写 KV，Blink 收到 iCloud 变更后同步到手机；写不成（无对应 tab）回退本地。
-        if cloudAvailable, CloudRestStore.setResting(cc: name, on: now, mapping: cloudMapping) {
-            if now { cloudResting.insert(name) } else { cloudResting.remove(name) }
+        let key = restKey(s)
+        let now = !isResting(s)
+        // 有映射 → 写三端共用的同步文件（+KV），手机、平板跟着变；写不成（无对应 tab）回退本地。
+        if cloudAvailable, CloudRestStore.setResting(key: key, on: now, mapping: cloudMapping) {
+            if now { cloudResting.insert(key) } else { cloudResting.remove(key) }
         } else {
             _ = MacRestStore.toggle(name)
         }
@@ -629,7 +712,7 @@ final class AppState: ObservableObject {
     func closeTab(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
         let full = (s.tmuxName ?? ("cc-" + s.name)).lowercased()
-        let uuids = cloudMapping.ccToUUIDs[full] ?? []
+        let uuids = cloudMapping.ccToUUIDs[CloudRestStore.key(machineId: s.machineID, cc: full)] ?? []
         var synced = false
         for id in uuids where CloudTabStore.closeTab(id: id) { synced = true }
         MacClosedStore.add(full)        // 本地记一份，重启后仍隐藏（枚举/无墓碑的也挡得住）
