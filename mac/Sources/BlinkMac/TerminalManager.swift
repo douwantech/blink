@@ -211,6 +211,15 @@ final class TerminalManager {
     func send(_ sessionID: String, text: String) { backends[sessionID]?.sendText(text) }
     func clear(_ sessionID: String) { backends[sessionID]?.clear() }
     func restart(_ sessionID: String) { backends[sessionID]?.restart() }
+
+    /// 丢掉这个会话的后端，下次取 view 时按当前配置重新建一个。
+    ///
+    /// restart() 只是拿**建后端时就拼好的**那段 exec 脚本重跑一遍，换了 CLI 也没用——
+    /// 脚本里写死的还是旧的 agent。切 CLI 必须走这条。
+    func rebuild(_ sessionID: String) {
+        backends[sessionID]?.stop()
+        backends.removeValue(forKey: sessionID)
+    }
 }
 
 // MARK: - SwiftUI bridge

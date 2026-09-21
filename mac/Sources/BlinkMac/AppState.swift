@@ -596,7 +596,10 @@ final class AppState: ObservableObject {
         Task { @MainActor in
             _ = await AppState.exec(tr, "\(BlinkdScript.bootPath); tmux kill-session -t \(name) 2>/dev/null; echo done",
                                     timeout: 10, marker: nil)
-            self.term.restart(s.id)
+            // 必须 rebuild 不能 restart：后端里存的是建它时拼好的启动脚本，
+            // restart 会拿旧脚本（旧 CLI）重跑，看着就像"切了没反应"。
+            self.term.rebuild(s.id)
+            self.agentTick &+= 1   // 触发 TerminalContainer 重新取 view → 用新配置建后端
             try? await Task.sleep(nanoseconds: 600_000_000)
             self.showToast("\(s.name) 已用 \(kind.label) 重开")
         }
