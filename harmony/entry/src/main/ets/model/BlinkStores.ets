@@ -608,7 +608,9 @@ export class BlinkStore {
 
   static agentCommand(agent: string): string {
     if (agent === 'codex') {
-      return 'codex';
+      // 跟 claude 的 --dangerously-skip-permissions 对等：跳过全部确认
+      // （含新目录的「信任这个文件夹吗」）并关掉沙箱。
+      return 'codex --dangerously-bypass-approvals-and-sandbox';
     }
     // DeepSeek 档跑的也是 claude，只是 ANTHROPIC_* 指到 DeepSeek 的兼容端点
     return 'claude --dangerously-skip-permissions';

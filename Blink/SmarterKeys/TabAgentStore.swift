@@ -50,7 +50,10 @@ enum AgentKind: Int, CaseIterable {
   var command: String {
     switch self {
     case .claude: return "claude --dangerously-skip-permissions"
-    case .codex: return "codex"
+    // 跟 claude 的 --dangerously-skip-permissions 对等：跳过全部确认（含新目录的
+    // 「信任这个文件夹吗」）并关掉沙箱。放在命令行而不是各机器的 ~/.codex/config.toml，
+    // 新机器不用再配一遍。
+    case .codex: return "codex --dangerously-bypass-approvals-and-sandbox"
     // DeepSeek 档跑的也是 claude，只是 ANTHROPIC_* 指到 DeepSeek 的兼容端点
     case .deepseek: return "claude --dangerously-skip-permissions"
     }
