@@ -68,7 +68,10 @@ enum AgentKind: String, CaseIterable, Identifiable {
     /// 结尾是 `&& `，接在后面的 `cd … && { … }` 前面，没 key 时整条短路。
     var envPrefix: String {
         guard self == .deepseek else { return "" }
-        return "if [ -z \"$DEEPSEEK_API_KEY\" ]; then "
+        // 往现有 shell 里 source 启动文件时（会话还在的自愈路径），那个 shell 可能是
+    // 在 ~/.zshrc 加 key 之前开的，没有这个变量——先自己去 ~/.zshrc 捞一次。
+    return "[ -z \"$DEEPSEEK_API_KEY\" ] && [ -f \"$HOME/.zshrc\" ] && eval \"$(grep \"^export DEEPSEEK_API_KEY=\" \"$HOME/.zshrc\" | tail -1)\"; "
+      + "if [ -z \"$DEEPSEEK_API_KEY\" ]; then "
             + "echo \"[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话\"; false; "
             + "else export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
             + "export ANTHROPIC_AUTH_TOKEN=\"$DEEPSEEK_API_KEY\"; "

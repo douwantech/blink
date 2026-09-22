@@ -23,6 +23,7 @@ enum BlinkdScript {
     static func tmuxClaude(title: String, workDir: String, agent: AgentKind = .claude) -> String {
         let outerSession = "cc-\(title)"
         let cd = "'" + workDir.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        // 启动文件先写临时文件再 mv：几个客户端同时重连时 `cat >` 会互相截断交错，留下半截内容（parse error）
         let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
 
         // inner 被外层 `$SHELL -lic '...'` 单引号包裹，里面只能用双引号；TITLE 预先算好。
@@ -43,9 +44,10 @@ enum BlinkdScript {
         return #"""
 \#(detectSock)
 PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-cat > \#(bootFile) <<'BLINKBOOT'
+cat > \#(bootFile).$$ <<'BLINKBOOT'
 \#(inner)
 BLINKBOOT
+mv -f \#(bootFile).$$ \#(bootFile)
 \#(heal)
 exec tmux new-session -A -s \#(outerSession) $SHELL -lic 'source \#(bootFile); echo "[blink] \#(agent.rawValue) 已退出，掉到 shell（上方有报错即原因，敲 \#(agent.rawValue) 重试）"; exec $SHELL -il'
 """#

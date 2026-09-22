@@ -673,7 +673,10 @@ export class BlinkStore {
     if (agent !== 'deepseek') {
       return '';
     }
-    return 'if [ -z "$DEEPSEEK_API_KEY" ]; then ' +
+    // 往现有 shell 里 source 启动文件时（会话还在的自愈路径），那个 shell 可能是
+    // 在 ~/.zshrc 加 key 之前开的，没有这个变量——先自己去 ~/.zshrc 捞一次。
+    return '[ -z "$DEEPSEEK_API_KEY" ] && [ -f "$HOME/.zshrc" ] && eval "$(grep "^export DEEPSEEK_API_KEY=" "$HOME/.zshrc" | tail -1)"; ' +
+      'if [ -z "$DEEPSEEK_API_KEY" ]; then ' +
       'echo "[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话"; false; ' +
       'else export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
       'export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"; ' +
@@ -715,6 +718,7 @@ export class BlinkStore {
     // Before attaching, if the pane's foreground process is a bare shell, send-keys
     // `source <boot>` to re-cd into the workdir and resume claude; leave claude alone
     // if it is still running. Refresh / auto-reconnect both go through this path.
+    // 启动文件先写临时文件再 mv：几个客户端同时重连时 `cat >` 会互相截断交错，留下半截内容（parse error）
     const bootFile: string = '/tmp/.blink-boot-' + outerSession + '.sh';
     const heal: string = 'if tmux has-session -t ' + outerSession +
       ' 2>/dev/null; then PC=$(tmux display-message -p -t ' + outerSession +
@@ -723,9 +727,10 @@ export class BlinkStore {
     return detectSock + '\n' +
       'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin\n' +
       migrate + '\n' +
-      "cat > " + bootFile + " <<'BLINKBOOT'\n" +
+      "cat > " + bootFile + ".$$ <<'BLINKBOOT'\n" +
       inner + '\n' +
       'BLINKBOOT\n' +
+      'mv -f ' + bootFile + '.$$ ' + bootFile + '\n' +
       heal + '\n' +
       'exec tmux new-session -A -s ' + outerSession + " $SHELL -lic 'source " + bootFile + tail + "'";
   }

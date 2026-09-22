@@ -222,6 +222,7 @@ enum HostReachability {
       // 只剩裸 shell 停在错误目录）就永远修不好。所以 attach 前检测 pane 前台进程：
       // 是裸 shell 就 send-keys 重新 source boot 文件自愈（重新 cd 进工作目录 + resume claude）；
       // claude 还活着则不打扰。点「刷新」/自动重连都走这条路。
+      // 启动文件先写临时文件再 mv：几个客户端同时重连时 `cat >` 会互相截断交错，留下半截内容（parse error）
       let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
       let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-u; tmux send-keys -t \#(outerSession) " source \#(bootFile)" Enter;; esac; fi"#
       // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装那）也加载进来。
@@ -231,9 +232,10 @@ enum HostReachability {
       \(detectSock)
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
       \(migrate)
-      cat > \(bootFile) <<'BLINKBOOT'
+      cat > \(bootFile).$$ <<'BLINKBOOT'
       \(inner)
       BLINKBOOT
+      mv -f \(bootFile).$$ \(bootFile)
       \(heal)
       exec tmux new-session -A -s \(outerSession) $SHELL -lic 'source \(bootFile); echo "[blink] \(agent.id) 已退出，掉到 shell（上方有报错即原因，敲 \(agent.id) 重试）"; exec $SHELL -il'
       """
