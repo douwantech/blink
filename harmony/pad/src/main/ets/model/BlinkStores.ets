@@ -690,9 +690,10 @@ export class BlinkStore {
     }
     // claude 和 DeepSeek（也是 claude）都走下面这条 resume-or-new；
     // DeepSeek 只是前面多几个 ANTHROPIC_* 环境变量。
+    // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
     return BlinkStore.deepseekEnv(agent) + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
-    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
+    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
   }
 
   // Full remote script for a (machine, workDir, session) triple — identical to
