@@ -61,14 +61,19 @@ enum AgentKind: String, CaseIterable, Identifiable {
     /// 起这个 CLI 前要带的环境变量。
     /// DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认，
     /// 换掉后端和模型，其余（resume / rename / 工具）跟平时一模一样。
+    ///
+    /// key 不由 App 下发，**从那台机器自己的 `$DEEPSEEK_API_KEY` 读**（~/.zshrc 里 export）：
+    /// 每台机器用自己的 key，App 里不存、不同步，也就不会再被哪一端的旧值盖回去。
+    /// 没配就不启动，把怎么配留在屏上——别悄悄退回去跑 Anthropic 的 claude。
+    /// 结尾是 `&& `，接在后面的 `cd … && { … }` 前面，没 key 时整条短路。
     var envPrefix: String {
         guard self == .deepseek else { return "" }
-        let k = TabAgentStore.deepseekKey()
-        guard !k.isEmpty else { return "" }
-        return "export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
-            + "export ANTHROPIC_AUTH_TOKEN=\"\(k)\"; "
+        return "if [ -z \"$DEEPSEEK_API_KEY\" ]; then "
+            + "echo \"[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话\"; false; "
+            + "else export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
+            + "export ANTHROPIC_AUTH_TOKEN=\"$DEEPSEEK_API_KEY\"; "
             + "export ANTHROPIC_MODEL=\"\(TabAgentStore.deepseekModel)\"; "
-            + "export ANTHROPIC_SMALL_FAST_MODEL=\"\(TabAgentStore.deepseekSmallModel)\"; "
+            + "export ANTHROPIC_SMALL_FAST_MODEL=\"\(TabAgentStore.deepseekSmallModel)\"; fi && "
     }
 
     /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
@@ -105,19 +110,10 @@ enum AgentKind: String, CaseIterable, Identifiable {
 /// key = `<machineId>|<title>`，title 就是 tmux 外层会话名 `cc-<TITLE>` 去掉前缀那截。
 enum TabAgentStore {
     private static let kAgents = "TabAgentStore.agents"
-    private static let kDeepSeekKey = "TabAgentStore.deepseekKey"
     /// DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
     static let deepseekBaseURL = "https://api.deepseek.com/anthropic"
     static let deepseekModel = "deepseek-v4-pro"
     static let deepseekSmallModel = "deepseek-flash"
-
-    /// DeepSeek 的 API key（手机设置页里填的，经配置同步过来）
-    static func deepseekKey() -> String {
-        if let v = SyncConfig.read()?["deepseekKey"] as? String, !v.isEmpty { return v }
-        let kv = NSUbiquitousKeyValueStore.default
-        kv.synchronize()
-        return kv.string(forKey: kDeepSeekKey) ?? ""
-    }
 
     static func storeKey(machineId: String, title: String) -> String {
         "\(machineId)|\(title.lowercased())"

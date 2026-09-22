@@ -94,14 +94,19 @@ enum AgentKind: Int, CaseIterable {
   /// 起这个 CLI 前要带的环境变量。
   /// DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认，
   /// 换掉后端和模型，其余（resume / rename / 工具）跟平时一模一样。
+  ///
+  /// key 不由 App 下发，**从那台机器自己的 `$DEEPSEEK_API_KEY` 读**（~/.zshrc 里 export）：
+  /// 每台机器用自己的 key，App 里不存、不同步，也就不会再被哪一端的旧值盖回去。
+  /// 没配就不启动，把怎么配留在屏上——别悄悄退回去跑 Anthropic 的 claude。
+  /// 结尾是 `&& `，接在后面的 `cd … && { … }` 前面，没 key 时整条短路。
   var envPrefix: String {
     guard self == .deepseek else { return "" }
-    let k = TabAgentStore.shared.deepseekKey
-    guard !k.isEmpty else { return "" }
-    return "export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
-      + "export ANTHROPIC_AUTH_TOKEN=\"\(k)\"; "
+    return "if [ -z \"$DEEPSEEK_API_KEY\" ]; then "
+      + "echo \"[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话\"; false; "
+      + "else export ANTHROPIC_BASE_URL=\"\(TabAgentStore.deepseekBaseURL)\"; "
+      + "export ANTHROPIC_AUTH_TOKEN=\"$DEEPSEEK_API_KEY\"; "
       + "export ANTHROPIC_MODEL=\"\(TabAgentStore.deepseekModel)\"; "
-      + "export ANTHROPIC_SMALL_FAST_MODEL=\"\(TabAgentStore.deepseekSmallModel)\"; "
+      + "export ANTHROPIC_SMALL_FAST_MODEL=\"\(TabAgentStore.deepseekSmallModel)\"; fi && "
   }
 
   /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
@@ -158,14 +163,13 @@ final class TabAgentStore: NSObject {
     s.hasPrefix("cc-") ? String(s.dropFirst(3)) : s
   }
 
-  /// DeepSeek 的 API key：起 Codewhale 时作为 DEEPSEEK_API_KEY 带过去。
-  /// 跟 agents 一样进配置同步，三端共用一份。
-  var deepseekKey: String {
-    get { d.string(forKey: Self.deepseekKeyKey) ?? "" }
-    set {
-      d.set(newValue, forKey: Self.deepseekKeyKey)
-      NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
-    }
+  /// 以前 App 里存过的 DeepSeek key（设置页那一项已删）：本地和 iCloud KV 里的旧值清掉，
+  /// 别让一把 key 留在同步链上。启动调一次，幂等。
+  @objc func purgeLegacyDeepSeekKey() {
+    guard d.object(forKey: Self.deepseekKeyKey) != nil else { return }
+    d.removeObject(forKey: Self.deepseekKeyKey)
+    NSUbiquitousKeyValueStore.default.removeObject(forKey: Self.deepseekKeyKey)
+    NSUbiquitousKeyValueStore.default.synchronize()
   }
 
   var all: [String: String] {

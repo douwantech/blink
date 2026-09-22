@@ -90,7 +90,6 @@ export interface SeedConfig {
   currentId: string;
   pinned: PinnedTab[];
   agents?: Record<string, string>;   // "<machineId>|<title>" -> claude|codex|deepseek
-  deepseekKey?: string;              // Codewhale 用的 DeepSeek key
   favorites: string[];
   history: string[];
   terms: Record<string, Record<string, number>>;
@@ -127,8 +126,6 @@ export class BlinkStore {
   pinned: PinnedTab[] = [];
   // 每个员工（机器 × tab）开会话进哪个 CLI；只存非默认的那几个，默认 claude
   agents: Record<string, string> = {};
-  // Codewhale 起的时候当 DEEPSEEK_API_KEY 带过去
-  deepseekKey: string = '';
   favorites: string[] = [];
   favoriteCounts: Record<string, number> = {};
   history: string[] = [];
@@ -187,7 +184,11 @@ export class BlinkStore {
     this.workMode = (await this.prefs!.get('workMode', false) as boolean);
     this.autoReconnect = (await this.prefs!.get('autoReconnect', true) as boolean);
     this.locale = (await this.prefs!.get('locale', 'zh-CN') as string);
-    this.deepseekKey = (await this.prefs!.get('deepseekKey', '') as string);
+    // DeepSeek key 改成各机器自己在 ~/.zshrc 里配，App 以前存的那份删掉（幂等）
+    if (await this.prefs!.has('deepseekKey')) {
+      await this.prefs!.delete('deepseekKey');
+      await this.prefs!.flush();
+    }
   }
 
   private async seedFromRawfile(ctx: common.UIAbilityContext): Promise<void> {
@@ -204,8 +205,6 @@ export class BlinkStore {
       this.pinned = s.pinned;
       const ag0: Record<string, string> | undefined = s.agents;
       this.agents = ag0 !== undefined ? ag0 : {};
-      const dk0: string | undefined = s.deepseekKey;
-      this.deepseekKey = dk0 !== undefined ? dk0 : '';
       this.favorites = s.favorites;
       this.favoriteCounts = s.favoriteCounts;
       this.history = s.history;
@@ -287,10 +286,7 @@ export class BlinkStore {
     if (ag !== undefined) {
       this.agents = ag;
     }
-    const dk: string | undefined = s.deepseekKey;
-    if (dk !== undefined) {
-      this.deepseekKey = dk;
-    }
+    // DeepSeek key 不再同步：各机器自己配，别端推来的一律不收
     this.favorites = s.favorites;
     this.favoriteCounts = s.favoriteCounts;
     // 学习类大头可能被发端瘦身成空（帧上限），空的不覆盖本地积累
@@ -331,7 +327,6 @@ export class BlinkStore {
       currentId: this.currentTabId,
       pinned: this.pinned,
       agents: this.agents,
-      deepseekKey: this.deepseekKey,
       favorites: this.favorites,
       history: slim ? [] : this.history,
       terms: slim ? {} : this.terms,
@@ -362,7 +357,6 @@ export class BlinkStore {
     await p.put('tabs', JSON.stringify(this.tabs));
     await p.put('pinned', JSON.stringify(this.pinned));
     await p.put('agents', JSON.stringify(this.agents));
-    await p.put('deepseekKey', this.deepseekKey);
     await p.put('favorites', JSON.stringify(this.favorites));
     await p.put('favoriteCounts', JSON.stringify(this.favoriteCounts));
     await p.put('history', JSON.stringify(this.history));
@@ -385,8 +379,6 @@ export class BlinkStore {
   saveTabs(): void { this.putJson('tabs', this.tabs); }
   savePinned(): void { this.putJson('pinned', this.pinned); }
   saveAgents(): void { this.putJson('agents', this.agents); }
-
-  saveDeepseekKey(): void { this.putVal('deepseekKey', this.deepseekKey); }
 
   // 这个员工（机器 × tab）配的 CLI；title 就是 cc-<TITLE> 去掉前缀那截
   agentFor(machineId: string, title: string): string {
@@ -619,9 +611,6 @@ export class BlinkStore {
   // 可执行名候选（按顺序 command -v，第一个找得到的就用它起）。
   // 「deepseek tui」实际是 Codewhale（github.com/Hmbown/Codewhale）：自己装了叫
   // deepseek 的就用它，否则用 codewhale。
-  // agentLaunch 是 static，拿不到实例；execForTab 之前把 key 放这里
-  static deepseekKeyForScript: string = '';
-
   static agentBins(agent: string): string[] {
     if (agent === 'codex') {
       return ['codex'];
@@ -672,15 +661,24 @@ export class BlinkStore {
     }
     run += 'se echo "[blink] 没有 ' + bins.join('/') + '：' + BlinkStore.agentHint(agent) + '"; ';
     run += 'fi; ';   // elif 串起来的整条只收一个 fi
-    // DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认
-    const k: string = BlinkStore.deepseekKeyForScript;
-    const env: string = (agent === 'deepseek' && k.length > 0)
-      ? 'export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
-        'export ANTHROPIC_AUTH_TOKEN="' + k + '"; ' +
-        'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
-        'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; '
-      : '';
-    return 'cd ' + cdTarget + ' && { ' + path + env + miss + run + '}';
+    return 'cd ' + cdTarget + ' && { ' + path + miss + run + '}';
+  }
+
+  // DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认。
+  // key 不由 App 下发，从那台机器自己的 $DEEPSEEK_API_KEY 读（~/.zshrc 里 export）：
+  // 每台机器用自己的 key，App 里不存、不同步，也就不会再被哪一端的旧值盖回去。
+  // 没配就不启动、把怎么配留在屏上，别悄悄退回去跑 Anthropic 的 claude。
+  // 结尾是 '&& '，接在后面的 cd … && { … } 前面，没 key 时整条短路。
+  private static deepseekEnv(agent: string): string {
+    if (agent !== 'deepseek') {
+      return '';
+    }
+    return 'if [ -z "$DEEPSEEK_API_KEY" ]; then ' +
+      'echo "[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话"; false; ' +
+      'else export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
+      'export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"; ' +
+      'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
+      'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; fi && ';
   }
 
   private static innerScript(cdTarget: string, title: string, agent: string): string {
@@ -689,14 +687,7 @@ export class BlinkStore {
     }
     // claude 和 DeepSeek（也是 claude）都走下面这条 resume-or-new；
     // DeepSeek 只是前面多几个 ANTHROPIC_* 环境变量。
-    const k0: string = BlinkStore.deepseekKeyForScript;
-    const env0: string = (agent === 'deepseek' && k0.length > 0)
-      ? 'export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
-        'export ANTHROPIC_AUTH_TOKEN="' + k0 + '"; ' +
-        'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
-        'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; '
-      : '';
-    return env0 + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
+    return BlinkStore.deepseekEnv(agent) + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
     '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | head -1); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
   }
@@ -749,7 +740,6 @@ export class BlinkStore {
     const user: string = m !== null ? m.user : '';
     const title: string = BlinkStore.titleFor(path, t.tmuxSession, user);
     const agent: string = this.agentFor(t.machineId, title);
-    BlinkStore.deepseekKeyForScript = this.deepseekKey;
     const script: string = BlinkStore.remoteScript(path, t.tmuxSession, user, t.useTmux, agent);
     const b64: string = buffer.from(script, 'utf-8').toString('base64');
     const tmpName: string = t.useTmux ? '/tmp/.blink-tmux-$$.sh' : '/tmp/.blink-cc-$$.sh';

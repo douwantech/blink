@@ -2214,18 +2214,16 @@ final class VoiceSettingsViewController: UITableViewController {
 
   @objc private func closeTapped() { dismiss(animated: true) }
 
-  override func numberOfSections(in tableView: UITableView) -> Int { 6 }
+  // 原来第 6 段「员工 CLI」里只有一个 DeepSeek Key：key 改成各机器自己配
+  // （~/.zshrc 里 export DEEPSEEK_API_KEY），App 不再保存、不再同步，这一段整段拿掉。
+  override func numberOfSections(in tableView: UITableView) -> Int { 5 }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-    ["机器", "工作目录", "识别", "AI 整理", "实验", "员工 CLI"][section]
+    ["机器", "工作目录", "识别", "AI 整理", "实验"][section]
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [3, 1, 1, 3, 2, 1][section]
-  }
-
-  override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    section == 5 ? "配成 DeepSeek 的员工，开会话时跑的还是 claude，只是后端指到 api.deepseek.com。" : nil
+    [3, 1, 1, 3, 2][section]
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -2286,11 +2284,6 @@ final class VoiceSettingsViewController: UITableViewController {
       cell.textLabel?.text = "测试 Whisper"
       cell.detailTextLabel?.text = "api.openai.com"
       cell.accessoryType = .disclosureIndicator
-    case (5, 0):
-      cell.textLabel?.text = "DeepSeek Key"
-      let k = TabAgentStore.shared.deepseekKey
-      cell.detailTextLabel?.text = k.isEmpty ? "未设置" : String(k.prefix(6)) + "…" + String(k.suffix(4))
-      cell.accessoryType = .disclosureIndicator
     default: break
     }
     return cell
@@ -2317,33 +2310,8 @@ final class VoiceSettingsViewController: UITableViewController {
       navigationController?.pushViewController(ASRTestViewController(config: .glm), animated: true)
     case (4, 1):
       navigationController?.pushViewController(ASRTestViewController(config: .whisper), animated: true)
-    case (5, 0):
-      presentDeepSeekKey()
     default: break
     }
-  }
-
-  /// DeepSeek key：存本地 + 进配置同步，三端共用（Codewhale 起的时候当环境变量带过去）
-  private func presentDeepSeekKey() {
-    let ac = UIAlertController(title: "DeepSeek Key",
-                               message: "配成 DeepSeek 的员工跑的是 claude，后端指到 api.deepseek.com",
-                               preferredStyle: .alert)
-    ac.addTextField { tf in
-      tf.placeholder = "sk-…"
-      tf.text = TabAgentStore.shared.deepseekKey
-      tf.isSecureTextEntry = true
-      tf.clearButtonMode = .whileEditing
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-    }
-    ac.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
-      let v = (ac.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      TabAgentStore.shared.deepseekKey = v
-      self?.tableView.reloadData()
-      self?.voiceView?.setHintForSettingsChange(v.isEmpty ? "DeepSeek Key 已清空" : "DeepSeek Key 已保存")
-    })
-    ac.addAction(UIAlertAction(title: "取消", style: .cancel))
-    present(ac, animated: true)
   }
 
   @objc private func toggleAI(_ sw: UISwitch) {

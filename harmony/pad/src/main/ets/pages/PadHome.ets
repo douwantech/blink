@@ -189,7 +189,6 @@ struct PadHome {
   @State teamGroups: TeamGroupVM[] = [];
   @State statIdle: number = 0;
   @State statRest: number = 0;
-  @State deepseekKey: string = '';   // 设置页里填的 DeepSeek key（Codewhale 用）
   @State showTeam: boolean = false;   // 团队栏默认关，顶栏人像按钮打开
   @State inspector: Inspector = 'employee';
   @State mode: Mode = 'terminal';
@@ -323,7 +322,6 @@ struct PadHome {
     this.fontSize = await this.uiPrefs.get('fontSize', 12) as number;
     this.showTeam = await this.uiPrefs.get('showTeam', false) as boolean;
     this.fabY = await this.uiPrefs.get('fabY', -1) as number;
-    this.deepseekKey = this.store.deepseekKey;
     await this.store.load(ctx);
     this.store.onLocalChange = (): void => {
       this.sync.notifyChanged();
@@ -622,7 +620,6 @@ struct PadHome {
     }
     this.statIdle = d;
     this.statRest = r;
-    this.deepseekKey = this.store.deepseekKey;   // 同步拉回来的 key 也要回填到输入框
     this.teamGroups = this.buildGroups();
     this.tick++;
   }
@@ -3496,19 +3493,6 @@ struct PadHome {
           Row().width('100%').height(1).backgroundColor(HAIR)
           this.navRow('AI 配置', this.store.voice.model, () => { this.sheet = 'aiConfig'; })
         }.padding({ left: 14, right: 14 }).backgroundColor(PANEL2).borderRadius(12)
-
-        this.sectionHeader('员工 CLI')
-        Column({ space: 8 }) {
-          TextInput({ text: this.deepseekKey, placeholder: 'DeepSeek Key（sk-…）' })
-            .fontSize(13).type(InputType.Password).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
-            .onChange((v: string) => {
-              this.deepseekKey = v;
-              this.store.deepseekKey = v;
-              this.store.saveDeepseekKey();
-            })
-          Text('配成 DeepSeek 的员工，开会话时跑的还是 claude，只是后端指到 api.deepseek.com。')
-            .fontSize(11).fontColor(DIM).width('100%')
-        }.padding(14).backgroundColor(PANEL2).borderRadius(12)
 
         this.sectionHeader('终端字号')
         Row({ space: 6 }) {
