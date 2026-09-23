@@ -111,9 +111,6 @@ export interface SeedConfig {
 const P_KEY: string = 'blink_store';   // preferences file name
 
 // DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
-const DEEPSEEK_BASE_URL: string = 'https://api.deepseek.com/anthropic';
-const DEEPSEEK_MODEL: string = 'deepseek-v4-pro';
-const DEEPSEEK_SMALL_MODEL: string = 'deepseek-flash';
 
 export class BlinkStore {
   machines: Machine[] = [];
@@ -598,14 +595,19 @@ export class BlinkStore {
     return agent === 'codex' ? '#0B0C0E' : '#FFFFFF';
   }
 
-  static agentCommand(agent: string): string {
+  // 起的时候统一带上的参数：三家都是「免确认 + 不进沙箱」，只是叫法不同
+  static agentArgs(agent: string): string {
     if (agent === 'codex') {
-      // 跟 claude 的 --dangerously-skip-permissions 对等：跳过全部确认
-      // （含新目录的「信任这个文件夹吗」）并关掉沙箱。
-      return 'codex --dangerously-bypass-approvals-and-sandbox';
+      return ' --dangerously-bypass-approvals-and-sandbox';
     }
-    // DeepSeek 档跑的也是 claude，只是 ANTHROPIC_* 指到 DeepSeek 的兼容端点
-    return 'claude --dangerously-skip-permissions';
+    if (agent === 'deepseek') {
+      return ' --approval-policy never --sandbox-mode danger-full-access';
+    }
+    return ' --dangerously-skip-permissions';
+  }
+
+  static agentCommand(agent: string): string {
+    return BlinkStore.agentBins(agent)[0] + BlinkStore.agentArgs(agent);
   }
 
   // 可执行名候选（按顺序 command -v，第一个找得到的就用它起）。
@@ -616,7 +618,7 @@ export class BlinkStore {
       return ['codex'];
     }
     if (agent === 'deepseek') {
-      return ['claude'];
+      return ['deepseek', 'codewhale'];
     }
     return ['claude'];
   }
@@ -627,6 +629,10 @@ export class BlinkStore {
       return 'if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; ' +
         'elif command -v brew >/dev/null 2>&1; then brew install codex; fi';
     }
+    if (agent === 'deepseek') {
+      // README 给的官方装法，装到 ~/.local/bin
+      return 'if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi';
+    }
     return '';
   }
 
@@ -635,7 +641,7 @@ export class BlinkStore {
       return '手动装：npm i -g @openai/codex 或 brew install codex';
     }
     if (agent === 'deepseek') {
-      return '装一下 claude code';
+      return '手动装：curl -fsSL https://codewhale.net/install.sh | sh';
     }
     return '装一下 claude code';
   }
@@ -656,18 +662,20 @@ export class BlinkStore {
       ins + '; hash -r 2>/dev/null; fi; ';
     let run: string = '';
     for (let i = 0; i < bins.length; i++) {
-      const cmd: string = i === 0 ? BlinkStore.agentCommand(agent) : bins[i];
+      const cmd: string = bins[i] + BlinkStore.agentArgs(agent);
       run += 'if command -v ' + bins[i] + ' >/dev/null 2>&1; then ' + cmd + '; el';
     }
     run += 'se echo "[blink] 没有 ' + bins.join('/') + '：' + BlinkStore.agentHint(agent) + '"; ';
     run += 'fi; ';   // elif 串起来的整条只收一个 fi
-    return 'cd ' + cdTarget + ' && { ' + path + miss + run + '}';
+    // deepseekEnv 以 '&& ' 收尾，放 cd 前面：没配 key 时整条短路，不会往下把 TUI 起起来
+    return BlinkStore.deepseekEnv(agent) + 'cd ' + cdTarget + ' && { ' + path + miss + run + '}';
   }
 
-  // DeepSeek 档 = claude 指到 DeepSeek 的 Anthropic 兼容端点：这四个变量 claude 认。
-  // key 不由 App 下发，从那台机器自己的 $DEEPSEEK_API_KEY 读（~/.zshrc 里 export）：
+  // Codewhale 自己认 $DEEPSEEK_API_KEY（auth status 里 provider=deepseek、来源 env），
+  // 所以只要确保这个变量在就行。
+  // key 不由 App 下发，从那台机器自己的 ~/.zshrc 读：
   // 每台机器用自己的 key，App 里不存、不同步，也就不会再被哪一端的旧值盖回去。
-  // 没配就不启动、把怎么配留在屏上，别悄悄退回去跑 Anthropic 的 claude。
+  // 没配就不启动、把怎么配留在屏上。
   // 结尾是 '&& '，接在后面的 cd … && { … } 前面，没 key 时整条短路。
   private static deepseekEnv(agent: string): string {
     if (agent !== 'deepseek') {
@@ -678,20 +686,18 @@ export class BlinkStore {
     return '[ -z "$DEEPSEEK_API_KEY" ] && [ -f "$HOME/.zshrc" ] && eval "$(grep "^export DEEPSEEK_API_KEY=" "$HOME/.zshrc" | tail -1)"; ' +
       'if [ -z "$DEEPSEEK_API_KEY" ]; then ' +
       'echo "[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话"; false; ' +
-      'else export ANTHROPIC_BASE_URL="' + DEEPSEEK_BASE_URL + '"; ' +
-      'export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"; ' +
-      'export ANTHROPIC_MODEL="' + DEEPSEEK_MODEL + '"; ' +
-      'export ANTHROPIC_SMALL_FAST_MODEL="' + DEEPSEEK_SMALL_MODEL + '"; fi && ';
+      'else export DEEPSEEK_API_KEY; fi && ';
   }
 
   private static innerScript(cdTarget: string, title: string, agent: string): string {
-    if (agent === 'codex') {
+    // 只有 claude 有 customTitle → resume 那套；codex 和 DeepSeek（Codewhale）裸起。
+    // DeepSeek 档不再用 claude 接 DeepSeek 后端：那样每轮都要把整段上下文重发，
+    // 一天光缓存读就 5 亿 token，太费。
+    if (agent !== 'claude') {
       return BlinkStore.agentLaunch(agent, cdTarget);
     }
-    // claude 和 DeepSeek（也是 claude）都走下面这条 resume-or-new；
-    // DeepSeek 只是前面多几个 ANTHROPIC_* 环境变量。
     // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
-    return BlinkStore.deepseekEnv(agent) + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
+    return 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
     '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
   }
