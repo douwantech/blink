@@ -14,12 +14,21 @@ enum AgentKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 起的时候统一带上的参数：三家都是「免确认 + 不进沙箱」，只是叫法不同
+    /// 起的时候统一带上的参数：三家都是「免确认 + 不进沙箱」，只是叫法不同。
+    ///
+    /// DeepSeek（Codewhale）这档**故意不传 `--approval-policy`**：
+    /// ① 它的 `never` 不是「不用批准」而是「只跑只读工具，其余一律挡」——2026-09-24
+    ///    jack 那台就是这么被卡死的，shell 通道整个没了，装机/部署/构建全做不了；
+    /// ② 只要在命令行上传了这个参数（never / auto 都一样），posture 就被**锁死**，
+    ///    进 TUI 后按 Alt+Y 也切不动（实测）。
+    /// 真正的「全允许」是 Full Access（内部叫 bypass），命令行和配置文件都给不了，
+    /// 只能在 TUI 里按 Alt+Y / Shift+Tab 切，而且不落盘——所以每次起都要靠
+    /// `fullAccessNudge` 补一下。
     var args: String {
         switch self {
         case .claude: return " --dangerously-skip-permissions"
         case .codex: return " --dangerously-bypass-approvals-and-sandbox"
-        case .deepseek: return " --approval-policy never --sandbox-mode danger-full-access"
+        case .deepseek: return " --sandbox-mode danger-full-access"
         }
     }
 
@@ -79,6 +88,22 @@ enum AgentKind: String, CaseIterable, Identifiable {
             + "else export DEEPSEEK_API_KEY; fi && "
     }
 
+    /// Codewhale 起来之后把权限档切到 Full Access（Alt+Y）。
+    ///
+    /// posture 既不落盘也不认命令行参数（见 `args` 的注释），只能进 TUI 后发键，
+    /// 所以每次启动都得补这一下。等 pane 的前台进程真是 codewhale 了再发，发完回读
+    /// 状态栏确认切到了没有，最多试 60 秒——盲等固定秒数会被启动画面吃掉。
+    /// 用 `( … & )` 起在子 shell 里，免得 zsh 的作业完成提示打到 TUI 画面上。
+    var fullAccessNudge: String {
+        guard self == .deepseek else { return "" }
+        let pane = "\"$TMUX_PANE\""
+        return "_fa() { [ -n \(pane) ] || return 0; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); "
+            + "case \"$(tmux display-message -p -t \(pane) \"#{pane_current_command}\" 2>/dev/null)\" in "
+            + "\(bins.joined(separator: "|"))) ;; *) continue;; esac; "
+            + "case \"$(tmux capture-pane -p -t \(pane) 2>/dev/null)\" in *\"Full Access\"*) return 0;; esac; "
+            + "tmux send-keys -t \(pane) M-y 2>/dev/null; done; }; ( _fa >/dev/null 2>&1 & ); "
+    }
+
     /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
     func launchSnippet(cdTarget: String) -> String {
         let has = bins.map { "command -v \($0) >/dev/null 2>&1" }.joined(separator: " || ")
@@ -95,7 +120,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
         run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
         run += "fi; "   // elif 串起来的整条只收一个 fi
         // envPrefix 放在 cd 前面：它以 `&& ` 收尾，没配 key 时整条短路，不会往下把 TUI 起起来
-        return envPrefix + "cd \(cdTarget) && { \(path)\(miss)\(run)}"
+        return envPrefix + "cd \(cdTarget) && { \(path)\(miss)\(fullAccessNudge)\(run)}"
     }
 
     /// SF Symbols（禁 emoji）
