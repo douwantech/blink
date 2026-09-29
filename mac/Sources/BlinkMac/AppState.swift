@@ -223,10 +223,12 @@ final class AppState: ObservableObject {
                     let out = await AppState.exec(t.tr, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
                     let live = OrphanTabAdopter.parseLive(out)
                     guard !live.isEmpty else { return nil }
-                    // 没有待补的就别去探目录了：这条路每次回前台都会走，远程是一次 ssh 往返
+                    // 没有待补的就别去探目录了：这条路每次回前台都会走，远程是一次 ssh 往返。
+                    // 但仍要回一条 Scan —— adopt 得据此落下扫描基线，否则这台机器永远停在
+                    // 「首次扫描」，以后在手机上关掉的标签会被当成孤儿又补回来。
                     let pend = OrphanTabAdopter.pending(machineId: t.id, isLocal: t.isLocal, live: live)
-                    guard !pend.isEmpty else { return nil }
-                    let dirs = await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend))
+                    let dirs = pend.isEmpty ? Set<String>()
+                        : await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend))
                     return OrphanTabAdopter.Scan(machineId: t.id, isLocal: t.isLocal,
                                                  live: live, existingDirs: dirs)
                 }
