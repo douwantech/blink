@@ -7,8 +7,15 @@ import Combine
 final class HUDPanelController {
     static let shared = HUDPanelController()
 
+    /// 比状态栏高一档。之前用 .statusBar(25)，和别的 app 的悬浮窗/HUD 同级——同级窗口按
+    /// 谁后 orderFront 谁在上，对面一刷新就把我们压下去；全屏播放器、会议悬浮窗也盖得住。
+    /// screenSaver(1000) 在系统里只比 Dock 拖拽反馈那几档低，正常 app 碰不到。
+    private static let topLevel: NSWindow.Level = .screenSaver
+
     private var panel: NSPanel?
     private var cancellable: AnyCancellable?
+    private var keepTopTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     private init() {}
 
@@ -19,6 +26,19 @@ final class HUDPanelController {
             .sink { [weak self] phase in
                 if phase == .idle { self?.hide() } else { self?.show() }
             }
+
+        // 切 app / 切桌面空间 / 进出全屏时，系统可能把这个不激活面板排到别人后面，
+        // 重新置顶一次（只在显示中才动，平时零开销）。
+        let nc = NSWorkspace.shared.notificationCenter
+        for name: NSNotification.Name in [
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.activeSpaceDidChangeNotification,
+        ] {
+            let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.raiseIfVisible()
+            }
+            workspaceObservers.append(token)
+        }
     }
 
     private func makePanel() -> NSPanel {
@@ -32,8 +52,10 @@ final class HUDPanelController {
             defer: false
         )
         p.isFloatingPanel = true
-        p.level = .statusBar
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        p.level = Self.topLevel
+        // .canJoinAllSpaces + .fullScreenAuxiliary：跟到每个桌面空间，也能浮在别的 app
+        // 的全屏窗口之上（全屏 app 独占一个 space，少了 fullScreenAuxiliary 就只能看它背面）。
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         p.hidesOnDeactivate = false
         p.isMovableByWindowBackground = false
         p.backgroundColor = .clear
@@ -49,11 +71,37 @@ final class HUDPanelController {
         panel = p
         p.setContentSize(p.contentView?.fittingSize ?? NSSize(width: 448, height: 96))
         reposition(p)
+        p.level = Self.topLevel              // 每次显示都重设：被系统降过档也能回来
         p.orderFrontRegardless()             // 不 makeKey：不抢焦点
+        startKeepingOnTop()
     }
 
     private func hide() {
+        stopKeepingOnTop()
         panel?.orderOut(nil)
+    }
+
+    /// 只在显示中重新置顶；不重新定位，免得听写途中面板跳位置。
+    private func raiseIfVisible() {
+        guard let p = panel, p.isVisible else { return }
+        p.level = Self.topLevel
+        p.orderFrontRegardless()
+    }
+
+    /// 通知不一定覆盖所有把我们压下去的情形（比如别的 app 不激活就新开一个同级悬浮窗），
+    /// 所以显示期间再补一个低频巡检。HUD 只在听写这几秒钟在，1 秒一次可以忽略不计。
+    private func startKeepingOnTop() {
+        guard keepTopTimer == nil else { return }
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.raiseIfVisible()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        keepTopTimer = t
+    }
+
+    private func stopKeepingOnTop() {
+        keepTopTimer?.invalidate()
+        keepTopTimer = nil
     }
 
     /// 放到当前鼠标所在屏幕的底部中间偏上。
