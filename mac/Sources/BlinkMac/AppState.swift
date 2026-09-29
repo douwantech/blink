@@ -174,7 +174,7 @@ final class AppState: ObservableObject {
         loadClosed()                 // 已关闭标签（本地 + KV 墓碑），显示时过滤
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
         await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
-        await adoptOrphanSessions()  // 本机没标签的会话补成标签（三端一致）
+        await adoptOrphanSessions()  // 各机器没标签的会话补成标签（三端一致）
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
@@ -189,42 +189,76 @@ final class AppState: ObservableObject {
         computeOrphanHidden()
     }
 
-    /// 本机上「有 tmux 会话但同步文件里没标签」的会话 id（<machineID>/cc-…）。
+    /// 「有 tmux 会话但同步文件里没标签」的会话 id（<machineID>/cc-…）。
     /// 手机、平板只显示同步文件里的标签，Mac 也照这个来，三端看到的一样（tmux 不动，只是不显示）。
     @Published var orphanHidden: Set<String> = []
 
+    /// 每台机器各算各的：某台读不到标签时只放过那台，别把它的会话全藏了。
+    /// （以前只算本机，于是 Jun、小白这些远程机器上自己起的会话 macOS 看得见、iPhone 看不见。）
     func computeOrphanHidden() {
-        guard SyncConfig.available, let local = machines.first(where: { $0.isLocalMac }) else {
-            orphanHidden = []; return
+        guard SyncConfig.available else { orphanHidden = []; return }
+        var byMachine: [String: Set<String>] = [:]
+        for t in CloudTabStore.tabs() {
+            byMachine[t.machineId, default: []].insert("cc-" + t.ccName.lowercased())
         }
-        let mine = Set(CloudTabStore.tabs().filter { $0.machineId == local.id }.map { "cc-" + $0.ccName.lowercased() })
-        guard !mine.isEmpty else { orphanHidden = []; return }   // 读不到本机标签时别把会话全藏了
-        orphanHidden = Set(sessions.filter {
-            $0.machineID == local.id && $0.tmuxName != nil && !mine.contains($0.tmuxName!.lowercased())
+        orphanHidden = Set(sessions.filter { s in
+            guard let name = s.tmuxName?.lowercased(),
+                  let mine = byMachine[s.machineID], !mine.isEmpty else { return false }
+            return !mine.contains(name)
         }.map(\.id))
     }
 
-    /// 本机 Mac：把没标签的 tmux 会话补成同步文件里的标签（三端一致），规则见 OrphanTabAdopter。
+    /// 把没标签的 tmux 会话补成同步文件里的标签（三端一致），规则见 OrphanTabAdopter。
+    ///
+    /// 本机和远程机器都做。远程机器的工作目录**要在那台机器上** `test -d` 查
+    /// —— 拿本机文件系统当准是错的，Jun 的 `/Users/mac/Codes/quan` 在这台 Mac 上根本不存在。
+    /// 枚举和探目录是只读的，几台并行；写同步文件只做一次（读-改-写，并发会互相盖掉）。
     func adoptOrphanSessions() async {
-        guard SyncConfig.available,
-              let m = machines.first(where: { $0.isLocalMac }), m.transport.connectable else { return }
-        let out = await AppState.exec(m.transport, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
-        // PTY 输出行尾是 \r\n，Swift 里它是一个 Character，按 "\n" 切不开，要用 isNewline
-        let live: [(title: String, created: Double)] = out.split(whereSeparator: \.isNewline).compactMap { line in
-            let p = line.split(separator: "\t")
-            guard p.count >= 2, p[0].hasPrefix("cc-"),
-                  let t = Double(p[1].trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-            return (String(p[0].dropFirst(3)).lowercased(), t)
+        guard SyncConfig.available else { return }
+        let targets = machines.map { (id: $0.id, isLocal: $0.isLocalMac, tr: $0.transport) }
+        var scans: [OrphanTabAdopter.Scan] = []
+        await withTaskGroup(of: OrphanTabAdopter.Scan?.self) { group in
+            for t in targets {
+                group.addTask {
+                    let out = await AppState.exec(t.tr, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
+                    let live = OrphanTabAdopter.parseLive(out)
+                    guard !live.isEmpty else { return nil }
+                    // 没有待补的就别去探目录了：这条路每次回前台都会走，远程是一次 ssh 往返
+                    let pend = OrphanTabAdopter.pending(machineId: t.id, isLocal: t.isLocal, live: live)
+                    guard !pend.isEmpty else { return nil }
+                    let dirs = await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend))
+                    return OrphanTabAdopter.Scan(machineId: t.id, isLocal: t.isLocal,
+                                                 live: live, existingDirs: dirs)
+                }
+            }
+            for await s in group { if let s { scans.append(s) } }
         }
-        guard !live.isEmpty else { return }
-        let mid = m.id
-        let r = await Task.detached(priority: .utility) { OrphanTabAdopter.adopt(machineId: mid, live: live) }.value
-        NSLog("[adopt] 本机会话=%d 补成标签=%@ 跳过(无三端一致的工作目录)=%@", live.count, r.adopted.joined(separator: ","), r.skipped.joined(separator: ","))
+        guard !scans.isEmpty else { return }
+        let snapshot = scans
+        let r = await Task.detached(priority: .utility) { OrphanTabAdopter.adopt(snapshot) }.value
+        let names = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0.name) })
+        NSLog("[adopt] 扫了 %@ 补成标签=%@ 跳过(无三端一致的工作目录)=%@",
+              snapshot.map { "\(names[$0.machineId] ?? $0.machineId):\($0.live.count)" }.joined(separator: " "),
+              r.adopted.joined(separator: ","), r.skipped.joined(separator: ","))
         guard !r.adopted.isEmpty else { return }
         await loadCloudRest()
         loadCloudTabs()
         loadClosed()
         showToast("已把 \(r.adopted.joined(separator: "、")) 补成标签，手机和平板也能看到")
+    }
+
+    /// 在目标机器上筛出真实存在的目录（一条命令查完，省往返）。
+    /// 带单引号或换行的路径没法安全塞进命令，直接跳过——这种路径本来也过不了三端同名那关。
+    nonisolated static func existingDirs(_ transport: Transport, _ paths: [String]) async -> Set<String> {
+        let safe = paths.filter { !$0.contains("'") && !$0.contains("\n") }
+        guard !safe.isEmpty else { return [] }
+        let list = safe.map { "'\($0)'" }.joined(separator: " ")
+        let out = await exec(transport, "for p in \(list); do [ -d \"$p\" ] && echo \"$p\"; done",
+                             timeout: 8, marker: nil)
+        let found = out.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return Set(found)
     }
 
     /// 把 iCloud KV 里手机配置的标签并进来（所有机器），跟 iOS 显示同一份标签列表。
