@@ -128,6 +128,7 @@ enum OrphanTabAdopter {
         for s in scans {
             baselines[sinceKey(s.machineId, isLocal: s.isLocal)] = scanAt
             var missed: [String] = []
+            var got: Set<String> = []
             for c in pending(machineId: s.machineId, isLocal: s.isLocal, live: s.live) {
                 // 同一个标题可能匹配到多个目录（如 quan 和 quan-x），取 basename 最长的那个
                 let hits = dirs.filter { s.existingDirs.contains($0.path) && c.title.hasPrefix($0.base + "-") }
@@ -143,9 +144,18 @@ enum OrphanTabAdopter {
                     "tmuxSession": c.title,
                     "useTmux": true,
                 ])
+                got.insert(c.title)
                 r.adopted.append(c.title)
             }
-            stillSkipped[s.machineId] = missed
+            // 跳过名单要**并进去**，不能直接替换：工作目录没变那轮 pending 压根不会把它们算进来，
+            // 一替换名单就空了，等用户真把目录配上时已经没东西可重试。
+            // 只在「会话没了」或「已经补上了」时才从名单里掉出去。
+            let already = Set(CloudTabStore.tabs().filter { $0.machineId == s.machineId }
+                .map { $0.ccName.lowercased() })
+            let stillLive = Set(s.live.map(\.title))
+            let prev = UserDefaults.standard.stringArray(forKey: skippedKey(s.machineId)) ?? []
+            stillSkipped[s.machineId] = Array(Set(prev + missed)
+                .filter { stillLive.contains($0) && !got.contains($0) && !already.contains($0) }).sorted()
         }
 
         if !newTabs.isEmpty {
