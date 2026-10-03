@@ -1,0 +1,22 @@
+# Custom domain blink-api.douwantech.com -> blink-config-server-prod,
+# HTTPS with the *.douwantech.com wildcard certificate (same as rc-api).
+# The certificate/key files come from CAS and live in env/ (gitignored).
+edition: 3.0.0
+name: blink-config-domain
+access: douwan
+resources:
+  BlinkConfigDomain:
+    component: fc3-domain
+    props:
+      region: cn-hangzhou
+      domainName: blink-api.douwantech.com
+      protocol: HTTP,HTTPS
+      certConfig:
+        certName: douwantech-wildcard
+        certificate: ${file("./env/douwantech.pem")}
+        privateKey: ${file("./env/douwantech.key")}
+      routeConfig:
+        routes:
+          - path: /*
+            functionName: blink-config-server-prod
+            qualifier: LATEST
