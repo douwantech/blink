@@ -14,6 +14,18 @@ struct SettingsView: View {
     @State private var optSpaceOn = HotkeyMonitor.shared.optSpaceEnabled
     @State private var axTrusted = AccessibilityPermission.isTrusted
 
+    // 我的词表（行内可编辑）。id 用一次性 UUID：编辑中 wrong/right 变了 id 不变，
+    // 行不重建、焦点不丢；count 只在重拉时刷新。
+    private struct TermRow: Identifiable {
+        let id = UUID()
+        var wrong: String
+        var right: String
+        var count: Int
+    }
+    @State private var rows: [TermRow] = []
+    @State private var newWrong = ""
+    @State private var newRight = ""
+
     private let locales: [(String, String)] = [
         ("zh-CN", "中文（普通话）"),
         ("en-US", "English (US)"),
@@ -83,6 +95,52 @@ struct SettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            Section("我的词表（听成 → 实际想说）") {
+                if rows.isEmpty {
+                    Text("词表是空的——加几条你常被听错的词，立刻生效。")
+                        .font(.callout).foregroundColor(.secondary)
+                }
+                ForEach($rows) { $row in
+                    HStack {
+                        TextField("听成", text: $row.wrong)
+                            .onChange(of: row.wrong) { old, new in
+                                LearningStore.shared.renameTerm(oldWrong: old, newWrong: new, right: row.right)
+                            }
+                        Image(systemName: "arrow.right").font(.caption).foregroundColor(.secondary)
+                        TextField("实际想说", text: $row.right)
+                            .onChange(of: row.right) { old, new in
+                                LearningStore.shared.retargetTerm(wrong: row.wrong, oldRight: old, newRight: new)
+                            }
+                        Text(row.count > 0 ? "\(row.count) 次" : "—")
+                            .font(.caption).foregroundColor(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                            .help("本地替换命中的次数")
+                        Button {
+                            LearningStore.shared.removeTerm(wrong: row.wrong, right: row.right)
+                            reloadTerms()
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("删除这条")
+                    }
+                }
+                HStack {
+                    TextField("听成", text: $newWrong)
+                    Image(systemName: "arrow.right").font(.caption).foregroundColor(.secondary)
+                    TextField("实际想说", text: $newRight)
+                    Button("加一条") {
+                        LearningStore.shared.setTerm(newWrong, right: newRight)
+                        newWrong = ""; newRight = ""
+                        reloadTerms()
+                    }
+                    .disabled(newWrong.trimmingCharacters(in: .whitespaces).isEmpty
+                              || newRight.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("改完立即生效：① 喂给系统识别器，从源头少听错 ② 转写后本地直接替换，不开 GLM 也管用。首次自带一批常用预置词（蒸鸡→真机、糖床→弹窗…），可删可改。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             Section("学习数据（删 app 也不丢）") {
                 Text("\(LearningStore.shared.history.count) 条历史 · \(LearningStore.shared.corrections.count) 条修正 · \(LearningStore.shared.terms.count) 个错词")
                     .font(.callout)
@@ -104,8 +162,16 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 560)
-        .onAppear { axTrusted = AccessibilityPermission.isTrusted }
+        .frame(width: 480, height: 680)
+        .onAppear {
+            axTrusted = AccessibilityPermission.isTrusted
+            reloadTerms()
+            Diag.log("SettingsView 出现：词表 \(rows.count) 行")
+        }
+    }
+
+    private func reloadTerms() {
+        rows = LearningStore.shared.allTermPairs().map { TermRow(wrong: $0.wrong, right: $0.right, count: $0.count) }
     }
 
     private var versionLine: String {

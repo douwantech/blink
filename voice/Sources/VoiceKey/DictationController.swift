@@ -225,6 +225,13 @@ final class DictationController: NSObject, ObservableObject, AVCaptureAudioDataO
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+            // 我的词表喂给识别器做偏置（contextualStrings）：从源头就偏向这些词，少听错。
+            // 识别器只把它当提示不硬替换，所以词表更新后下一次听写即生效。
+            let hints = LearningStore.shared.contextualStrings()
+            if !hints.isEmpty {
+                req.contextualStrings = hints
+                Diag.log("contextualStrings \(hints.count) 条（来自我的词表）")
+            }
             self.recognitionRequest = req
             self.recognitionTask = rec.recognitionTask(with: req) { [weak self] result, error in
                 DispatchQueue.main.async { self?.handle(result: result, error: error, epoch: myEpoch) }
@@ -332,6 +339,8 @@ final class DictationController: NSObject, ObservableObject, AVCaptureAudioDataO
         var clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         clean = clean.replacingOccurrences(of: "<asr>", with: "").replacingOccurrences(of: "</asr>", with: "")
         clean = clean.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 本地词表直替换：GLM 润色漏掉的 / 没开 GLM 时全靠它，离线也纠错。
+        clean = LearningStore.shared.applyTerms(to: clean)
         guard !clean.isEmpty else { showError("没听到内容"); return }
         Diag.log("最终插入：\"\(clean.prefix(60))\"")
         AITextPolisher.shared.recordHistory(clean)
