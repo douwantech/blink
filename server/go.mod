@@ -3,6 +3,7 @@ module github.com/douwantech/blink/server
 go 1.22
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-sql-driver/mysql v1.9.3
 	golang.org/x/crypto v0.31.0
 )

@@ -25,9 +25,9 @@ All JSON uses UTF-8. Authenticated requests send `Authorization: Bearer <token>`
 | GET | `/v1/config?version=G:U` | Signed in | Full snapshot or `304` if current |
 | PUT | `/v1/machines/{id}` | Admin with `canWrite` | Create or replace a machine |
 | DELETE | `/v1/machines/{id}` | Admin with `canWrite` | Remove a machine |
-| PUT | `/v1/config/tabs` | Admin with `canWrite` | Replace own tab state |
-| PUT | `/v1/config/selection` | Admin with `canWrite` | Replace own recent selection |
-| PUT | `/v1/config/agents` | Admin with `canWrite` | Replace own agent map |
+| PUT | `/v1/config/tabs` | Signed in | Replace own tab state |
+| PUT | `/v1/config/selection` | Signed in | Replace own recent selection |
+| PUT | `/v1/config/agents` | Signed in | Replace own agent map |
 | POST | `/v1/admin/users` | Admin | Create account |
 | PATCH | `/v1/admin/users/{id}` | Admin | Change `password`, `disabled`, `isAdmin`, `canWrite` |
 
@@ -35,8 +35,10 @@ All JSON uses UTF-8. Authenticated requests send `Authorization: Bearer <token>`
 
 `version` combines the shared machine revision and the signed-in account's revision. Pass the last version on the next request; `304` means the cached snapshot is still current. Any machine change increments the shared revision. Tab, selection, or agent changes increment only that user's revision. Clients should treat the full snapshot as authoritative and cache it for offline read-only use.
 
-Only admins with `canWrite=true` can change configuration. Admins can manage accounts even when `canWrite=false`. Non-admins have read-only access. The API does not currently support editing another user's personal tab state; the administrator can set up a user's state on that user's client after signing in.
+Only admins with `canWrite=true` can change shared machines. Every signed-in user can update their own tabs, recent selection, and agent choices; these endpoints always use the authenticated user ID. Admins can manage accounts even when `canWrite=false`. Other users cannot edit machines or accounts.
+
+The service does not currently enforce a login rate limit. Configure rate limiting at the FC/API gateway before exposing the public endpoint.
 
 ## Deployment prerequisites
 
-Laoda needs to provision the FC function, RDS MySQL database and user, DNS and HTTPS certificate for `blink-api.douwantech.com`, and secret values. Do not put any secret value in the PR or issue.
+Jack is provisioning the FC function, RDS MySQL database and user, DNS and HTTPS certificate for `blink-api.douwantech.com`, and secret values. Do not put any secret value in the PR or issue.

@@ -27,6 +27,9 @@ var schema embed.FS
 
 type app struct{ db *sql.DB }
 
+// A real bcrypt comparison for unknown usernames avoids a simple timing oracle.
+var dummyPasswordHash, _ = bcrypt.GenerateFromPassword([]byte("blink-invalid-user-password"), bcrypt.DefaultCost)
+
 type user struct {
 	ID       uint64 `json:"id"`
 	Username string `json:"username"`
@@ -68,6 +71,8 @@ func main() {
 
 func migrate(ctx context.Context, db *sql.DB) error {
 	b, _ := schema.ReadFile("schema.sql")
+	// schema.sql is deliberately plain DDL: semicolons may only terminate statements.
+	// If SQL strings or stored procedures are added, replace this splitter first.
 	for _, statement := range strings.Split(string(b), ";") {
 		if strings.TrimSpace(statement) == "" {
 			continue
@@ -186,7 +191,16 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	var u user
 	var hash string
 	err := a.db.QueryRowContext(r.Context(), `SELECT id,username,password_hash,is_admin,can_write,disabled FROM users WHERE username=?`, req.Username).Scan(&u.ID, &u.Username, &hash, &u.Admin, &u.CanWrite, &u.Disabled)
-	if err != nil || u.Disabled || bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
+		http.Error(w, "invalid credentials", 401)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil || u.Disabled {
 		http.Error(w, "invalid credentials", 401)
 		return
 	}

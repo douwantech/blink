@@ -98,8 +98,18 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "invalid id", 400)
 		return
 	}
+	var raw json.RawMessage
+	if !readJSON(w, r, &raw) {
+		return
+	}
+	if len(raw) == 0 || raw[0] != '{' {
+		http.Error(w, "expected JSON object", 400)
+		return
+	}
 	var m machine
-	if !readJSON(w, r, &m) {
+	// Decode known fields for validation while retaining extensions from newer clients.
+	if err := json.Unmarshal(raw, &m); err != nil {
+		http.Error(w, "invalid machine", 400)
 		return
 	}
 	if m.ID != id || strings.TrimSpace(m.Host) == "" || strings.TrimSpace(m.User) == "" || m.Position < 0 {
@@ -114,14 +124,13 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "invalid port", 400)
 		return
 	}
-	data, _ := json.Marshal(m)
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		http.Error(w, "internal error", 500)
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO machines(id,position,data) VALUES(?,?,?) ON DUPLICATE KEY UPDATE position=VALUES(position),data=VALUES(data)`, id, m.Position, data)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO machines(id,position,data) VALUES(?,?,?) ON DUPLICATE KEY UPDATE position=VALUES(position),data=VALUES(data)`, id, m.Position, []byte(raw))
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
 	}
@@ -132,7 +141,7 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	writeJSON(w, 200, m)
+	writeJSON(w, 200, raw)
 }
 
 func (a *app) deleteMachine(w http.ResponseWriter, r *http.Request, u user) {
@@ -169,7 +178,16 @@ func (a *app) deleteMachine(w http.ResponseWriter, r *http.Request, u user) {
 
 func (a *app) writeUserConfig(column string) handler {
 	return func(w http.ResponseWriter, r *http.Request, u user) {
-		if !requireWrite(w, u) {
+		var query string
+		switch column {
+		case "tabs":
+			query = `INSERT INTO user_configs(user_id,tabs) VALUES(?,?) ON DUPLICATE KEY UPDATE tabs=VALUES(tabs)`
+		case "recent_selection":
+			query = `INSERT INTO user_configs(user_id,recent_selection) VALUES(?,?) ON DUPLICATE KEY UPDATE recent_selection=VALUES(recent_selection)`
+		case "agents":
+			query = `INSERT INTO user_configs(user_id,agents) VALUES(?,?) ON DUPLICATE KEY UPDATE agents=VALUES(agents)`
+		default:
+			http.Error(w, "internal error", 500)
 			return
 		}
 		var body json.RawMessage
@@ -180,14 +198,13 @@ func (a *app) writeUserConfig(column string) handler {
 			http.Error(w, "expected JSON object", 400)
 			return
 		}
-		// column is selected only from route constants above.
 		tx, err := a.db.BeginTx(r.Context(), nil)
 		if err != nil {
 			http.Error(w, "internal error", 500)
 			return
 		}
 		defer tx.Rollback()
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO user_configs(user_id,`+column+`) VALUES(?,?) ON DUPLICATE KEY UPDATE `+column+`=VALUES(`+column+`)`, u.ID, []byte(body))
+		_, err = tx.ExecContext(r.Context(), query, u.ID, []byte(body))
 		if err == nil {
 			_, err = tx.ExecContext(r.Context(), `UPDATE users SET config_version=config_version+1 WHERE id=?`, u.ID)
 		}
