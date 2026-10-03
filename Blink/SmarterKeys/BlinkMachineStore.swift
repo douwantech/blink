@@ -61,6 +61,25 @@ final class BlinkMachine: Codable {
     }
     return nil
   }
+
+  /// #25：把生效的 blinkd 配置（含内置默认回退的结果）物化成显式字段。
+  /// 内置机器（BLINKD_AUTO_MACHINE）可以三件套留空、运行时靠 Info.plist 回退连 blinkd，
+  /// 但回退只在本进程生效——KV / 同步文件带出去的是字段原值（空），Mac 端
+  /// MacMachine.blinkd 要求 host+token 非空才认 blinkd，空则降级 SSH；只开 blinkd
+  /// 没开 sshd 的机器（如 jack 那台）直接连不上。写进 store 前物化，所有端读同一份显式数据。
+  /// 幂等：物化后 transport=="blinkd" 且三件套非空，blinkdConfig 走自身字段分支，再物化不变。
+  var blinkdMaterialized: BlinkMachine {
+    guard usesBlinkd, let cfg = blinkdConfig else { return self }
+    if transport == "blinkd", blinkdHost == cfg.host, blinkdPort == cfg.port, blinkdToken == cfg.token {
+      return self
+    }
+    let m = BlinkMachine(id: id, name: name, host: host, host2: host2, lanHost: lanHost,
+                         user: user, transport: "blinkd",
+                         blinkdHost: cfg.host, blinkdPort: cfg.port, blinkdToken: cfg.token)
+    m.rustdeskId = rustdeskId
+    m.rustdeskPassword = rustdeskPassword
+    return m
+  }
 }
 
 enum HostReachability {
@@ -142,7 +161,10 @@ enum HostReachability {
       return arr
     }
     set {
-      if let data = try? JSONEncoder().encode(newValue) {
+      // #25：写入路径统一物化（保存表单 / 调序 / 远端采纳后重写都走这里），
+      // 让镜像进 KV 与 Mac 同步文件的数据自带生效配置，不依赖各端自己带内置默认。
+      let out = newValue.map { $0.blinkdMaterialized }
+      if let data = try? JSONEncoder().encode(out) {
         UserDefaults.standard.set(data, forKey: kMachines)
       }
     }
@@ -732,6 +754,16 @@ enum HostReachability {
     let m = arr.remove(at: fromIndex)
     arr.insert(m, at: min(max(toIndex, 0), arr.count))
     machines = arr
+  }
+
+  /// #25 存量迁移：物化只发生在写入路径，已存的老数据（内置机器三件套为空）不会自动变。
+  /// 启动时 / 远端配置落地后调一次；有变化才写回（走 setter 再物化一遍，幂等），
+  /// 随后 CloudConfigSync 的 1s 镜像把它带进 iCloud KV 与 Mac 同步文件。
+  @objc func materializeBlinkdDefaults() {
+    let raw = machines
+    let out = raw.map { $0.blinkdMaterialized }
+    guard zip(raw, out).contains(where: { $0 !== $1 }) else { return }
+    machines = out
   }
 
   func delete(id: String) {

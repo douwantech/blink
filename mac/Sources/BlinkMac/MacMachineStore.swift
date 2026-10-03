@@ -13,6 +13,9 @@ struct MacMachine {
     let name: String
     let host: String
     let user: String
+    /// 手机端声明的连接方式："blinkd" / "ssh" / nil（老数据没写）。#25 用来区分
+    /// 「用户明确配的 SSH」和「声明走 blinkd 但三件套没同步过来」——后者不降级 SSH。
+    let transport: String?
     let blinkdHost: String?
     let blinkdPort: Int?
     let blinkdToken: String?
@@ -43,6 +46,7 @@ enum MacMachineStore {
                               name: name.isEmpty ? host : name,
                               host: host,
                               user: (m["user"] as? String) ?? "",
+                              transport: m["transport"] as? String,
                               blinkdHost: m["blinkdHost"] as? String,
                               blinkdPort: m["blinkdPort"] as? Int,
                               blinkdToken: m["blinkdToken"] as? String)

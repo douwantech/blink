@@ -95,6 +95,9 @@ final class CloudConfigSync: NSObject {
     NotificationCenter.default.addObserver(
       self, selector: #selector(localChanged),
       name: UserDefaults.didChangeNotification, object: nil)
+    // #25：老数据里内置机器的 blinkd 三件套还是空，物化成显式字段（有变化才写回）。
+    // 观察者已注册；写回会镜像进 KV 并推 Mac 同步文件。
+    BlinkMachineStore.shared.materializeBlinkdDefaults()
     schedulePush()
 
     // 启动也主动拉一次：adoptSyncedIfNewer 读的是 UserDefaults 镜像，而镜像只有 didChangeExternally
@@ -177,6 +180,8 @@ final class CloudConfigSync: NSObject {
     }
     applyingRemote = false
     if changed {
+      // 云端可能仍是内置 blinkd 机器的旧快照；落地后恢复生效字段并重新推送。
+      BlinkMachineStore.shared.materializeBlinkdDefaults()
       NotificationCenter.default.post(name: CloudConfigSync.didRestoreNotification, object: nil)
     }
   }
@@ -640,6 +645,10 @@ final class ConfigSyncPull: NSObject {
       if let cur = cfg["currentId"] as? String, UUID(uuidString: cur) != nil { state["currentId"] = cur }
       setJSON(state, forKey: TabStateStore.kSyncKey)
     }
+
+    // #25：上面 machines 是 dict 层面直写 UserDefaults（绕过 BlinkMachineStore 的物化 setter），
+    // 落地后补一次物化，保证随后镜像出去的机器自带生效 blinkd 配置。
+    BlinkMachineStore.shared.materializeBlinkdDefaults()
   }
 
   // MARK: 常驻 watcher（同鸿蒙端：Mac 上跑 stat 小循环，mtime 变了吐一行）
