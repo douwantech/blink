@@ -54,6 +54,7 @@ typedef void (*mosh_state_callback) (const void *context, const void *buffer, si
 #import "BKUserConfigurationManager.h"
 #import "Session.h"
 #import "MCPSession.h"
+#import "BlinkdSession.h"
 #import "TermDevice.h"
 #import "TermView.h"
 #import "KBWebViewBase.h"

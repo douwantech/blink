@@ -668,14 +668,9 @@ final class VoiceInputView: UIView {
     }
     lastAsrRaw = nil
     lastPolished = nil
+    // 之前这里会在 0.4s 后无差别盲补第二个回车（对抗括号粘贴吞回车）。#27 改成
+    // 条件补偿：didCommitText 里 TurnGuarantee 盯 PTY 输出，真没起轮才补，不再盲发。
     delegate?.voiceInput(self, didCommitText: text)
-    // 发送按钮：正常文本在单回车之后再补一个回车，确保 claude 真正提交（第一个
-    // 回车常被括号粘贴吞进内容里没提交）。/rewind /compact 走 pillTapped 直连
-    // didCommitText 只发单回车，不经过这里，弹菜单不受影响。
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-      guard let self else { return }
-      self.delegate?.voiceInputDidRequestSendReturn(self)
-    }
   }
 
   @objc private func discardReview() {
