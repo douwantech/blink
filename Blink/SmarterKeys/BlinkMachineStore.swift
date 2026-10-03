@@ -722,6 +722,18 @@ enum HostReachability {
     machines = arr
   }
 
+  /// 手动调序（#26）：把 fromIndex 的机器挪到 toIndex。顺序直接用数组顺序表达，
+  /// 不加独立 order 字段——写回 UserDefaults 后 CloudConfigSync 自动镜像 iCloud KV
+  /// 并推 Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染；多端同时调序沿用 KV 的
+  /// last-write-wins。新增机器仍走 addOrUpdate 追加到末尾。
+  func moveMachine(fromIndex: Int, toIndex: Int) {
+    var arr = machines
+    guard arr.indices.contains(fromIndex) else { return }
+    let m = arr.remove(at: fromIndex)
+    arr.insert(m, at: min(max(toIndex, 0), arr.count))
+    machines = arr
+  }
+
   func delete(id: String) {
     machines.removeAll { $0.id == id }
     var m = avatarMap; m.removeValue(forKey: id); avatarMap = m
@@ -786,9 +798,12 @@ final class MachineListViewController: UITableViewController {
     navigationItem.leftBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done, target: self, action: #selector(closeTapped)
     )
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
+    // 右侧：+ 在最右，「编辑」在其左——编辑态出来的是拖动调序手柄（无删除钮，
+    // 删除仍在机器表单里）。系统 editButtonItem 自带「编辑/完成」切换。
+    let add = UIBarButtonItem(
       barButtonSystemItem: .add, target: self, action: #selector(addTapped)
     )
+    navigationItem.rightBarButtonItems = [add, editButtonItem]
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -804,7 +819,7 @@ final class MachineListViewController: UITableViewController {
 
   private func _footerText() -> String {
     let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
-    return "点选机器进入编辑/删除。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    return "点选机器进入编辑/删除；右上「编辑」后可拖动调序，顺序在 iOS / Mac / 鸿蒙间同步。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
   }
 
   override func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
@@ -862,6 +877,23 @@ final class MachineListViewController: UITableViewController {
   override func tableView(_ tv: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
     let m = BlinkMachineStore.shared.machines[indexPath.row]
     pushForm(editing: m)
+  }
+
+  // MARK: 手动调序（#26）——编辑态下系统 reorder 手柄拖动，onMove 写回 store。
+  // 数组顺序即展示顺序（SpaceController 切机器条、MacThreeColumn、Mac、鸿蒙都按它渲染），
+  // 写回后 CloudConfigSync 自动镜像 iCloud KV + 推 Mac 同步文件，多端跟随。
+  override func tableView(_ tv: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+    true
+  }
+
+  // 编辑态只做调序，不出系统删除圈（删除仍在机器表单里）；不实现的话
+  // UITableView 默认给 .delete，会显示点了又没反应的圈。
+  override func tableView(_ tv: UITableView, editingStyleForRowAt indexPath: IndexPath) -> UITableViewCell.EditingStyle {
+    .none
+  }
+
+  override func tableView(_ tv: UITableView, moveRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+    BlinkMachineStore.shared.moveMachine(fromIndex: sourceIndexPath.row, toIndex: destinationIndexPath.row)
   }
 
   @objc private func closeTapped() { dismiss(animated: true) }
