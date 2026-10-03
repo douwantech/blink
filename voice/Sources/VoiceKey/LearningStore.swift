@@ -34,6 +34,13 @@ final class LearningStore {
 
     // MARK: 读写
 
+    /// terms 变更后统一走这里：落盘 + 防抖推三端同步文件（TermSync 自己判断采纳中不回推）。
+    /// history/corrections 变更不推——它们是端私有上下文，同步只会互相覆盖丢数据。
+    private func saveAndSyncTerms() {
+        save()
+        TermSync.shared.schedulePush()
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let p = try? JSONDecoder().decode(Payload.self, from: data) else { return }
@@ -141,7 +148,7 @@ final class LearningStore {
         q.sync {
             guard payload.terms[w]?[r] == nil else { return }
             payload.terms[w, default: [:]][r] = 0
-            save()
+            saveAndSyncTerms()
         }
     }
 
@@ -158,14 +165,14 @@ final class LearningStore {
             if oldWrong.isEmpty {
                 if payload.terms[w]?[right] == nil {
                     payload.terms[w, default: [:]][right] = 0
-                    save()
+                    saveAndSyncTerms()
                 }
                 return
             }
             guard let n = payload.terms[oldWrong]?[right] else { return }
             removeTermInternal(wrong: oldWrong, right: right)
             payload.terms[w, default: [:]][right] = max(n, payload.terms[w]?[right] ?? 0)
-            save()
+            saveAndSyncTerms()
         }
     }
 
@@ -181,14 +188,14 @@ final class LearningStore {
             if oldRight.isEmpty {
                 if payload.terms[wrong]?[r] == nil {
                     payload.terms[wrong, default: [:]][r] = 0
-                    save()
+                    saveAndSyncTerms()
                 }
                 return
             }
             guard let n = payload.terms[wrong]?[oldRight] else { return }
             removeTermInternal(wrong: wrong, right: oldRight)
             payload.terms[wrong, default: [:]][r] = max(n, payload.terms[wrong]?[r] ?? 0)
-            save()
+            saveAndSyncTerms()
         }
     }
 
@@ -196,14 +203,14 @@ final class LearningStore {
     private func removeTermInternal(wrong: String, right: String) {
         payload.terms[wrong]?[right] = nil
         if payload.terms[wrong]?.isEmpty == true { payload.terms[wrong] = nil }
-        save()
+        saveAndSyncTerms()
     }
 
     func removeTerm(wrong: String, right: String) {
         q.sync {
             payload.terms[wrong]?[right] = nil
             if payload.terms[wrong]?.isEmpty == true { payload.terms[wrong] = nil }
-            save()
+            saveAndSyncTerms()
         }
     }
 
@@ -223,7 +230,7 @@ final class LearningStore {
         guard !hits.isEmpty else { return out }
         q.sync {
             for (w, r) in hits { payload.terms[w, default: [:]][r, default: 0] += 1 }
-            save()
+            saveAndSyncTerms()
         }
         let detail = hits.map { "\($0.0)→\($0.1)" }.joined(separator: "、")
         Diag.log("词表本地替换 \(hits.count) 处：\(detail)")
@@ -244,6 +251,18 @@ final class LearningStore {
         return out
     }
 
+    /// 采纳三端同步文件里的词表（TermSync 拉到远端值时调）：LWW 整字段覆盖，非空才收。
+    /// 这里用裸 save() 不回推——推送方写的这份就是源头，回推只会翻 origin 打乒乓。
+    func adoptTerms(_ raw: [String: Any]) {
+        q.sync {
+            guard let data = try? JSONSerialization.data(withJSONObject: raw),
+                  let typed = try? JSONDecoder().decode([String: [String: Int]].self, from: data),
+                  !typed.isEmpty, typed != payload.terms else { return }
+            payload.terms = typed
+            save()
+        }
+    }
+
     /// 首次启动把核心预置词 seed 进词表（只在 terms 为空时，不覆盖用户已积累/已删除的）。
     /// 只收「错写不可能是用户本意」的对（GTO→cto、大夫→binsoft-dev、week→wiki 这类
     /// 正常词不进来——本地替换是无脑子串替换，正常词会被误伤；它们留在 GLM 的
@@ -260,7 +279,7 @@ final class LearningStore {
         q.sync {
             guard payload.terms.isEmpty else { return }
             for (w, r) in Self.presetTerms { payload.terms[w, default: [:]][r] = 0 }
-            save()
+            saveAndSyncTerms()   // 首次 seed 顺手推上三端同步文件，手机/鸿蒙直接拿到预置词
             Diag.log("预置词表已 seed：\(Self.presetTerms.count) 对")
         }
     }

@@ -137,7 +137,7 @@ struct SettingsView: View {
                     .disabled(newWrong.trimmingCharacters(in: .whitespaces).isEmpty
                               || newRight.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                Text("改完立即生效：① 喂给系统识别器，从源头少听错 ② 转写后本地直接替换，不开 GLM 也管用。首次自带一批常用预置词（蒸鸡→真机、糖床→弹窗…），可删可改。")
+                Text("改完立即生效：① 喂给系统识别器，从源头少听错 ② 转写后本地直接替换，不开 GLM 也管用。首次自带一批常用预置词（蒸鸡→真机、糖床→弹窗…），可删可改。这份词表和手机 / 鸿蒙共用一份（~/.blink/sync/blink_config.json），一端改了，其他端下次同步自动带上。")
                     .font(.caption).foregroundColor(.secondary)
             }
 
