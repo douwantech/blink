@@ -29,7 +29,9 @@ final class UnconfiguredBackend: TerminalBackend {
 
     func sendText(_ s: String) {}
     func clear() {}
-    func restart() {}
+    func restart() {
+        tv.feed(text: "\r\n⚠ 未配置 blinkd，无法重连；请先在手机上补齐 Socket 配置并同步。\r\n")
+    }
     func stop() {}
 }
 

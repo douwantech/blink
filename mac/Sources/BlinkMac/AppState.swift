@@ -384,7 +384,7 @@ final class AppState: ObservableObject {
         case .ssh(let u, let h):
             return await SSHExec.run(user: u, host: h, command: command, timeout: timeout)
         case .unconfigured:
-            return ""   // #25：blinkd 三件套缺失，不降级 SSH，无路可走直接空返回
+            return "⚠ 未配置 blinkd：请在手机上补齐 Socket 配置并同步"
         case .local:
             return ""
         }
@@ -813,6 +813,10 @@ final class AppState: ObservableObject {
     }
 
     func reconnect() {
+        if activeMachine.transport.isUnconfigured {
+            showToast("⚠ 未配置 blinkd，无法重连；请先同步 Socket 配置")
+            return
+        }
         guard !reconnecting else { return }
         reconnecting = true
         term.restart(activeSessionID)   // 本地=重开 shell；blinkd=重连
