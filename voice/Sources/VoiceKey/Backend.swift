@@ -59,8 +59,7 @@ final class AITextPolisher {
     private let kModel = "VoiceKey.aiModel"
     private let kBaseURL = "VoiceKey.aiBaseURL"
     private let kEnabled = "VoiceKey.aiEnabled"
-    private let kHistory = "VoiceKey.aiHistory"
-    private let maxHistory = 30
+    private let maxTermsInPrompt = 40
 
     private init() {
         UserDefaults.standard.register(defaults: [
@@ -160,22 +159,43 @@ final class AITextPolisher {
         规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。
         """
 
+    /// 记进持久化学习库（~/Library/Application Support/VoiceKey/learning.json，删 app 不丢）。
     func recordHistory(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        var arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
-        arr.removeAll { $0 == trimmed }
-        arr.append(trimmed)
-        if arr.count > maxHistory { arr.removeFirst(arr.count - maxHistory) }
-        UserDefaults.standard.set(arr, forKey: kHistory)
+        LearningStore.shared.addHistory(text)
     }
 
+    /// 编辑后提交时的整句修正（供 prompt 学习）。
+    func recordCorrection(asrRaw: String, final: String) {
+        LearningStore.shared.recordCorrection(asrRaw: asrRaw, final: final)
+    }
+
+    /// 拼装动态上下文：近期历史 + 高频错词表 + 整句修正记录（都来自持久化 LearningStore）。
     private func historyBlock() -> String {
-        let history = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
-        guard !history.isEmpty else { return "" }
-        let recent = history.suffix(maxHistory).reversed()
-        let body = recent.map { "- \($0)" }.joined(separator: "\n")
-        return "\n\n用户近期已提交的输入（按从新到旧）：\n\(body)"
+        var parts: [String] = []
+        let history = LearningStore.shared.history
+        if !history.isEmpty {
+            let body = history.reversed().map { "- \($0)" }.joined(separator: "\n")
+            parts.append("用户近期已提交的输入（按从新到旧）：\n\(body)")
+        }
+        // 高频错词表：错→出现最多的对，按次数降序
+        let terms = LearningStore.shared.terms
+            .compactMap { (wrong, m) -> (String, String, Int)? in
+                guard let best = m.max(by: { $0.value < $1.value }) else { return nil }
+                return (wrong, best.key, best.value)
+            }
+            .sorted { $0.2 > $1.2 }
+            .prefix(maxTermsInPrompt)
+        if !terms.isEmpty {
+            let body = terms.map { "- 「\($0.0)」 → 「\($0.1)」（\($0.2) 次）" }.joined(separator: "\n")
+            parts.append("用户的高频错读词表（左=ASR 容易听成，右=用户实际想说，按频次降序；这是最重要的纠错依据）：\n\(body)")
+        }
+        let corrections = LearningStore.shared.corrections
+        if !corrections.isEmpty {
+            let body = corrections.reversed().map { "- 「\($0[0])」 → 「\($0[1])」" }.joined(separator: "\n")
+            parts.append("用户的整句修正记录（左=ASR 原文，右=用户改后版本，按从新到旧）：\n\(body)")
+        }
+        guard !parts.isEmpty else { return "" }
+        return "\n\n" + parts.joined(separator: "\n\n")
     }
 
     func polish(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
