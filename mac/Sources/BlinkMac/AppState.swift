@@ -61,22 +61,28 @@ final class AppState: ObservableObject {
     @Published var transportBySession: [String: String] = [:]
 
     private var toastTask: Task<Void, Never>?
+    private let localBlinkdConfig: (host: String, port: UInt16, token: String)?
+    private let initialMachine: Machine
 
     init() {
         // blinkd 配置：环境变量优先，其次 ~/.config/blinkmac/config.json（双击 .app 用这个）。
         // 有配置 → 本机走 blinkd 枚举真实会话；没有 → 本地示例数据。
-        if let cfg = AppState.blinkdConfig() {
-            machines = [
-                Machine(id: "mbp", name: "MacBook Pro", host: "blinkd \(cfg.host):\(cfg.port)", initials: "M",
-                        grad: Grad.blue, transport: .blinkd(host: cfg.host, port: cfg.port, token: cfg.token)),
-            ]
+        let localConfig = AppState.blinkdConfig()
+        localBlinkdConfig = localConfig
+        if let cfg = localConfig {
+            let local = Machine(id: "mbp", name: "MacBook Pro", host: "blinkd \(cfg.host):\(cfg.port)", initials: "M",
+                                grad: Grad.blue, transport: .blinkd(host: cfg.host, port: cfg.port, token: cfg.token))
+            initialMachine = local
+            machines = [local]
             sessions = [Session(id: "loading", machineID: "mbp", name: "连接中…", dir: "", initials: "··",
                                 grad: Grad.slate, status: .idle, lines: [], placeholder: true)]
             activeMachineID = "mbp"
             activeSessionID = "loading"
         } else {
+            let local = Machine(id: "mbp", name: "MacBook Pro", host: "本地 shell", initials: "M", grad: Grad.blue, transport: .local)
+            initialMachine = local
             machines = [
-                Machine(id: "mbp", name: "MacBook Pro", host: "本地 shell", initials: "M", grad: Grad.blue, transport: .local),
+                local,
                 Machine(id: "studio", name: "Mac Studio", host: "jack@100.96.88.42", initials: "S", grad: Grad.amber, transport: .local),
             ]
             sessions = AppState.sampleSessions()
@@ -294,7 +300,9 @@ final class AppState: ObservableObject {
     /// 套用手机上给它起的显示名，不重复列。KV 空（dev / 未同步）→ 保持本地单机不动。
     func loadCloudMachines() {
         let cloud = MacMachineStore.machines()
-        guard !cloud.isEmpty, case .blinkd(_, let lp, let lt) = machines.first?.transport else { return }
+        guard !cloud.isEmpty, let localConfig = localBlinkdConfig else { return }
+        let lp = localConfig.port
+        let lt = localConfig.token
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple, Grad.slate]
         var out: [Machine] = []
         var thisMacId: String? = nil
@@ -303,7 +311,7 @@ final class AppState: ObservableObject {
             let transport: Transport
             let hostLabel: String
             let isLocalMac: Bool
-            if let b = cm.blinkd {
+            if cm.transport != "ssh", let b = cm.blinkd {
                 let isThisMac = (b.token == lt)
                 // 这台 Mac 连自己的 daemon 走 127.0.0.1 回环（daemon 双模式在 0.0.0.0 也监听），
                 // 不绕 Tailscale/tsnet；其余 blinkd 机器才走 KV 里的地址（tsnet）。
@@ -313,6 +321,13 @@ final class AppState: ObservableObject {
                 hostLabel = isThisMac ? "本机 · \(loopback):\(lp)" : "blinkd \(b.host):\(b.port)"
                 isLocalMac = isThisMac
                 if isThisMac { thisMacId = cm.id }
+            } else if cm.transport == "blinkd" {
+                // #25：声明走 blinkd 但三件套没同步过来（旧 KV 数据 / iOS 未升级物化）。
+                // 这类机器只开 blinkd 没开 sshd——不静默降级 SSH（降级只会连不上，
+                // 还掩盖「配置没同步」真因），标成 unconfigured：rail ⚠、header 写明、不可连。
+                transport = .unconfigured
+                hostLabel = "⚠ blinkd 未配置（更新手机 App 或补齐 Socket 配置）"
+                isLocalMac = false
             } else {
                 // 手机上配的是 SSH：用系统 /usr/bin/ssh + 用户自己的密钥连（跟手机同一套远端脚本）。
                 transport = .ssh(user: cm.user, host: cm.host)
@@ -323,13 +338,16 @@ final class AppState: ObservableObject {
             out.append(Machine(id: cm.id, name: name, host: hostLabel,
                                initials: String(name.prefix(2)).uppercased(),
                                grad: grads[i % grads.count],
-                               online: true, transport: transport, isLocalMac: isLocalMac))
+                               // rail 绿点只给 blinkd 在线（isRemote）；SSH 机器无 daemon 探测、
+                               // 显示「ssh」小标，unconfigured 显示 ⚠（#25 降级可见性）
+                               online: transport.isRemote,
+                               transport: transport, isLocalMac: isLocalMac))
         }
         guard !out.isEmpty else { return }
         // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。
-        if thisMacId == nil, let local = machines.first {
-            out.insert(local, at: 0)
-            thisMacId = local.id
+        if thisMacId == nil {
+            out.insert(initialMachine, at: 0)
+            thisMacId = initialMachine.id
         }
         machines = out
         activeMachineID = thisMacId ?? out[0].id
@@ -365,6 +383,8 @@ final class AppState: ObservableObject {
                                         timeout: timeout, finishMarker: marker)
         case .ssh(let u, let h):
             return await SSHExec.run(user: u, host: h, command: command, timeout: timeout)
+        case .unconfigured:
+            return "⚠ 未配置 blinkd：请在手机上补齐 Socket 配置并同步"
         case .local:
             return ""
         }
@@ -389,6 +409,31 @@ final class AppState: ObservableObject {
 
     private var observingCloud = false
 
+    /// #25 顺带：KV 远端变更 / 回前台时重读机器清单。以前只在启动读一次，手机上改完
+    /// 机器配置 Mac 端必须退出重开才生效。指纹（id/name/host/transport）没变就不动；
+    /// 变了才重建；连接参数变化的机器需丢掉旧 backend（它持有旧 token / 旧错误页），
+    /// 其他机器正在用的会话保持不动。当前选中的机器若还在清单里就保持选中。
+    func reloadMachinesIfChanged() {
+        let before = machines.map { "\($0.id)|\($0.name)|\($0.host)|\($0.transport.fingerprint)" }
+        let previousTransports = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0.transport.fingerprint) })
+        let keepActive = activeMachineID
+        loadCloudMachines()
+        let after = machines.map { "\($0.id)|\($0.name)|\($0.host)|\($0.transport.fingerprint)" }
+        guard before != after else {
+            // 清单没变：loadCloudMachines 末尾会把 activeMachineID 重置回本机——恢复用户选择
+            if machines.contains(where: { $0.id == keepActive }) { activeMachineID = keepActive }
+            return
+        }
+        if machines.contains(where: { $0.id == keepActive }) { activeMachineID = keepActive }
+        let changedIDs = Set(machines.compactMap { machine in
+            previousTransports[machine.id].map { $0 != machine.transport.fingerprint } == true ? machine.id : nil
+        })
+        for session in sessions where changedIDs.contains(session.machineID) {
+            term.rebuild(session.id)
+        }
+        Task { await enumerateAll(); loadCloudTabs() }   // 新机器补枚举 + KV 标签并进来
+    }
+
     /// 实时监听休息变化：iCloud KV 外部变更（手机改了推过来）+ 回前台补拉
     /// （didChangeExternally 不可靠，Blink 自己也靠回前台 pull）。
     func startObservingCloud() {
@@ -397,6 +442,7 @@ final class AppState: ObservableObject {
         NSUbiquitousKeyValueStore.default.synchronize()
         let reload: (Notification) -> Void = { [weak self] _ in
             Task { @MainActor in
+                self?.reloadMachinesIfChanged()   // #25 顺带：机器清单也跟手（以前要重启 Mac 才生效）
                 self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed()
                 await self?.adoptOrphanSessions()
             }
@@ -767,6 +813,10 @@ final class AppState: ObservableObject {
     }
 
     func reconnect() {
+        if activeMachine.transport.isUnconfigured {
+            showToast("⚠ 未配置 blinkd，无法重连；请先同步 Socket 配置")
+            return
+        }
         guard !reconnecting else { return }
         reconnecting = true
         term.restart(activeSessionID)   // 本地=重开 shell；blinkd=重连

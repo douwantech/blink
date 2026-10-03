@@ -58,17 +58,38 @@ enum Transport {
     /// 手机上配成 SSH 的机器：Mac 端用系统 /usr/bin/ssh 连（开会话走 SSHBackend，
     /// 跑单条命令走 SSHExec），要免密才行。
     case ssh(user: String, host: String)
+    /// #25：KV 里声明走 blinkd（transport=="blinkd"）但 daemon 三件套没同步过来
+    /// （旧数据 / iOS 未升级物化）。这类机器只开 blinkd 没开 sshd——不静默降级 SSH
+    /// （降级只会连不上，还掩盖「配置没同步」这个真因），rail 标 ⚠、header 写明，
+    /// 手机升级后启动会物化旧配置；无内置默认的机器需补齐 Socket 字段。
+    case unconfigured
 
     var isRemote: Bool { if case .blinkd = self { return true }; return false }
+    var isUnconfigured: Bool { if case .unconfigured = self { return true }; return false }
     /// 能否「自动」枚举/探测：SSH 要免密且每次最多等 8 秒，批量拉会话时跳过它，
     /// 改用 iCloud KV 里手机配的标签。**不要拿它当「能不能跑命令」的门槛** ——
     /// SSH 跑单条命令是通的，误用会让切 CLI、刷新这类动作在 SSH 机器上静默失效。
-    var connectable: Bool { if case .ssh = self { return false }; return true }
+    var connectable: Bool {
+        if case .ssh = self { return false }
+        if case .unconfigured = self { return false }
+        return true
+    }
     /// 顶栏徽标文案：blinkd 连接直接带上实际 IP（本机 127.0.0.1 / 远程对应 IP），
     /// 一眼看清走的是哪台/哪条链路，不再只写「本地」这种模糊词。
     var badge: String {
         if case .blinkd(let host, _, _) = self { return "blinkd · \(host)" }
+        if case .unconfigured = self { return "blinkd 未配置" }
         return "blinkd"
+    }
+
+    /// 机器清单热重载（#25 顺带）用的变化指纹：内容全同视为没变，避免 KV 每次回调都重建 rail。
+    var fingerprint: String {
+        switch self {
+        case .local: return "local"
+        case .blinkd(let h, let p, let t): return "blinkd(\(h):\(p):\(t.hashValue))"
+        case .ssh(let u, let h): return "ssh(\(u)@\(h))"
+        case .unconfigured: return "unconfigured"
+        }
     }
 }
 

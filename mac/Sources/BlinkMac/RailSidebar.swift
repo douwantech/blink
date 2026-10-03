@@ -15,11 +15,27 @@ struct MachineRail: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Color.white.opacity(0.9), lineWidth: m.id == state.activeMachineID ? 2.5 : 0)
                         )
+                        // #25 降级可见性：blinkd=在线绿点；按 SSH 连的=teal「ssh」小标；
+                        // 声明 blinkd 但配置没同步=amber ⚠（不降级 SSH，去手机重新保存机器）。
                         .overlay(alignment: .bottomTrailing) {
-                            if m.online {
+                            if m.transport.isUnconfigured {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.wait)
+                                    .overlay(Circle().stroke(Theme.bg, lineWidth: 2).frame(width: 14, height: 14))
+                                    .offset(x: 1, y: 1)
+                            } else if m.online {
                                 Circle().fill(Theme.work)
                                     .frame(width: 11, height: 11)
                                     .overlay(Circle().stroke(Theme.bg, lineWidth: 2))
+                                    .offset(x: 1, y: 1)
+                            } else if case .ssh = m.transport {
+                                Text("ssh")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(Theme.teal)
+                                    .padding(.horizontal, 2)
+                                    .background(Capsule().fill(Theme.bg).frame(width: 16, height: 11))
+                                    .overlay(Capsule().stroke(Theme.teal.opacity(0.7), lineWidth: 0.8).frame(width: 16, height: 11))
                                     .offset(x: 1, y: 1)
                             }
                         }
