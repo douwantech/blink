@@ -25,7 +25,9 @@ resources:
       memorySize: 1024
       runtime: custom.debian10
       code: ./cmd
-      instanceConcurrency: 100
+      # 单实例并发上限：RDS 实例与 ai-printer-prod 共用，限并发防意外扇入
+      # （#29 review P3）。DB 连接另有 main.go SetMaxOpenConns(8) 兜底。
+      instanceConcurrency: 20
       customRuntimeConfig:
         port: 9000
         command:
