@@ -33,11 +33,21 @@ final class ServerConfigSync: ObservableObject {
   @Published private(set) var isOnline = false
   @Published private(set) var isLoading = false
 
-  private let baseURL = URL(string: "https://blink-api.douwantech.com")!
+  private let baseURL: URL = {
+    #if BLINK_PUBLISHING_OPTION_DEVELOPER
+    // A simulator can point at an unavailable endpoint to exercise offline
+    // cache and retry behavior without changing the production server.
+    if let value = ProcessInfo.processInfo.environment["BLINK_CONFIG_SERVER_URL"],
+       let url = URL(string: value) { return url }
+    #endif
+    return URL(string: "https://blink-api.douwantech.com")!
+  }()
   private let tokenService = "com.douwantech.blink.config-server"
   private let tokenAccount = "session"
   private let defaults = UserDefaults.standard
+  private let dirtyKey = "BlinkServer.personalDirty"
   private var applying = false
+  private var isUploading = false
   private var uploadWork: DispatchWorkItem?
 
   private init() { username = defaults.string(forKey: "BlinkServer.username") }
@@ -48,8 +58,6 @@ final class ServerConfigSync: ObservableObject {
     guard let data = defaults.data(forKey: "BlinkMachineStore.machines") else { return false }
     return !((try? JSONDecoder().decode([BlinkMachine].self, from: data))?.isEmpty ?? true)
   }
-  var canEditSharedMachines: Bool { hasSession && isOnline && defaults.bool(forKey: "BlinkServer.canWrite") }
-  var isReadOnly: Bool { !hasSession || !isOnline }
 
   private var token: String? {
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -100,12 +108,15 @@ final class ServerConfigSync: ObservableObject {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try JSONEncoder().encode(["username": username, "password": password])
     let (data, response) = try await URLSession.shared.data(for: request)
-    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-      throw NSError(domain: "BlinkServer", code: 401, userInfo: [NSLocalizedDescriptionKey: "用户名或密码错误"])
+    guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+    guard http.statusCode == 200 else {
+      let message = http.statusCode == 401 ? "用户名或密码错误" : "服务器暂时不可用（HTTP \(http.statusCode)）"
+      throw NSError(domain: "BlinkServer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
     }
     let login = try JSONDecoder().decode(ServerLoginResponse.self, from: data)
-    if let cached = cachedSnapshot(), cached.user.id != login.user.id {
+    if cachedSnapshot()?.user.id != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
+      defaults.removeObject(forKey: dirtyKey)
     }
     try saveToken(login.token)
     self.username = login.user.username
@@ -132,6 +143,7 @@ final class ServerConfigSync: ObservableObject {
       guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
       if http.statusCode == 304 {
         isOnline = true
+        schedulePendingUpload()
         return
       }
       if http.statusCode == 401 {
@@ -147,6 +159,7 @@ final class ServerConfigSync: ObservableObject {
       try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: cacheURL.path)
       apply(snapshot, replaceTabs: replaceTabs)
       isOnline = true
+      schedulePendingUpload()
     } catch {
       isOnline = false
       if let snapshot = cachedSnapshot(), snapshot.user.username == username {
@@ -171,22 +184,45 @@ final class ServerConfigSync: ObservableObject {
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
     }
-    if let data = try? JSONEncoder().encode(snapshot.tabs) {
+    let localDirty = defaults.bool(forKey: dirtyKey)
+    let localTabs = TabStateStore.shared.snapshot()
+    let localTime = localTabs.updatedAt ?? 0
+    let remoteTime = snapshot.tabs.updatedAt ?? 0
+    let retainLocalTabs = (localDirty && localTime >= remoteTime) ||
+      (!replaceTabs && localTime > remoteTime)
+    let selectedTabs = retainLocalTabs ? localTabs : snapshot.tabs
+    if let data = try? JSONEncoder().encode(selectedTabs) {
       defaults.set(data, forKey: TabStateStore.kSyncKey)
     }
-    if replaceTabs { TabStateStore.shared.replaceFromServer(snapshot.tabs) }
-    TabAgentStore.shared.replaceAll(snapshot.agents)
-    if let machine = snapshot.recentSelection["machineId"], !machine.isEmpty {
-      defaults.set(machine, forKey: "BlinkTabFilterMachineId")
-    } else {
-      defaults.removeObject(forKey: "BlinkTabFilterMachineId")
+    // On an active scene, the existing tab reconciliation observer reads the
+    // mirror and merges remote additions/tombstones without replacing a live
+    // terminal. First login has no live scene to reconcile, so seed the store.
+    if replaceTabs && !retainLocalTabs {
+      TabStateStore.shared.replaceFromServer(snapshot.tabs)
+    }
+    if !localDirty {
+      TabAgentStore.shared.replaceAll(snapshot.agents)
+      if let machine = snapshot.recentSelection["machineId"], !machine.isEmpty {
+        defaults.set(machine, forKey: "BlinkTabFilterMachineId")
+      } else {
+        defaults.removeObject(forKey: "BlinkTabFilterMachineId")
+      }
+    }
+    if retainLocalTabs && !localDirty {
+      defaults.set(true, forKey: dirtyKey)
     }
     defaults.set(snapshot.user.isAdmin && snapshot.user.canWrite, forKey: "BlinkServer.canWrite")
     NotificationCenter.default.post(name: Self.didApply, object: nil)
   }
 
   func schedulePersonalUpload() {
-    guard hasSession, isOnline, !applying else { return }
+    guard !applying else { return }
+    defaults.set(true, forKey: dirtyKey)
+    schedulePendingUpload()
+  }
+
+  private func schedulePendingUpload() {
+    guard hasSession, isOnline, defaults.bool(forKey: dirtyKey) else { return }
     uploadWork?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self else { return }
@@ -197,7 +233,13 @@ final class ServerConfigSync: ObservableObject {
   }
 
   @MainActor private func uploadPersonal() async {
-    guard let token, isOnline else { return }
+    guard let token, isOnline, !isUploading, defaults.bool(forKey: dirtyKey) else { return }
+    isUploading = true
+    defaults.set(false, forKey: dirtyKey)
+    defer {
+      isUploading = false
+      if isOnline { schedulePendingUpload() }
+    }
     let tabs = TabStateStore.shared.snapshot()
     let selection = ["machineId": defaults.string(forKey: "BlinkTabFilterMachineId") ?? "",
                      "tabId": tabs.currentId?.uuidString ?? ""]
@@ -215,8 +257,10 @@ final class ServerConfigSync: ObservableObject {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       do {
         let (_, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 204 else { isOnline = false; return }
-      } catch { isOnline = false; return }
+        guard (response as? HTTPURLResponse)?.statusCode == 204 else {
+          defaults.set(true, forKey: dirtyKey); isOnline = false; return
+        }
+      } catch { defaults.set(true, forKey: dirtyKey); isOnline = false; return }
     }
   }
 }

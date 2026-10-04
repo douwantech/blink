@@ -161,9 +161,6 @@ enum HostReachability {
       return arr
     }
     set {
-      #if !targetEnvironment(macCatalyst)
-      if !ServerConfigSync.shared.canEditSharedMachines { return }
-      #endif
       // #25：写入路径统一物化（保存表单 / 调序 / 远端采纳后重写都走这里），
       // 让镜像进 KV 与 Mac 同步文件的数据自带生效配置，不依赖各端自己带内置默认。
       let out = newValue.map { $0.blinkdMaterialized }
@@ -839,6 +836,12 @@ final class MachineListViewController: UITableViewController {
       barButtonSystemItem: .add, target: self, action: #selector(addTapped)
     )
     navigationItem.rightBarButtonItems = [add, editButtonItem]
+    #if !targetEnvironment(macCatalyst)
+    // Shared machine changes go through /admin. Keep the iPhone list usable for
+    // viewing connections while making its unavailable edit actions explicit.
+    add.isEnabled = false
+    editButtonItem.isEnabled = false
+    #endif
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -854,7 +857,14 @@ final class MachineListViewController: UITableViewController {
 
   private func _footerText() -> String {
     let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
+    #if !targetEnvironment(macCatalyst)
+    let syncStatus = ServerConfigSync.shared.isOnline
+      ? "已连接配置服务器"
+      : "离线：个人标签保存在本机，联网后自动同步"
+    return "\(syncStatus)。共享机器只读；添加、修改和调序请在 blink-api.douwantech.com/admin 操作。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #else
     return "点选机器进入编辑/删除；右上「编辑」后可拖动调序，顺序在 iOS / Mac / 鸿蒙间同步。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #endif
   }
 
   override func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
@@ -918,7 +928,11 @@ final class MachineListViewController: UITableViewController {
   // 数组顺序即展示顺序（SpaceController 切机器条、MacThreeColumn、Mac、鸿蒙都按它渲染），
   // 写回后 CloudConfigSync 自动镜像 iCloud KV + 推 Mac 同步文件，多端跟随。
   override func tableView(_ tv: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+    #if !targetEnvironment(macCatalyst)
+    return false
+    #else
     true
+    #endif
   }
 
   // 编辑态只做调序，不出系统删除圈（删除仍在机器表单里）；不实现的话
@@ -938,6 +952,12 @@ final class MachineListViewController: UITableViewController {
   }
 
   private func pushForm(editing machine: BlinkMachine?) {
+    #if !targetEnvironment(macCatalyst)
+    let alert = UIAlertController(title: "机器配置只读", message: "请在 blink-api.douwantech.com/admin 管理共享机器。", preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "知道了", style: .default))
+    present(alert, animated: true)
+    return
+    #endif
     let form = MachineFormViewController(editing: machine)
     navigationController?.pushViewController(form, animated: true)
   }

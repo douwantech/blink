@@ -207,9 +207,6 @@ final class TabAgentStore: NSObject {
   }
 
   func setAgent(_ kind: AgentKind, machineId: String, title: String) {
-    #if !targetEnvironment(macCatalyst)
-    if ServerConfigSync.shared.isReadOnly { return }
-    #endif
     var m = all
     let k = Self.storeKey(machineId: machineId, title: title)
     if kind == .claude { m.removeValue(forKey: k) } else { m[k] = kind.id }

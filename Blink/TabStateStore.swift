@@ -65,9 +65,6 @@ final class TabStateStore {
   func snapshot() -> TabState { state }
 
   func update(_ mutate: (inout TabState) -> Void) {
-    #if !targetEnvironment(macCatalyst)
-    if ServerConfigSync.shared.isReadOnly { return }
-    #endif
     let beforeTabs = state.tabs
     let beforeClosed = state.closedIds ?? []
     mutate(&state)
@@ -76,7 +73,7 @@ final class TabStateStore {
       state.updatedAt = Date().timeIntervalSince1970
     }
     scheduleSave()
-    DispatchQueue.main.async { ServerConfigSync.shared.schedulePersonalUpload() }
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   func replaceFromServer(_ incoming: TabState) {
