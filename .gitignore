@@ -88,3 +88,7 @@ harmony/pad/src/main/resources/rawfile/avatars/
 /build-watch-sim/
 WatchAssistant/build/
 WatchAssistant/build-dev/
+
+# 配置服务器 (#29)：部署密钥与 Dockerfile 抽取的构建产物
+/server/env/
+/server/cmd/

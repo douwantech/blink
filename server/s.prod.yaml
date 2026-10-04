@@ -1,0 +1,60 @@
+edition: 3.0.0
+name: blink-config-server-prod
+access: douwan
+resources:
+  BlinkConfigServer:
+    component: fc3
+    actions:
+      # 用仓库 Dockerfile（golang:1.26-alpine 多阶段构建）编译出静态二进制，
+      # 抽到 ./cmd 交给 custom.debian10 runtime —— 构建定义只有 Dockerfile 一份，
+      # 部署形态与 ai-printer-api 同款（fc3 + 二进制，无需 ACR）。
+      pre-deploy:
+        - run: docker build -t blink-config-build .
+          path: ./
+        - run: docker rm -f blink-extract >/dev/null 2>&1; docker create --name blink-extract blink-config-build && docker cp blink-extract:/blink-server ./cmd/blink-server && docker rm blink-extract
+          path: ./
+    props:
+      region: cn-hangzhou
+      role: 'AliyunFcDefaultRole'
+      description: 'Blink config server (#29)'
+      timeout: 60
+      diskSize: 512
+      internetAccess: true
+      functionName: blink-config-server-prod
+      cpu: 1
+      memorySize: 1024
+      runtime: custom.debian10
+      code: ./cmd
+      # 单实例并发上限：RDS 实例与 ai-printer-prod 共用，限并发防意外扇入
+      # （#29 review P3）。DB 连接另有 main.go SetMaxOpenConns(8) 兜底。
+      instanceConcurrency: 20
+      customRuntimeConfig:
+        port: 9000
+        command:
+          - './blink-server'
+      vpcConfig:
+        securityGroupId: sg-bp16hara3tw95won748y
+        vpcId: vpc-bp1o7v3bxwomtpnkiynl0
+        vSwitchIds:
+          - vsw-bp1lc08bq632p32koztl3
+      logConfig:
+        project: 'aliyun-fc-cn-hangzhou-97112094-8709-5991-8cc4-cf288c9db48a'
+        logstore: 'function-log'
+        enableRequestMetrics: true
+        enableInstanceMetrics: true
+        logBeginRule: DefaultRegex
+      environmentVariables: ${json(file("./env/prod.json"))}
+      triggers:
+        - triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+            disableURLInternet: false
+          triggerName: blink-config-http
+          description: 'HTTP trigger for Blink config server'
+          qualifier: LATEST
+          triggerType: http
