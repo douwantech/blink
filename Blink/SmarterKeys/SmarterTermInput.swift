@@ -697,10 +697,16 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     guard let device = device else { return }
     device.write(text)
     // 回车只发一个、但停一拍再发：claude 这类 TUI 会把紧跟文本的回车并进
-    // 粘贴内容（表现为要手动再按一次回车）。不能补发第二个回车——/rewind
-    // 这类弹菜单的命令会被第二下直接确认关掉。
+    // 粘贴内容（表现为要手动再按一次回车）。不能盲补第二个回车——/rewind
+    // 这类弹菜单的命令会被第二下直接确认关掉（#27 改成按 PTY 输出判定的
+    // 条件补偿，见 TurnGuarantee）。
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
       self?.device?.write("\r")
+    }
+    // #27 起轮保障：注入后数 PTY 输出，真没起轮才补回车 / C-u 重打。
+    // 斜杠命令在 begin 内部直接豁免（静态菜单怕补刀）。
+    TurnGuarantee.shared.begin(device: device, text: text) { [weak view] in
+      view?.showToast("⚠️ 消息可能没送达，建议重发", isError: true)
     }
   }
 

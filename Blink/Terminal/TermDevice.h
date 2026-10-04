@@ -74,6 +74,9 @@
 @property (readonly) UIView<TermInput> *input;
 @property id<TermDeviceDelegate> delegate;
 @property id<TermDeviceReadlineListener> readlineListener;
+/// PTY 输出观察（#27 起轮保障用）：每个读到的数据块回调一次字节数（UTF-8 处理前）。
+/// 只读流量不做拦截，nil = 无观察（常态）。io 队列回调，赋值方自行保证线程安全。
+@property (copy, nullable) void (^onPTYOutput)(NSInteger byteCount);
 @property (nonatomic) BOOL rawMode;
 @property (nonatomic) BOOL autoCR;
 @property (nonatomic) BOOL secureTextEntry;

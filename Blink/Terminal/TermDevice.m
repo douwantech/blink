@@ -63,6 +63,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 @interface ViewStream: NSObject
   @property TermView *view;
+  /// 输出观察（#27 起轮保障）：每个读到的数据块回调一次字节数。由 TermDevice
+  /// 在 init 里接上、转发给自己的 onPTYOutput；nil = 无观察（常态）。
+  @property (nonatomic, copy, nullable) void (^onData)(NSInteger byteCount);
 @end
 
 @implementation ViewStream {
@@ -89,6 +92,10 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   return ^(bool done, dispatch_data_t data, int error) {
     if (!data) {
       return;
+    }
+
+    if (_onData) {
+      _onData((NSInteger)dispatch_data_get_size(data));
     }
 
     if (_splitChar) {
@@ -193,6 +200,27 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
     
     _outStream = [[ViewStream alloc] initWithQueue:_queue fd:_poutput[0]];
     _errStream = [[ViewStream alloc] initWithQueue:_queue fd:_perror[0]];
+
+    // #27 起轮保障：两条输出流的字节数都转发给 onPTYOutput。
+    // onPTYOutput 的赋值 / 清空都发生在主线程，但 io 队列里直接读原子属性仍
+    // 存在 getter-load 与 setter-release 之间的窗口（真机实测 double-free
+    // abort 在 -[TermDevice init] 的转发 block 里），所以这里统一派发回主线程
+    // 调用，读写自然串行。每数据块一次 main dispatch，终端输出块频下可忽略。
+    __weak TermDevice *wself = self;
+    void (^hook)(NSInteger) = ^(NSInteger count) {
+      TermDevice *s = wself;
+      if (s == nil) {
+        return;
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        void (^cb)(NSInteger) = s.onPTYOutput;
+        if (cb != nil) {
+          cb(count);
+        }
+      });
+    };
+    _outStream.onData = hook;
+    _errStream.onData = hook;
   }
   
   return self;
