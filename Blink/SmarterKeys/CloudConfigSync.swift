@@ -76,6 +76,15 @@ final class CloudConfigSync: NSObject {
   @objc static func start() { shared._start() }
 
   private func _start() {
+    #if !targetEnvironment(macCatalyst)
+    // iPhone uses the server snapshot (or its local cache) as its config source.
+    ServerConfigSync.shared.restoreCachedSnapshot()
+    return
+    #endif
+    if ServerConfigSync.shared.hasSession {
+      ServerConfigSync.shared.restoreCachedSnapshot()
+      return
+    }
     guard !started else { return }
     started = true
 
@@ -112,6 +121,7 @@ final class CloudConfigSync: NSObject {
   // MARK: 本地 → iCloud
 
   @objc private func localChanged() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     guard !applyingRemote else { return }   // 拉回写本地时不要再回推
     schedulePush()
     // 顺手让 Mac 侧的同步文件也跟上（3s 合并窗口直推，不吃 60s 节流），
@@ -134,6 +144,7 @@ final class CloudConfigSync: NSObject {
   /// 删除是通过「整份数组/字典被重写成更短的值」传播的（machines、tabs 等都是单 key 存整份），
   /// 不靠 removeObject，从而避免重装窗口期把云端备份误删。
   private func pushToCloud() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     // 只同步「真正写进持久域」的值：register(defaults:) 的 seed 默认会让 object(forKey:) 返回非 nil，
     // 但不代表本机真设过——全新安装若把 seed 默认推上 iCloud，会覆盖其它设备已有的真实数据（本次 workDir 丢失根因）。
     let persisted = persistedKeys()
@@ -154,6 +165,7 @@ final class CloudConfigSync: NSObject {
   // MARK: iCloud → 本地
 
   @objc private func cloudChanged(_ note: Notification) {
+    guard !ServerConfigSync.shared.hasSession else { return }
     let reason = (note.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? NSNumber)?.intValue ?? -1
     switch reason {
     case NSUbiquitousKeyValueStoreServerChange:
@@ -168,6 +180,7 @@ final class CloudConfigSync: NSObject {
   }
 
   private func applyFromCloud(_ keysToApply: [String]) {
+    guard !ServerConfigSync.shared.hasSession else { return }
     guard !keysToApply.isEmpty else { return }
     applyingRemote = true
     var changed = false
@@ -192,6 +205,7 @@ final class CloudConfigSync: NSObject {
   /// tab 用 last-writer-wins（adoptSyncedIfNewer 按 updatedAt 决定是否真采纳），所以这里即便把
   /// 稍旧的云端值写进 mirror 也不会覆盖更新的本地 tab。
   @objc func pullNow() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     guard started else { return }
     kv.synchronize()
     var toApply: [String] = []
@@ -265,6 +279,7 @@ final class ConfigSyncPush: NSObject {
 
   /// 节流入口：前后台切换都打这里
   @objc func pushSoon() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     guard Date().timeIntervalSince(lastPush) > 60 else { return }
     lastPush = Date()
     DispatchQueue.global(qos: .utility).async { self.pushNow() }
@@ -286,6 +301,7 @@ final class ConfigSyncPush: NSObject {
   }
 
   private func pushNow() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     var payload = Self.exportJSON(slim: false)?.base64EncodedString() ?? ""
     // blinkd 帧长上限 u16=64KB：超了就砍掉学习类大头（history/corrections/terms）
     if payload.count > 60_000 {
@@ -518,6 +534,7 @@ final class ConfigSyncPull: NSObject {
   // MARK: 拉取 + 采纳
 
   func pullNow() {
+    guard !ServerConfigSync.shared.hasSession else { return }
     guard !pullBusy, let ep = firstEndpoint() else { return }
     pullBusy = true
     BlinkdExecOnce.run(host: ep.host, port: ep.port, token: ep.token,
@@ -535,6 +552,7 @@ final class ConfigSyncPull: NSObject {
   }
 
   private func adopt(_ cfg: [String: Any]) {
+    guard !ServerConfigSync.shared.hasSession else { return }
     // 自己（或别的 iOS 设备）写的文件不采纳——iOS 之间走 iCloud，别绕道 Mac 文件回声。
     // 鸿蒙手机写 origin=harmony，鸿蒙平板写 harmony-pad，都要采纳。
     guard (cfg["origin"] as? String)?.hasPrefix("harmony") == true else { return }

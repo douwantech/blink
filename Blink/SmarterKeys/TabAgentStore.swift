@@ -207,11 +207,15 @@ final class TabAgentStore: NSObject {
   }
 
   func setAgent(_ kind: AgentKind, machineId: String, title: String) {
+    #if !targetEnvironment(macCatalyst)
+    if ServerConfigSync.shared.isReadOnly { return }
+    #endif
     var m = all
     let k = Self.storeKey(machineId: machineId, title: title)
     if kind == .claude { m.removeValue(forKey: k) } else { m[k] = kind.id }
     d.set(m, forKey: Self.key)
     NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   /// 同步文件/KV 拉回来的整份字典（CloudConfigSync 用）
