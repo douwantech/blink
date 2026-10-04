@@ -13,6 +13,28 @@ protocol TerminalBackend: AnyObject {
     func stop()
 }
 
+/// #25：blinkd 三件套缺失（声明走 blinkd 但配置没同步过来）的机器不降级 SSH，
+/// 也开不出真连接——给个只显示一段说明的假终端，点到残留会话行时不误导、不挂起。
+@MainActor
+final class UnconfiguredBackend: TerminalBackend {
+    private let tv: TerminalView
+    var view: TerminalView { tv }
+
+    init(machineName: String) {
+        tv = TerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
+                          font: makeFont(), options: TerminalOptions.default)
+        applyTheme(tv)
+        tv.feed(text: "\r\n⚠ 「\(machineName)」声明走 blinkd，但 daemon 配置没同步到这台 Mac，不降级 SSH。\r\n更新并打开手机 App，或在手机上补齐 Socket 配置；同步后即可连接。\r\n\r\n")
+    }
+
+    func sendText(_ s: String) {}
+    func clear() {}
+    func restart() {
+        tv.feed(text: "\r\n⚠ 未配置 blinkd，无法重连；请先在手机上补齐 Socket 配置并同步。\r\n")
+    }
+    func stop() {}
+}
+
 private func makeFont() -> NSFont { NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular) }
 
 private func applyTheme(_ tv: TerminalView) {
@@ -189,6 +211,8 @@ final class TerminalManager {
             b = RemoteBackend(host: h, port: p, token: t, exec: exec,
                               uploadImageOnPaste: !machine.isLocalMac, onToast: onToast,
                               onTransport: { [weak self, sid = session.id] kind in self?.onTransport?(sid, kind) })
+        case .unconfigured:
+            b = UnconfiguredBackend(machineName: machine.name)
         case .ssh(let user, let host):
             // 系统 ssh + 远端 tmux+claude（resume-or-new）。dir 是远端路径，不在本地展开。
             // 空/~ 时用 "."（ssh 登录落点就是远端 $HOME），别用会被单引号挡住展开的 $HOME。

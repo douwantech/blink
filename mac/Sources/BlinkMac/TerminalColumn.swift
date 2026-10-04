@@ -154,6 +154,8 @@ struct TerminalColumn: View {
             badge("本机", Theme.sub)
         case .ssh:
             badge("SSH", Theme.teal)
+        case .unconfigured:
+            badge("⚠ blinkd 未配置", Theme.wait)   // #25：不降级 SSH，去手机重新保存机器
         case .blinkd:
             switch state.transportBySession[state.activeSessionID] {
             case "LAN 直连": badge("LAN 直连", Theme.green2)   // 同网 IP 直连（不经 Tailscale）
