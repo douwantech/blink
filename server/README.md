@@ -37,7 +37,31 @@ All JSON uses UTF-8. Authenticated requests send `Authorization: Bearer <token>`
 
 Only admins with `canWrite=true` can change shared machines. Every signed-in user can update their own tabs, recent selection, and agent choices; these endpoints always use the authenticated user ID. Admins can manage accounts even when `canWrite=false`. Other users cannot edit machines or accounts.
 
-The service does not currently enforce a login rate limit. Configure rate limiting at the FC/API gateway before exposing the public endpoint.
+Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts per username per five minutes across FC instances. Configure an additional IP-level limit at the FC/API gateway to cover floods of arbitrary usernames. The custom domain is HTTPS-only.
+
+## Admin page
+
+`/admin/login` is the public sign-in page. After an existing admin signs in, `/admin` shows shared machines, accounts, and read-only personal tabs/recent selections. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
+
+The machine form includes a `notes` field. The API retains this and other unrecognized machine fields, so editing an existing machine does not discard newer client fields.
+
+## Import an existing Mac snapshot
+
+The Mac sync file `~/.blink/sync/blink_config.json` contains `machines`, `tabs`, `agents`, `currentId`, and `filterMachineId`. It also contains machine connection tokens. Obtain a copy through a private channel and keep it outside the repository. The import targets the account that signs in: shared machines are upserted, while that account's tabs, agents, and recent selection are replaced. The tool does not delete machines already on the server; compare IDs before import if the shared library is already populated. Re-running the import is safe for these same values, though it increments config versions again.
+
+From `server/`, preview without credentials:
+
+```sh
+go run ./tools/import-config --input /private/path/blink_config.json
+```
+
+To apply, set `BLINK_IMPORT_USER` and `BLINK_IMPORT_PASSWORD` in the local shell or secret store, then run:
+
+```sh
+go run ./tools/import-config --input /private/path/blink_config.json --base-url https://blink-api.douwantech.com --apply
+```
+
+The account must have both `isAdmin` and `canWrite`. The tool checks that every source machine ID appears in the resulting snapshot and that tabs, agents, and selection match. It prints counts and machine IDs, never token values or passwords. If a request fails partway through, fix the cause and rerun it.
 
 ## Deployment prerequisites
 
