@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blink 配置管理</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f4f6fb; color:#17223b }
+    * { box-sizing:border-box }
+    body { margin:0 }
+    button,input,select,textarea { font:inherit }
+    button { cursor:pointer; border:0; border-radius:9px; padding:9px 14px; color:#fff; background:#315fe8 }
+    button.secondary { color:#3150a2; background:#e9eeff }
+    button.danger { color:#b42834; background:#fff0f1 }
+    button:disabled { opacity:.5; cursor:not-allowed }
+    input,select,textarea { width:100%; padding:9px 11px; border:1px solid #cbd3e2; border-radius:8px; background:#fff; color:#17223b }
+    label { display:block; font-size:13px; font-weight:600; margin:12px 0 5px }
+    h1,h2,h3,p { margin-top:0 }
+    h1 { font-size:24px; letter-spacing:-.03em }
+    h2 { font-size:18px }
+    .muted { color:#64748b; font-size:13px }
+    .top { background:#fff; border-bottom:1px solid #e0e5ee; padding:18px max(24px,calc((100vw - 1160px)/2)); display:flex; justify-content:space-between; align-items:center; gap:16px }
+    .top h1 { margin:0 }
+    main { max-width:1160px; margin:26px auto; padding:0 20px 60px }
+    .card { background:#fff; border:1px solid #e0e5ee; border-radius:14px; padding:22px; box-shadow:0 5px 20px #17223b08; margin-bottom:22px }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap }
+    .between { justify-content:space-between }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 16px }
+    .three { grid-template-columns:repeat(3,minmax(0,1fr)) }
+    .table-wrap { overflow:auto }
+    table { border-collapse:collapse; width:100%; min-width:660px }
+    th,td { border-bottom:1px solid #ebeff6; padding:12px 8px; text-align:left; font-size:14px; vertical-align:middle }
+    th { color:#59677f; font-weight:600; font-size:12px }
+    td .row button { padding:6px 9px; font-size:12px }
+    .pill { display:inline-block; padding:4px 8px; border-radius:20px; background:#eff3fc; font-size:12px }
+    .pill.off { color:#b42834; background:#fff0f1 }
+    .login-wrap { max-width:400px; margin:11vh auto; padding:20px }
+    .login-wrap .card { padding:30px }
+    .login-wrap button { width:100%; margin-top:20px }
+    .error { color:#b42834; min-height:20px; font-size:13px; margin-top:10px }
+    .notice { color:#146c42; min-height:20px; font-size:13px; margin:10px 0 }
+    dialog { border:0; border-radius:14px; padding:24px; width:min(650px,calc(100vw - 24px)); max-height:90vh; overflow:auto; box-shadow:0 15px 60px #17223b40 }
+    dialog::backdrop { background:#0d1b37aa }
+    details { border:1px solid #e0e5ee; border-radius:10px; margin:8px 0; padding:12px }
+    summary { cursor:pointer; font-weight:600 }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f5f7fb; border-radius:8px; padding:14px; font-size:12px }
+    @media(max-width:680px) { .grid,.three { grid-template-columns:1fr } .top { padding:16px 20px } }
+  </style>
+</head>
+<body>
+  <section id="login" class="login-wrap" hidden>
+    <div class="card">
+      <h1>Blink 配置管理</h1>
+      <p class="muted">使用管理员账号登录。</p>
+      <form id="login-form">
+        <label for="username">用户名</label><input id="username" autocomplete="username" required>
+        <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required>
+        <button type="submit">登录</button>
+        <div id="login-error" class="error" role="alert"></div>
+      </form>
+    </div>
+  </section>
+  <div id="dashboard" hidden>
+    <header class="top"><div><h1>Blink 配置管理</h1><div id="identity" class="muted"></div></div><button id="logout" class="secondary">退出登录</button></header>
+    <main>
+      <div id="notice" class="notice" role="status"></div>
+      <section class="card">
+        <div class="row between"><div><h2>机器库</h2><p class="muted">全员共享。编辑时凭据留空会保留原值。</p></div><button id="add-machine">添加机器</button></div>
+        <div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>连接方式</th><th>备注</th><th>操作</th></tr></thead><tbody id="machine-rows"></tbody></table></div>
+      </section>
+      <section class="card">
+        <div class="row between"><div><h2>账号</h2><p class="muted">管理员可开户、禁用、重置密码和授权机器写入。</p></div><button id="add-user">开户</button></div>
+        <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
+      </section>
+      <section class="card"><h2>用户 tabs / 最近选择</h2><p class="muted">只读查看；用户在 App 中维护自己的布局。</p><div id="personal-list"></div></section>
+    </main>
+  </div>
+  <dialog id="machine-dialog"><form id="machine-form">
+    <h2 id="machine-heading">添加机器</h2>
+    <div class="grid three">
+      <div><label for="m-id">ID</label><input id="m-id" required maxlength="100"></div>
+      <div><label for="m-name">名称</label><input id="m-name"></div>
+      <div><label for="m-position">排序</label><input id="m-position" type="number" min="0" value="0" required></div>
+      <div><label for="m-host">主地址</label><input id="m-host" required></div>
+      <div><label for="m-host2">备用地址</label><input id="m-host2"></div>
+      <div><label for="m-lan">局域网地址</label><input id="m-lan"></div>
+      <div><label for="m-user">SSH 用户</label><input id="m-user" required></div>
+      <div><label for="m-transport">连接方式</label><select id="m-transport"><option value="">默认</option><option value="ssh">SSH</option><option value="blinkd">blinkd</option></select></div>
+      <div><label for="m-blinkd-host">blinkd 地址</label><input id="m-blinkd-host"></div>
+      <div><label for="m-blinkd-port">blinkd 端口</label><input id="m-blinkd-port" type="number" min="1" max="65535"></div>
+      <div><label for="m-token">blinkd Token</label><input id="m-token" type="password" autocomplete="off" placeholder="编辑时留空保留原值"></div>
+      <div><label for="m-rustdesk-id">RustDesk ID</label><input id="m-rustdesk-id"></div>
+      <div><label for="m-rustdesk-password">RustDesk 密码</label><input id="m-rustdesk-password" type="password" autocomplete="off" placeholder="编辑时留空保留原值"></div>
+    </div>
+    <label for="m-notes">备注</label><textarea id="m-notes" rows="2"></textarea>
+    <div id="machine-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="machine-cancel">取消</button><button type="submit">保存机器</button></div>
+  </form></dialog>
+  <dialog id="user-dialog"><form id="user-form">
+    <h2>开户</h2>
+    <label for="u-name">用户名</label><input id="u-name" required minlength="2" maxlength="100" autocomplete="off">
+    <label for="u-password">初始密码（至少 12 位）</label><input id="u-password" type="password" required minlength="12" autocomplete="new-password">
+    <label><input id="u-admin" type="checkbox" style="width:auto"> 管理员</label>
+    <label><input id="u-write" type="checkbox" style="width:auto"> 可写机器</label>
+    <div id="user-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="user-cancel">取消</button><button type="submit">创建账号</button></div>
+  </form></dialog>
+  <script>
+    const $ = id => document.getElementById(id);
+    const state = { machines: [], users: [], personal: [], me: null, editing: null };
+    async function api(path, options = {}) {
+      const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
+      if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
+      if (!response.ok) throw new Error((await response.text()).trim() || `请求失败 (${response.status})`);
+      return response.status === 204 ? null : response.json();
+    }
+    const json = value => JSON.stringify(value);
+    const td = (tr, value) => { const cell = document.createElement('td'); cell.textContent = value ?? ''; tr.append(cell); return cell; };
+    const button = (label, action, className = 'secondary') => { const b = document.createElement('button'); b.type = 'button'; b.className = className; b.textContent = label; b.addEventListener('click', action); return b; };
+    const notify = message => { $('notice').textContent = message; };
+    async function load() {
+      const data = await api('/admin/api/state'); Object.assign(state, data);
+      $('identity').textContent = `${state.me.username} · 管理员`;
+      $('add-machine').disabled = !state.me.canWrite;
+      renderMachines(); renderUsers(); renderPersonal();
+    }
+    function renderMachines() {
+      $('machine-rows').replaceChildren();
+      for (const m of state.machines) {
+        const tr = document.createElement('tr'); td(tr, m.name || m.id); td(tr, m.host); td(tr, m.transport || '默认'); td(tr, m.notes || '');
+        const actions = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        if (state.me.canWrite) { row.append(button('编辑', () => openMachine(m)), button('删除', () => removeMachine(m), 'danger')); }
+        actions.append(row); $('machine-rows').append(tr);
+      }
+      if (!state.machines.length) { const tr = document.createElement('tr'); td(tr, '还没有机器'); $('machine-rows').append(tr); }
+    }
+    function renderUsers() {
+      $('user-rows').replaceChildren();
+      for (const u of state.users) {
+        const tr = document.createElement('tr'); td(tr, u.username); td(tr, u.isAdmin ? '管理员' : '成员'); td(tr, u.canWrite ? '已授权' : '只读'); td(tr, u.disabled ? '已禁用' : '正常');
+        const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        row.append(button('重置密码', () => resetPassword(u)), button(u.isAdmin ? '取消管理员' : '设为管理员', () => changeUser(u, u.isAdmin ? { isAdmin:false, canWrite:false } : { isAdmin:true })));
+        if (u.isAdmin) row.append(button(u.canWrite ? '收回可写' : '授予可写', () => changeUser(u, { canWrite: !u.canWrite })));
+        row.append(button(u.disabled ? '启用' : '禁用', () => changeUser(u, { disabled: !u.disabled }), 'danger'));
+        cell.append(row); $('user-rows').append(tr);
+      }
+    }
+    function renderPersonal() {
+      $('personal-list').replaceChildren();
+      for (const u of state.users) {
+        const p = state.personal.find(item => item.userId === u.id);
+        const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = `${u.username} · ${(p?.tabs?.tabs || []).length} 个 tab`; details.append(summary);
+        const pre = document.createElement('pre'); pre.textContent = JSON.stringify({ tabs: p?.tabs || { version: 1, tabs: [] }, recentSelection: p?.recentSelection || {} }, null, 2); details.append(pre); $('personal-list').append(details);
+      }
+    }
+    function openMachine(m = null) {
+      state.editing = m; $('machine-form').reset(); $('machine-error').textContent = '';
+      $('machine-heading').textContent = m ? '编辑机器' : '添加机器'; $('m-id').disabled = !!m;
+      const fields = { 'm-id': 'id', 'm-name': 'name', 'm-position': 'position', 'm-host': 'host', 'm-host2': 'host2', 'm-lan': 'lanHost', 'm-user': 'user', 'm-transport': 'transport', 'm-blinkd-host': 'blinkdHost', 'm-blinkd-port': 'blinkdPort', 'm-rustdesk-id': 'rustdeskId', 'm-notes': 'notes' };
+      for (const [id, key] of Object.entries(fields)) $(id).value = m?.[key] ?? (key === 'position' ? '0' : '');
+      $('machine-dialog').showModal();
+    }
+    function optional(obj, key, value) { if (value) obj[key] = value; else delete obj[key]; }
+    async function saveMachine(event) {
+      event.preventDefault(); const m = { ...(state.editing || {}), id: $('m-id').value.trim(), name: $('m-name').value.trim(), host: $('m-host').value.trim(), user: $('m-user').value.trim(), position: Number($('m-position').value) };
+      for (const [key,id] of Object.entries({ host2:'m-host2', lanHost:'m-lan', transport:'m-transport', blinkdHost:'m-blinkd-host', rustdeskId:'m-rustdesk-id', notes:'m-notes' })) optional(m,key,$(id).value.trim());
+      optional(m,'blinkdPort',$('m-blinkd-port').value ? Number($('m-blinkd-port').value) : null);
+      if ($('m-token').value) m.blinkdToken = $('m-token').value;
+      if ($('m-rustdesk-password').value) m.rustdeskPassword = $('m-rustdesk-password').value;
+      try { await api('/admin/api/machines/' + encodeURIComponent(m.id), { method:'PUT', body:json(m) }); $('machine-dialog').close(); await load(); notify('机器已保存'); }
+      catch (error) { $('machine-error').textContent = error.message; }
+    }
+    async function removeMachine(m) {
+      if (!confirm(`确定删除机器「${m.name || m.id}」？`)) return;
+      try { await api('/admin/api/machines/' + encodeURIComponent(m.id), { method:'DELETE' }); await load(); notify('机器已删除'); } catch (error) { notify(error.message); }
+    }
+    async function createUser(event) {
+      event.preventDefault(); const body = { username:$('u-name').value.trim(), password:$('u-password').value, isAdmin:$('u-admin').checked, canWrite:$('u-write').checked };
+      try { await api('/admin/api/users', { method:'POST', body:json(body) }); $('user-dialog').close(); await load(); notify('账号已创建'); }
+      catch (error) { $('user-error').textContent = error.message; }
+    }
+    async function changeUser(u, changes) {
+      if ('disabled' in changes && !confirm(`确定${changes.disabled ? '禁用' : '启用'}「${u.username}」？`)) return;
+      try { await api('/admin/api/users/' + u.id, { method:'PATCH', body:json(changes) }); await load(); notify('账号已更新'); } catch (error) { notify(error.message); }
+    }
+    async function resetPassword(u) {
+      const password = prompt(`给「${u.username}」设置新密码（至少 12 位）：`);
+      if (password === null) return;
+      if (password.length < 12) { notify('密码至少 12 位'); return; }
+      await changeUser(u, { password });
+    }
+    $('login-form').addEventListener('submit', async event => {
+      event.preventDefault(); $('login-error').textContent = '';
+      try { await api('/admin/session', { method:'POST', body:json({ username:$('username').value.trim(), password:$('password').value }) }); location.assign('/admin'); }
+      catch (error) { $('login-error').textContent = error.message; }
+    });
+    $('logout').addEventListener('click', async () => { try { await api('/admin/session', { method:'DELETE' }); } finally { location.assign('/admin/login'); } });
+    $('add-machine').addEventListener('click', () => openMachine()); $('machine-form').addEventListener('submit', saveMachine); $('machine-cancel').addEventListener('click', () => $('machine-dialog').close());
+    $('add-user').addEventListener('click', () => { $('user-form').reset(); $('user-error').textContent = ''; $('user-dialog').showModal(); }); $('user-form').addEventListener('submit', createUser); $('user-cancel').addEventListener('click', () => $('user-dialog').close());
+    $('u-write').addEventListener('change', () => { if ($('u-write').checked) $('u-admin').checked = true; });
+    $('u-admin').addEventListener('change', () => { if (!$('u-admin').checked) $('u-write').checked = false; });
+    if (location.pathname === '/admin/login') { $('login').hidden = false; } else { $('dashboard').hidden = false; load().catch(error => notify(error.message)); }
+  </script>
+</body>
+</html>

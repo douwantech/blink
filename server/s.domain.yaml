@@ -10,7 +10,7 @@ resources:
     props:
       region: cn-hangzhou
       domainName: blink-api.douwantech.com
-      protocol: HTTP,HTTPS
+      protocol: HTTPS
       certConfig:
         certName: douwantech-wildcard
         certificate: ${file("./env/douwantech.pem")}

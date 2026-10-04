@@ -3,3 +3,5 @@
 !go.sum
 !*.go
 !schema.sql
+!web/
+!web/admin.html
