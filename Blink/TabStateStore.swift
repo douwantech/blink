@@ -65,6 +65,9 @@ final class TabStateStore {
   func snapshot() -> TabState { state }
 
   func update(_ mutate: (inout TabState) -> Void) {
+    #if !targetEnvironment(macCatalyst)
+    if ServerConfigSync.shared.isReadOnly { return }
+    #endif
     let beforeTabs = state.tabs
     let beforeClosed = state.closedIds ?? []
     mutate(&state)
@@ -73,6 +76,15 @@ final class TabStateStore {
       state.updatedAt = Date().timeIntervalSince1970
     }
     scheduleSave()
+    DispatchQueue.main.async { ServerConfigSync.shared.schedulePersonalUpload() }
+  }
+
+  func replaceFromServer(_ incoming: TabState) {
+    pendingWork?.cancel()
+    pendingWork = nil
+    dirty = false
+    state = incoming
+    ioQueue.sync { self.write(incoming) }
   }
 
   /// 记录被关闭的 tab（本机关，或采纳别处的关闭）：加入墓碑集合并从 tabs 移除。

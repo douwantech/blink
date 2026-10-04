@@ -622,6 +622,7 @@ class SpaceController: UIViewController {
       } else {
         UserDefaults.standard.removeObject(forKey: SpaceController.kTabFilterMachineId)
       }
+      ServerConfigSync.shared.schedulePersonalUpload()
     }
   }
 
@@ -784,6 +785,15 @@ Please go to your subscriptions and cancel one of them!
 
     nc.addObserver(self, selector: #selector(_cloudConfigDidRestore),
                    name: CloudConfigSync.didRestoreNotification, object: nil)
+    nc.addObserver(self, selector: #selector(_serverConfigDidApply),
+                   name: ServerConfigSync.didApply, object: nil)
+  }
+
+  @objc private func _serverConfigDidApply() {
+    _cloudConfigDidRestore()
+    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+    _macRail?.reload(currentId: _tabFilterMachineId)
+    _reloadTabBar()
   }
 
   @objc private func _flushTabStateStore() {
@@ -932,9 +942,15 @@ Please go to your subscriptions and cancel one of them!
     // 极不可靠的 didChangeExternally，切过来常常看不到另一台的最新 tab。pullNow 里若有变化会
     // post didRestore → _cloudConfigDidRestore 采纳/追加，跨设备 tab 才真正跟手。
     if view.window?.windowScene === scene {
-      CloudConfigSync.shared.pullNow()
-      // 顺手把配置推到各台机器的 ~/.blink/sync/（60s 节流），鸿蒙端从那里拉
-      ConfigSyncPush.shared.pushSoon()
+      if ServerConfigSync.shared.hasSession {
+        Task { try? await ServerConfigSync.shared.refresh() }
+      } else {
+        #if targetEnvironment(macCatalyst)
+        CloudConfigSync.shared.pullNow()
+        // 顺手把配置推到各台机器的 ~/.blink/sync/（60s 节流），鸿蒙端从那里拉
+        ConfigSyncPush.shared.pushSoon()
+        #endif
+      }
     }
 
     #if targetEnvironment(macCatalyst)
@@ -2774,6 +2790,14 @@ extension SpaceController: BlinkTabBarDelegate {
     _tabFilterMachineId = machineId
     let filtered = _filteredViewportsKeys()
 
+    // A newly created account has no personal tabs yet. Open a terminal when
+    // its first machine is selected instead of leaving the empty tab in place.
+    if let machineId, filtered.isEmpty {
+      _newShellWithMachine(machineId, workDirId: nil, tmuxSession: nil)
+      _floatingMachineBar.reload(currentId: machineId)
+      return
+    }
+
     // 选定目标 tab：上次选中的 > 当前若已在过滤集内 > 第一个
     var target: UUID? = nil
     if let mid = machineId, let remembered = _lastKeyPerMachine[mid], filtered.contains(remembered) {
@@ -3933,4 +3957,3 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
     present(av, animated: true)
   }
 }
-
