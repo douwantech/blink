@@ -18,8 +18,11 @@ func TestPrepareMacSnapshot(t *testing.T) {
 	if err = json.Unmarshal(p.Machines[0], &machine); err != nil {
 		t.Fatal(err)
 	}
-	if machine["futureFlag"] != true || machine["blinkdToken"] != "secret" || machine["position"] != float64(0) {
+	if machine["futureFlag"] != true || machine["blinkdToken"] != "secret" {
 		t.Fatalf("machine lost fields: %+v", machine)
+	}
+	if _, ok := machine["position"]; ok {
+		t.Fatal("import added order field")
 	}
 	var tabs map[string]any
 	if err = json.Unmarshal(p.Tabs, &tabs); err != nil {

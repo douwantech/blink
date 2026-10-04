@@ -106,22 +106,9 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "expected JSON object", 400)
 		return
 	}
-	var m machine
-	// Decode known fields for validation while retaining extensions from newer clients.
-	if err := json.Unmarshal(raw, &m); err != nil {
+	m, stored, err := validateMachine(raw)
+	if err != nil || m.ID != id || m.Position < 0 {
 		http.Error(w, "invalid machine", 400)
-		return
-	}
-	if m.ID != id || strings.TrimSpace(m.Host) == "" || strings.TrimSpace(m.User) == "" || m.Position < 0 {
-		http.Error(w, "invalid machine", 400)
-		return
-	}
-	if m.Transport != nil && *m.Transport != "ssh" && *m.Transport != "blinkd" {
-		http.Error(w, "invalid transport", 400)
-		return
-	}
-	if m.BlinkdPort != nil && (*m.BlinkdPort < 1 || *m.BlinkdPort > 65535) {
-		http.Error(w, "invalid port", 400)
 		return
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
@@ -130,7 +117,7 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO machines(id,position,data) VALUES(?,?,?) ON DUPLICATE KEY UPDATE position=VALUES(position),data=VALUES(data)`, id, m.Position, []byte(raw))
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO machines(id,position,data) VALUES(?,?,?) ON DUPLICATE KEY UPDATE position=VALUES(position),data=VALUES(data)`, id, m.Position, []byte(stored))
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
 	}
@@ -141,7 +128,88 @@ func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	writeJSON(w, 200, raw)
+	writeJSON(w, 200, stored)
+}
+
+// The array order is authoritative. position is an internal SQL index and is
+// never part of the machine JSON sent to clients.
+func (a *app) replaceMachines(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireWrite(w, u) {
+		return
+	}
+	var input []json.RawMessage
+	if !readJSON(w, r, &input) {
+		return
+	}
+	if len(input) == 0 {
+		http.Error(w, "empty machine list", 400)
+		return
+	}
+	type item struct {
+		id   string
+		data json.RawMessage
+	}
+	items := make([]item, 0, len(input))
+	seen := map[string]bool{}
+	for _, raw := range input {
+		m, stored, err := validateMachine(raw)
+		if err != nil || seen[m.ID] {
+			http.Error(w, "invalid machine list", 400)
+			return
+		}
+		seen[m.ID] = true
+		items = append(items, item{m.ID, stored})
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(r.Context(), `DELETE FROM machines`)
+	for i, it := range items {
+		if err != nil {
+			break
+		}
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO machines(id,position,data) VALUES(?,?,?)`, it.id, i, []byte(it.data))
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func validateMachine(raw json.RawMessage) (machine, json.RawMessage, error) {
+	var m machine
+	if len(raw) == 0 || raw[0] != '{' {
+		return m, nil, fmt.Errorf("expected object")
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return m, nil, err
+	}
+	if m.ID == "" || len(m.ID) > 100 || strings.ContainsAny(m.ID, "/\\") || strings.TrimSpace(m.Host) == "" || strings.TrimSpace(m.User) == "" {
+		return m, nil, fmt.Errorf("missing machine fields")
+	}
+	if m.Transport != nil && *m.Transport != "ssh" && *m.Transport != "blinkd" {
+		return m, nil, fmt.Errorf("invalid transport")
+	}
+	if m.BlinkdPort != nil && (*m.BlinkdPort < 1 || *m.BlinkdPort > 65535) {
+		return m, nil, fmt.Errorf("invalid port")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return m, nil, err
+	}
+	delete(fields, "position")
+	stored, err := json.Marshal(fields)
+	return m, stored, err
 }
 
 func (a *app) deleteMachine(w http.ResponseWriter, r *http.Request, u user) {

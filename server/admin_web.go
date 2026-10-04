@@ -172,15 +172,25 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	rows, err = a.db.QueryContext(r.Context(), `SELECT data FROM machines ORDER BY position,id`)
+	rows, err = a.db.QueryContext(r.Context(), `SELECT position,data FROM machines ORDER BY position,id`)
 	if err != nil {
 		http.Error(w, "internal error", 500)
 		return
 	}
 	machines := make([]json.RawMessage, 0)
 	for rows.Next() {
+		var position int
 		var data []byte
-		if err = rows.Scan(&data); err != nil {
+		if err = rows.Scan(&position, &data); err != nil {
+			break
+		}
+		var fields map[string]json.RawMessage
+		if err = json.Unmarshal(data, &fields); err != nil {
+			break
+		}
+		fields["position"], _ = json.Marshal(position)
+		data, err = json.Marshal(fields)
+		if err != nil {
 			break
 		}
 		machines = append(machines, json.RawMessage(data))

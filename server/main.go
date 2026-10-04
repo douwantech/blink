@@ -111,6 +111,7 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("PUT /v1/config/selection", a.auth(a.writeUserConfig("recent_selection")))
 	m.HandleFunc("PUT /v1/config/agents", a.auth(a.writeUserConfig("agents")))
 	m.HandleFunc("PUT /v1/machines/{id}", a.auth(a.putMachine))
+	m.HandleFunc("PUT /v1/machines/batch", a.auth(a.replaceMachines))
 	m.HandleFunc("DELETE /v1/machines/{id}", a.auth(a.deleteMachine))
 	m.HandleFunc("POST /v1/admin/users", a.auth(a.createUser))
 	m.HandleFunc("PATCH /v1/admin/users/{id}", a.auth(a.updateUser))

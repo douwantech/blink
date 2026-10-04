@@ -70,9 +70,8 @@ func prepare(data []byte) (plan, error) {
 			return plan{}, fmt.Errorf("machine %d has missing/duplicate id, host or user", i)
 		}
 		seen[id] = true
-		if _, ok := m["position"]; !ok {
-			m["position"] = i
-		}
+		// Array order is authoritative; never add a per-machine order field.
+		delete(m, "position")
 		b, err := json.Marshal(m)
 		if err != nil {
 			return plan{}, err
@@ -83,7 +82,7 @@ func prepare(data []byte) (plan, error) {
 	closed := make([]string, 0, len(src.ClosedIDs))
 	for _, id := range src.ClosedIDs {
 		if !uuid.MatchString(id) {
-			return plan{}, fmt.Errorf("invalid closed tab id %q", id)
+			return plan{}, errors.New("invalid closed tab id")
 		}
 		closed = append(closed, id)
 	}
@@ -183,10 +182,9 @@ func apply(ctx context.Context, p plan, base, username, password string) error {
 		return errors.New("target account needs admin and canWrite to import machines")
 	}
 	c.token = login.Token
-	for i, m := range p.Machines {
-		if err = c.request(ctx, "PUT", "/v1/machines/"+url.PathEscape(p.IDs[i]), m, nil); err != nil {
-			return err
-		}
+	batch, _ := json.Marshal(p.Machines)
+	if err = c.request(ctx, "PUT", "/v1/machines/batch", batch, nil); err != nil {
+		return err
 	}
 	for _, item := range []struct {
 		path string
@@ -205,19 +203,12 @@ func apply(ctx context.Context, p plan, base, username, password string) error {
 	if err = c.request(ctx, "GET", "/v1/config", nil, &snapshot); err != nil {
 		return err
 	}
-	machines := map[string]json.RawMessage{}
-	for _, raw := range snapshot.Machines {
-		var m struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return err
-		}
-		machines[m.ID] = raw
+	if len(snapshot.Machines) != len(p.Machines) {
+		return errors.New("verification failed: machine count differs")
 	}
-	for i, id := range p.IDs {
-		if !sameJSON(machines[id], p.Machines[i]) {
-			return fmt.Errorf("verification failed: machine %s differs", id)
+	for i, raw := range snapshot.Machines {
+		if !sameJSON(raw, p.Machines[i]) {
+			return fmt.Errorf("verification failed: machine at index %d differs", i)
 		}
 	}
 	if !sameJSON(snapshot.Tabs, p.Tabs) || !sameJSON(snapshot.Agents, p.Agents) || !sameJSON(snapshot.RecentSelection, p.Selection) {
@@ -257,7 +248,7 @@ func main() {
 	_ = json.Unmarshal(p.Tabs, &tabs)
 	var agents map[string]string
 	_ = json.Unmarshal(p.Agents, &agents)
-	fmt.Printf("Preview: %d machines, %d tabs, %d agent choices. Machine IDs: %s\n", len(p.IDs), len(tabs.Tabs), len(agents), strings.Join(p.IDs, ", "))
+	fmt.Printf("Preview: %d machines, %d tabs, %d agent choices.\n", len(p.IDs), len(tabs.Tabs), len(agents))
 	if !*doApply {
 		fmt.Println("Dry run only. Add --apply to write.")
 		return
