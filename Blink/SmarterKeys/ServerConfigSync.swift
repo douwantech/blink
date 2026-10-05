@@ -63,9 +63,14 @@ final class ServerConfigSync: ObservableObject {
   }
 
   private var token: String? {
+    // kSecUseDataProtectionKeychain 必须显式打开：iOS-on-Mac（Designed for iPad）不指定时
+    // SecItem 走 macOS 传统 file keychain，写入与读取可能落在不同分区——2026-10-05 晚
+    // 老板在 Mac 上 11 次 login 200 后紧跟 GET config 401，就是 saveToken 刚写入、
+    // 这里读回 nil，请求头拼成 "Bearer nil" 被服务器秒拒（「登录已过期」循环）。
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: tokenService,
                                 kSecAttrAccount as String: tokenAccount,
+                                kSecUseDataProtectionKeychain as String: true,
                                 kSecReturnData as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
     var result: CFTypeRef?
@@ -75,9 +80,11 @@ final class ServerConfigSync: ObservableObject {
   }
 
   private func saveToken(_ value: String) throws {
+    // 与 token 读取同一套 query（含 data protection keychain 开关），写读分区必须一致。
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: tokenService,
-                                kSecAttrAccount as String: tokenAccount]
+                                kSecAttrAccount as String: tokenAccount,
+                                kSecUseDataProtectionKeychain as String: true]
     SecItemDelete(query as CFDictionary)
     var item = query
     item[kSecValueData as String] = Data(value.utf8)
@@ -134,26 +141,33 @@ final class ServerConfigSync: ObservableObject {
     // 抖动一下就把刚发的 token 删掉，用户被弹回登录页反复重登（2026-10-05 线上
     // 由此烧穿登录限流 429）。token 已存 Keychain，refresh 失败下次启动会重拉；
     // 若真是 401，syncFromServer 内部自己会 clearSession。
-    try await refresh(replaceTabs: true, force: true)
+    // 首拉直接用响应里的 token（bearer 直传），不回读 Keychain：2026-10-05 Mac 端
+    // Keychain 写读分区不一致时回读 nil，用户刚登录就撞「登录已过期」死循环。
+    try await refresh(replaceTabs: true, force: true, bearer: login.token)
   }
 
-  @MainActor func refresh(replaceTabs: Bool = false, force: Bool = false) async throws {
+  @MainActor func refresh(replaceTabs: Bool = false, force: Bool = false, bearer: String? = nil) async throws {
     guard hasSession else { return }
-    try await syncFromServer(replaceTabs: replaceTabs, force: force)
+    try await syncFromServer(replaceTabs: replaceTabs, force: force, bearer: bearer)
     schedulePendingUpload()
   }
 
   /// GET /v1/config 并采纳。304 = 服务器版本未变；200 = 版本前进，apply() 里版本
   /// 优先采纳。这里故意不安排上传：uploadPersonal() 上传前也调本方法对齐版本，
   /// 若在这里 schedule 会互相触发成环。
-  @MainActor private func syncFromServer(replaceTabs: Bool = false, force: Bool = false) async throws {
+  @MainActor private func syncFromServer(replaceTabs: Bool = false, force: Bool = false,
+                                         bearer: String? = nil) async throws {
+    // token 为 nil 时绝不发请求：Optional 插值会把请求头拼成 "Bearer nil"（3 字节，
+    // 不是 64 hex），服务器必然 401，用户侧表现成「登录已过期」——2026-10-05 Mac
+    // 登录循环就是这么来的。静默跳过，等下次启动/回前台有 token 再拉。
+    guard let auth = bearer ?? token else { return }
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
     if !force, let snapshot = cachedSnapshot(), snapshot.user.username == username {
       let version = snapshot.version
       components.queryItems = [URLQueryItem(name: "version", value: version)]
     }
     var request = URLRequest(url: components.url!)
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(auth)", forHTTPHeaderField: "Authorization")
     do {
       let (data, response) = try await URLSession.shared.data(for: request)
       guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
@@ -186,7 +200,8 @@ final class ServerConfigSync: ObservableObject {
   private func clearSession() {
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: tokenService,
-                                kSecAttrAccount as String: tokenAccount]
+                                kSecAttrAccount as String: tokenAccount,
+                                kSecUseDataProtectionKeychain as String: true]
     SecItemDelete(query as CFDictionary)
     username = nil
     defaults.removeObject(forKey: "BlinkServer.username")

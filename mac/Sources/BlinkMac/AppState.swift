@@ -167,6 +167,11 @@ final class AppState: ObservableObject {
     func startup() async {
         if chatShotIfNeeded() { return }
         BlinkdDiscovery.shared.start()   // 常驻 Bonjour 发现同网 blinkd，供 LAN 优先直连用
+        if ServerSync.shared.hasSession {
+          // 服务器快照 → sync 文件；落地后 watchSyncFile() 自动触发标签/机器 reload，
+          // 不阻塞启动（首屏先用文件/KV 缓存）。
+          Task { await ServerSync.shared.refresh() }
+        }
         // 头像在独立后台任务里读（容器读可能被 TCC 卡住），不阻塞枚举/探测
         Task.detached(priority: .utility) { [weak self] in
             let a = BlinkAvatars.load()
@@ -446,6 +451,7 @@ final class AppState: ObservableObject {
                 self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed()
                 await self?.adoptOrphanSessions()
             }
+            Task { @MainActor in await ServerSync.shared.refresh() }   // 回前台：服务器有新版就落盘（304 即止）
         }
         NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
