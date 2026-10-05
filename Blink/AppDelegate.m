@@ -82,8 +82,8 @@ void __setupProcessEnv(void) {
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
-  // 把本地配置镜像到 iCloud Key-Value Store，并在重装后自动拉回。尽量早调，
-  // 让后续代码读 UserDefaults 前先有机会从 iCloud 恢复。
+  // 配置同步总入口（2026-10-05 起 iCloud 链路停用，见 _start 注释）：
+  // 恢复服务器快照缓存 + 驱动 ConfigSyncPush 写各机器同步文件供鸿蒙拉。
   [CloudConfigSync start];
   [[BlinkdLAN shared] start];   // 常驻 Bonjour 发现同网 blinkd，供 LAN 直连优先用
 

@@ -51,6 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 隐藏诊断：BLINKMAC_DIAG=1 时打印从 iCloud KV 读到的机器清单（不含 token），随后退出。
         // 用来验证「从手机同步机器清单」这条路真的读到数据——正式签名跑才有 KV。
         if ProcessInfo.processInfo.environment["BLINKMAC_DIAG"] == "1" {
+            // 有 session 先拉一次服务器（DIAG 不走 RootView.task 的 startup，服务器
+            // 同步层得在这里显式触发，否则诊断不到它）。fetchAndApply 不碰 MainActor，
+            // 主线程 semaphore 等它不会死锁。
+            if ServerSync.shared.hasSession {
+                let sem = DispatchSemaphore(value: 0)
+                Task.detached { _ = await ServerSync.shared.fetchAndApply(); sem.signal() }
+                sem.wait()
+            }
             let raw = MacMachineStore.machines()
             let s = AppState()
             s.loadCloudMachines()
@@ -111,16 +119,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 截图自测：BLINKMAC_CHATSHOT=1 时，窗口渲染好后把 contentView 存成 PNG 再退出
         // （app 自绘成位图，不吃屏幕录制权限，命令行也能拿到真实布局图）。
+        // BLINKMAC_SHOT_DELAY 可拉长等待（默认 2.5s；要看 SSH 枚举并入的多机标签得等 10s+）。
+        // SwiftUI 的 .sheet 是独立 NSWindow，主窗抓不到 —— 第二张存成 *-sheet.png。
         if ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT"] == "1" {
-            let out = ProcessInfo.processInfo.environment["BLINKMAC_CHATSHOT_OUT"] ?? "/tmp/blinkmac-chatshot.png"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                if let w = NSApp.windows.first(where: { $0.contentView != nil }),
-                   let v = w.contentView,
-                   let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+            let env = ProcessInfo.processInfo.environment
+            let out = env["BLINKMAC_CHATSHOT_OUT"] ?? "/tmp/blinkmac-chatshot.png"
+            let delay = Double(env["BLINKMAC_SHOT_DELAY"] ?? "") ?? 2.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                var idx = 0
+                for w in NSApp.windows where w.contentView != nil {
+                    guard let v = w.contentView,
+                          let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
                     v.cacheDisplay(in: v.bounds, to: rep)
                     if let data = rep.representation(using: .png, properties: [:]) {
-                        try? data.write(to: URL(fileURLWithPath: out))
+                        let path = idx == 0 ? out : ((out as NSString).deletingPathExtension) + "-sheet.png"
+                        try? data.write(to: URL(fileURLWithPath: path))
                     }
+                    idx += 1
                 }
                 exit(0)
             }

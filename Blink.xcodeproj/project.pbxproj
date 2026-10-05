@@ -100,6 +100,7 @@
 		BD1758AC26EA8C5400AEC545 /* MenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1758AB26EA8C5400AEC545 /* MenuController.swift */; };
 		BD19DB412B056E9C003A4367 /* SSHCommandTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD19DB402B056E9C003A4367 /* SSHCommandTest.swift */; };
 		D27A00000000000000002712 /* TurnGuaranteeE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */; };
+		D27A00000000000000002732 /* CCTitleConventionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D27A00000000000000002731 /* CCTitleConventionTests.swift */; };
 		D33A00000000000000000002 /* TerminalStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000001 /* TerminalStyleTests.swift */; };
 		D33A00000000000000000004 /* SessionParamsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000003 /* SessionParamsTests.swift */; };
 		BD1FFF702E4A10C600DB5AF9 /* TermSessionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */; };
@@ -407,6 +408,7 @@
 		D2BB88AC2E45A12300000001 /* TabAgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB88AC2E45A12300000002 /* TabAgentStore.swift */; };
 		D2BB88AC2E45A12400000001 /* AgentMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB88AC2E45A12400000002 /* AgentMark.swift */; };
 		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
+		B34C0F010000000000000002 /* ServerConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34C0F010000000000000001 /* ServerConfigSync.swift */; };
 		D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229A230D279B0010AC04 /* VoiceInputView.swift */; };
 		D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */; };
 		D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */; };
@@ -902,6 +904,7 @@
 		BD1758AB26EA8C5400AEC545 /* MenuController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuController.swift; sourceTree = "<group>"; };
 		BD19DB402B056E9C003A4367 /* SSHCommandTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHCommandTest.swift; sourceTree = "<group>"; };
 		D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnGuaranteeE2ETests.swift; sourceTree = "<group>"; };
+		D27A00000000000000002731 /* CCTitleConventionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCTitleConventionTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000001 /* TerminalStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalStyleTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000003 /* SessionParamsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionParamsTests.swift; sourceTree = "<group>"; };
 		BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermSessionPayload.swift; sourceTree = "<group>"; };
@@ -1198,6 +1201,7 @@
 		D2BB88AC2E45A12300000002 /* TabAgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabAgentStore.swift; sourceTree = "<group>"; };
 		D2BB88AC2E45A12400000002 /* AgentMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMark.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
+		B34C0F010000000000000001 /* ServerConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigSync.swift; sourceTree = "<group>"; };
 		D2A5229A230D279B0010AC04 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
 		D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkImageViewerController.swift; sourceTree = "<group>"; };
 		D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkMachineStore.swift; sourceTree = "<group>"; };
@@ -2323,6 +2327,7 @@
 				D2BB88AC2E45A12300000002 /* TabAgentStore.swift */,
 				D2BB88AC2E45A12400000002 /* AgentMark.swift */,
 				D2A52297230D279B0010CC02 /* CloudConfigSync.swift */,
+				B34C0F010000000000000001 /* ServerConfigSync.swift */,
 				D2B1F8DC23265A0600634D67 /* CommandsHUDView.swift */,
 				D2B1F8DE23265A4700634D67 /* CommandControl.swift */,
 			);
@@ -2368,6 +2373,7 @@
 				BDE7C45B29DCAEFA005E033E /* FileLocationPathTests.swift */,
 				BD19DB402B056E9C003A4367 /* SSHCommandTest.swift */,
 				D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */,
+				D27A00000000000000002731 /* CCTitleConventionTests.swift */,
 				D33A00000000000000000001 /* TerminalStyleTests.swift */,
 				D33A00000000000000000003 /* SessionParamsTests.swift */,
 				D265FBBE2317DD3C0017EAC4 /* Info.plist */,
@@ -3627,6 +3633,7 @@
 				BD9EA216271F83B400874007 /* BlinkLoggingTests.swift in Sources */,
 				BD19DB412B056E9C003A4367 /* SSHCommandTest.swift in Sources */,
 				D27A00000000000000002712 /* TurnGuaranteeE2ETests.swift in Sources */,
+				D27A00000000000000002732 /* CCTitleConventionTests.swift in Sources */,
 				D33A00000000000000000002 /* TerminalStyleTests.swift in Sources */,
 				D33A00000000000000000004 /* SessionParamsTests.swift in Sources */,
 				D20CBA57236031D700D93301 /* CompleteUtilsTests.swift in Sources */,
@@ -3743,6 +3750,7 @@
 				D2BB88AC2E45A12300000001 /* TabAgentStore.swift in Sources */,
 				D2BB88AC2E45A12400000001 /* AgentMark.swift in Sources */,
 				D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */,
+				B34C0F010000000000000002 /* ServerConfigSync.swift in Sources */,
 				D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */,
 				D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */,
 				D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */,

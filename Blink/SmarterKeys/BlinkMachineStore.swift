@@ -701,21 +701,29 @@ enum HostReachability {
   }
 
   /// TITLE = customTitle（外层 tmux session 名为 cc-<TITLE>）。
-  /// 规则跟 sshCommand / transcriptCommand 一致：默认 <basename(workPath)>-<session>；
+  ///
+  /// 三端统一约定（2026-10-05 服务器同步后明确）：tab 带了 tmuxSession 就是**权威会话名**
+  /// （服务器 tab / Mac blinkd 端建的会话都按 cc-<tmuxSession> 命名），这里 sanitize 后
+  /// 原样返回，绝不再拼目录/用户名前缀。曾经对带 tmuxSession 的 tab 也套本地命名规则
+  /// （<basename>-<session>），而 workDirs 不随服务器快照下发、本地查不到时 basename
+  /// 退化到 SSH 用户名——brain 的 user=app，手机点 tom-blink 去找 cc-app-tom-blink，
+  /// new-session -A 又建了个空会话（blinkd 通道按枚举名直连不踩，只有 SSH 通道暴露）。
+  ///
+  /// tmuxSession 为空（本地新建 tab 还没指定会话）才走本地生成：默认 <basename(workPath)>-<session>，
   /// session 已是 basename 或 basename- 开头则不再 prepend；workPath 缺省退化到 machine.user。
   static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
+    let sanitize: (String) -> String = {
+      $0.lowercased()
+        .replacingOccurrences(of: "\"", with: "")
+        .replacingOccurrences(of: " ", with: "-")
+    }
+    if let ts = tmuxSession, !ts.isEmpty { return sanitize(ts) }
     var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
     let wd = BlinkWorkDirStore.shared.workDir(forId: workDirId)
     let workPath = wd?.path
     let dirBasename: String
     // 优先用工作目录的「显示名」（跟 tab 标签一致，比如 juncandy），显示名缺省再退回路径 basename。
-    // tmux/session 名不能带空格/引号，统一小写并把空白→连字符、去掉引号。
-    let sanitize: (String) -> String = {
-      $0.lowercased()
-        .replacingOccurrences(of: "\"", with: "")
-        .replacingOccurrences(of: " ", with: "-")
-    }
     if let nm = wd?.name, !nm.isEmpty {
       dirBasename = sanitize(nm)
     } else if let wp = workPath, !wp.isEmpty {
@@ -745,9 +753,9 @@ enum HostReachability {
   }
 
   /// 手动调序（#26）：把 fromIndex 的机器挪到 toIndex。顺序直接用数组顺序表达，
-  /// 不加独立 order 字段——写回 UserDefaults 后 CloudConfigSync 自动镜像 iCloud KV
-  /// 并推 Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染；多端同时调序沿用 KV 的
-  /// last-write-wins。新增机器仍走 addOrUpdate 追加到末尾。
+  /// 不加独立 order 字段——写回 UserDefaults 后经 localChanged → ConfigSyncPush 推
+  /// Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染。配置服务器侧 machines 全员
+  /// 共享，多端同时调序由服务器版本号仲裁。新增机器仍走 addOrUpdate 追加到末尾。
   func moveMachine(fromIndex: Int, toIndex: Int) {
     var arr = machines
     guard arr.indices.contains(fromIndex) else { return }
@@ -758,7 +766,7 @@ enum HostReachability {
 
   /// #25 存量迁移：物化只发生在写入路径，已存的老数据（内置机器三件套为空）不会自动变。
   /// 启动时 / 远端配置落地后调一次；有变化才写回（走 setter 再物化一遍，幂等），
-  /// 随后 CloudConfigSync 的 1s 镜像把它带进 iCloud KV 与 Mac 同步文件。
+  /// 随后 localChanged → ConfigSyncPush 把它带进 Mac 同步文件。
   @objc func materializeBlinkdDefaults() {
     let raw = machines
     let out = raw.map { $0.blinkdMaterialized }
@@ -836,6 +844,12 @@ final class MachineListViewController: UITableViewController {
       barButtonSystemItem: .add, target: self, action: #selector(addTapped)
     )
     navigationItem.rightBarButtonItems = [add, editButtonItem]
+    #if !targetEnvironment(macCatalyst)
+    // Shared machine changes go through /admin. Keep the iPhone list usable for
+    // viewing connections while making its unavailable edit actions explicit.
+    add.isEnabled = false
+    editButtonItem.isEnabled = false
+    #endif
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -851,7 +865,14 @@ final class MachineListViewController: UITableViewController {
 
   private func _footerText() -> String {
     let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
+    #if !targetEnvironment(macCatalyst)
+    let syncStatus = ServerConfigSync.shared.isOnline
+      ? "已连接配置服务器"
+      : "离线：个人标签保存在本机，联网后自动同步"
+    return "\(syncStatus)。共享机器只读；添加、修改和调序请在 blink-api.douwantech.com/admin 操作。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #else
     return "点选机器进入编辑/删除；右上「编辑」后可拖动调序，顺序在 iOS / Mac / 鸿蒙间同步。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #endif
   }
 
   override func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
@@ -913,9 +934,13 @@ final class MachineListViewController: UITableViewController {
 
   // MARK: 手动调序（#26）——编辑态下系统 reorder 手柄拖动，onMove 写回 store。
   // 数组顺序即展示顺序（SpaceController 切机器条、MacThreeColumn、Mac、鸿蒙都按它渲染），
-  // 写回后 CloudConfigSync 自动镜像 iCloud KV + 推 Mac 同步文件，多端跟随。
+  // 写回后经 localChanged → ConfigSyncPush 推 Mac 同步文件，多端跟随。
   override func tableView(_ tv: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+    #if !targetEnvironment(macCatalyst)
+    return false
+    #else
     true
+    #endif
   }
 
   // 编辑态只做调序，不出系统删除圈（删除仍在机器表单里）；不实现的话
@@ -935,6 +960,12 @@ final class MachineListViewController: UITableViewController {
   }
 
   private func pushForm(editing machine: BlinkMachine?) {
+    #if !targetEnvironment(macCatalyst)
+    let alert = UIAlertController(title: "机器配置只读", message: "请在 blink-api.douwantech.com/admin 管理共享机器。", preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "知道了", style: .default))
+    present(alert, animated: true)
+    return
+    #endif
     let form = MachineFormViewController(editing: machine)
     navigationController?.pushViewController(form, animated: true)
   }
@@ -1228,8 +1259,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     return resting.contains(key)
   }
 
-  /// 从 UserDefaults 重读休息集合。iCloud 同步把云端新值写进了持久域，但内存缓存还是旧的，
-  /// 收到 CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
+  /// 从 UserDefaults 重读休息集合。服务器同步把新值写进了持久域，但内存缓存还是旧的，
+  /// 收到 ServerConfigSync.didApply / CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
   @objc @discardableResult func reload() -> Bool {
     let fresh = Set(UserDefaults.standard.stringArray(forKey: kKey) ?? [])
     guard fresh != resting else { return false }
