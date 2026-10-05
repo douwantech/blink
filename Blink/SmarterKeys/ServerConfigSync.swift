@@ -113,7 +113,9 @@ final class ServerConfigSync: ObservableObject {
     let previousID = defaults.object(forKey: "BlinkServer.userID") as? NSNumber
     if previousID?.uint64Value != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
-      AITextPolisher.shared.clearTerms()
+      // Do not enqueue an empty write under the previous account while its
+      // token is still in the keychain; the new snapshot will replace it.
+      AITextPolisher.shared.replaceTerms([:])
     }
     try saveToken(login.token)
     self.username = login.user.username
