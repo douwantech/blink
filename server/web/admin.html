@@ -69,10 +69,18 @@
         <div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>连接方式</th><th>备注</th><th>操作</th></tr></thead><tbody id="machine-rows"></tbody></table></div>
       </section>
       <section class="card">
+        <div class="row between"><div><h2>项目</h2><p class="muted">全员共享。标签按员工+项目建会话，所以项目 ID 会成为会话名的一半。</p></div><button id="add-project">添加项目</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead><tbody id="project-rows"></tbody></table></div>
+      </section>
+      <section class="card">
+        <div class="row between"><div><h2>员工</h2><p class="muted">全员共享。员工 ID 会成为会话名的另一半。</p></div><button id="add-employee">添加员工</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead><tbody id="employee-rows"></tbody></table></div>
+      </section>
+      <section class="card">
         <div class="row between"><div><h2>账号</h2><p class="muted">管理员可开户、禁用、重置密码和授权机器写入。</p></div><button id="add-user">开户</button></div>
         <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
       </section>
-      <section class="card"><h2>账号标签</h2><p class="muted">每个账号的标签独立保存；新增和关闭只影响该账号。</p><div id="personal-list"></div></section>
+      <section class="card"><h2>账号标签</h2><p class="muted">每个账号的标签独立保存；新增和关闭只影响该账号。新增标签必须同时选定员工、项目和机器，会话名为 <code>员工-项目</code>（远端约定加 <code>cc-</code> 前缀）。</p><div id="personal-list"></div></section>
     </main>
   </div>
   <dialog id="machine-dialog"><form id="machine-form">
@@ -107,13 +115,28 @@
   </form></dialog>
   <dialog id="tab-dialog"><form id="tab-form">
     <h2 id="tab-heading">新增标签</h2>
-    <label for="tab-machine">机器</label><select id="tab-machine"><option value="">空白标签</option></select>
+    <label for="tab-employee">员工</label><select id="tab-employee" required></select>
+    <label for="tab-project">项目</label><select id="tab-project" required></select>
+    <label for="tab-machine">机器</label><select id="tab-machine" required></select>
+    <p class="muted" id="tab-session"></p>
     <div id="tab-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="tab-cancel">取消</button><button type="submit">新增标签</button></div>
   </form></dialog>
+  <dialog id="directory-dialog"><form id="directory-form">
+    <h2 id="directory-heading">添加项目</h2>
+    <label for="dir-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="dir-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
+    <label for="dir-name">名称</label><input id="dir-name" required maxlength="100" autocomplete="off">
+    <div id="directory-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="directory-cancel">取消</button><button type="submit">保存</button></div>
+  </form></dialog>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { machines: [], users: [], personal: [], me: null, editing: null, tabUser: null, openAccounts: new Set() };
+    // 员工和项目是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
+    const DIRECTORY = {
+      projects: { title: '项目', rows: 'project-rows', add: 'add-project' },
+      employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' }
+    };
+    const state = { machines: [], users: [], personal: [], employees: [], projects: [], me: null, editing: null, tabUser: null, directory: null, openAccounts: new Set() };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
       if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
@@ -128,7 +151,38 @@
       const data = await api('/admin/api/state'); Object.assign(state, data);
       $('identity').textContent = `${state.me.username} · 管理员`;
       $('add-machine').disabled = !state.me.canWrite;
-      renderMachines(); renderUsers(); renderPersonal();
+      renderMachines(); renderDirectories(); renderUsers(); renderPersonal();
+    }
+    const nameOf = (list, id) => list.find(item => item.id === id)?.name || id;
+    function renderDirectories() {
+      for (const [kind, meta] of Object.entries(DIRECTORY)) {
+        const rows = $(meta.rows); rows.replaceChildren();
+        for (const entry of state[kind]) {
+          const tr = document.createElement('tr'); td(tr, entry.id); td(tr, entry.name);
+          const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+          row.append(button('编辑', () => openDirectory(kind, entry)), button('删除', () => removeDirectory(kind, entry), 'danger'));
+          cell.append(row); rows.append(tr);
+        }
+        if (!state[kind].length) { const tr = document.createElement('tr'); td(tr, `还没有${meta.title}`); rows.append(tr); }
+      }
+    }
+    function openDirectory(kind, entry = null) {
+      state.directory = { kind, entry };
+      $('directory-form').reset(); $('directory-error').textContent = '';
+      $('directory-heading').textContent = `${entry ? '编辑' : '添加'}${DIRECTORY[kind].title}`;
+      $('dir-id').disabled = !!entry;
+      $('dir-id').value = entry?.id ?? ''; $('dir-name').value = entry?.name ?? '';
+      $('directory-dialog').showModal();
+    }
+    async function saveDirectory(event) {
+      event.preventDefault(); const { kind, entry } = state.directory;
+      const id = entry ? entry.id : $('dir-id').value.trim();
+      try { await api(`/admin/api/${kind}/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('dir-name').value.trim() }) }); $('directory-dialog').close(); await load(); notify('已保存'); }
+      catch (error) { $('directory-error').textContent = error.message; }
+    }
+    async function removeDirectory(kind, entry) {
+      if (!confirm(`确定删除${DIRECTORY[kind].title}「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
+      try { await api(`/admin/api/${kind}/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
     }
     function renderMachines() {
       $('machine-rows').replaceChildren();
@@ -164,10 +218,14 @@
         if (!tabs.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '这个账号还没有标签'; details.append(empty); }
         else {
           const wrap = document.createElement('div'); wrap.className = 'table-wrap';
-          const table = document.createElement('table'); const head = document.createElement('thead'); head.innerHTML = '<tr><th>标签</th><th>机器</th><th>状态</th><th>操作</th></tr>'; table.append(head);
+          const table = document.createElement('table'); const head = document.createElement('thead'); head.innerHTML = '<tr><th>标签</th><th>员工</th><th>项目</th><th>机器</th><th>状态</th><th>操作</th></tr>'; table.append(head);
           const body = document.createElement('tbody');
           for (const [index, tab] of tabs.entries()) {
+            // 关联存在 tab_links 里，客户端整份回传 tabs 时不会把它冲掉；老标签没有关联。
+            const link = p?.links?.[tab.id];
             const tr = document.createElement('tr'); td(tr, tab.tmuxSession || `标签 ${index + 1}`);
+            td(tr, link ? nameOf(state.employees, link.employeeId) : '—');
+            td(tr, link ? nameOf(state.projects, link.projectId) : '—');
             const machine = state.machines.find(m => m.id === tab.machineId); td(tr, machine?.name || tab.machineId || '空白');
             td(tr, tab.id === p?.tabs?.currentId ? '当前选择' : '');
             const actions = td(tr, ''); actions.append(button('关闭', () => closeTab(u, tab), 'danger')); body.append(tr);
@@ -177,15 +235,23 @@
         $('personal-list').append(details);
       }
     }
+    const fillSelect = (select, list) => { select.replaceChildren(...list.map(item => new Option(item.name || item.id, item.id))); };
+    function updateTabSession() {
+      const employee = $('tab-employee').value, project = $('tab-project').value;
+      $('tab-session').textContent = employee && project ? `会话名：${employee}-${project}（远端约定 cc-${employee}-${project}）` : '请选择员工和项目。';
+    }
     function openTab(u) {
       state.tabUser = u; $('tab-heading').textContent = `给「${u.username}」新增标签`; $('tab-error').textContent = '';
-      const select = $('tab-machine'); select.replaceChildren(new Option('空白标签', ''));
-      for (const m of state.machines) select.add(new Option(m.name || m.id, m.id));
+      fillSelect($('tab-employee'), state.employees);
+      fillSelect($('tab-project'), state.projects);
+      fillSelect($('tab-machine'), state.machines);
+      updateTabSession();
       $('tab-dialog').showModal();
     }
     async function createTab(event) {
       event.preventDefault(); const u = state.tabUser;
-      try { await api(`/admin/api/users/${u.id}/tabs`, { method:'POST', body:json({ machineId:$('tab-machine').value }) }); $('tab-dialog').close(); await load(); notify(`已给「${u.username}」新增标签`); }
+      const body = { machineId:$('tab-machine').value, employeeId:$('tab-employee').value, projectId:$('tab-project').value };
+      try { await api(`/admin/api/users/${u.id}/tabs`, { method:'POST', body:json(body) }); $('tab-dialog').close(); await load(); notify(`已给「${u.username}」新增标签`); }
       catch (error) { $('tab-error').textContent = error.message; }
     }
     async function closeTab(u, tab) {
@@ -238,6 +304,9 @@
     $('add-machine').addEventListener('click', () => openMachine()); $('machine-form').addEventListener('submit', saveMachine); $('machine-cancel').addEventListener('click', () => $('machine-dialog').close());
     $('add-user').addEventListener('click', () => { $('user-form').reset(); $('user-error').textContent = ''; $('user-dialog').showModal(); }); $('user-form').addEventListener('submit', createUser); $('user-cancel').addEventListener('click', () => $('user-dialog').close());
     $('tab-form').addEventListener('submit', createTab); $('tab-cancel').addEventListener('click', () => $('tab-dialog').close());
+    $('tab-employee').addEventListener('change', updateTabSession); $('tab-project').addEventListener('change', updateTabSession);
+    for (const [kind, meta] of Object.entries(DIRECTORY)) $(meta.add).addEventListener('click', () => openDirectory(kind));
+    $('directory-form').addEventListener('submit', saveDirectory); $('directory-cancel').addEventListener('click', () => $('directory-dialog').close());
     $('u-write').addEventListener('change', () => { if ($('u-write').checked) $('u-admin').checked = true; });
     $('u-admin').addEventListener('change', () => { if (!$('u-admin').checked) $('u-write').checked = false; });
     if (location.pathname === '/admin/login') { $('login').hidden = false; } else { $('dashboard').hidden = false; load().catch(error => notify(error.message)); }

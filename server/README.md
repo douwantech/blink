@@ -42,7 +42,22 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 
 ## Admin page
 
-`/admin/login` is the public sign-in page. After an existing admin signs in, `/admin` shows shared machines, accounts, and each account's own tabs. Admins can add a blank tab or one linked to a shared machine, and close a tab for that account. `POST /admin/api/users/{id}/tabs` accepts `{"machineId":"..."}` (empty for a blank tab); `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab. These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
+`/admin/login` is the public sign-in page. After an existing admin signs in, `/admin` shows shared machines, the employee and project directories, accounts, and each account's own tabs with the employee and project each tab is linked to. Admins can maintain the directories, add a tab for an account, and close a tab for that account.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| PUT | `/admin/api/employees/{id}` | Create or replace an employee, `{"id":"jack","name":"Jack"}` |
+| DELETE | `/admin/api/employees/{id}` | Remove an employee |
+| PUT | `/admin/api/projects/{id}` | Create or replace a project, `{"id":"blink","name":"Blink"}` |
+| DELETE | `/admin/api/projects/{id}` | Remove a project |
+
+Both directories are org-wide and shared like `machines`, ordered by ID, and carry no position column. The path ID and the body `id` must match; IDs allow lowercase letters, digits, `.`, `_`, and `-` (max 60 characters, must start with a letter or digit) because an employee and a project ID are concatenated into a tmux session name that people type. Uppercase is rejected so two entries cannot differ only by case and produce two session names nobody can tell apart. Deleting an entry that tabs still reference is allowed: those tabs keep their session name, and the page falls back to showing the bare ID.
+
+`POST /admin/api/users/{id}/tabs` accepts `{"machineId":"...","employeeId":"...","projectId":"..."}` — all three are required, must already exist, and the created tab's `tmuxSession` is `<employeeId>-<projectId>`. The `cc-` prefix belongs to the remote startup convention and is not part of this field. Adding the same employee, project, and machine twice for one account returns `409`. `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab.
+
+Each tab's employee and project live in the `tab_links` table, not inside the tab JSON: clients upload their whole `TabState` on sync and re-encoding drops fields they do not model, so link data stored in the tab entry would be erased by the account's next sync. `GET /admin/api/state` returns `links` per account keyed by tab ID, and closing a tab deletes its row.
+
+These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
 
 The machine form includes a `notes` field. The API retains this and other unrecognized machine fields, so editing an existing machine does not discard newer client fields.
 
