@@ -36,6 +36,20 @@ func TestReadJSONRejectsTrailingInput(t *testing.T) {
 	}
 }
 
+func TestSharedAIConfigMigrationIsSafeForExistingDatabases(t *testing.T) {
+	schemaSQL, err := schema.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaText := string(schemaSQL)
+	if !strings.Contains(schemaText, "CREATE TABLE IF NOT EXISTS shared_ai_config") {
+		t.Fatal("shared AI config migration must create the table idempotently")
+	}
+	if !strings.Contains(schemaText, "INSERT IGNORE INTO shared_ai_config") {
+		t.Fatal("shared AI config migration must seed a missing singleton row without overwriting it")
+	}
+}
+
 func TestWriteAccessRequiresBothFlags(t *testing.T) {
 	for _, u := range []user{{Admin: false, CanWrite: false}, {Admin: false, CanWrite: true}, {Admin: true, CanWrite: false}} {
 		w := httptest.NewRecorder()
@@ -53,7 +67,6 @@ func TestPersonalWritesUseSignedInUser(t *testing.T) {
 		{"/v1/config/tabs", "tabs"},
 		{"/v1/config/selection", "recent_selection"},
 		{"/v1/config/agents", "agents"},
-		{"/v1/config/voice-corrections", "voice_corrections"},
 	} {
 		t.Run(tc.column, func(t *testing.T) {
 			db, mock, err := sqlmock.New()
@@ -62,11 +75,7 @@ func TestPersonalWritesUseSignedInUser(t *testing.T) {
 			}
 			defer db.Close()
 			mock.ExpectBegin()
-			if tc.column == "voice_corrections" {
-				mock.ExpectExec("INSERT INTO voice_corrections").WithArgs(uint64(7), []byte(`{"key":"value"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
-			} else {
-				mock.ExpectExec("INSERT INTO user_configs").WithArgs(uint64(7), []byte(`{"key":"value"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
-			}
+			mock.ExpectExec("INSERT INTO user_configs").WithArgs(uint64(7), []byte(`{"key":"value"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec("UPDATE users SET config_version").WithArgs(uint64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectCommit()
 			r := httptest.NewRequest(http.MethodPut, tc.path, strings.NewReader(`{"key":"value"}`))

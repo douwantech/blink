@@ -53,8 +53,9 @@ CREATE TABLE IF NOT EXISTS voice_corrections (
   CONSTRAINT voice_corrections_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- AI configuration is shared by every account. The singleton row is versioned
--- through config_versions, like the shared machine catalogue.
+-- AI configuration is shared by every account. These idempotent statements run
+-- on every startup, so an existing database gets the table and singleton seed
+-- row during upgrade without overwriting an already configured document.
 CREATE TABLE IF NOT EXISTS shared_ai_config (
   id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
   data JSON NOT NULL

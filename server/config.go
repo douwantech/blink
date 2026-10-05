@@ -344,8 +344,6 @@ func (a *app) writeUserConfig(column string) handler {
 			query = `INSERT INTO user_configs(user_id,recent_selection) VALUES(?,?) ON DUPLICATE KEY UPDATE recent_selection=VALUES(recent_selection)`
 		case "agents":
 			query = `INSERT INTO user_configs(user_id,agents) VALUES(?,?) ON DUPLICATE KEY UPDATE agents=VALUES(agents)`
-		case "voice_corrections":
-			query = `INSERT INTO voice_corrections(user_id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`
 		default:
 			http.Error(w, "internal error", 500)
 			return
