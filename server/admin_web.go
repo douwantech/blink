@@ -28,6 +28,8 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /admin/api/state", a.adminAuth(a.adminState))
 	m.HandleFunc("POST /admin/api/users", a.adminAuth(a.createUser))
 	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.updateUser))
+	m.HandleFunc("POST /admin/api/users/{id}/tabs", a.adminAuth(a.addUserTab))
+	m.HandleFunc("DELETE /admin/api/users/{id}/tabs/{tabId}", a.adminAuth(a.closeUserTab))
 	m.HandleFunc("PUT /admin/api/machines/{id}", a.adminAuth(a.putMachine))
 	m.HandleFunc("DELETE /admin/api/machines/{id}", a.adminAuth(a.deleteMachine))
 }

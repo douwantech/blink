@@ -42,7 +42,7 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 
 ## Admin page
 
-`/admin/login` is the public sign-in page. After an existing admin signs in, `/admin` shows shared machines, accounts, and read-only personal tabs/recent selections. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
+`/admin/login` is the public sign-in page. After an existing admin signs in, `/admin` shows shared machines, accounts, and each account's own tabs. Admins can add a blank tab or one linked to a shared machine, and close a tab for that account. `POST /admin/api/users/{id}/tabs` accepts `{"machineId":"..."}` (empty for a blank tab); `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab. These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
 
 The machine form includes a `notes` field. The API retains this and other unrecognized machine fields, so editing an existing machine does not discard newer client fields.
 

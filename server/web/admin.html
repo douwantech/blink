@@ -72,7 +72,7 @@
         <div class="row between"><div><h2>账号</h2><p class="muted">管理员可开户、禁用、重置密码和授权机器写入。</p></div><button id="add-user">开户</button></div>
         <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
       </section>
-      <section class="card"><h2>用户 tabs / 最近选择</h2><p class="muted">只读查看；用户在 App 中维护自己的布局。</p><div id="personal-list"></div></section>
+      <section class="card"><h2>账号标签</h2><p class="muted">每个账号的标签独立保存；新增和关闭只影响该账号。</p><div id="personal-list"></div></section>
     </main>
   </div>
   <dialog id="machine-dialog"><form id="machine-form">
@@ -105,9 +105,15 @@
     <div id="user-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="user-cancel">取消</button><button type="submit">创建账号</button></div>
   </form></dialog>
+  <dialog id="tab-dialog"><form id="tab-form">
+    <h2 id="tab-heading">新增标签</h2>
+    <label for="tab-machine">机器</label><select id="tab-machine"><option value="">空白标签</option></select>
+    <div id="tab-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="tab-cancel">取消</button><button type="submit">新增标签</button></div>
+  </form></dialog>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { machines: [], users: [], personal: [], me: null, editing: null };
+    const state = { machines: [], users: [], personal: [], me: null, editing: null, tabUser: null, openAccounts: new Set() };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
       if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
@@ -149,9 +155,43 @@
       $('personal-list').replaceChildren();
       for (const u of state.users) {
         const p = state.personal.find(item => item.userId === u.id);
-        const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = `${u.username} · ${(p?.tabs?.tabs || []).length} 个 tab`; details.append(summary);
-        const pre = document.createElement('pre'); pre.textContent = JSON.stringify({ tabs: p?.tabs || { version: 1, tabs: [] }, recentSelection: p?.recentSelection || {} }, null, 2); details.append(pre); $('personal-list').append(details);
+        const tabs = Array.isArray(p?.tabs?.tabs) ? p.tabs.tabs : [];
+        const details = document.createElement('details'); details.open = state.openAccounts.has(u.id);
+        details.addEventListener('toggle', () => { if (details.open) state.openAccounts.add(u.id); else state.openAccounts.delete(u.id); });
+        const summary = document.createElement('summary'); summary.textContent = `${u.username} · ${tabs.length} 个标签`; details.append(summary);
+        const controls = document.createElement('div'); controls.className = 'row'; controls.style.margin = '12px 0';
+        controls.append(button('新增标签', () => openTab(u))); details.append(controls);
+        if (!tabs.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '这个账号还没有标签'; details.append(empty); }
+        else {
+          const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+          const table = document.createElement('table'); const head = document.createElement('thead'); head.innerHTML = '<tr><th>标签</th><th>机器</th><th>状态</th><th>操作</th></tr>'; table.append(head);
+          const body = document.createElement('tbody');
+          for (const [index, tab] of tabs.entries()) {
+            const tr = document.createElement('tr'); td(tr, tab.tmuxSession || `标签 ${index + 1}`);
+            const machine = state.machines.find(m => m.id === tab.machineId); td(tr, machine?.name || tab.machineId || '空白');
+            td(tr, tab.id === p?.tabs?.currentId ? '当前选择' : '');
+            const actions = td(tr, ''); actions.append(button('关闭', () => closeTab(u, tab), 'danger')); body.append(tr);
+          }
+          table.append(body); wrap.append(table); details.append(wrap);
+        }
+        $('personal-list').append(details);
       }
+    }
+    function openTab(u) {
+      state.tabUser = u; $('tab-heading').textContent = `给「${u.username}」新增标签`; $('tab-error').textContent = '';
+      const select = $('tab-machine'); select.replaceChildren(new Option('空白标签', ''));
+      for (const m of state.machines) select.add(new Option(m.name || m.id, m.id));
+      $('tab-dialog').showModal();
+    }
+    async function createTab(event) {
+      event.preventDefault(); const u = state.tabUser;
+      try { await api(`/admin/api/users/${u.id}/tabs`, { method:'POST', body:json({ machineId:$('tab-machine').value }) }); $('tab-dialog').close(); await load(); notify(`已给「${u.username}」新增标签`); }
+      catch (error) { $('tab-error').textContent = error.message; }
+    }
+    async function closeTab(u, tab) {
+      if (!confirm(`确定关闭「${u.username}」的这个标签？`)) return;
+      try { await api(`/admin/api/users/${u.id}/tabs/${encodeURIComponent(tab.id)}`, { method:'DELETE' }); await load(); notify(`已关闭「${u.username}」的标签`); }
+      catch (error) { notify(error.message); }
     }
     function openMachine(m = null) {
       state.editing = m; $('machine-form').reset(); $('machine-error').textContent = '';
@@ -197,6 +237,7 @@
     $('logout').addEventListener('click', async () => { try { await api('/admin/session', { method:'DELETE' }); } finally { location.assign('/admin/login'); } });
     $('add-machine').addEventListener('click', () => openMachine()); $('machine-form').addEventListener('submit', saveMachine); $('machine-cancel').addEventListener('click', () => $('machine-dialog').close());
     $('add-user').addEventListener('click', () => { $('user-form').reset(); $('user-error').textContent = ''; $('user-dialog').showModal(); }); $('user-form').addEventListener('submit', createUser); $('user-cancel').addEventListener('click', () => $('user-dialog').close());
+    $('tab-form').addEventListener('submit', createTab); $('tab-cancel').addEventListener('click', () => $('tab-dialog').close());
     $('u-write').addEventListener('change', () => { if ($('u-write').checked) $('u-admin').checked = true; });
     $('u-admin').addEventListener('change', () => { if (!$('u-admin').checked) $('u-write').checked = false; });
     if (location.pathname === '/admin/login') { $('login').hidden = false; } else { $('dashboard').hidden = false; load().catch(error => notify(error.message)); }
