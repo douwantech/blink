@@ -5,6 +5,9 @@ struct RootView: View {
     @EnvironmentObject var state: AppState
     /// 浏览器占满顶栏以下整块（和鸿蒙平板一样全屏），关掉回终端；⌘B / 顶栏地球按钮切换
     @AppStorage("BrowserPanel.open") private var showBrowser = false
+    /// 无登录 session 时启动弹一次登录 sheet（2026-10-05 服务器化）。「离线使用」
+    /// 可跳过——缓存照用，下次启动再弹。
+    @State private var showLogin = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +32,10 @@ struct RootView: View {
         .background(Theme.bg)
         .foregroundColor(Theme.fg)
         .task { await state.startup() }
+        .sheet(isPresented: $showLogin) {
+            ServerLoginView(onSuccess: { showLogin = false })
+        }
+        .onAppear { if !ServerSync.shared.hasSession { showLogin = true } }
     }
 }
 

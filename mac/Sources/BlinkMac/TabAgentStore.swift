@@ -176,7 +176,12 @@ enum TabAgentStore {
 /// 除了改动的那个 key 和 origin / updatedAt 之外的字段原样保留，不动别人的配置。
 enum SyncConfig {
     static var path: String {
-        (NSHomeDirectory() as NSString).appendingPathComponent(".blink/sync/blink_config.json")
+        // BLINKMAC_SYNC_FILE：E2E 测试重定向到 fixture，别写坏真同步文件（老板的
+        // 现版 BlinkMac / 鸿蒙端都在读写它）。与 CHATSHOT/DIAG 同类测试钩子。
+        if let override = ProcessInfo.processInfo.environment["BLINKMAC_SYNC_FILE"], !override.isEmpty {
+            return override
+        }
+        return (NSHomeDirectory() as NSString).appendingPathComponent(".blink/sync/blink_config.json")
     }
 
     static func read() -> [String: Any]? {
