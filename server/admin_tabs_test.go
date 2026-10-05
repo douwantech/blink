@@ -554,6 +554,7 @@ func TestAdminStateExposesDirectoriesAndTabLinks(t *testing.T) {
 	mock.ExpectQuery("SELECT position,data FROM machines").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
 	mock.ExpectQuery("SELECT data FROM employees").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"id":"jack","name":"Jack"}`)))
 	mock.ExpectQuery("SELECT data FROM projects").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"id":"blink","name":"Blink"}`)))
+	mock.ExpectQuery("SELECT position,data FROM pinned_bookmarks").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
 	mock.ExpectQuery("SELECT user_id,tab_id,employee_id,project_id FROM tab_links").WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}).AddRow(7, "22222222-2222-4222-8222-222222222222", "jack", "blink"))
 	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection").WillReturnRows(sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}).AddRow(7, []byte(linkedTabState), nil))
 	w := httptest.NewRecorder()

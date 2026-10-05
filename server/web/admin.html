@@ -83,6 +83,10 @@
         <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead><tbody id="employee-rows"></tbody></table></div>
       </section>
       <section class="card">
+        <div class="row between"><div><h2>后台书签</h2><p class="muted">浏览器「后台」列表，全员共享。认证用户名/密码是可选的 HTTP Basic，留空表示这个网址不需要登录。</p></div><button id="add-pinned">添加书签</button></div>
+        <div class="table-wrap"><table><thead><tr><th>标题</th><th>网址</th><th>认证账号</th><th>操作</th></tr></thead><tbody id="pinned-rows"></tbody></table></div>
+      </section>
+      <section class="card">
         <div class="row between"><div><h2>账号</h2><p class="muted">管理员可开户、禁用、重置密码和授权机器写入。</p></div><button id="add-user">开户</button></div>
         <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
       </section>
@@ -157,13 +161,26 @@
     <div id="directory-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="directory-cancel">取消</button><button type="submit">保存</button></div>
   </form></dialog>
+  <dialog id="pinned-dialog"><form id="pinned-form">
+    <h2 id="pinned-heading">添加书签</h2>
+    <div class="grid">
+      <div><label for="p-id">ID</label><input id="p-id" required maxlength="100"></div>
+      <div><label for="p-position">排序</label><input id="p-position" type="number" min="0" value="0" required></div>
+      <div><label for="p-title">标题</label><input id="p-title" required></div>
+      <div><label for="p-url">网址</label><input id="p-url" required placeholder="https://example.com/admin"></div>
+      <div><label for="p-user">认证用户名</label><input id="p-user" autocomplete="off"></div>
+      <div><label for="p-password">认证密码</label><input id="p-password" type="password" autocomplete="off" placeholder="编辑时留空 = 清除认证"></div>
+    </div>
+    <div id="pinned-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="pinned-cancel">取消</button><button type="submit">保存书签</button></div>
+  </form></dialog>
   <script>
     const $ = id => document.getElementById(id);
     // 员工是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
     // 项目也是目录，但比员工多「公用」标记和有效员工名单，所以有自己的弹窗。
     const DIRECTORY = { employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' } };
     const PUBLIC_STATUS = { ok: '已就绪', missing: '缺失', wrongMachine: '机器不符', noAccount: '无此账号', extra: '名单外' };
-    const state = { machines: [], users: [], personal: [], employees: [], projects: [], publicTabs: { rows: [], extras: [], summary: {} }, me: null, editing: null, tabUser: null, directory: null, project: null, openAccounts: new Set() };
+    const state = { machines: [], pinned: [], users: [], personal: [], employees: [], projects: [], publicTabs: { rows: [], extras: [], summary: {} }, me: null, editing: null, tabUser: null, directory: null, project: null, openAccounts: new Set(), pinnedEditing: null };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
       if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
@@ -178,7 +195,8 @@
       const data = await api('/admin/api/state'); Object.assign(state, data);
       $('identity').textContent = `${state.me.username} · 管理员`;
       $('add-machine').disabled = !state.me.canWrite;
-      renderMachines(); renderProjects(); renderDirectories(); renderUsers(); renderPersonal(); renderPublic();
+      $('add-pinned').disabled = !state.me.canWrite;
+      renderMachines(); renderPinned(); renderProjects(); renderDirectories(); renderUsers(); renderPersonal(); renderPublic();
     }
     const nameOf = (list, id) => list.find(item => item.id === id)?.name || id;
     function renderDirectories() {
@@ -414,6 +432,37 @@
       if (!confirm(`确定删除机器「${m.name || m.id}」？`)) return;
       try { await api('/admin/api/machines/' + encodeURIComponent(m.id), { method:'DELETE' }); await load(); notify('机器已删除'); } catch (error) { notify(error.message); }
     }
+    function renderPinned() {
+      $('pinned-rows').replaceChildren();
+      for (const p of state.pinned) {
+        const tr = document.createElement('tr'); td(tr, p.title); td(tr, p.url); td(tr, p.authUser || '不需要登录');
+        const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        if (state.me.canWrite) { row.append(button('编辑', () => openPinned(p)), button('删除', () => removePinned(p), 'danger')); }
+        cell.append(row); $('pinned-rows').append(tr);
+      }
+      if (!state.pinned.length) { const tr = document.createElement('tr'); td(tr, '还没有后台书签'); $('pinned-rows').append(tr); }
+    }
+    function openPinned(p = null) {
+      state.pinnedEditing = p; $('pinned-form').reset(); $('pinned-error').textContent = '';
+      $('pinned-heading').textContent = p ? '编辑书签' : '添加书签'; $('p-id').disabled = !!p;
+      for (const [id, key] of Object.entries({ 'p-id': 'id', 'p-position': 'position', 'p-title': 'title', 'p-url': 'url', 'p-user': 'authUser' })) $(id).value = p?.[key] ?? (key === 'position' ? '0' : '');
+      $('p-password').value = '';
+      $('pinned-dialog').showModal();
+    }
+    async function savePinned(event) {
+      event.preventDefault(); $('pinned-error').textContent = '';
+      const p = { ...(state.pinnedEditing || {}), id: $('p-id').value.trim(), title: $('p-title').value.trim(), url: $('p-url').value.trim(), position: Number($('p-position').value) };
+      const user = $('p-user').value.trim(), password = $('p-password').value;
+      if (user && password) { p.authUser = user; p.authPassword = password; }
+      else if (user || password) { $('pinned-error').textContent = '认证用户名和密码要么都填，要么都留空'; return; }
+      else { delete p.authUser; delete p.authPassword; }
+      try { await api('/admin/api/pinned/' + encodeURIComponent(p.id), { method:'PUT', body:json(p) }); $('pinned-dialog').close(); await load(); notify('书签已保存'); }
+      catch (error) { $('pinned-error').textContent = error.message; }
+    }
+    async function removePinned(p) {
+      if (!confirm(`确定删除书签「${p.title}」？`)) return;
+      try { await api('/admin/api/pinned/' + encodeURIComponent(p.id), { method:'DELETE' }); await load(); notify('书签已删除'); } catch (error) { notify(error.message); }
+    }
     async function createUser(event) {
       event.preventDefault(); const body = { username:$('u-name').value.trim(), password:$('u-password').value, isAdmin:$('u-admin').checked, canWrite:$('u-write').checked };
       try { await api('/admin/api/users', { method:'POST', body:json(body) }); $('user-dialog').close(); await load(); notify('账号已创建'); }
@@ -436,6 +485,7 @@
     });
     $('logout').addEventListener('click', async () => { try { await api('/admin/session', { method:'DELETE' }); } finally { location.assign('/admin/login'); } });
     $('add-machine').addEventListener('click', () => openMachine()); $('machine-form').addEventListener('submit', saveMachine); $('machine-cancel').addEventListener('click', () => $('machine-dialog').close());
+    $('add-pinned').addEventListener('click', () => openPinned()); $('pinned-form').addEventListener('submit', savePinned); $('pinned-cancel').addEventListener('click', () => $('pinned-dialog').close());
     $('add-user').addEventListener('click', () => { $('user-form').reset(); $('user-error').textContent = ''; $('user-dialog').showModal(); }); $('user-form').addEventListener('submit', createUser); $('user-cancel').addEventListener('click', () => $('user-dialog').close());
     $('tab-form').addEventListener('submit', createTab); $('tab-cancel').addEventListener('click', () => $('tab-dialog').close());
     $('tab-employee').addEventListener('change', updateTabSession); $('tab-project').addEventListener('change', updateTabSession);

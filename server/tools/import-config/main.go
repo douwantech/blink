@@ -25,6 +25,7 @@ type source struct {
 	Machines        []json.RawMessage `json:"machines"`
 	Tabs            []map[string]any  `json:"tabs"`
 	Agents          map[string]string `json:"agents"`
+	Pinned          []map[string]any  `json:"pinned"`
 	CurrentID       string            `json:"currentId"`
 	ClosedIDs       []string          `json:"closedIds"`
 	FilterMachineID string            `json:"filterMachineId"`
@@ -33,9 +34,43 @@ type source struct {
 type plan struct {
 	Machines  []json.RawMessage
 	IDs       []string
-	Tabs      json.RawMessage
-	Agents    json.RawMessage
-	Selection json.RawMessage
+	Pinned    []json.RawMessage
+	PinnedIDs []string
+	// Titles filled from the host because the source entry had none (Mac 侧显示名同约定).
+	FilledTitles int
+	Tabs         json.RawMessage
+	Agents       json.RawMessage
+	Selection    json.RawMessage
+}
+
+// bookmarkID 由 URL 推一个稳定、可读的 id（host 为底，同域冲突加序号），
+// 这样重复导入同一份清单是幂等的（PUT /v1/pinned/batch 整表替换，不产生重复条目）。
+func bookmarkID(parsed *url.URL, seen map[string]bool) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(parsed.Host) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	base := strings.Trim(b.String(), "-.")
+	if base == "" {
+		base = "bookmark"
+	}
+	if len(base) > 90 {
+		base = base[:90]
+	}
+	id := base
+	for i := 2; seen[id]; i++ {
+		suffix := fmt.Sprintf("-%d", i)
+		trimmed := base
+		if len(trimmed)+len(suffix) > 100 {
+			trimmed = trimmed[:100-len(suffix)]
+		}
+		id = trimmed + suffix
+	}
+	return id
 }
 
 func prepare(data []byte) (plan, error) {
@@ -79,6 +114,37 @@ func prepare(data []byte) (plan, error) {
 		p.Machines = append(p.Machines, b)
 		p.IDs = append(p.IDs, id)
 	}
+	seenBookmarks := map[string]bool{}
+	p.Pinned = make([]json.RawMessage, 0, len(src.Pinned))
+	p.PinnedIDs = make([]string, 0, len(src.Pinned))
+	for i, entry := range src.Pinned {
+		rawURL, _ := entry["url"].(string)
+		parsed, err := url.Parse(strings.TrimSpace(rawURL))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return plan{}, fmt.Errorf("bookmark %d has a missing or invalid url", i)
+		}
+		title, _ := entry["title"].(string)
+		if strings.TrimSpace(title) == "" {
+			title, p.FilledTitles = parsed.Host, p.FilledTitles+1
+		}
+		id := bookmarkID(parsed, seenBookmarks)
+		seenBookmarks[id] = true
+		bookmark := map[string]any{"id": id, "title": title, "url": strings.TrimSpace(rawURL)}
+		if user, _ := entry["authUser"].(string); user != "" {
+			password, _ := entry["authPassword"].(string)
+			if password == "" {
+				return plan{}, fmt.Errorf("bookmark %d has a username without a password", i)
+			}
+			bookmark["authUser"], bookmark["authPassword"] = user, password
+		}
+		b, err := json.Marshal(bookmark)
+		if err != nil {
+			return plan{}, err
+		}
+		p.Pinned = append(p.Pinned, b)
+		p.PinnedIDs = append(p.PinnedIDs, id)
+	}
+
 	closed := make([]string, 0, len(src.ClosedIDs))
 	for _, id := range src.ClosedIDs {
 		if !uuid.MatchString(id) {
@@ -186,6 +252,13 @@ func apply(ctx context.Context, p plan, base, username, password string) error {
 	if err = c.request(ctx, "PUT", "/v1/machines/batch", batch, nil); err != nil {
 		return err
 	}
+	// 共享书签：整表替换，只在源清单里确实带了 pinned 时执行（老快照没有这个键）。
+	if len(p.Pinned) > 0 {
+		bookmarks, _ := json.Marshal(p.Pinned)
+		if err = c.request(ctx, "PUT", "/v1/pinned/batch", bookmarks, nil); err != nil {
+			return err
+		}
+	}
 	for _, item := range []struct {
 		path string
 		body []byte
@@ -196,6 +269,7 @@ func apply(ctx context.Context, p plan, base, username, password string) error {
 	}
 	var snapshot struct {
 		Machines        []json.RawMessage `json:"machines"`
+		Pinned          []json.RawMessage `json:"pinned"`
 		Tabs            json.RawMessage   `json:"tabs"`
 		Agents          json.RawMessage   `json:"agents"`
 		RecentSelection json.RawMessage   `json:"recentSelection"`
@@ -211,10 +285,20 @@ func apply(ctx context.Context, p plan, base, username, password string) error {
 			return fmt.Errorf("verification failed: machine at index %d differs", i)
 		}
 	}
+	if len(p.Pinned) > 0 {
+		if len(snapshot.Pinned) != len(p.Pinned) {
+			return errors.New("verification failed: bookmark count differs")
+		}
+		for i, raw := range snapshot.Pinned {
+			if !sameJSON(raw, p.Pinned[i]) {
+				return fmt.Errorf("verification failed: bookmark at index %d differs", i)
+			}
+		}
+	}
 	if !sameJSON(snapshot.Tabs, p.Tabs) || !sameJSON(snapshot.Agents, p.Agents) || !sameJSON(snapshot.RecentSelection, p.Selection) {
 		return errors.New("verification failed: personal config differs")
 	}
-	fmt.Printf("Verified %d imported machines and personal tabs/agents/selection.\n", len(p.IDs))
+	fmt.Printf("Verified %d imported machines, %d shared bookmarks and personal tabs/agents/selection.\n", len(p.IDs), len(p.Pinned))
 	return nil
 }
 
@@ -248,7 +332,10 @@ func main() {
 	_ = json.Unmarshal(p.Tabs, &tabs)
 	var agents map[string]string
 	_ = json.Unmarshal(p.Agents, &agents)
-	fmt.Printf("Preview: %d machines, %d tabs, %d agent choices.\n", len(p.IDs), len(tabs.Tabs), len(agents))
+	fmt.Printf("Preview: %d machines, %d tabs, %d agent choices, %d shared bookmarks.\n", len(p.IDs), len(tabs.Tabs), len(agents), len(p.Pinned))
+	if p.FilledTitles > 0 {
+		fmt.Printf("Note: %d bookmark(s) had no title; the host is used as the title (edit them in the admin page if you want something nicer).\n", p.FilledTitles)
+	}
 	if !*doApply {
 		fmt.Println("Dry run only. Add --apply to write.")
 		return

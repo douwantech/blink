@@ -36,6 +36,8 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /admin/api/employees/{id}", a.adminAuth(a.deleteDirectoryEntry("employees")))
 	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putProject))
 	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))
+	m.HandleFunc("PUT /admin/api/pinned/{id}", a.adminAuth(a.putPinnedLink))
+	m.HandleFunc("DELETE /admin/api/pinned/{id}", a.adminAuth(a.deletePinnedLink))
 }
 
 func serveAdminPage(w http.ResponseWriter) {
@@ -219,6 +221,37 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
+	rows, err = a.db.QueryContext(r.Context(), `SELECT position,data FROM pinned_bookmarks ORDER BY position,id`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	pinned := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var position int
+		var data []byte
+		if err = rows.Scan(&position, &data); err != nil {
+			break
+		}
+		var fields map[string]json.RawMessage
+		if err = json.Unmarshal(data, &fields); err != nil {
+			break
+		}
+		fields["position"], _ = json.Marshal(position)
+		data, err = json.Marshal(fields)
+		if err != nil {
+			break
+		}
+		pinned = append(pinned, json.RawMessage(data))
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	links := map[uint64]map[string]map[string]string{}
 	rows, err = a.db.QueryContext(r.Context(), `SELECT user_id,tab_id,employee_id,project_id FROM tab_links`)
 	if err != nil {
@@ -287,5 +320,5 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	report := buildPublicReport(decodeProjects(projects), accounts)
-	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "personal": personal, "employees": employees, "projects": projects, "publicTabs": report})
+	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "pinned": pinned, "personal": personal, "employees": employees, "projects": projects, "publicTabs": report})
 }

@@ -26,17 +26,22 @@ All JSON uses UTF-8. Authenticated requests send `Authorization: Bearer <token>`
 | PUT | `/v1/machines/{id}` | Admin with `canWrite` | Create or replace a machine |
 | PUT | `/v1/machines/batch` | Admin with `canWrite` | Replace the ordered machine array in one transaction |
 | DELETE | `/v1/machines/{id}` | Admin with `canWrite` | Remove a machine |
+| PUT | `/v1/pinned/{id}` | Admin with `canWrite` | Create or replace one browser bookmark |
+| PUT | `/v1/pinned/batch` | Admin with `canWrite` | Replace the ordered bookmark array in one transaction |
+| DELETE | `/v1/pinned/{id}` | Admin with `canWrite` | Remove a browser bookmark |
 | PUT | `/v1/config/tabs` | Signed in | Replace own tab state |
 | PUT | `/v1/config/selection` | Signed in | Replace own recent selection |
 | PUT | `/v1/config/agents` | Signed in | Replace own agent map |
 | POST | `/v1/admin/users` | Admin | Create account |
 | PATCH | `/v1/admin/users/{id}` | Admin | Change `password`, `disabled`, `isAdmin`, `canWrite` |
 
-`GET /v1/config` returns `{version, machines, tabs, recentSelection, agents, user}`. `machines` use `BlinkMachine`'s Codable field names (`id`, `name`, `host`, `user`, `transport`, `blinkdHost`, `blinkdPort`, `blinkdToken`, `rustdeskId`, `rustdeskPassword`, etc.). Machine array order is authoritative; the SQL `position` column is internal and never added to client JSON. The server sends the connection tokens to every signed-in employee as required by #29; clients must keep cached snapshots in protected storage and avoid logging them. `tabs` uses the existing `TabState` JSON shape. `agents` maps the existing `machineId|title` key to `claude`, `codex`, or `deepseek`. `recentSelection` is an object reserved for the client's current machine/tab IDs. Empty accounts receive empty defaults.
+`GET /v1/config` returns `{version, machines, pinned, tabs, recentSelection, agents, user}`. `machines` use `BlinkMachine`'s Codable field names (`id`, `name`, `host`, `user`, `transport`, `blinkdHost`, `blinkdPort`, `blinkdToken`, `rustdeskId`, `rustdeskPassword`, etc.). Machine array order is authoritative; the SQL `position` column is internal and never added to client JSON. The server sends the connection tokens to every signed-in employee as required by #29; clients must keep cached snapshots in protected storage and avoid logging them. `tabs` uses the existing `TabState` JSON shape. `agents` maps the existing `machineId|title` key to `claude`, `codex`, or `deepseek`. `recentSelection` is an object reserved for the client's current machine/tab IDs. Empty accounts receive empty defaults.
 
-`version` combines the shared machine revision and the signed-in account's revision. Pass the last version on the next request; `304` means the cached snapshot is still current. Any machine change increments the shared revision. Tab, selection, or agent changes increment only that user's revision. Clients should treat the full snapshot as authoritative and cache it for offline read-only use.
+`pinned` is the shared browser bookmark list shown on the app's browser「后台」sidebar: `{id, title, url, authUser, authPassword}` entries in display order. It is global, not per-account — every signed-in employee receives the same list, so nobody has to enter bookmarks by hand. `authUser`/`authPassword` are an optional HTTP Basic pair and must be set together; blank means the site needs no credentials. Array order is authoritative (`position` stays internal, exactly like machines), `title` and an `http`/`https` `url` are required, and unknown fields are retained. Like machine tokens, these credentials reach every signed-in client, so clients must keep cached snapshots in protected storage and avoid logging them.
 
-Only admins with `canWrite=true` can change shared machines. Every signed-in user can update their own tabs, recent selection, and agent choices; these endpoints always use the authenticated user ID. Admins can manage accounts even when `canWrite=false`. Other users cannot edit machines or accounts.
+`version` combines the shared machine revision and the signed-in account's revision. Pass the last version on the next request; `304` means the cached snapshot is still current. Any machine or bookmark change increments the shared revision. Tab, selection, or agent changes increment only that user's revision. Clients should treat the full snapshot as authoritative and cache it for offline read-only use.
+
+Only admins with `canWrite=true` can change shared machines or shared bookmarks. Every signed-in user can update their own tabs, recent selection, and agent choices; these endpoints always use the authenticated user ID. Admins can manage accounts even when `canWrite=false`. Other users cannot edit machines or accounts.
 
 Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts per username per five minutes across FC instances. Configure an additional IP-level limit at the FC/API gateway to cover floods of arbitrary usernames. The custom domain is HTTPS-only.
 
@@ -76,13 +81,13 @@ Tabs an account holds for a public project that its employee list does not call 
 
 A tab's employee and project come from its `tab_links` row when it has one, because that is what the admin page recorded. A tab the client created has no row, so its employee and project are read off its session name instead; the project half is matched whole against the known project IDs, longest first, so an employee ID containing a dash still resolves and a project ID that is the suffix of another cannot win the match on the shorter one. A row that names a project which is not public is authoritative too: the session name is not used as a fallback.
 
-These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
+These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. The page also manages the shared browser bookmarks (the「后台书签」card): add, edit, reorder, and delete, with an optional authentication username/password per entry. Its API is `PUT`/`DELETE /admin/api/pinned/{id}`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
 
 The machine form includes a `notes` field. The API retains this and other unrecognized machine fields, so editing an existing machine does not discard newer client fields.
 
 ## Import an existing Mac snapshot
 
-The Mac sync file `~/.blink/sync/blink_config.json` contains `machines`, `tabs`, `agents`, `currentId`, and `filterMachineId`. It also contains machine connection tokens. Obtain a copy through a private channel and keep it outside the repository. The import targets the account that signs in: the shared machine array is replaced transactionally in source order, while that account's tabs, agents, and recent selection are replaced. Re-running the import is safe for these same values, though it increments config versions again.
+The Mac sync file `~/.blink/sync/blink_config.json` contains `machines`, `tabs`, `agents`, `pinned`, `currentId`, and `filterMachineId`. It also contains machine connection tokens. Obtain a copy through a private channel and keep it outside the repository. The import targets the account that signs in: the shared machine array is replaced transactionally in source order, while that account's tabs, agents, and recent selection are replaced. Re-running the import is safe for these same values, though it increments config versions again.
 
 From `server/`, preview without credentials:
 
@@ -95,6 +100,8 @@ To apply, set `BLINK_IMPORT_USER` and `BLINK_IMPORT_PASSWORD` in the local shell
 ```sh
 go run ./tools/import-config --input /private/path/blink_config.json --base-url https://blink-api.douwantech.com --apply
 ```
+
+When the snapshot carries `pinned`, the tool also replaces the shared bookmark list (`PUT /v1/pinned/batch`), keeping source order. Bookmark ids are derived from each URL's host (a numeric suffix disambiguates entries on the same host), so re-running the import is idempotent instead of creating duplicates. Entries without a title take the host as their title and are reported in the preview, because the server requires a non-empty title. A snapshot without `pinned` leaves the shared bookmarks untouched.
 
 The account must have both `isAdmin` and `canWrite`. The tool checks exact machine array order and JSON content, plus tabs, agents, and selection. It prints counts only, never IDs, token values, or passwords. If a request fails partway through, fix the cause and rerun it.
 

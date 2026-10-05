@@ -377,6 +377,7 @@ func TestAdminStateCarriesThePublicReport(t *testing.T) {
 	mock.ExpectQuery("SELECT position,data FROM machines").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}).AddRow(0, []byte(`{"id":"m1","host":"h"}`)))
 	mock.ExpectQuery("SELECT data FROM employees").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"id":"jack","name":"Jack"}`)))
 	mock.ExpectQuery("SELECT data FROM projects").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"m1"}]}`)))
+	mock.ExpectQuery("SELECT position,data FROM pinned_bookmarks").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
 	mock.ExpectQuery("SELECT user_id,tab_id,employee_id,project_id FROM tab_links").WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}))
 	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection").WillReturnRows(sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}).AddRow(1, []byte(`{"version":1,"tabs":[]}`), nil).AddRow(7, []byte(`{"version":1,"tabs":[]}`), nil))
 	w := httptest.NewRecorder()
