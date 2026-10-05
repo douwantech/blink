@@ -41,6 +41,12 @@
     .notice { color:#146c42; min-height:20px; font-size:13px; margin:10px 0 }
     dialog { border:0; border-radius:14px; padding:24px; width:min(650px,calc(100vw - 24px)); max-height:90vh; overflow:auto; box-shadow:0 15px 60px #17223b40 }
     dialog::backdrop { background:#0d1b37aa }
+    tr.group td { background:#f5f7fb; border-radius:8px; padding:8px 10px }
+    tr.group strong { font-size:13px }
+    label.check { display:flex; align-items:center; gap:8px; font-weight:600 }
+    label.check input { width:auto }
+    #project-employee-rows .row { margin-bottom:8px }
+    #project-employee-rows select { flex:1 1 180px; width:auto }
     details { border:1px solid #e0e5ee; border-radius:10px; margin:8px 0; padding:12px }
     summary { cursor:pointer; font-weight:600 }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f5f7fb; border-radius:8px; padding:14px; font-size:12px }
@@ -69,8 +75,8 @@
         <div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>连接方式</th><th>备注</th><th>操作</th></tr></thead><tbody id="machine-rows"></tbody></table></div>
       </section>
       <section class="card">
-        <div class="row between"><div><h2>项目</h2><p class="muted">全员共享。标签按员工+项目建会话，所以项目 ID 会成为会话名的一半。</p></div><button id="add-project">添加项目</button></div>
-        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>操作</th></tr></thead><tbody id="project-rows"></tbody></table></div>
+        <div class="row between"><div><h2>项目</h2><p class="muted">全员共享。标签按员工+项目建会话，所以项目 ID 会成为会话名的一半。标为「公用」的项目连同有效员工名单一起进入公用标签视图。</p></div><button id="add-project">添加项目</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>公用</th><th>有效员工</th><th>操作</th></tr></thead><tbody id="project-rows"></tbody></table></div>
       </section>
       <section class="card">
         <div class="row between"><div><h2>员工</h2><p class="muted">全员共享。员工 ID 会成为会话名的另一半。</p></div><button id="add-employee">添加员工</button></div>
@@ -81,6 +87,15 @@
         <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
       </section>
       <section class="card"><h2>账号标签</h2><p class="muted">每个账号的标签独立保存；新增和关闭只影响该账号。新增标签必须同时选定员工、项目和机器，会话名为 <code>员工-项目</code>（远端约定加 <code>cc-</code> 前缀）。</p><div id="personal-list"></div></section>
+      <section class="card">
+        <h2>公用标签</h2>
+        <p class="muted">按 项目×有效员工 列出应有的标签，并和账号实际持有的标签对账。账号按用户名匹配员工 ID；缺失的可以一键建，机器不符或不在名单里的会被标出。未被标为「公用」的项目（如 main/blink）不进入本视图。</p>
+        <p id="public-summary" class="muted"></p>
+        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>机器</th><th>账号</th><th>状态</th><th>操作</th></tr></thead><tbody id="public-rows"></tbody></table></div>
+        <h3>名单外的标签</h3>
+        <p class="muted">账号持有、但该项目的有效员工名单里没有的标签。这里只标出，不自动处理。</p>
+        <div class="table-wrap"><table><thead><tr><th>账号</th><th>项目</th><th>员工</th><th>会话</th><th>机器</th></tr></thead><tbody id="extra-rows"></tbody></table></div>
+      </section>
     </main>
   </div>
   <dialog id="machine-dialog"><form id="machine-form">
@@ -122,6 +137,19 @@
     <div id="tab-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="tab-cancel">取消</button><button type="submit">新增标签</button></div>
   </form></dialog>
+  <dialog id="project-dialog"><form id="project-form">
+    <h2 id="project-heading">添加项目</h2>
+    <label for="project-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="project-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
+    <label for="project-name">名称</label><input id="project-name" required maxlength="100" autocomplete="off">
+    <label class="check"><input type="checkbox" id="project-public"> 公用项目（连同下面的名单进入公用标签视图）</label>
+    <div id="project-employees">
+      <p class="muted">有效员工名单：每个员工一台机器，用来生成 <code>员工-项目</code> 会话。</p>
+      <div id="project-employee-rows"></div>
+      <button type="button" class="secondary" id="project-employee-add">添加员工</button>
+    </div>
+    <div id="project-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="project-cancel">取消</button><button type="submit">保存</button></div>
+  </form></dialog>
   <dialog id="directory-dialog"><form id="directory-form">
     <h2 id="directory-heading">添加项目</h2>
     <label for="dir-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="dir-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
@@ -131,12 +159,11 @@
   </form></dialog>
   <script>
     const $ = id => document.getElementById(id);
-    // 员工和项目是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
-    const DIRECTORY = {
-      projects: { title: '项目', rows: 'project-rows', add: 'add-project' },
-      employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' }
-    };
-    const state = { machines: [], users: [], personal: [], employees: [], projects: [], me: null, editing: null, tabUser: null, directory: null, openAccounts: new Set() };
+    // 员工是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
+    // 项目也是目录，但比员工多「公用」标记和有效员工名单，所以有自己的弹窗。
+    const DIRECTORY = { employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' } };
+    const PUBLIC_STATUS = { ok: '已就绪', missing: '缺失', wrongMachine: '机器不符', noAccount: '无此账号', extra: '名单外' };
+    const state = { machines: [], users: [], personal: [], employees: [], projects: [], publicTabs: { rows: [], extras: [], summary: {} }, me: null, editing: null, tabUser: null, directory: null, project: null, openAccounts: new Set() };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
       if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
@@ -151,7 +178,7 @@
       const data = await api('/admin/api/state'); Object.assign(state, data);
       $('identity').textContent = `${state.me.username} · 管理员`;
       $('add-machine').disabled = !state.me.canWrite;
-      renderMachines(); renderDirectories(); renderUsers(); renderPersonal();
+      renderMachines(); renderProjects(); renderDirectories(); renderUsers(); renderPersonal(); renderPublic();
     }
     const nameOf = (list, id) => list.find(item => item.id === id)?.name || id;
     function renderDirectories() {
@@ -165,6 +192,19 @@
         }
         if (!state[kind].length) { const tr = document.createElement('tr'); td(tr, `还没有${meta.title}`); rows.append(tr); }
       }
+    }
+    function renderProjects() {
+      const rows = $('project-rows'); rows.replaceChildren();
+      for (const entry of state.projects) {
+        const tr = document.createElement('tr');
+        td(tr, entry.id); td(tr, entry.name); td(tr, entry.public ? '公用' : '—');
+        const list = entry.public ? (entry.employees || []) : [];
+        td(tr, list.length ? list.map(e => `${e.id}@${nameOf(state.machines, e.machineId)}`).join('、') : '—');
+        const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        row.append(button('编辑', () => openProject(entry)), button('删除', () => removeProject(entry), 'danger'));
+        cell.append(row); rows.append(tr);
+      }
+      if (!state.projects.length) { const tr = document.createElement('tr'); td(tr, '还没有项目'); rows.append(tr); }
     }
     function openDirectory(kind, entry = null) {
       state.directory = { kind, entry };
@@ -183,6 +223,100 @@
     async function removeDirectory(kind, entry) {
       if (!confirm(`确定删除${DIRECTORY[kind].title}「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
       try { await api(`/admin/api/${kind}/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
+    }
+    // 一行 = 一个有效员工 + 它的机器。会话名由 员工-项目 推出来，不在这里填。
+    function employeeRow(employee = {}) {
+      const row = document.createElement('div'); row.className = 'row';
+      const who = document.createElement('select'); who.className = 'employee-pick';
+      for (const e of state.employees) who.add(new Option(`${e.name || e.id}（${e.id}）`, e.id));
+      if (employee.id) who.value = employee.id;
+      const machine = document.createElement('select'); machine.className = 'employee-machine';
+      for (const m of state.machines) machine.add(new Option(m.name || m.id, m.id));
+      if (employee.machineId) machine.value = employee.machineId;
+      row.append(who, machine, button('移除', () => row.remove(), 'danger'));
+      return row;
+    }
+    function openProject(entry = null) {
+      state.project = entry;
+      $('project-form').reset(); $('project-error').textContent = '';
+      $('project-heading').textContent = entry ? '编辑项目' : '添加项目';
+      $('project-id').disabled = !!entry;
+      $('project-id').value = entry?.id ?? ''; $('project-name').value = entry?.name ?? '';
+      $('project-public').checked = !!entry?.public;
+      const rows = $('project-employee-rows'); rows.replaceChildren();
+      for (const e of entry?.employees || []) rows.append(employeeRow(e));
+      renderProjectEmployeeFields();
+      $('project-dialog').showModal();
+    }
+    // 名单只有在勾了「公用」时才有意义，所以没勾就先收起来。
+    function renderProjectEmployeeFields() { $('project-employees').hidden = !$('project-public').checked; }
+    async function saveProject(event) {
+      event.preventDefault(); const entry = state.project;
+      const id = entry ? entry.id : $('project-id').value.trim();
+      const employees = [...$('project-employee-rows').children].map(row => ({ id: row.querySelector('.employee-pick').value, machineId: row.querySelector('.employee-machine').value }));
+      try {
+        await api(`/admin/api/projects/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('project-name').value.trim(), public:$('project-public').checked, employees }) });
+        $('project-dialog').close(); await load(); notify('已保存');
+      } catch (error) { $('project-error').textContent = error.message; }
+    }
+    async function removeProject(entry) {
+      if (!confirm(`确定删除项目「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
+      try { await api(`/admin/api/projects/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
+    }
+    function renderPublic() {
+      const report = state.publicTabs || { rows: [], extras: [], summary: {} };
+      const summary = report.summary || {};
+      $('public-summary').textContent = summary.projects
+        ? `${summary.projects} 个公用项目，应有 ${summary.expected} 个标签：缺失 ${summary.missing}、机器不符 ${summary.wrongMachine}、无此账号 ${summary.noAccount}、名单外 ${summary.extra}。`
+        : '还没有标为「公用」的项目。到上面的项目里勾选「公用项目」并填上有效员工名单。';
+      const rows = $('public-rows'); rows.replaceChildren();
+      let current = null;
+      for (const row of report.rows) {
+        // 每个项目前插一行表头，带上补齐按钮，省得一个个点。
+        if (row.projectId !== current) {
+          current = row.projectId;
+          const missing = report.rows.filter(r => r.projectId === current && r.status === 'missing');
+          const group = document.createElement('tr'); group.className = 'group';
+          const cell = td(group, ''); cell.colSpan = 7;
+          const head = document.createElement('div'); head.className = 'row between';
+          const title = document.createElement('strong'); title.textContent = `${row.projectName}（${row.projectId}）`;
+          head.append(title);
+          if (missing.length) head.append(button(`补齐缺失 ${missing.length}`, () => fillProject(current)));
+          cell.append(head); rows.append(group);
+        }
+        const tr = document.createElement('tr');
+        td(tr, row.projectName); td(tr, nameOf(state.employees, row.employeeId)); td(tr, row.session);
+        td(tr, row.status === 'wrongMachine' ? `${nameOf(state.machines, row.machineId)} → 实际 ${nameOf(state.machines, row.actualMachineId)}` : nameOf(state.machines, row.machineId));
+        td(tr, row.accountName || '—'); td(tr, PUBLIC_STATUS[row.status] || row.status);
+        const cell = td(tr, '');
+        if (row.status === 'missing') cell.append(button('建这个标签', () => createPublicTab(row)));
+        else if (row.status === 'wrongMachine') cell.append(button('去账号标签里关闭', () => { state.openAccounts.add(row.accountId); renderPersonal(); }, 'secondary'));
+        rows.append(tr);
+      }
+      if (!report.rows.length) { const tr = document.createElement('tr'); td(tr, '没有公用项目'); rows.append(tr); }
+      const extras = $('extra-rows'); extras.replaceChildren();
+      for (const row of report.extras) {
+        const tr = document.createElement('tr');
+        td(tr, row.accountName); td(tr, row.projectName); td(tr, nameOf(state.employees, row.employeeId)); td(tr, row.session); td(tr, nameOf(state.machines, row.machineId));
+        extras.append(tr);
+      }
+      if (!report.extras.length) { const tr = document.createElement('tr'); td(tr, '没有名单外的标签'); extras.append(tr); }
+    }
+    async function createPublicTab(row) {
+      try {
+        await api(`/admin/api/users/${row.accountId}/tabs`, { method:'POST', body:json({ machineId:row.machineId, employeeId:row.employeeId, projectId:row.projectId }) });
+        await load(); notify(`已给「${row.accountName}」建 ${row.session}`);
+      } catch (error) { notify(error.message); }
+    }
+    // 一个项目的缺失标签逐个建；中途失败会把失败数报出来，不静默吞掉。
+    async function fillProject(projectId) {
+      const rows = (state.publicTabs?.rows || []).filter(r => r.projectId === projectId && r.status === 'missing');
+      let done = 0, failed = 0;
+      for (const row of rows) {
+        try { await api(`/admin/api/users/${row.accountId}/tabs`, { method:'POST', body:json({ machineId:row.machineId, employeeId:row.employeeId, projectId:row.projectId }) }); done++; }
+        catch { failed++; }
+      }
+      await load(); notify(`已补齐 ${done} 个${failed ? `，${failed} 个失败` : ''}`);
     }
     function renderMachines() {
       $('machine-rows').replaceChildren();
@@ -307,6 +441,10 @@
     $('tab-employee').addEventListener('change', updateTabSession); $('tab-project').addEventListener('change', updateTabSession);
     for (const [kind, meta] of Object.entries(DIRECTORY)) $(meta.add).addEventListener('click', () => openDirectory(kind));
     $('directory-form').addEventListener('submit', saveDirectory); $('directory-cancel').addEventListener('click', () => $('directory-dialog').close());
+    $('add-project').addEventListener('click', () => openProject());
+    $('project-form').addEventListener('submit', saveProject); $('project-cancel').addEventListener('click', () => $('project-dialog').close());
+    $('project-public').addEventListener('change', renderProjectEmployeeFields);
+    $('project-employee-add').addEventListener('click', () => $('project-employee-rows').append(employeeRow()));
     $('u-write').addEventListener('change', () => { if ($('u-write').checked) $('u-admin').checked = true; });
     $('u-admin').addEventListener('change', () => { if (!$('u-admin').checked) $('u-write').checked = false; });
     if (location.pathname === '/admin/login') { $('login').hidden = false; } else { $('dashboard').hidden = false; load().catch(error => notify(error.message)); }

@@ -48,14 +48,33 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 | --- | --- | --- |
 | PUT | `/admin/api/employees/{id}` | Create or replace an employee, `{"id":"jack","name":"Jack"}` |
 | DELETE | `/admin/api/employees/{id}` | Remove an employee |
-| PUT | `/admin/api/projects/{id}` | Create or replace a project, `{"id":"blink","name":"Blink"}` |
+| PUT | `/admin/api/projects/{id}` | Create or replace a project, `{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"mac-mini"}]}` |
 | DELETE | `/admin/api/projects/{id}` | Remove a project |
 
 Both directories are org-wide and shared like `machines`, ordered by ID, and carry no position column. The path ID and the body `id` must match; IDs allow lowercase letters, digits, `.`, `_`, and `-` (max 60 characters, must start with a letter or digit) because an employee and a project ID are concatenated into a tmux session name that people type. Uppercase is rejected so two entries cannot differ only by case and produce two session names nobody can tell apart. Deleting an entry that tabs still reference is allowed: those tabs keep their session name, and the page falls back to showing the bare ID.
 
+A project carries two more fields than an employee: `public` and `employees`, a list of `{"id":"jack","machineId":"mac-mini"}`. The machine sits on the employee rather than on the project because two employees on one project may not run on the same host. `PUT /admin/api/projects/{id}` merges rather than replaces: `public` and `employees` are only written when the request names them, so a request that changes only the name cannot empty the employee list, and fields another writer added survive. An omitted field keeps its stored value; `PUT /admin/api/employees/{id}` cannot write a project at all, because it would drop those two fields.
+
 `POST /admin/api/users/{id}/tabs` accepts `{"machineId":"...","employeeId":"...","projectId":"..."}` — all three are required, must already exist, and the created tab's `tmuxSession` is `<employeeId>-<projectId>`. The `cc-` prefix belongs to the remote startup convention and is not part of this field. Adding the same employee, project, and machine twice for one account returns `409`. `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab.
 
 Each tab's employee and project live in the `tab_links` table, not inside the tab JSON: clients upload their whole `TabState` on sync and re-encoding drops fields they do not model, so link data stored in the tab entry would be erased by the account's next sync. `GET /admin/api/state` returns `links` per account keyed by tab ID, and closing a tab deletes its row.
+
+### Public tabs
+
+The public-tabs card reconciles the two: a project marked `public` should have one tab per employee on its list, named `<employee>-<project>`, on that pair's machine. `GET /admin/api/state` returns the result as `publicTabs`, and `buildPublicReport` in `admin_public.go` computes it from data the same response already carries.
+
+Reconciliation is per account and matches an account by username: an employee ID is a username. Each expected row is one of
+
+| Status | Meaning |
+| --- | --- |
+| `ok` | The account holds the tab, on the declared machine |
+| `missing` | No tab for that employee and project; the page offers to create it |
+| `wrongMachine` | A tab exists but points at a different machine, so the employee would reach the wrong host. Reported only, never changed |
+| `noAccount` | No account has that username, so there is nobody to create the tab for |
+
+Tabs an account holds for a public project that its employee list does not call for appear under `extras` — an employee who is not on that project, or a session that belongs to somebody else sitting on the wrong account. They are reported, never deleted. Projects that are not `public` are left out of both lists entirely, so `main` and `blink` never appear.
+
+A tab's employee and project come from its `tab_links` row when it has one, because that is what the admin page recorded. A tab the client created has no row, so its employee and project are read off its session name instead; the project half is matched whole against the known project IDs, longest first, so an employee ID containing a dash still resolves and a project ID that is the suffix of another cannot win the match on the shorter one. A row that names a project which is not public is authoritative too: the session name is not used as a fallback.
 
 These operations update only the target account's `user_configs` row and config revision. Closing a tab records its ID in `closedIds` so it stays closed during sync. Every `/admin` data or mutation endpoint checks a short-lived, HttpOnly, SameSite=Strict admin session cookie; non-admin accounts cannot enter. Machine editing still requires `canWrite`. Admin mutations require a same-origin-only custom request header. The HTML and JavaScript are embedded into the same Go binary and FC function; there is no separate web service.
 

@@ -34,7 +34,7 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /admin/api/machines/{id}", a.adminAuth(a.deleteMachine))
 	m.HandleFunc("PUT /admin/api/employees/{id}", a.adminAuth(a.putDirectoryEntry("employees")))
 	m.HandleFunc("DELETE /admin/api/employees/{id}", a.adminAuth(a.deleteDirectoryEntry("employees")))
-	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putDirectoryEntry("projects")))
+	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putProject))
 	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))
 }
 
@@ -249,7 +249,12 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
+	usernameByID := make(map[uint64]string, len(users))
+	for _, v := range users {
+		usernameByID[v.ID] = v.Username
+	}
 	personal := make([]map[string]any, 0)
+	accounts := make([]publicAccount, 0, len(users))
 	for rows.Next() {
 		var id uint64
 		var tabs, selection []byte
@@ -267,6 +272,11 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 			account = map[string]map[string]string{}
 		}
 		personal = append(personal, map[string]any{"userId": id, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "links": account})
+		accountLinks := make(map[string]publicLink, len(account))
+		for tabID, ref := range account {
+			accountLinks[tabID] = publicLink{EmployeeID: ref["employeeId"], ProjectID: ref["projectId"]}
+		}
+		accounts = append(accounts, publicAccount{ID: id, Name: usernameByID[id], Tabs: publicTabsOf(tabs), Links: accountLinks})
 	}
 	if err == nil {
 		err = rows.Err()
@@ -276,5 +286,6 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "personal": personal, "employees": employees, "projects": projects})
+	report := buildPublicReport(decodeProjects(projects), accounts)
+	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "personal": personal, "employees": employees, "projects": projects, "publicTabs": report})
 }

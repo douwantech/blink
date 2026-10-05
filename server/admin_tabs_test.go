@@ -434,22 +434,29 @@ func TestDirectoryRoutesThroughRouter(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("rejects mismatched path and body", func(t *testing.T) {
-		db, mock, err := sqlmock.New()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		r := adminRequest(t, mock, "PUT", "/admin/api/projects/blink", `{"id":"huum","name":"Huum"}`)
-		w := httptest.NewRecorder()
-		(&app{db: db}).routes().ServeHTTP(w, r)
-		if w.Code != 400 {
-			t.Fatalf("status %d: %s", w.Code, w.Body.String())
-		}
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatal(err)
-		}
-	})
+	// Both directory writers check this, so cover each route separately: they
+	// are different handlers and one can lose the check without the other.
+	for _, tc := range []struct{ name, path, body string }{
+		{"projects", "/admin/api/projects/blink", `{"id":"huum","name":"Huum"}`},
+		{"employees", "/admin/api/employees/jack", `{"id":"tom","name":"Tom"}`},
+	} {
+		t.Run("rejects mismatched path and body in "+tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			r := adminRequest(t, mock, "PUT", tc.path, tc.body)
+			w := httptest.NewRecorder()
+			(&app{db: db}).routes().ServeHTTP(w, r)
+			if w.Code != 400 {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 // The directory handlers splice their table name into SQL, so the name must
