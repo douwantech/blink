@@ -70,7 +70,7 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	var tabs, selection, agents []byte
+	var tabs, selection, agents, voiceCorrections, aiConfig []byte
 	err = tx.QueryRowContext(r.Context(), `SELECT tabs,recent_selection,agents FROM user_configs WHERE user_id=?`, u.ID).Scan(&tabs, &selection, &agents)
 	if err != nil && err != sql.ErrNoRows {
 		http.Error(w, "internal error", 500)
@@ -85,8 +85,98 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 	if len(agents) == 0 {
 		agents = []byte(`{}`)
 	}
+	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM voice_corrections WHERE user_id=?`, u.ID).Scan(&voiceCorrections); err != nil && err != sql.ErrNoRows {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if len(voiceCorrections) == 0 {
+		voiceCorrections = []byte(`{}`)
+	}
+	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&aiConfig); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	w.Header().Set("X-Config-Version", version)
-	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "user": u})
+	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "voiceCorrections": json.RawMessage(voiceCorrections), "aiConfig": json.RawMessage(aiConfig), "user": u})
+}
+
+func (a *app) sharedAIConfig(w http.ResponseWriter, r *http.Request, _ user) {
+	var data []byte
+	if err := a.db.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&data); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"data": json.RawMessage(data)})
+}
+
+func (a *app) writeSharedAIConfig(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireWrite(w, u) {
+		return
+	}
+	var body json.RawMessage
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if len(body) == 0 || body[0] != '{' {
+		http.Error(w, "expected JSON object", 400)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO shared_ai_config(id,data) VALUES(1,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, []byte(body))
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) voiceCorrections(w http.ResponseWriter, r *http.Request, u user) {
+	var data []byte
+	err := a.db.QueryRowContext(r.Context(), `SELECT data FROM voice_corrections WHERE user_id=?`, u.ID).Scan(&data)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if len(data) == 0 {
+		data = []byte(`{}`)
+	}
+	writeJSON(w, 200, map[string]any{"data": json.RawMessage(data)})
+}
+
+func (a *app) writeVoiceCorrections(w http.ResponseWriter, r *http.Request, u user) {
+	var body json.RawMessage
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if len(body) == 0 || body[0] != '{' {
+		http.Error(w, "expected JSON object", 400)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO voice_corrections(user_id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, u.ID, []byte(body))
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE users SET config_version=config_version+1 WHERE id=?`, u.ID)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {

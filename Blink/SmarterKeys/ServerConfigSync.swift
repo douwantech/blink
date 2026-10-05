@@ -14,12 +14,18 @@ private struct ServerUser: Codable {
   let canWrite: Bool
 }
 
+private struct ServerAIConfig: Codable {
+  let userGlossary: String
+}
+
 private struct ServerSnapshot: Codable {
   let version: String
   let machines: [BlinkMachine]
   let tabs: TabState
   let recentSelection: [String: String]
   let agents: [String: String]
+  let aiConfig: ServerAIConfig?
+  let voiceCorrections: [String: [String: Int]]?
   let user: ServerUser
 }
 
@@ -131,6 +137,10 @@ final class ServerConfigSync: ObservableObject {
       try? FileManager.default.removeItem(at: cacheURL)
       defaults.removeObject(forKey: dirtyKey)
       defaults.removeObject(forKey: appliedVersionKey)
+      // 换账号立即清掉旧账号的语音纠正词（跨账号隔离）。用 replaceTerms([:])
+      // 而不是 clearTerms()：后者会触发上传调度，此刻 keychain 里还是旧账号
+      // token，0.8s 后会把空词条写到旧账号名下（#43 e3cfe496）。
+      AITextPolisher.shared.replaceTerms([:])
     }
     try saveToken(login.token)
     self.username = login.user.username
@@ -240,10 +250,19 @@ final class ServerConfigSync: ObservableObject {
     if replaceTabs && !retainLocalTabs {
       TabStateStore.shared.replaceFromServer(snapshot.tabs)
     }
-    // 版本前进时个人配置（agents/selection）同样以服务器为准；只有服务器版本
-    // 没动、本地确有未上传改动时才保留本地。
+    // 共享 AI 配置（全局词表）跟 machines 同级：服务器说了算，空值守卫让
+    // 内置词表在离线/引导期保留（#43）。
+    if let glossary = snapshot.aiConfig?.userGlossary, !glossary.isEmpty {
+      AITextPolisher.shared.setSharedGlossary(glossary)
+    }
+    // 版本前进时个人配置（agents/selection/语音纠正词）同样以服务器为准；只有
+    // 服务器版本没动、本地确有未上传改动时才保留本地。voiceCorrections 是
+    // 按账号隔离的个人数据，跟随 agents 的同一套版本采纳语义，不另发明规则。
     if serverAdvanced || !localDirty {
       TabAgentStore.shared.replaceAll(snapshot.agents)
+      if let terms = snapshot.voiceCorrections {
+        AITextPolisher.shared.replaceTerms(terms)
+      }
       if let machine = snapshot.recentSelection["machineId"], !machine.isEmpty {
         defaults.set(machine, forKey: "BlinkTabFilterMachineId")
       } else {
@@ -298,7 +317,9 @@ final class ServerConfigSync: ObservableObject {
     let bodies: [(String, Data?)] = [
       ("tabs", try? JSONEncoder().encode(tabs)),
       ("selection", try? JSONEncoder().encode(selection)),
-      ("agents", try? JSONEncoder().encode(TabAgentStore.shared.all))
+      ("agents", try? JSONEncoder().encode(TabAgentStore.shared.all)),
+      // 语音纠正词按账号隔离，随个人配置队列一起上传（#43）
+      ("voice-corrections", try? JSONEncoder().encode(AITextPolisher.shared.termsPayload))
     ]
     for (path, body) in bodies {
       guard let body else { continue }
