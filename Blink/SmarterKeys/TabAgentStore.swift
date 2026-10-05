@@ -6,9 +6,9 @@
 //  key 用 "<machineId>|<title>"，title 就是 BlinkMachineStore.ccTitle 算出来的 cc-<TITLE>
 //  里那截（也是 tmux 外层 session 名去掉 cc- 前缀），三端一致。
 //
-//  存 UserDefaults + 进 CloudConfigSync 白名单，同步文件里的 key 叫 "agents"，
+//  存 UserDefaults + 随配置服务器快照同步（同步文件里的 key 叫 "agents"），
 //  所以 iOS / macOS / 鸿蒙看到的是同一份配置。默认 claude，选回 claude 就把键删掉
-//  （字典只存"非默认"的那几个，省 iCloud KV 配额）。
+//  （字典只存"非默认"的那几个）。
 //
 
 import Foundation

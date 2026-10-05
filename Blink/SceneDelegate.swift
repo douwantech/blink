@@ -333,7 +333,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       window.rootViewController = spCtrl
     }
 
-    #if !targetEnvironment(macCatalyst)
+    // Mac 与 iPhone 一样从配置服务器取配置（老板 2026-10-05 拍板弃用 iCloud）：
+    // 无会话就弹登录页，不再回落 iCloud。
     if scene.session.role == .windowApplication {
       if !ServerConfigSync.shared.hasSession {
         _showServerLoginIfNeeded()
@@ -341,7 +342,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         Task { try? await ServerConfigSync.shared.refresh() }
       }
     }
-    #endif
 
     guard let term = spCtrl.currentTerm() else {
       return

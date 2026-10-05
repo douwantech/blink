@@ -27,7 +27,7 @@ struct TabState: Codable {
 final class TabStateStore {
   static let shared = TabStateStore()
 
-  /// 镜像到 UserDefaults 的 key（CloudConfigSync 会把它同步到 iCloud，实现 tab 跨设备）。
+  /// 镜像到 UserDefaults 的 key（ServerConfigSync 据此与配置服务器同步 tab，跨设备）。
   static let kSyncKey = "TabStateStore.syncState"
 
   private let fileURL: URL = {
@@ -141,7 +141,7 @@ final class TabStateStore {
     tabs.contains { $0.machineId != nil || $0.workDirId != nil || $0.tmuxSession != nil }
   }
 
-  /// 把有真实 tab 的状态镜像到 UserDefaults（CloudConfigSync 会推到 iCloud）。
+  /// 把有真实 tab 的状态镜像到 UserDefaults（ServerConfigSync 上传时读它推到配置服务器）。
   /// 空列表、或只有空白默认 shell，都不镜像 —— 绝不覆盖云端别设备的真实列表。
   private func mirrorToSync(_ snap: TabState) {
     guard hasRealTab(snap.tabs) else { return }

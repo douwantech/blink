@@ -745,9 +745,9 @@ enum HostReachability {
   }
 
   /// 手动调序（#26）：把 fromIndex 的机器挪到 toIndex。顺序直接用数组顺序表达，
-  /// 不加独立 order 字段——写回 UserDefaults 后 CloudConfigSync 自动镜像 iCloud KV
-  /// 并推 Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染；多端同时调序沿用 KV 的
-  /// last-write-wins。新增机器仍走 addOrUpdate 追加到末尾。
+  /// 不加独立 order 字段——写回 UserDefaults 后经 localChanged → ConfigSyncPush 推
+  /// Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染。配置服务器侧 machines 全员
+  /// 共享，多端同时调序由服务器版本号仲裁。新增机器仍走 addOrUpdate 追加到末尾。
   func moveMachine(fromIndex: Int, toIndex: Int) {
     var arr = machines
     guard arr.indices.contains(fromIndex) else { return }
@@ -758,7 +758,7 @@ enum HostReachability {
 
   /// #25 存量迁移：物化只发生在写入路径，已存的老数据（内置机器三件套为空）不会自动变。
   /// 启动时 / 远端配置落地后调一次；有变化才写回（走 setter 再物化一遍，幂等），
-  /// 随后 CloudConfigSync 的 1s 镜像把它带进 iCloud KV 与 Mac 同步文件。
+  /// 随后 localChanged → ConfigSyncPush 把它带进 Mac 同步文件。
   @objc func materializeBlinkdDefaults() {
     let raw = machines
     let out = raw.map { $0.blinkdMaterialized }
@@ -926,7 +926,7 @@ final class MachineListViewController: UITableViewController {
 
   // MARK: 手动调序（#26）——编辑态下系统 reorder 手柄拖动，onMove 写回 store。
   // 数组顺序即展示顺序（SpaceController 切机器条、MacThreeColumn、Mac、鸿蒙都按它渲染），
-  // 写回后 CloudConfigSync 自动镜像 iCloud KV + 推 Mac 同步文件，多端跟随。
+  // 写回后经 localChanged → ConfigSyncPush 推 Mac 同步文件，多端跟随。
   override func tableView(_ tv: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
     #if !targetEnvironment(macCatalyst)
     return false
@@ -1251,8 +1251,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     return resting.contains(key)
   }
 
-  /// 从 UserDefaults 重读休息集合。iCloud 同步把云端新值写进了持久域，但内存缓存还是旧的，
-  /// 收到 CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
+  /// 从 UserDefaults 重读休息集合。服务器同步把新值写进了持久域，但内存缓存还是旧的，
+  /// 收到 ServerConfigSync.didApply / CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
   @objc @discardableResult func reload() -> Bool {
     let fresh = Set(UserDefaults.standard.stringArray(forKey: kKey) ?? [])
     guard fresh != resting else { return false }

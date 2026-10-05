@@ -116,7 +116,34 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("POST /v1/admin/users", a.auth(a.createUser))
 	m.HandleFunc("PATCH /v1/admin/users/{id}", a.auth(a.updateUser))
 	a.adminRoutes(m)
-	return m
+	return logRequests(m)
+}
+
+// logRequests 给每个请求落一行 method/path/status/耗时。FC stdout 直接进 SLS，
+// 线上排查「哪个端点在什么时候返回了什么」不用再靠 Invoke 计数猜（2026-10-05
+// 登录循环事故时日志里只有 Invoke Start/End，分不清 login 和 config）。
+// 只记 path（含 query），不记 header/body —— 那里有 token 和密码。
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		path := r.URL.Path
+		if r.URL.RawQuery != "" {
+			path += "?" + r.URL.RawQuery
+		}
+		log.Printf("%s %s -> %d (%s)", r.Method, path, rec.status, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -198,6 +225,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	err := a.db.QueryRowContext(r.Context(), `SELECT id,username,password_hash,is_admin,can_write,disabled FROM users WHERE username=?`, req.Username).Scan(&u.ID, &u.Username, &hash, &u.Admin, &u.CanWrite, &u.Disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
+		a.bumpLoginLimit(r, req.Username)
 		http.Error(w, "invalid credentials", 401)
 		return
 	}
@@ -206,6 +234,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil || u.Disabled {
+		a.bumpLoginLimit(r, req.Username)
 		http.Error(w, "invalid credentials", 401)
 		return
 	}

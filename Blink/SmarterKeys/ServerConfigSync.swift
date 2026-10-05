@@ -46,6 +46,9 @@ final class ServerConfigSync: ObservableObject {
   private let tokenAccount = "session"
   private let defaults = UserDefaults.standard
   private let dirtyKey = "BlinkServer.personalDirty"
+  // 上次完整采纳进本地的服务器版本（"global:personal"）。版本是服务器唯一的
+  // 权威变更信号：本地 tab updatedAt 与服务器时钟不可比，不能用来判定新旧。
+  private let appliedVersionKey = "BlinkServer.appliedVersion"
   private var applying = false
   private var isUploading = false
   private var uploadWork: DispatchWorkItem?
@@ -110,27 +113,40 @@ final class ServerConfigSync: ObservableObject {
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
     guard http.statusCode == 200 else {
-      let message = http.statusCode == 401 ? "用户名或密码错误" : "服务器暂时不可用（HTTP \(http.statusCode)）"
+      let message: String
+      if http.statusCode == 401 { message = "用户名或密码错误" }
+      else if http.statusCode == 429 { message = "尝试次数过多，请等 5 分钟后再登录" }
+      else { message = "服务器暂时不可用（HTTP \(http.statusCode)）" }
       throw NSError(domain: "BlinkServer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
     }
     let login = try JSONDecoder().decode(ServerLoginResponse.self, from: data)
     if cachedSnapshot()?.user.id != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
       defaults.removeObject(forKey: dirtyKey)
+      defaults.removeObject(forKey: appliedVersionKey)
     }
     try saveToken(login.token)
     self.username = login.user.username
     defaults.set(login.user.username, forKey: "BlinkServer.username")
     defaults.set(login.user.isAdmin && login.user.canWrite, forKey: "BlinkServer.canWrite")
-    do { try await refresh(replaceTabs: true, force: true) }
-    catch {
-      if cachedSnapshot()?.user.id != login.user.id { clearSession() }
-      throw error
-    }
+    // 登录成功即落袋：这里绝不能因 refresh 失败回滚 session。旧写法在 catch 里按
+    // 「缓存不属于该用户」clearSession —— 首次登录缓存必然为空，条件恒真，网络
+    // 抖动一下就把刚发的 token 删掉，用户被弹回登录页反复重登（2026-10-05 线上
+    // 由此烧穿登录限流 429）。token 已存 Keychain，refresh 失败下次启动会重拉；
+    // 若真是 401，syncFromServer 内部自己会 clearSession。
+    try await refresh(replaceTabs: true, force: true)
   }
 
   @MainActor func refresh(replaceTabs: Bool = false, force: Bool = false) async throws {
-    guard let token else { return }
+    guard hasSession else { return }
+    try await syncFromServer(replaceTabs: replaceTabs, force: force)
+    schedulePendingUpload()
+  }
+
+  /// GET /v1/config 并采纳。304 = 服务器版本未变；200 = 版本前进，apply() 里版本
+  /// 优先采纳。这里故意不安排上传：uploadPersonal() 上传前也调本方法对齐版本，
+  /// 若在这里 schedule 会互相触发成环。
+  @MainActor private func syncFromServer(replaceTabs: Bool = false, force: Bool = false) async throws {
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
     if !force, let snapshot = cachedSnapshot(), snapshot.user.username == username {
       let version = snapshot.version
@@ -143,7 +159,6 @@ final class ServerConfigSync: ObservableObject {
       guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
       if http.statusCode == 304 {
         isOnline = true
-        schedulePendingUpload()
         return
       }
       if http.statusCode == 401 {
@@ -159,7 +174,6 @@ final class ServerConfigSync: ObservableObject {
       try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: cacheURL.path)
       apply(snapshot, replaceTabs: replaceTabs)
       isOnline = true
-      schedulePendingUpload()
     } catch {
       isOnline = false
       if let snapshot = cachedSnapshot(), snapshot.user.username == username {
@@ -176,6 +190,7 @@ final class ServerConfigSync: ObservableObject {
     SecItemDelete(query as CFDictionary)
     username = nil
     defaults.removeObject(forKey: "BlinkServer.username")
+    defaults.removeObject(forKey: appliedVersionKey)
   }
 
   private func apply(_ snapshot: ServerSnapshot, replaceTabs: Bool) {
@@ -188,8 +203,18 @@ final class ServerConfigSync: ObservableObject {
     let localTabs = TabStateStore.shared.snapshot()
     let localTime = localTabs.updatedAt ?? 0
     let remoteTime = snapshot.tabs.updatedAt ?? 0
-    let retainLocalTabs = (localDirty && localTime >= remoteTime) ||
-      (!replaceTabs && localTime > remoteTime)
+    // 版本优先：服务器版本相对上次采纳有前进（或本机首次采纳）时，服务器快照
+    // 无条件生效 —— 管理员在服务端改的标签必须落到每一台手机上，本地时钟与
+    // 服务器时钟不可比，updatedAt 比较拦不住这个场景。本地未上传的 pending
+    // 此刻放弃（dirty 清掉），也绝不会被回传覆盖服务器（见 uploadPersonal）。
+    let serverAdvanced = defaults.string(forKey: appliedVersionKey) != snapshot.version
+    let retainLocalTabs = !serverAdvanced &&
+      ((localDirty && localTime >= remoteTime) ||
+        (!replaceTabs && localTime > remoteTime))
+    if serverAdvanced {
+      defaults.set(false, forKey: dirtyKey)
+    }
+    defaults.set(snapshot.version, forKey: appliedVersionKey)
     let selectedTabs = retainLocalTabs ? localTabs : snapshot.tabs
     if let data = try? JSONEncoder().encode(selectedTabs) {
       defaults.set(data, forKey: TabStateStore.kSyncKey)
@@ -200,7 +225,9 @@ final class ServerConfigSync: ObservableObject {
     if replaceTabs && !retainLocalTabs {
       TabStateStore.shared.replaceFromServer(snapshot.tabs)
     }
-    if !localDirty {
+    // 版本前进时个人配置（agents/selection）同样以服务器为准；只有服务器版本
+    // 没动、本地确有未上传改动时才保留本地。
+    if serverAdvanced || !localDirty {
       TabAgentStore.shared.replaceAll(snapshot.agents)
       if let machine = snapshot.recentSelection["machineId"], !machine.isEmpty {
         defaults.set(machine, forKey: "BlinkTabFilterMachineId")
@@ -235,6 +262,16 @@ final class ServerConfigSync: ObservableObject {
   @MainActor private func uploadPersonal() async {
     guard let token, isOnline, !isUploading, defaults.bool(forKey: dirtyKey) else { return }
     isUploading = true
+    // 上传前先向服务器对齐版本：若服务器版本已前进（别处在服务端改过），apply()
+    // 会采纳服务器快照并清掉 dirty，下面的 guard 直接退出 —— 本地旧快照永远不会
+    // 回传覆盖服务器。只有确认服务器版本没动（304）才继续 PUT 本地改动。
+    do { try await syncFromServer() }
+    catch {
+      isUploading = false
+      isOnline = false
+      return
+    }
+    guard defaults.bool(forKey: dirtyKey) else { isUploading = false; return }
     defaults.set(false, forKey: dirtyKey)
     defer {
       isUploading = false
