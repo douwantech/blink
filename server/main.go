@@ -107,6 +107,10 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("POST /v1/login", a.login)
 	m.HandleFunc("POST /v1/logout", a.auth(a.logout))
 	m.HandleFunc("GET /v1/config", a.auth(a.config))
+	m.HandleFunc("GET /v1/config/ai", a.authForbidden(a.sharedAIConfig))
+	m.HandleFunc("PUT /v1/config/ai", a.authForbidden(a.writeSharedAIConfig))
+	m.HandleFunc("GET /v1/config/voice-corrections", a.authForbidden(a.voiceCorrections))
+	m.HandleFunc("PUT /v1/config/voice-corrections", a.authForbidden(a.writeVoiceCorrections))
 	m.HandleFunc("PUT /v1/config/tabs", a.auth(a.writeUserConfig("tabs")))
 	m.HandleFunc("PUT /v1/config/selection", a.auth(a.writeUserConfig("recent_selection")))
 	m.HandleFunc("PUT /v1/config/agents", a.auth(a.writeUserConfig("agents")))
@@ -145,22 +149,32 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 type handler func(http.ResponseWriter, *http.Request, user)
 
 func (a *app) auth(next handler) http.HandlerFunc {
+	return a.authWithStatus(next, http.StatusUnauthorized)
+}
+
+// The config API treats an absent/invalid session as forbidden so callers do
+// not mistake it for a credential challenge handled by the login endpoint.
+func (a *app) authForbidden(next handler) http.HandlerFunc {
+	return a.authWithStatus(next, http.StatusForbidden)
+}
+
+func (a *app) authWithStatus(next handler, unauthenticatedStatus int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.Header.Get("Authorization"), " ")
 		if len(parts) != 2 || parts[0] != "Bearer" || len(parts[1]) != 64 {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "forbidden", unauthenticatedStatus)
 			return
 		}
 		b, err := hex.DecodeString(parts[1])
 		if err != nil {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "forbidden", unauthenticatedStatus)
 			return
 		}
 		digest := sha256.Sum256(b)
 		var u user
 		err = a.db.QueryRowContext(r.Context(), `SELECT u.id,u.username,u.is_admin,u.can_write,u.disabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>NOW()`, digest[:]).Scan(&u.ID, &u.Username, &u.Admin, &u.CanWrite, &u.Disabled)
 		if err != nil || u.Disabled {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "forbidden", unauthenticatedStatus)
 			return
 		}
 		next(w, r, u)

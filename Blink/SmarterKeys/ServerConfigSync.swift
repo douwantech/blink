@@ -14,12 +14,18 @@ private struct ServerUser: Codable {
   let canWrite: Bool
 }
 
+private struct ServerAIConfig: Codable {
+  let userGlossary: String
+}
+
 private struct ServerSnapshot: Codable {
   let version: String
   let machines: [BlinkMachine]
   let tabs: TabState
   let recentSelection: [String: String]
   let agents: [String: String]
+  let aiConfig: ServerAIConfig?
+  let voiceCorrections: [String: [String: Int]]?
   let user: ServerUser
 }
 
@@ -104,11 +110,14 @@ final class ServerConfigSync: ObservableObject {
       throw NSError(domain: "BlinkServer", code: 401, userInfo: [NSLocalizedDescriptionKey: "用户名或密码错误"])
     }
     let login = try JSONDecoder().decode(ServerLoginResponse.self, from: data)
-    if let cached = cachedSnapshot(), cached.user.id != login.user.id {
+    let previousID = defaults.object(forKey: "BlinkServer.userID") as? NSNumber
+    if previousID?.uint64Value != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
+      AITextPolisher.shared.clearTerms()
     }
     try saveToken(login.token)
     self.username = login.user.username
+    defaults.set(login.user.id, forKey: "BlinkServer.userID")
     defaults.set(login.user.username, forKey: "BlinkServer.username")
     defaults.set(login.user.isAdmin && login.user.canWrite, forKey: "BlinkServer.canWrite")
     do { try await refresh(replaceTabs: true, force: true) }
@@ -163,6 +172,7 @@ final class ServerConfigSync: ObservableObject {
     SecItemDelete(query as CFDictionary)
     username = nil
     defaults.removeObject(forKey: "BlinkServer.username")
+    defaults.removeObject(forKey: "BlinkServer.userID")
   }
 
   private func apply(_ snapshot: ServerSnapshot, replaceTabs: Bool) {
@@ -176,6 +186,12 @@ final class ServerConfigSync: ObservableObject {
     }
     if replaceTabs { TabStateStore.shared.replaceFromServer(snapshot.tabs) }
     TabAgentStore.shared.replaceAll(snapshot.agents)
+    if let glossary = snapshot.aiConfig?.userGlossary, !glossary.isEmpty {
+      AITextPolisher.shared.setSharedGlossary(glossary)
+    }
+    if let terms = snapshot.voiceCorrections {
+      AITextPolisher.shared.replaceTerms(terms)
+    }
     if let machine = snapshot.recentSelection["machineId"], !machine.isEmpty {
       defaults.set(machine, forKey: "BlinkTabFilterMachineId")
     } else {
@@ -204,7 +220,8 @@ final class ServerConfigSync: ObservableObject {
     let bodies: [(String, Data?)] = [
       ("tabs", try? JSONEncoder().encode(tabs)),
       ("selection", try? JSONEncoder().encode(selection)),
-      ("agents", try? JSONEncoder().encode(TabAgentStore.shared.all))
+      ("agents", try? JSONEncoder().encode(TabAgentStore.shared.all)),
+      ("voice-corrections", try? JSONEncoder().encode(AITextPolisher.shared.termsPayload))
     ]
     for (path, body) in bodies {
       guard let body else { continue }

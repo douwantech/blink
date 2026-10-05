@@ -1767,7 +1767,7 @@ final class AITextPolisher {
   /// 用户专属固定术语表：从真实语音修正记录里提炼出的高频专有名词错听。
   /// 最高优先级——ASR 只要出现左侧任一近音写法（或明显同音变体），一律改成右侧规范写法。
   /// 只放「读音接近、含义唯一」的专名，不放风格改写（跑→运行 这类不进）。
-  private let userGlossary = """
+  private var userGlossary = """
     用户专属术语表（固定，最高优先级；ASR 一旦出现近音写法，直接改成规范写法，即使词表/修正记录里没有）：
     工具 / 命令：
     - claude（听成 cloud / Cloud / cloudcode / CloudAI / 卡了带 / 卡老的 / 卡密）
@@ -1793,6 +1793,14 @@ final class AITextPolisher {
     - 边距（的编辑）；错题（彻底）
     规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。
     """
+
+  /// The server owns this shared glossary after the current account snapshot
+  /// is applied. The bundled text remains an offline/bootstrap fallback.
+  func setSharedGlossary(_ value: String) {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    userGlossary = trimmed
+  }
 
   func recordHistory(_ text: String) {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1915,6 +1923,7 @@ final class AITextPolisher {
     UserDefaults.standard.set(arr, forKey: kCorrections)
     // 顺手抽词级映射，喂给 polish prompt 用
     accumulateTermPairs(asrRaw: asrTrim, final: finTrim)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   // MARK: - 词级"错→对"映射
@@ -2003,6 +2012,14 @@ final class AITextPolisher {
     UserDefaults.standard.set(map, forKey: kTerms)
   }
 
+  var termsPayload: [String: [String: Int]] {
+    UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]] ?? [:]
+  }
+
+  func replaceTerms(_ terms: [String: [String: Int]]) {
+    UserDefaults.standard.set(terms, forKey: kTerms)
+  }
+
   /// 词表条目（按总频次降序）
   var termEntries: [(wrong: String, correct: String, count: Int)] {
     let map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
@@ -2017,6 +2034,7 @@ final class AITextPolisher {
 
   func clearTerms() {
     UserDefaults.standard.removeObject(forKey: kTerms)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   func deleteTerm(wrong: String, correct: String) {
@@ -2025,6 +2043,7 @@ final class AITextPolisher {
     sub.removeValue(forKey: correct)
     if sub.isEmpty { map.removeValue(forKey: wrong) } else { map[wrong] = sub }
     UserDefaults.standard.set(map, forKey: kTerms)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   var correctionEntries: [(asrRaw: String, final: String)] {

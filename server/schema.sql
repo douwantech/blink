@@ -44,3 +44,19 @@ CREATE TABLE IF NOT EXISTS user_configs (
   agents JSON NULL,
   CONSTRAINT user_configs_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Voice corrections are personal configuration. Keeping them in their own
+-- table lets existing user_configs rows migrate without an ALTER statement.
+CREATE TABLE IF NOT EXISTS voice_corrections (
+  user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  CONSTRAINT voice_corrections_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- AI configuration is shared by every account. The singleton row is versioned
+-- through config_versions, like the shared machine catalogue.
+CREATE TABLE IF NOT EXISTS shared_ai_config (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+  data JSON NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO shared_ai_config (id, data) VALUES (1, '{"userGlossary":""}');
