@@ -83,7 +83,7 @@ func newTabID() (string, error) {
 	return hex.EncodeToString(b[:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:]), nil
 }
 
-func (a *app) editUserTabs(w http.ResponseWriter, r *http.Request, edit func(*sql.Tx, *adminTabState, map[string]json.RawMessage) (int, error)) {
+func (a *app) editUserTabs(w http.ResponseWriter, r *http.Request, edit func(*sql.Tx, uint64, *adminTabState, map[string]json.RawMessage) (int, error)) {
 	id, ok := parseID(w, r)
 	if !ok {
 		return
@@ -129,7 +129,7 @@ func (a *app) editUserTabs(w http.ResponseWriter, r *http.Request, edit func(*sq
 			return
 		}
 	}
-	status, err := edit(tx, &tabs, selection)
+	status, err := edit(tx, id, &tabs, selection)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -154,46 +154,67 @@ func (a *app) editUserTabs(w http.ResponseWriter, r *http.Request, edit func(*sq
 	w.WriteHeader(status)
 }
 
+// An admin-created tab is always the triple employee + project + machine: one
+// session per employee and project, on the machine that hosts it. The session
+// name is <employee>-<project>; the cc- prefix belongs to the remote startup
+// convention, not to this field.
 func (a *app) addUserTab(w http.ResponseWriter, r *http.Request, _ user) {
 	var req struct {
-		MachineID string `json:"machineId"`
+		MachineID  string `json:"machineId"`
+		EmployeeID string `json:"employeeId"`
+		ProjectID  string `json:"projectId"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if len(req.MachineID) > 100 || strings.ContainsAny(req.MachineID, "/\\") {
+	if req.MachineID == "" || len(req.MachineID) > 100 || strings.ContainsAny(req.MachineID, "/\\") {
 		http.Error(w, "invalid machine", 400)
 		return
 	}
-	a.editUserTabs(w, r, func(tx *sql.Tx, tabs *adminTabState, selection map[string]json.RawMessage) (int, error) {
-		if req.MachineID != "" {
-			var found string
-			err := tx.QueryRowContext(r.Context(), `SELECT id FROM machines WHERE id=?`, req.MachineID).Scan(&found)
-			if errors.Is(err, sql.ErrNoRows) {
-				return 400, errors.New("machine not found")
-			}
+	if !validDirectoryID(req.EmployeeID) || !validDirectoryID(req.ProjectID) {
+		http.Error(w, "invalid employee or project", 400)
+		return
+	}
+	session := req.EmployeeID + "-" + req.ProjectID
+	a.editUserTabs(w, r, func(tx *sql.Tx, uid uint64, tabs *adminTabState, selection map[string]json.RawMessage) (int, error) {
+		for _, ref := range []struct{ table, id, label string }{
+			{"machines", req.MachineID, "machine"},
+			{"employees", req.EmployeeID, "employee"},
+			{"projects", req.ProjectID, "project"},
+		} {
+			ok, err := directoryExists(r.Context(), tx, ref.table, ref.id)
 			if err != nil {
 				return 500, errors.New("internal error")
+			}
+			if !ok {
+				return 400, errors.New(ref.label + " not found")
+			}
+		}
+		// One session per employee, project and machine, so the same triple
+		// twice is a mistake rather than a second tab.
+		for _, raw := range tabs.tabs {
+			var entry struct {
+				MachineID   string `json:"machineId"`
+				TmuxSession string `json:"tmuxSession"`
+			}
+			_ = json.Unmarshal(raw, &entry)
+			if entry.MachineID == req.MachineID && strings.EqualFold(entry.TmuxSession, session) {
+				return 409, errors.New("this tab already exists for the account")
 			}
 		}
 		id, err := newTabID()
 		if err != nil {
 			return 500, errors.New("internal error")
 		}
-		entry := map[string]any{"id": id}
-		if req.MachineID != "" {
-			entry["machineId"] = req.MachineID
-		}
-		b, _ := json.Marshal(entry)
+		b, _ := json.Marshal(map[string]string{"id": id, "machineId": req.MachineID, "tmuxSession": session})
 		tabs.tabs = append(tabs.tabs, b)
 		if len(tabs.tabs) == 1 && tabs.currentID() == "" {
 			tabs.fields["currentId"], _ = json.Marshal(id)
 			selection["tabId"], _ = json.Marshal(id)
-			if req.MachineID != "" {
-				selection["machineId"], _ = json.Marshal(req.MachineID)
-			} else {
-				delete(selection, "machineId")
-			}
+			selection["machineId"], _ = json.Marshal(req.MachineID)
+		}
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO tab_links(user_id,tab_id,employee_id,project_id) VALUES(?,?,?,?)`, uid, id, req.EmployeeID, req.ProjectID); err != nil {
+			return 500, errors.New("internal error")
 		}
 		return 204, nil
 	})
@@ -205,7 +226,7 @@ func (a *app) closeUserTab(w http.ResponseWriter, r *http.Request, _ user) {
 		http.Error(w, "invalid tab", 400)
 		return
 	}
-	a.editUserTabs(w, r, func(_ *sql.Tx, tabs *adminTabState, selection map[string]json.RawMessage) (int, error) {
+	a.editUserTabs(w, r, func(tx *sql.Tx, uid uint64, tabs *adminTabState, selection map[string]json.RawMessage) (int, error) {
 		index := -1
 		for i, raw := range tabs.tabs {
 			if strings.EqualFold(tabID(raw), id) {
@@ -218,6 +239,9 @@ func (a *app) closeUserTab(w http.ResponseWriter, r *http.Request, _ user) {
 			return 404, errors.New("tab not found in account")
 		}
 		tabs.tabs = append(tabs.tabs[:index], tabs.tabs[index+1:]...)
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM tab_links WHERE user_id=? AND tab_id=?`, uid, id); err != nil {
+			return 500, errors.New("internal error")
+		}
 		seen := false
 		for _, closed := range tabs.closed {
 			if strings.EqualFold(closed, id) {

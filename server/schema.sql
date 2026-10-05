@@ -44,3 +44,29 @@ CREATE TABLE IF NOT EXISTS user_configs (
   agents JSON NULL,
   CONSTRAINT user_configs_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Org-wide directories, shared like machines. Only the admin page reads them.
+CREATE TABLE IF NOT EXISTS employees (
+  id VARCHAR(100) NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS projects (
+  id VARCHAR(100) NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Which employee and project an admin-created tab belongs to. This lives
+-- outside user_configs.tabs on purpose: clients upload their whole TabState
+-- back, and re-encoding it drops fields they do not model, so anything stored
+-- inside the tab JSON would be erased on the next sync.
+CREATE TABLE IF NOT EXISTS tab_links (
+  user_id BIGINT UNSIGNED NOT NULL,
+  tab_id CHAR(36) NOT NULL,
+  employee_id VARCHAR(100) NOT NULL,
+  project_id VARCHAR(100) NOT NULL,
+  PRIMARY KEY (user_id, tab_id),
+  CONSTRAINT tab_links_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

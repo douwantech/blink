@@ -32,6 +32,10 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /admin/api/users/{id}/tabs/{tabId}", a.adminAuth(a.closeUserTab))
 	m.HandleFunc("PUT /admin/api/machines/{id}", a.adminAuth(a.putMachine))
 	m.HandleFunc("DELETE /admin/api/machines/{id}", a.adminAuth(a.deleteMachine))
+	m.HandleFunc("PUT /admin/api/employees/{id}", a.adminAuth(a.putDirectoryEntry("employees")))
+	m.HandleFunc("DELETE /admin/api/employees/{id}", a.adminAuth(a.deleteDirectoryEntry("employees")))
+	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putProject))
+	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))
 }
 
 func serveAdminPage(w http.ResponseWriter) {
@@ -205,12 +209,52 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
+	employees, err := a.listDirectory(r.Context(), "employees")
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	projects, err := a.listDirectory(r.Context(), "projects")
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	links := map[uint64]map[string]map[string]string{}
+	rows, err = a.db.QueryContext(r.Context(), `SELECT user_id,tab_id,employee_id,project_id FROM tab_links`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	for rows.Next() {
+		var uid uint64
+		var tab, employee, project string
+		if err = rows.Scan(&uid, &tab, &employee, &project); err != nil {
+			break
+		}
+		if links[uid] == nil {
+			links[uid] = map[string]map[string]string{}
+		}
+		links[uid][tab] = map[string]string{"employeeId": employee, "projectId": project}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	rows, err = a.db.QueryContext(r.Context(), `SELECT u.id,c.tabs,c.recent_selection FROM users u LEFT JOIN user_configs c ON c.user_id=u.id ORDER BY u.username`)
 	if err != nil {
 		http.Error(w, "internal error", 500)
 		return
 	}
+	usernameByID := make(map[uint64]string, len(users))
+	for _, v := range users {
+		usernameByID[v.ID] = v.Username
+	}
 	personal := make([]map[string]any, 0)
+	accounts := make([]publicAccount, 0, len(users))
 	for rows.Next() {
 		var id uint64
 		var tabs, selection []byte
@@ -223,7 +267,16 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		if len(selection) == 0 {
 			selection = []byte(`{}`)
 		}
-		personal = append(personal, map[string]any{"userId": id, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection)})
+		account := links[id]
+		if account == nil {
+			account = map[string]map[string]string{}
+		}
+		personal = append(personal, map[string]any{"userId": id, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "links": account})
+		accountLinks := make(map[string]publicLink, len(account))
+		for tabID, ref := range account {
+			accountLinks[tabID] = publicLink{EmployeeID: ref["employeeId"], ProjectID: ref["projectId"]}
+		}
+		accounts = append(accounts, publicAccount{ID: id, Name: usernameByID[id], Tabs: publicTabsOf(tabs), Links: accountLinks})
 	}
 	if err == nil {
 		err = rows.Err()
@@ -233,5 +286,6 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "personal": personal})
+	report := buildPublicReport(decodeProjects(projects), accounts)
+	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "personal": personal, "employees": employees, "projects": projects, "publicTabs": report})
 }
