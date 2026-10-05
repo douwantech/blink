@@ -539,9 +539,17 @@ export class BlinkStore {
 
   // ---- exec script generation (iOS BlinkMachineStore.swift:180-260 verbatim) ----
 
-  // TITLE = <basename(workPath)>-<session>; if session already equals/prefixes
-  // the basename it is used as-is. outer tmux session = "cc-<TITLE>".
+  // 三端统一约定（2026-10-05 服务器同步后明确，与 iOS ccTitle 一致）：
+  // tab 带了 tmuxSession 就是权威会话名（服务器 tab / Mac blinkd 端都按 cc-<tmuxSession>
+  // 命名），sanitize 后原样返回，不再拼目录/用户名前缀——曾经对带 tmuxSession 的 tab 也套
+  // <basename>-<session>，workDirs 不随服务器快照下发时 basename 退化到 SSH 用户名，
+  // 手机/平板连 brain 找 cc-app-tom-blink 而真会话是 cc-tom-blink，new-session -A 建空会话。
+  // tmuxSession 为空（本地新建 tab）才走本地生成：<basename(workPath)>-<session>，
+  // session 已是 basename 或 basename- 开头则不再 prepend。outer tmux session = "cc-<TITLE>"。
   static titleFor(workPath: string, session: string, fallbackUser: string): string {
+    if (session.length > 0) {
+      return session.toLowerCase().replace(/"/g, '').replace(/ /g, '-');
+    }
     let dirBasename: string;
     if (workPath.length > 0) {
       const parts: string[] = workPath.split('/');

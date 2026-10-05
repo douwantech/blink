@@ -701,21 +701,29 @@ enum HostReachability {
   }
 
   /// TITLE = customTitle（外层 tmux session 名为 cc-<TITLE>）。
-  /// 规则跟 sshCommand / transcriptCommand 一致：默认 <basename(workPath)>-<session>；
+  ///
+  /// 三端统一约定（2026-10-05 服务器同步后明确）：tab 带了 tmuxSession 就是**权威会话名**
+  /// （服务器 tab / Mac blinkd 端建的会话都按 cc-<tmuxSession> 命名），这里 sanitize 后
+  /// 原样返回，绝不再拼目录/用户名前缀。曾经对带 tmuxSession 的 tab 也套本地命名规则
+  /// （<basename>-<session>），而 workDirs 不随服务器快照下发、本地查不到时 basename
+  /// 退化到 SSH 用户名——brain 的 user=app，手机点 tom-blink 去找 cc-app-tom-blink，
+  /// new-session -A 又建了个空会话（blinkd 通道按枚举名直连不踩，只有 SSH 通道暴露）。
+  ///
+  /// tmuxSession 为空（本地新建 tab 还没指定会话）才走本地生成：默认 <basename(workPath)>-<session>，
   /// session 已是 basename 或 basename- 开头则不再 prepend；workPath 缺省退化到 machine.user。
   static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
+    let sanitize: (String) -> String = {
+      $0.lowercased()
+        .replacingOccurrences(of: "\"", with: "")
+        .replacingOccurrences(of: " ", with: "-")
+    }
+    if let ts = tmuxSession, !ts.isEmpty { return sanitize(ts) }
     var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
     let wd = BlinkWorkDirStore.shared.workDir(forId: workDirId)
     let workPath = wd?.path
     let dirBasename: String
     // 优先用工作目录的「显示名」（跟 tab 标签一致，比如 juncandy），显示名缺省再退回路径 basename。
-    // tmux/session 名不能带空格/引号，统一小写并把空白→连字符、去掉引号。
-    let sanitize: (String) -> String = {
-      $0.lowercased()
-        .replacingOccurrences(of: "\"", with: "")
-        .replacingOccurrences(of: " ", with: "-")
-    }
     if let nm = wd?.name, !nm.isEmpty {
       dirBasename = sanitize(nm)
     } else if let wp = workPath, !wp.isEmpty {
