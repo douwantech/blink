@@ -1,11 +1,69 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+func (a *app) deleteUser(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireAdmin(w, u) {
+		return
+	}
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if id == u.ID {
+		http.Error(w, "cannot delete yourself", http.StatusBadRequest)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	defer tx.Rollback()
+	var targetID uint64
+	var targetAdmin bool
+	if err = tx.QueryRowContext(r.Context(), `SELECT id,is_admin FROM users WHERE id=? FOR UPDATE`, id).Scan(&targetID, &targetAdmin); err == sql.ErrNoRows {
+		http.Error(w, "not found", 404)
+		return
+	} else if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	rows, err := tx.QueryContext(r.Context(), `SELECT id FROM users WHERE is_admin=1 FOR UPDATE`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	adminCount := 0
+	for rows.Next() {
+		adminCount++
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if targetAdmin && adminCount <= 1 {
+		http.Error(w, "cannot delete the last administrator", http.StatusBadRequest)
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `DELETE FROM users WHERE id=?`, targetID); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
 func (a *app) createUser(w http.ResponseWriter, r *http.Request, u user) {
 	if !requireAdmin(w, u) {
