@@ -342,6 +342,7 @@
         row.append(button('重置密码', () => resetPassword(u)), button(u.isAdmin ? '取消管理员' : '设为管理员', () => changeUser(u, u.isAdmin ? { isAdmin:false, canWrite:false } : { isAdmin:true })));
         if (u.isAdmin) row.append(button(u.canWrite ? '收回可写' : '授予可写', () => changeUser(u, { canWrite: !u.canWrite })));
         row.append(button(u.disabled ? '启用' : '禁用', () => changeUser(u, { disabled: !u.disabled }), 'danger'));
+        row.append(button('删除账号', () => removeUser(u), 'danger'));
         cell.append(row); $('user-rows').append(tr);
       }
     }
@@ -466,6 +467,11 @@
       if (password === null) return;
       if (password.length < 12) { notify('密码至少 12 位'); return; }
       await changeUser(u, { password });
+    }
+    async function removeUser(u) {
+      if (!confirm(`确定删除「${u.username}」？这会连带清除该账号的会话、标签和纠正词，且无法恢复。`)) return;
+      try { await api('/admin/api/users/' + u.id, { method:'DELETE' }); await load(); notify(`账号「${u.username}」已删除`); }
+      catch (error) { notify(error.message); }
     }
     $('login-form').addEventListener('submit', async event => {
       event.preventDefault(); $('login-error').textContent = '';

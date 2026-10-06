@@ -49,6 +49,78 @@ func TestAdminPageAndAPIRequireAdminSession(t *testing.T) {
 	}
 }
 
+func TestDeleteUserGuardsAndCascades(t *testing.T) {
+	t.Run("unauthenticated", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		(&app{}).routes().ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/admin/api/users/8", nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d", w.Code)
+		}
+	})
+	t.Run("non-admin", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		token := make([]byte, 32)
+		digest := sha256.Sum256(token)
+		mock.ExpectQuery("SELECT u.id,u.username,u.is_admin").WithArgs(digest[:]).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "is_admin", "can_write", "disabled"}).AddRow(9, "member", false, false, false))
+		r := httptest.NewRequest(http.MethodDelete, "/admin/api/users/8", nil)
+		r.AddCookie(&http.Cookie{Name: adminCookie, Value: hex.EncodeToString(token)})
+		w := httptest.NewRecorder()
+		(&app{db: db}).routes().ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("got %d", w.Code)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("self", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodDelete, "/admin/api/users/7", nil)
+		r.SetPathValue("id", "7")
+		w := httptest.NewRecorder()
+		(&app{}).deleteUser(w, r, user{ID: 7, Admin: true})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("got %d", w.Code)
+		}
+	})
+	t.Run("last admin", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT id,is_admin FROM users").WithArgs(uint64(8)).WillReturnRows(sqlmock.NewRows([]string{"id", "is_admin"}).AddRow(8, true))
+		mock.ExpectQuery("SELECT id FROM users WHERE is_admin=1").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(8))
+		r := httptest.NewRequest(http.MethodDelete, "/admin/api/users/8", nil)
+		r.SetPathValue("id", "8")
+		w := httptest.NewRecorder()
+		(&app{db: db}).deleteUser(w, r, user{ID: 7, Admin: true})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("got %d", w.Code)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("normal delete commits cascade", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT id,is_admin FROM users").WithArgs(uint64(8)).WillReturnRows(sqlmock.NewRows([]string{"id", "is_admin"}).AddRow(8, false))
+		mock.ExpectQuery("SELECT id FROM users WHERE is_admin=1").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7).AddRow(8))
+		mock.ExpectExec("DELETE FROM users").WithArgs(uint64(8)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		r := httptest.NewRequest(http.MethodDelete, "/admin/api/users/8", nil)
+		r.SetPathValue("id", "8")
+		w := httptest.NewRecorder()
+		(&app{db: db}).deleteUser(w, r, user{ID: 7, Admin: true})
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("got %d", w.Code)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestAdminMutationRequiresCustomHeader(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/admin/session", strings.NewReader(`{"username":"x","password":"y"}`))

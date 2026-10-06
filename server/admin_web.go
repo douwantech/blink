@@ -30,6 +30,7 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("PUT /admin/api/voice", a.adminAuth(a.putAdminVoice))
 	m.HandleFunc("POST /admin/api/users", a.adminAuth(a.createUser))
 	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.updateUser))
+	m.HandleFunc("DELETE /admin/api/users/{id}", a.adminDeleteAuth(a.deleteUser))
 	m.HandleFunc("POST /admin/api/users/{id}/tabs", a.adminAuth(a.addUserTab))
 	m.HandleFunc("DELETE /admin/api/users/{id}/tabs/{tabId}", a.adminAuth(a.closeUserTab))
 	m.HandleFunc("PUT /admin/api/machines/{id}", a.adminAuth(a.putMachine))
@@ -233,6 +234,38 @@ func (a *app) adminAuth(next handler) http.HandlerFunc {
 		err = a.db.QueryRowContext(r.Context(), `SELECT u.id,u.username,u.is_admin,u.can_write,u.disabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>NOW()`, digest[:]).Scan(&u.ID, &u.Username, &u.Admin, &u.CanWrite, &u.Disabled)
 		if err != nil || u.Disabled || !u.Admin {
 			a.adminUnauthorized(w, r)
+			return
+		}
+		if r.Method != "GET" && !adminMutation(w, r) {
+			return
+		}
+		next(w, r, u)
+	}
+}
+
+// User deletion reports a valid non-admin session as 403 (rather than the
+// legacy admin API's 401) so callers can distinguish authorization failure.
+func (a *app) adminDeleteAuth(next handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie(adminCookie)
+		if err != nil || len(c.Value) != 64 {
+			a.adminUnauthorized(w, r)
+			return
+		}
+		token, err := hex.DecodeString(c.Value)
+		if err != nil {
+			a.adminUnauthorized(w, r)
+			return
+		}
+		digest := sha256.Sum256(token)
+		var u user
+		err = a.db.QueryRowContext(r.Context(), `SELECT u.id,u.username,u.is_admin,u.can_write,u.disabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>NOW()`, digest[:]).Scan(&u.ID, &u.Username, &u.Admin, &u.CanWrite, &u.Disabled)
+		if err != nil || u.Disabled {
+			a.adminUnauthorized(w, r)
+			return
+		}
+		if !u.Admin {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		if r.Method != "GET" && !adminMutation(w, r) {
