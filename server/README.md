@@ -52,6 +52,7 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | PUT | `/admin/api/employees/{id}` | Create or replace an employee, `{"id":"jack","name":"Jack"}` |
+| PUT | `/admin/api/employees/{id}/avatar` | Admin-only PNG upload (max 2 MiB) |
 | DELETE | `/admin/api/employees/{id}` | Remove an employee |
 | PUT | `/admin/api/projects/{id}` | Create or replace a project, `{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"mac-mini"}]}` |
 | DELETE | `/admin/api/projects/{id}` | Remove a project |
@@ -59,6 +60,8 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 Both directories are org-wide and shared like `machines`, ordered by ID, and carry no position column. The path ID and the body `id` must match; IDs allow lowercase letters, digits, `.`, `_`, and `-` (max 60 characters, must start with a letter or digit) because an employee and a project ID are concatenated into a tmux session name that people type. Uppercase is rejected so two entries cannot differ only by case and produce two session names nobody can tell apart. Deleting an entry that tabs still reference is allowed: those tabs keep their session name, and the page falls back to showing the bare ID.
 
 A project carries two more fields than an employee: `public` and `employees`, a list of `{"id":"jack","machineId":"mac-mini"}`. The machine sits on the employee rather than on the project because two employees on one project may not run on the same host. `PUT /admin/api/projects/{id}` merges rather than replaces: `public` and `employees` are only written when the request names them, so a request that changes only the name cannot empty the employee list, and fields another writer added survive. An omitted field keeps its stored value; `PUT /admin/api/employees/{id}` cannot write a project at all, because it would drop those two fields.
+
+Employee avatars use the existing RDS as the smallest deployment change: PNG bytes live in `employee_avatars` with a foreign key to `employees`, while the directory JSON carries only `/v1/employees/{id}/avatar`. Signed-in clients fetch that endpoint after login; the admin page uploads PNGs from the employee editor. This avoids adding OSS credentials or a second storage lifecycle, and employee deletion cascades to the blob.
 
 `POST /admin/api/users/{id}/tabs` accepts `{"machineId":"...","employeeId":"...","projectId":"..."}` — all three are required, must already exist, and the created tab's `tmuxSession` is `<employeeId>-<projectId>`. The `cc-` prefix belongs to the remote startup convention and is not part of this field. Adding the same employee, project, and machine twice for one account returns `409`. `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab.
 

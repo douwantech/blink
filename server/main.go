@@ -107,6 +107,7 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("POST /v1/login", a.login)
 	m.HandleFunc("POST /v1/logout", a.auth(a.logout))
 	m.HandleFunc("GET /v1/config", a.auth(a.config))
+	m.HandleFunc("GET /v1/employees/{id}/avatar", a.auth(a.employeeAvatar))
 	m.HandleFunc("GET /v1/config/ai", a.authForbidden(a.sharedAIConfig))
 	m.HandleFunc("PUT /v1/config/ai", a.authForbidden(a.writeSharedAIConfig))
 	m.HandleFunc("GET /v1/config/voice-corrections", a.authForbidden(a.voiceCorrections))
