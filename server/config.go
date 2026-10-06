@@ -8,6 +8,35 @@ import (
 	"strings"
 )
 
+type sharedVoiceConfig struct {
+	Model    string  `json:"model"`
+	BaseURL  string  `json:"baseURL"`
+	APIKey   string  `json:"apiKey"`
+	Debounce float64 `json:"debounce"`
+}
+
+type sharedAIConfigDocument struct {
+	UserGlossary string            `json:"userGlossary"`
+	Voice        sharedVoiceConfig `json:"voice"`
+}
+
+func normalizeSharedAIConfig(raw json.RawMessage) ([]byte, error) {
+	var doc sharedAIConfigDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Voice.Model == "" {
+		doc.Voice.Model = "glm-4-flashx"
+	}
+	if doc.Voice.BaseURL == "" {
+		doc.Voice.BaseURL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+	}
+	if doc.Voice.Debounce <= 0 {
+		doc.Voice.Debounce = 1.5
+	}
+	return json.Marshal(doc)
+}
+
 // Machine JSON uses BlinkMachine's Codable field names. Unknown fields are
 // retained so clients can extend the shared model without a database migration.
 type machine struct {
@@ -126,9 +155,14 @@ func (a *app) writeSharedAIConfig(w http.ResponseWriter, r *http.Request, u user
 		http.Error(w, "expected JSON object", 400)
 		return
 	}
+	normalized, err := normalizeSharedAIConfig(body)
+	if err != nil {
+		http.Error(w, "invalid JSON object", 400)
+		return
+	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO shared_ai_config(id,data) VALUES(1,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, []byte(body))
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO shared_ai_config(id,data) VALUES(1,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, normalized)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)

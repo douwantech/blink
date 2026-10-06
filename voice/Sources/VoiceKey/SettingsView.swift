@@ -13,6 +13,9 @@ struct SettingsView: View {
     @State private var globeOn = HotkeyMonitor.shared.globeEnabled
     @State private var optSpaceOn = HotkeyMonitor.shared.optSpaceEnabled
     @State private var axTrusted = AccessibilityPermission.isTrusted
+    @State private var serverUser = ""
+    @State private var serverPassword = ""
+    @State private var serverStatus = ""
 
     // 我的词表（行内可编辑）。id 用一次性 UUID：编辑中 wrong/right 变了 id 不变，
     // 行不重建、焦点不丢；count 只在重拉时刷新。
@@ -93,6 +96,13 @@ struct SettingsView: View {
                     .onChange(of: baseURL) { _, v in AITextPolisher.shared.baseURL = v }
                 Text("不填 Key 也能用——只走苹果本地识别。填了 Key 会额外走智谱 GLM-ASR 精转 + GLM 润色（同音纠错更准）。")
                     .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section("账号同步") {
+                TextField("账号", text: $serverUser)
+                SecureField("密码", text: $serverPassword)
+                HStack { Button("登录并同步") { VoiceServerConfigSync.shared.login(username: serverUser, password: serverPassword) { result in DispatchQueue.main.async { serverStatus = (try? result.get()) == nil ? "登录失败" : "已同步" } } }; Text(serverStatus).font(.caption).foregroundColor(.secondary) }
+                Text("登录后从服务器读取公共语音模型、API key、词表；离线继续使用本机配置。").font(.caption).foregroundColor(.secondary)
             }
 
             Section("我的词表（听成 → 实际想说）") {
