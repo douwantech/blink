@@ -65,9 +65,6 @@ final class TabStateStore {
   func snapshot() -> TabState { state }
 
   func update(_ mutate: (inout TabState) -> Void) {
-    #if !targetEnvironment(macCatalyst)
-    if ServerConfigSync.shared.isReadOnly { return }
-    #endif
     let beforeTabs = state.tabs
     let beforeClosed = state.closedIds ?? []
     mutate(&state)

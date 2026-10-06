@@ -161,9 +161,6 @@ enum HostReachability {
       return arr
     }
     set {
-      #if !targetEnvironment(macCatalyst)
-      if !ServerConfigSync.shared.canEditSharedMachines { return }
-      #endif
       // #25：写入路径统一物化（保存表单 / 调序 / 远端采纳后重写都走这里），
       // 让镜像进 KV 与 Mac 同步文件的数据自带生效配置，不依赖各端自己带内置默认。
       let out = newValue.map { $0.blinkdMaterialized }
