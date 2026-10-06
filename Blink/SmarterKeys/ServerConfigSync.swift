@@ -7,26 +7,41 @@ private struct ServerLoginResponse: Decodable {
   let user: ServerUser
 }
 
-private struct ServerUser: Codable {
+struct ServerUser: Codable {
   let id: UInt64
   let username: String
   let isAdmin: Bool
   let canWrite: Bool
 }
 
-private struct ServerAIConfig: Codable {
+struct ServerAIConfig: Codable {
   let userGlossary: String
 }
 
-private struct ServerSnapshot: Codable {
+struct ServerSnapshot: Codable {
   let version: String
   let machines: [BlinkMachine]
+  // 共享书签（浏览器「后台」）。可选是刻意的：老缓存快照/老服务端没有这个字段 → nil，
+  // 应用层据此保持本地清单不动；字段存在（哪怕是空数组）就是权威，照服务器顺序覆盖。
+  let pinned: [PinnedTab]?
   let tabs: TabState
   let recentSelection: [String: String]
   let agents: [String: String]
   let aiConfig: ServerAIConfig?
   let voiceCorrections: [String: [String: Int]]?
   let user: ServerUser
+}
+
+/// 服务器共享书签落地：写进浏览器侧真正读的那个 key（`PinnedTabsStore.tabs`，
+/// PinnedTabsStore.shared.tabs 的存储），顺序 = 服务器数组顺序。
+/// 抽成独立类型是为了能直接对「快照 → 后台列表」这一跳做单测。
+enum ServerPinnedStore {
+  static let defaultsKey = "PinnedTabsStore.tabs"
+
+  static func apply(_ pinned: [PinnedTab], to defaults: UserDefaults = .standard) {
+    guard let data = try? JSONEncoder().encode(pinned) else { return }
+    defaults.set(data, forKey: defaultsKey)
+  }
 }
 
 /// Server config is authoritative after login. The last full snapshot remains
@@ -223,6 +238,11 @@ final class ServerConfigSync: ObservableObject {
     defer { applying = false }
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
+    }
+    // 共享书签：登录/刷新即有，全员同一份（管理员在后台维护）。服务器没带这个字段时
+    // 不动本地 —— 离线兜底照旧靠缓存快照与 iCloud KV。
+    if let pinned = snapshot.pinned {
+      ServerPinnedStore.apply(pinned, to: defaults)
     }
     let localDirty = defaults.bool(forKey: dirtyKey)
     let localTabs = TabStateStore.shared.snapshot()

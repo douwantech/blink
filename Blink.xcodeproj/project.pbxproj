@@ -102,6 +102,7 @@
 		D27A00000000000000002712 /* TurnGuaranteeE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */; };
 		D27A00000000000000002732 /* CCTitleConventionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D27A00000000000000002731 /* CCTitleConventionTests.swift */; };
 		D33A00000000000000000002 /* TerminalStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000001 /* TerminalStyleTests.swift */; };
+		D3B110000000000000000002 /* ServerPinnedSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B110000000000000000001 /* ServerPinnedSnapshotTests.swift */; };
 		D33A00000000000000000004 /* SessionParamsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33A00000000000000000003 /* SessionParamsTests.swift */; };
 		BD1FFF702E4A10C600DB5AF9 /* TermSessionPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */; };
 		BD23B6E12CB0585B0041C38D /* ios_patches.m in Sources */ = {isa = PBXBuildFile; fileRef = BD23B6E02CB0585B0041C38D /* ios_patches.m */; };
@@ -906,6 +907,7 @@
 		D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnGuaranteeE2ETests.swift; sourceTree = "<group>"; };
 		D27A00000000000000002731 /* CCTitleConventionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCTitleConventionTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000001 /* TerminalStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalStyleTests.swift; sourceTree = "<group>"; };
+		D3B110000000000000000001 /* ServerPinnedSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerPinnedSnapshotTests.swift; sourceTree = "<group>"; };
 		D33A00000000000000000003 /* SessionParamsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionParamsTests.swift; sourceTree = "<group>"; };
 		BD1FFF6F2E4A10C600DB5AF9 /* TermSessionPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermSessionPayload.swift; sourceTree = "<group>"; };
 		BD23B6DF2CB058550041C38D /* ios_patches.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ios_patches.h; sourceTree = "<group>"; };
@@ -2375,6 +2377,7 @@
 				D27A00000000000000002711 /* TurnGuaranteeE2ETests.swift */,
 				D27A00000000000000002731 /* CCTitleConventionTests.swift */,
 				D33A00000000000000000001 /* TerminalStyleTests.swift */,
+				D3B110000000000000000001 /* ServerPinnedSnapshotTests.swift */,
 				D33A00000000000000000003 /* SessionParamsTests.swift */,
 				D265FBBE2317DD3C0017EAC4 /* Info.plist */,
 				BD8BBF0825F819970084705F /* SEKeyTests.swift */,
@@ -3635,6 +3638,7 @@
 				D27A00000000000000002712 /* TurnGuaranteeE2ETests.swift in Sources */,
 				D27A00000000000000002732 /* CCTitleConventionTests.swift in Sources */,
 				D33A00000000000000000002 /* TerminalStyleTests.swift in Sources */,
+				D3B110000000000000000002 /* ServerPinnedSnapshotTests.swift in Sources */,
 				D33A00000000000000000004 /* SessionParamsTests.swift in Sources */,
 				D20CBA57236031D700D93301 /* CompleteUtilsTests.swift in Sources */,
 				D20CBA5B2360327900D93301 /* CompleteUtils.swift in Sources */,

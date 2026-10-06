@@ -134,6 +134,9 @@ final class ServerSync: ObservableObject {
 
     var obj = SyncConfig.read() ?? [:]
     obj["machines"] = machines
+    // 共享书签（浏览器「后台」）：服务器快照带 pinned 就是权威，PinnedLinksStore
+    // 直接从这个文件读；不带（老快照）就保留文件里的存量，别清掉离线兜底。
+    if let pinned = snap["pinned"] as? [[String: Any]] { obj["pinned"] = pinned }
     obj["tabs"] = tabs
     obj["closedIds"] = closedIds
     obj["agents"] = agents
