@@ -71,20 +71,22 @@ struct SessionSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // header
+            // header：形态照旧（机器名 + host + 在岗/休息计数），计数口径 = 列出来的 tom 公用标签
             VStack(alignment: .leading, spacing: 3) {
                 Text(state.activeMachine.name).font(Theme.ui(17, .bold))
-                Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 在岗"
-                     + (state.restingCount > 0 ? " · \(state.restingCount) 休息" : ""))
+                Text("\(state.activeMachine.host) · \(state.dockSharedSessions.count) 在岗"
+                     + (state.dockRestingCount > 0 ? " · \(state.dockRestingCount) 休息" : ""))
                     .font(Theme.mono(11)).foregroundColor(Theme.dim)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
 
-            // list
+            // list：与手机坞完全同口径（老板 2026-10-06）——只铺 tom 的那几条公用标签，
+            // 服务端顺序、不分节、不挂徽标；Mac 自有标签彻底不显示。
+            // 「只是把配置放到服务器，逻辑保持之前一样」：点行进终端、右键菜单照旧。
             ScrollView {
                 VStack(spacing: 4) {
-                    ForEach(state.sidebarSessions) { s in
+                    ForEach(state.dockSharedSessions) { s in
                         SessionRow(session: s)
                     }
                 }
@@ -118,6 +120,16 @@ struct SessionRow: View {
 
     var isActive: Bool { session.id == state.activeSessionID }
 
+    /// 公用标签可能挂在别的员工的机器上 —— 那台不在本机清单里就没有 transport，
+    /// 行照样列出来，但置灰，点它只给一句提示。
+    var machineKnown: Bool { state.machines.contains { $0.id == session.machineID } }
+    var machineName: String { state.machines.first { $0.id == session.machineID }?.name ?? session.machineID }
+
+    var subtitle: String {
+        guard session.isShared else { return session.dir }
+        return machineKnown ? machineName : "\(machineName) · 未在本机配置"
+    }
+
     var body: some View {
         Button {
             state.selectSession(session.id)
@@ -128,7 +140,7 @@ struct SessionRow: View {
                        agent: state.agent(for: session), ring: Theme.panel2)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
-                    Text(session.dir).font(Theme.mono(11)).foregroundColor(Theme.sub)
+                    Text(subtitle).font(Theme.mono(11)).foregroundColor(Theme.sub)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
@@ -146,10 +158,13 @@ struct SessionRow: View {
                 }
             }
             .contentShape(Rectangle())   // 整行(含空白/Spacer)都可点
+            .opacity(session.isShared && !machineKnown ? 0.45 : 1)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
+        // 菜单形态与改造前一致（老板 2026-10-06）：休息 / 打开时进哪个 CLI / 关闭。
+        // 公用标签的这几样都只落本地（休息表/CLI 配置/关闭墓碑），服务端目录不受影响。
         .contextMenu {
             Button { state.toggleRest(sessionID: session.id) } label: {
                 Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",

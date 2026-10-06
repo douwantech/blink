@@ -116,7 +116,12 @@ final class LearningStore {
     var corrections: [[String]] { q.sync { payload.corrections } }
     var terms: [String: [String: Int]] { q.sync { payload.terms } }
 
-    // MARK: 手工词表（设置页「我的词表」直接增删改，和挖矿共用 terms 这一份存储）
+    // MARK: 词表（只学不改）
+
+    // 2026-10-06：手工增删改的入口按 iOS #22 的口径删掉了（设置页「我的词表」现在只显示
+    // 计数）。**学习 / 替换 / 喂识别器 / 三端同步这几条链路一个字没动** —— 下面留着的
+    // `mineTerms` / `applyTerms` / `contextualStrings` / `allTermPairs` 就是全部活口，
+    // 别再往这里加「设置页改词表」那种 API。
 
     struct TermPair: Identifiable {
         let id = UUID()
@@ -138,80 +143,6 @@ final class LearningStore {
             for (right, n) in m { out.append((wrong, right, n)) }
         }
         return out.sorted { $0.2 == $1.2 ? $0.0 < $1.0 : $0.2 > $1.2 }
-    }
-
-    /// 手工加一条（已存在同一对则不动）。手工词 count 从 0 起，被本地替换命中会累加。
-    func setTerm(_ wrong: String, right: String) {
-        let w = wrong.trimmingCharacters(in: .whitespacesAndNewlines)
-        let r = right.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !w.isEmpty, !r.isEmpty, w != r else { return }
-        q.sync {
-            guard payload.terms[w]?[r] == nil else { return }
-            payload.terms[w, default: [:]][r] = 0
-            saveAndSyncTerms()
-        }
-    }
-
-    /// 手工改错词那半边（设置页行内编辑「听成」列）。清空 = 暂时删掉这条，接着输入
-    /// 新词会被加回（oldWrong 为空时走 add 分支），所以「全删重打」不丢编辑。
-    func renameTerm(oldWrong: String, newWrong: String, right: String) {
-        let w = newWrong.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard w != oldWrong else { return }
-        q.sync {
-            if w.isEmpty {
-                removeTermInternal(wrong: oldWrong, right: right)
-                return
-            }
-            if oldWrong.isEmpty {
-                if payload.terms[w]?[right] == nil {
-                    payload.terms[w, default: [:]][right] = 0
-                    saveAndSyncTerms()
-                }
-                return
-            }
-            guard let n = payload.terms[oldWrong]?[right] else { return }
-            removeTermInternal(wrong: oldWrong, right: right)
-            payload.terms[w, default: [:]][right] = max(n, payload.terms[w]?[right] ?? 0)
-            saveAndSyncTerms()
-        }
-    }
-
-    /// 手工改「实际想说」那半边（设置页行内编辑右列），清空重打同理。
-    func retargetTerm(wrong: String, oldRight: String, newRight: String) {
-        let r = newRight.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard r != oldRight else { return }
-        q.sync {
-            if r.isEmpty {
-                removeTermInternal(wrong: wrong, right: oldRight)
-                return
-            }
-            if oldRight.isEmpty {
-                if payload.terms[wrong]?[r] == nil {
-                    payload.terms[wrong, default: [:]][r] = 0
-                    saveAndSyncTerms()
-                }
-                return
-            }
-            guard let n = payload.terms[wrong]?[oldRight] else { return }
-            removeTermInternal(wrong: wrong, right: oldRight)
-            payload.terms[wrong, default: [:]][r] = max(n, payload.terms[wrong]?[r] ?? 0)
-            saveAndSyncTerms()
-        }
-    }
-
-    /// 已在 q.sync 内时用的删除（外部入口是 removeTerm）。
-    private func removeTermInternal(wrong: String, right: String) {
-        payload.terms[wrong]?[right] = nil
-        if payload.terms[wrong]?.isEmpty == true { payload.terms[wrong] = nil }
-        saveAndSyncTerms()
-    }
-
-    func removeTerm(wrong: String, right: String) {
-        q.sync {
-            payload.terms[wrong]?[right] = nil
-            if payload.terms[wrong]?.isEmpty == true { payload.terms[wrong] = nil }
-            saveAndSyncTerms()
-        }
     }
 
     /// 转写后本地直接替换（不依赖 GLM，离线也纠错）。按错词长度降序替换，避免短词先换

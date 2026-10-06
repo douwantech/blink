@@ -15,6 +15,14 @@ struct CloudTab {
     let dir: String      // 工作目录绝对路径
 }
 
+/// 当前这份快照里的**公用标签 id**（小写）。由 `AppState.applySharedTabs()` 维护 ——
+/// 剥掉之后同步文件里本就不该有这些 id，这里是**第二道闸**：万一 KV 兜底或旧版本留下的
+/// 条目混进来，也绝不允许被关闭 / 写墓碑 / 标休息（对应 iOS 的 `_persistTabsToStore` 守卫）。
+enum PublicTabIDs {
+    static var current: Set<String> = []
+    static func contains(_ id: String) -> Bool { current.contains(id.lowercased()) }
+}
+
 enum CloudTabStore {
     private static let kTabs = "TabStateStore.syncState"
     private static let kWorkDirs = "BlinkWorkDirStore.workDirs"
@@ -69,6 +77,9 @@ enum CloudTabStore {
 
         var out: [(CloudTab, Bool)] = []
         for t in rawTabs {
+            // 公用标签不进任何标签表（服务端读时注入、由 admin 维护）；旧版本或 KV 兜底里
+            // 残留的条目在这里挡掉，否则会显示成一条可关闭的普通标签。
+            guard (t["shared"] as? Bool) != true else { continue }
             guard let id = t["id"] as? String else { continue }
             guard let mid = t["machineId"] as? String, !mid.isEmpty else { continue }
             let path = (t["workDirId"] as? String).flatMap { dirOf[$0] } ?? ""
@@ -98,6 +109,7 @@ enum CloudTabStore {
     /// 返回是否真的动了（KV 里没这个 tab → false）。
     @discardableResult
     static func closeTab(id: String) -> Bool {
+        guard !PublicTabIDs.contains(id) else { return false }   // 公用标签由 admin 维护，关不得
         let fileDone = closeTabInSyncFile(id: id)
         // iCloud KV 暂时保留，照旧写一份
         var kvDone = false
@@ -131,6 +143,7 @@ enum CloudTabStore {
     /// 纯计算（不写 KV）：读 KV 整份 syncState，产出「关闭 id 后」的新对象；没这个 tab → nil。
     /// closeTab 用它落盘；诊断用它做 dry-run（不动真数据）。
     static func mutateSyncState(closingId id: String) -> [String: Any]? {
+        guard !PublicTabIDs.contains(id) else { return nil }     // 同上，第二道闸
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
         guard let td = dataForKey(kv, kTabs),

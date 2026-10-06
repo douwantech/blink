@@ -56,8 +56,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 主线程 semaphore 等它不会死锁。
             if ServerSync.shared.hasSession {
                 let sem = DispatchSemaphore(value: 0)
-                Task.detached { _ = await ServerSync.shared.fetchAndApply(); sem.signal() }
+                var pulled: [SharedTab] = []
+                Task.detached {
+                    // fetchAndApply 不碰 @MainActor；公用标签走返回值（在 detached 里写 @Published 是数据竞争）
+                    (_, pulled) = await ServerSync.shared.fetchAndApply()
+                    sem.signal()
+                }
                 sem.wait()
+                ServerSync.shared.publishSharedTabsForDiagnostics(pulled)
             }
             let raw = MacMachineStore.machines()
             let s = AppState()
@@ -114,6 +120,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.loadClosed()
             let cleared = !s.closedCC.contains(testCC)
             lines.append("CLOSED-PERSIST 合成cc加入后隐藏=\(hidden) 清理后=\(cleared ? "已移除" : "残留")  当前closedCC=\(s.closedCC.count)")
+
+            // 公用标签（二期）：两个自测。
+            //  1) BLINKMAC_DIAG_FIXTURE=<snapshot.json>：把一份快照走一遍「解码 + 剥离 + 落盘」，
+            //     再回读断言没泄漏（LEAK 必须 0/0）。不需要凭据，配 BLINKMAC_SYNC_FILE=/tmp/...
+            //     就不会碰真的同步文件。契约同 iOS BlinkTests/SharedTabSnapshotTests。
+            //  2) 不带 fixture：走服务器真快照，只看计数（绝不回显 token）。
+            let fixture = ProcessInfo.processInfo.environment["BLINKMAC_DIAG_FIXTURE"] ?? ""
+            if !fixture.isEmpty {
+                if let data = FileManager.default.contents(atPath: fixture) {
+                    // applySnapshot 会把 version 记进 UserDefaults（真跑时是对的，下次才好走 304）。
+                    // 自测是只读检查，BLINKMAC_SYNC_FILE 只兜得住同步文件、兜不住偏好 —— 在**已经登录**
+                    // 的机器上跑一次 fixture，就会把真账号的 appliedVersion 改成 fixture 的版本号，
+                    // 于是下次真启动带着它去拉、服务器回 304，这一轮真配置就应用不上。所以前后夹住还原。
+                    let defaults = UserDefaults.standard
+                    let savedVersion = defaults.string(forKey: "BlinkServer.appliedVersion")
+                    let shared = ServerSync.shared.applySnapshot(data)
+                    if let savedVersion { defaults.set(savedVersion, forKey: "BlinkServer.appliedVersion") }
+                    else { defaults.removeObject(forKey: "BlinkServer.appliedVersion") }
+                    let written = SyncConfig.read() ?? [:]
+                    let outTabs = (written["tabs"] as? [[String: Any]]) ?? []
+                    let outClosed = (written["closedIds"] as? [String]) ?? []
+                    let leakedTabs = outTabs.filter { ($0["shared"] as? Bool) == true }.count
+                    let sharedIDs = Set(shared.map { $0.id.lowercased() })
+                    let leakedClosed = outClosed.filter { sharedIDs.contains($0.lowercased()) }.count
+                    lines.append("SERVER shared=\(shared.count) own=\(outTabs.count)")
+                    lines.append("LEAK shared_in_tabs=\(leakedTabs) shared_in_closed=\(leakedClosed)"
+                                 + (leakedTabs == 0 && leakedClosed == 0 ? "  OK" : "  ❌ 公用标签泄漏进同步文件"))
+                    let known = Set(s.machines.map(\.id))
+                    lines.append("PUBLIC-MACHINES known=\(shared.filter { known.contains($0.machineId) }.count)/\(shared.count)")
+                    ServerSync.shared.publishSharedTabsForDiagnostics(shared)   // 让下面能验侧栏合成
+                } else {
+                    lines.append("FIXTURE 读不到：\(fixture)")
+                }
+            }
+            s.applySharedTabs()
+            // 本地缓存这份是「重启只回 304」时的唯一来源：正常跑过一次后这里应等于服务端那份。
+            lines.append("SHARED-TABS 服务端=\(ServerSync.shared.sharedTabs.count)"
+                         + " 本地缓存=\(ServerSync.shared.cachedSharedTabs().count)"
+                         + " 侧栏tom行=\(s.dockSharedSessions.count)"
+                         + " 公用会话行=\(s.sharedSessions.count)"
+                         + " 本机会话=\(s.sessions.filter { !$0.isShared }.count)")
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
         }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 @MainActor
 final class AppState: ObservableObject {
@@ -185,7 +186,6 @@ final class AppState: ObservableObject {
         loadClosed()                 // 已关闭标签（本地 + KV 墓碑），显示时过滤
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
         await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
-        await adoptOrphanSessions()  // 各机器没标签的会话补成标签（三端一致）
         loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
@@ -197,81 +197,70 @@ final class AppState: ObservableObject {
         let open = CloudTabStore.openCC()
         MacClosedStore.remove(open)   // 手机又开了同名 → 本地解封
         closedCC = MacClosedStore.all.union(CloudTabStore.fullyClosedCC()).subtracting(open)
-        computeOrphanHidden()
+        applySharedTabs()
     }
 
-    /// 「有 tmux 会话但同步文件里没标签」的会话 id（<machineID>/cc-…）。
-    /// 手机、平板只显示同步文件里的标签，Mac 也照这个来，三端看到的一样（tmux 不动，只是不显示）。
-    @Published var orphanHidden: Set<String> = []
+    // MARK: - 公用标签（服务端读时注入的全局只读标签）
 
-    /// 每台机器各算各的：某台读不到标签时只放过那台，别把它的会话全藏了。
-    /// （以前只算本机，于是 Jun、小白这些远程机器上自己起的会话 macOS 看得见、iPhone 看不见。）
-    func computeOrphanHidden() {
-        guard SyncConfig.available else { orphanHidden = []; return }
-        var byMachine: [String: Set<String>] = [:]
-        for t in CloudTabStore.tabs() {
-            byMachine[t.machineId, default: []].insert("cc-" + t.ccName.lowercased())
-        }
-        orphanHidden = Set(sessions.filter { s in
-            guard let name = s.tmuxName?.lowercased(),
-                  let mine = byMachine[s.machineID], !mine.isEmpty else { return false }
-            return !mine.contains(name)
-        }.map(\.id))
-    }
+    /// 公用标签的会话 id：`<machineId>/cc-<tmuxSession>` —— 与 blinkd 枚举出来的活会话同一套身份，
+    /// 所以同一条会话只会有一行（标记到实枚举的那条上），不会「枚举一条 + 注入一条」重复。
+    func sharedSessionID(_ t: SharedTab) -> String { "\(t.machineId)/cc-\(t.tmuxSession)" }
 
-    /// 把没标签的 tmux 会话补成同步文件里的标签（三端一致），规则见 OrphanTabAdopter。
+    /// 幂等：先摘掉不再公用的标记，再把每条公用标签标到同名活会话上；没有活会话就合成一条 idle 行
+    /// （点开会 `tmux new-session -A` 起，与 loadCloudTabs 对配置标签的处理一致）。
     ///
-    /// 本机和远程机器都做。远程机器的工作目录**要在那台机器上** `test -d` 查
-    /// —— 拿本机文件系统当准是错的，Jun 的 `/Users/mac/Codes/quan` 在这台 Mac 上根本不存在。
-    /// 枚举和探目录是只读的，几台并行；写同步文件只做一次（读-改-写，并发会互相盖掉）。
-    func adoptOrphanSessions() async {
-        guard SyncConfig.available else { return }
-        let targets = machines.map { (id: $0.id, isLocal: $0.isLocalMac, tr: $0.transport) }
-        var scans: [OrphanTabAdopter.Scan] = []
-        await withTaskGroup(of: OrphanTabAdopter.Scan?.self) { group in
-            for t in targets {
-                group.addTask {
-                    let out = await AppState.exec(t.tr, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
-                    let live = OrphanTabAdopter.parseLive(out)
-                    guard !live.isEmpty else { return nil }
-                    // 没有待补的就别去探目录了：这条路每次回前台都会走，远程是一次 ssh 往返。
-                    // 但仍要回一条 Scan —— adopt 得据此落下扫描基线，否则这台机器永远停在
-                    // 「首次扫描」，以后在手机上关掉的标签会被当成孤儿又补回来。
-                    let pend = OrphanTabAdopter.pending(machineId: t.id, isLocal: t.isLocal, live: live)
-                    let dirs = pend.isEmpty ? Set<String>()
-                        : await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend))
-                    return OrphanTabAdopter.Scan(machineId: t.id, isLocal: t.isLocal,
-                                                 live: live, existingDirs: dirs)
-                }
-            }
-            for await s in group { if let s { scans.append(s) } }
+    /// 凡是动过 `sessions` 的地方收尾都要调一次（枚举 / loadCloudTabs / loadClosed / 同步文件变更）
+    /// —— `enumerateAll` 会 `removeAll { machineID == mid }`，合成出来的行活不过一轮。
+    ///
+    /// 带 `shared` 的条目**不进同步文件、不进 iCloud KV**（上行剔除在 ServerSync.applySnapshot）；
+    /// 关闭/休息/切 CLI 在本地照常可用（老板 2026-10-06：逻辑保持之前一样）——
+    /// 关闭写本地墓碑，所以合成时跳过已关的，否则下一轮枚举又把行造回来。
+    func applySharedTabs() {
+        let tabs = ServerSync.shared.sharedTabs
+        PublicTabIDs.current = Set(tabs.map { $0.id.lowercased() })   // CloudTabStore / CloudRestStore 的第二道闸
+        let ids = Set(tabs.map { sharedSessionID($0).lowercased() })
+        for i in sessions.indices where sessions[i].isShared && !ids.contains(sessions[i].id.lowercased()) {
+            sessions[i].isShared = false
         }
-        guard !scans.isEmpty else { return }
-        let snapshot = scans
-        let r = await Task.detached(priority: .utility) { OrphanTabAdopter.adopt(snapshot) }.value
-        let names = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0.name) })
-        NSLog("[adopt] 扫了 %@ 补成标签=%@ 跳过(无三端一致的工作目录)=%@",
-              snapshot.map { "\(names[$0.machineId] ?? $0.machineId):\($0.live.count)" }.joined(separator: " "),
-              r.adopted.joined(separator: ","), r.skipped.joined(separator: ","))
-        guard !r.adopted.isEmpty else { return }
-        await loadCloudRest()
-        loadCloudTabs()
-        loadClosed()
-        showToast("已把 \(r.adopted.joined(separator: "、")) 补成标签，手机和平板也能看到")
+        washLegacyPublicTombstones(tabs)
+        guard !tabs.isEmpty else { return }
+        // 合成行的 initials / grad 照 loadCloudTabs 那套（同一套观感，免得两类标签长得不一样）
+        let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
+        let known = Set(machines.map(\.id))
+        var built: [Session] = []
+        for t in tabs {
+            let sid = sharedSessionID(t)
+            if let i = sessions.firstIndex(where: { $0.id.lowercased() == sid.lowercased() }) {
+                sessions[i].isShared = true
+                continue
+            }
+            // 本地关过的不再造行（isClosed 对合成行不生效——它们压根不该出现）
+            if closedCC.contains(("cc-" + t.tmuxSession).lowercased()) { continue }
+            let initials = String(t.tmuxSession.replacingOccurrences(of: "-", with: "").prefix(2))
+            // 机器不在本机清单里也照常造行（侧栏只列 tom 的，团队面板要看得见全部），
+            // 只是没有 transport 可连 —— selectSession 会挡住（否则 activeMachine 回落到
+            // machines[0]，连错机器）。
+            let connectable = known.contains(t.machineId)
+            built.append(Session(id: sid, machineID: t.machineId, name: t.tmuxSession,
+                                 dir: connectable ? "~" : "", initials: initials,
+                                 grad: grads[built.count % grads.count],
+                                 status: .idle, lines: [],
+                                 tmuxName: "cc-" + t.tmuxSession, isShared: true))
+        }
+        sessions.append(contentsOf: built)
     }
 
-    /// 在目标机器上筛出真实存在的目录（一条命令查完，省往返）。
-    /// 带单引号或换行的路径没法安全塞进命令，直接跳过——这种路径本来也过不了三端同名那关。
-    nonisolated static func existingDirs(_ transport: Transport, _ paths: [String]) async -> Set<String> {
-        let safe = paths.filter { !$0.contains("'") && !$0.contains("\n") }
-        guard !safe.isEmpty else { return [] }
-        let list = safe.map { "'\($0)'" }.joined(separator: " ")
-        let out = await exec(transport, "for p in \(list); do [ -d \"$p\" ] && echo \"$p\"; done",
-                             timeout: 8, marker: nil)
-        let found = out.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return Set(found)
+    /// 一次性清障：本版本之前公用标签曾被当自有标签关过，本地墓碑里可能压着它们的
+    /// cc 名 —— 不清掉，升级后 tom 的某条标签会「凭空消失」。只在拿到公用标签的
+    /// 第一跑清一次（标志位落 UserDefaults）；之后老板再关公用标签是新决定，
+    /// 墓碑要照常生效（2026-10-06 口径：关闭逻辑与之前一样）。
+    /// KV/同步文件那侧不用管：公用条目已在上游剥掉，`fullyClosedCC` 里根本不会有它们。
+    private func washLegacyPublicTombstones(_ tabs: [SharedTab]) {
+        let key = "BlinkMac.washedPublicTombstones"
+        let defaults = UserDefaults.standard
+        guard !tabs.isEmpty, !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
+        MacClosedStore.remove(Set(tabs.map { ("cc-" + $0.tmuxSession).lowercased() }))
     }
 
     /// 把 iCloud KV 里手机配置的标签并进来（所有机器），跟 iOS 显示同一份标签列表。
@@ -376,7 +365,7 @@ final class AppState: ObservableObject {
             }
         }
         recomputeRestStatuses()
-        computeOrphanHidden()
+        applySharedTabs()   // 上面刚整台清过，公用标签要重新标记/合成
     }
 
     /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。
@@ -409,7 +398,7 @@ final class AppState: ObservableObject {
         sessions.append(contentsOf: real)
         loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
         recomputeRestStatuses()
-        computeOrphanHidden()
+        applySharedTabs()
     }
 
     private var observingCloud = false
@@ -449,7 +438,6 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 self?.reloadMachinesIfChanged()   // #25 顺带：机器清单也跟手（以前要重启 Mac 才生效）
                 self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed()
-                await self?.adoptOrphanSessions()
             }
             Task { @MainActor in await ServerSync.shared.refresh() }   // 回前台：服务器有新版就落盘（304 即止）
         }
@@ -459,8 +447,16 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main, using: reload)
+        // 公用标签走服务器刷新（启动时是异步的，还可能只回 304 用本地缓存），落点单独订阅：
+        // 每次 sharedTabs 变化就重新标记 / 合成只读行。订阅即刻收到当前值，覆盖「订阅前已刷完」。
+        ServerSync.shared.$sharedTabs
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applySharedTabs() }
+            .store(in: &cloudCancellables)
         watchSyncFile()
     }
+
+    private var cloudCancellables = Set<AnyCancellable>()
 
     private var syncDirSource: DispatchSourceFileSystemObject?
     private var syncReloadPending = false
@@ -519,7 +515,9 @@ final class AppState: ObservableObject {
     func restKey(_ s: Session) -> String { CloudRestStore.key(machineId: s.machineID, cc: s.tmuxName ?? s.id) }
 
     /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
+    /// 公用标签与手机同口径：休息是**本机**状态（手机那边走 TabRestStore），不走云映射。
     func isResting(_ s: Session) -> Bool {
+        if s.isShared { return MacRestStore.isResting(s.tmuxName ?? s.id) }
         let key = restKey(s)
         if cloudResting.contains(key) { return true }
         if cloudAvailable, cloudMapping.ccToUUIDs[key] != nil { return false }
@@ -586,16 +584,59 @@ final class AppState: ObservableObject {
     func resting(_ s: Session) -> Bool { isResting(s) }
 
     /// 该会话是否被「关闭」（本地记录 + KV 墓碑，且手机没重新开同名 → 见 loadClosed）。
+    /// 公用标签关闭同样走本地墓碑（老板 2026-10-06：逻辑保持之前一样）——
+    /// 服务端目录仍会把这条下发给别的端，本机不再显示而已。
     func isClosed(_ s: Session) -> Bool {
-        closedCC.contains((s.tmuxName ?? s.id).lowercased()) || orphanHidden.contains(s.id)
+        closedCC.contains((s.tmuxName ?? s.id).lowercased())
     }
 
-    /// 侧栏只显示在岗会话，休息/已关闭的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
+    /// 侧栏列表 = 与手机坞完全同口径（老板 2026-10-06）：只铺 **tom** 的公用标签
+    ///（服务端顺序、跨机器、不分节、不挂徽标），Mac 自有标签彻底不显示。
+    /// 休息/关闭的行不列（休息在右侧员工列表管理，关闭写本地墓碑）。
+    var dockSharedSessions: [Session] {
+        var out: [Session] = []
+        for t in ServerSync.shared.sharedTabs where DockTabs.isDockTab(t) {
+            let sid = sharedSessionID(t).lowercased()
+            if let s = sessions.first(where: { $0.id.lowercased() == sid && $0.isShared }),
+               !resting(s), !isClosed(s) {
+                out.append(s)
+            }
+        }
+        return out
+    }
+
+    /// 侧栏里休息着的 tom 公用标签数（表头「N 休息」用；行本体被 dockSharedSessions 滤掉）。
+    var dockRestingCount: Int {
+        ServerSync.shared.sharedTabs.filter(DockTabs.isDockTab).reduce(0) { n, t in
+            let sid = sharedSessionID(t).lowercased()
+            if let s = sessions.first(where: { $0.id.lowercased() == sid && $0.isShared }),
+               resting(s), !isClosed(s) {
+                return n + 1
+            }
+            return n
+        }
+    }
+
+    /// 当前机器的自有在岗会话（侧栏已不显示自有标签，2026-10-06 老板口径；这份数据
+    /// 仍供关标签后的回落选择等内部路径用）。公用标签走 `dockSharedSessions`。
     var sidebarSessions: [Session] {
-        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !resting($0) && !isClosed($0) }
-            .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }
+        sessions.filter {
+            $0.machineID == activeMachineID && $0.tmuxName != nil && !$0.isShared
+                && !resting($0) && !isClosed($0)
+        }
+        .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }
     }
 
+    /// 全部公用标签对应的会话行（跨机器，含非 tom 的 —— 与手机 `_syncSharedTabs` 同口径：
+    /// 都注册成会话，团队面板/休息计数才看得见它们；侧栏只列 tom 的那部分）。
+    var sharedSessions: [Session] {
+        ServerSync.shared.sharedTabs.compactMap { t in
+            let sid = sharedSessionID(t).lowercased()
+            return sessions.first { $0.id.lowercased() == sid && $0.isShared }
+        }
+    }
+
+    /// 当前机器休息中的会话数（团队面板统计用；侧栏表头已改用 dockRestingCount）。
     var restingCount: Int {
         sessions.filter { $0.machineID == activeMachineID && resting($0) && !isClosed($0) }.count
     }
@@ -705,8 +746,14 @@ final class AppState: ObservableObject {
     }
 
     func selectSession(_ id: String) {
-        activeSessionID = id
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
+        // 公用标签可能是别的员工机器上的：那台不在本机清单里就没有 transport，
+        // activeMachine 会回落到 machines[0]，于是拿**错的机器**去 attach —— 挡住。
+        if let s = sessions.first(where: { $0.id == id }), !machines.contains(where: { $0.id == s.machineID }) {
+            showToast("「\(s.machineID)」不在本机机器清单里，先在手机上同步这台机器")
+            return
+        }
+        activeSessionID = id
         if let s = sessions.first(where: { $0.id == id }) {
             activeMachineID = s.machineID
             lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab（并落盘）
@@ -783,7 +830,9 @@ final class AppState: ObservableObject {
         let key = restKey(s)
         let now = !isResting(s)
         // 有映射 → 写三端共用的同步文件（+KV），手机、平板跟着变；写不成（无对应 tab）回退本地。
-        if cloudAvailable, CloudRestStore.setResting(key: key, on: now, mapping: cloudMapping) {
+        // 公用标签只写本地（与手机同口径：那边休息走 TabRestStore，本机状态），
+        // 也别把公用条目的休息状态塞进同步文件。
+        if !s.isShared, cloudAvailable, CloudRestStore.setResting(key: key, on: now, mapping: cloudMapping) {
             if now { cloudResting.insert(key) } else { cloudResting.remove(key) }
         } else {
             _ = MacRestStore.toggle(name)
@@ -796,16 +845,18 @@ final class AppState: ObservableObject {
     /// 关闭一个标签：写 KV 墓碑同步到 iOS（有对应 tab UUID 时），本地也移除。
     /// 说明：blinkd 机器的会话是「实时枚举」出来的，关了下次刷新还会再枚举回来
     /// （tmux 还活着，关标签不 kill 远端进程，跟 iOS 一致）；SSH/离线机器的标签来自 KV，
-    /// 写了墓碑后 iOS 和 Mac 都不再显示。
+    /// 写了墓碑后 iOS 和 Mac 都不再显示。公用标签没有 KV 对应（上行剔除），
+    /// 墓碑只记本地 —— 本机不再显示，服务端目录照旧下发，逻辑与之前一致。
     func closeTab(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
         let full = (s.tmuxName ?? ("cc-" + s.name)).lowercased()
-        let uuids = cloudMapping.ccToUUIDs[CloudRestStore.key(machineId: s.machineID, cc: full)] ?? []
+        let uuids = s.isShared ? [] : (cloudMapping.ccToUUIDs[CloudRestStore.key(machineId: s.machineID, cc: full)] ?? [])
         var synced = false
         for id in uuids where CloudTabStore.closeTab(id: id) { synced = true }
         MacClosedStore.add(full)        // 本地记一份，重启后仍隐藏（枚举/无墓碑的也挡得住）
         sessions.removeAll { $0.id == sessionID }
-        if activeSessionID == sessionID { activeSessionID = sidebarSessions.first?.id ?? "" }
+        // 侧栏现在只有 tom 的公用标签 —— 回落先挑它，挑不着再看本机自有会话。
+        if activeSessionID == sessionID { activeSessionID = dockSharedSessions.first?.id ?? sidebarSessions.first?.id ?? "" }
         loadClosed()                    // 立即纳入隐藏集
         Task { @MainActor in await self.loadCloudRest() }   // 刷新映射
         showToast(synced ? "已关闭「\(s.name)」并同步到手机" : "已关闭「\(s.name)」（本地）")

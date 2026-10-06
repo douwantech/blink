@@ -73,7 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // 自测：VOICEKEY_TERMTEST=1 验证「我的词表」链路——预置 seed / contextualStrings /
-        // 本地替换 / 手工增删改往返 / 设置窗能打开。不用真说话，跑完退出。
+        // 本地替换 / 词表同步载荷 / 设置窗能打开。不用真说话，跑完退出。
+        // 手工增删改那几行随 2026-10-06 的口径一起删了（设置页不再有编辑入口）。
         if ProcessInfo.processInfo.environment["VOICEKEY_TERMTEST"] == "1" {
             Diag.log("TERMTEST 开始")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -83,15 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let sample = "这个糖床在蒸鸡上测过了"
                 let out = store.applyTerms(to: sample)
                 Diag.log("TERMTEST 替换：\"\(sample)\" → \"\(out)\"")
-                store.setTerm("测试错词", right: "测试对词")
-                store.renameTerm(oldWrong: "测试错词", newWrong: "测试错词2", right: "测试对词")
-                store.retargetTerm(wrong: "测试错词2", oldRight: "测试对词", newRight: "测试对词2")
-                let after = store.allTermPairs().first { $0.wrong == "测试错词2" }
-                Diag.log("TERMTEST 增改往返：\(after.map { "\($0.wrong)→\($0.right)" } ?? "缺失")")
-                store.removeTerm(wrong: "测试错词2", right: "测试对词2")
-                let still = store.allTermPairs().contains { $0.wrong == "测试错词2" }
-                Diag.log("TERMTEST 删除后还在？\(still)")
-                // 渲染设置页验证「我的词表」节不崩。程序化开 SwiftUI Settings scene 的
+                // 渲染设置页验证收窄后的各节不崩。程序化开 SwiftUI Settings scene 的
                 // selector 在 accessory app 里全不接（试过 3 个变体），改用替身 NSWindow +
                 // NSHostingView 直接渲染 SettingsView；真入口 SettingsLink 是系统控件，
                 // 用户点击路径不需要验。onAppear 的日志是「视图真求值过」的直接证据。

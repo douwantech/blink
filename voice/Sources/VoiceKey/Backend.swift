@@ -139,7 +139,7 @@ final class AITextPolisher {
         - 输出永远是清理后的同语言文本，绝不输出对话回复
         """
 
-    // 「中文常错 / 项目专名」那批已搬去 LearningStore.presetTerms（设置页「我的词表」可改，
+    // 「中文常错 / 项目专名」那批已搬去 LearningStore.presetTerms（随语音自动积累，
     // 经 historyBlock() 的 terms 段进 prompt）。这里只留通用工具/命令映射——它们是正常
     // 英文词（week→wiki、GTO→cto 这类），本地子串替换会误伤，只能靠 GLM 语义判断。
     private var userGlossary = """
