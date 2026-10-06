@@ -6,25 +6,54 @@
 
 ## ① Blink iOS 包 —— 治连 brain 弹主机密钥确认框
 
-**PR #52** · 分支 `fix/ssh-brain-host-key` · 提交 `b642e5f9`
-
-先把 #52 合进 `deploy/blink-api-20261006`，再出包装机：
+**PR #52 已合进 `deploy/blink-api-20261006`**（merge commit `c0ed0c48`）；依赖锁文件 PR #54 也已合（`fe5b116c`）。
+不用再合，直接从 deploy 出包：
 
 ```bash
 cd /Users/apple/Codes/Jack/blink
-git fetch origin && git checkout deploy/blink-api-20261006 && git pull
+git fetch origin && git checkout -B build/ssh-hostkey origin/deploy/blink-api-20261006
 
+# ① 工具链：用非 beta 的那份 Xcode（27 beta 会踩下面第三个坑）
+ls -d /Applications/Xcode*.app                                          # 先看装了哪些
+export DEVELOPER_DIR="/Applications/<非 beta 那份>.app/Contents/Developer"
+xcodebuild -version                      # 必须是 26.x，不是 27 beta
+
+# ② 依赖先落到独立目录（锁文件现在在仓库里，第一次跑会把钉住的版本 clone 下来）
+xcodebuild -resolvePackageDependencies -project Blink.xcodeproj -scheme Blink \
+  -clonedSourcePackagesDirPath /tmp/blink-spm
+git -C /tmp/blink-spm/checkouts/purchases-ios describe --tags                  # 应为 5.92.0
+git -C /tmp/blink-spm/checkouts/purchases-ios log --oneline -1 \
+  -- Sources/Paywalls/PaywallColor.swift    # 含 870899891a（#6949）才算对
+
+# ③ 出包：全新 dd（别复用旧的）+ 两个 flag 硬锁依赖
 DEVID=<老板手机的 UDID>
 xcodebuild -project Blink.xcodeproj -scheme Blink -destination "generic/platform=iOS" \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=659T9VUN97 ENABLE_DEBUG_DYLIB=NO build
+  -derivedDataPath /tmp/blink-dd-ssh \
+  -clonedSourcePackagesDirPath /tmp/blink-spm \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=659T9VUN97 ENABLE_DEBUG_DYLIB=NO \
+  -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+  build
 
-APP=$(ls -dt ~/Library/Developer/Xcode/DerivedData/Blink-*/Build/Products/Debug-iphoneos/Blink.app | head -1)
+APP=/tmp/blink-dd-ssh/Build/Products/Debug-iphoneos/Blink.app
 nm -g "$APP/Blink" | grep -c blink_ssh_main    # 必须 ≥1，否则 ssh 被 debug.dylib 弄坏，禁装
 xcrun devicectl device install app --device "$DEVID" "$APP"
 ```
 
-`ENABLE_DEBUG_DYLIB=NO` 这次尤其不能漏：这个包改的正是 ssh 那条路，
-dylib 一坏看起来就像这版把 ssh 弄挂了。团队 ID 也必须显式覆盖（6 个 target 硬编码官方 team）。
+（想发 Release 就加 `-configuration Release`，APP 路径跟着变成 `Release-iphoneos`；
+jack 一直出的是 Debug，这条没验证过，出急件就用默认。）
+
+三个坑，都踩过：
+
+1. **`ENABLE_DEBUG_DYLIB=NO` 不能漏**：这个包改的正是 ssh 那条路，dylib 一坏看起来就像这版把 ssh 弄挂了。
+2. **团队 ID 必须显式覆盖**（`DEVELOPMENT_TEAM=659T9VUN97`）：6 个 target 硬编码官方 team。
+3. **依赖必须锁住**：`project.pbxproj` 里依赖是 `upToNextMajorVersion`（SwiftCBOR 甚至是 `branch = master`），
+   不锁的话**每台机解析出来的版本都不一样** —— 2026-10-06 出包两连败就是这么来的：解析到的 RevenueCat
+   版本在 **Xcode 27 beta** 下编不过（`PaywallColor.swift: invalid redeclaration of synthesized memberwise
+   init(stringRepresentation:)` + `CustomerCenterConfigData.swift: ambiguous use`），上游 #6949 才修，
+   **5.92.0 是含该修复的版本**。所以：工具链用 26.x，依赖用上面那两个 flag 钉死；
+   要升依赖就显式改仓库里那份 `Package.resolved`（#54 收进来的），别指望重新解析。
+   两个 flag 的分工：`-disableAutomaticPackageResolution` 缺包就报错、绝不偷偷升级；
+   `-onlyUsePackageVersionsFromResolvedFile` 只认那份锁文件。
 
 ### 验收（不用等老板，jack 自己就能查）
 
