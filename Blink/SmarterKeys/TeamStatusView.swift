@@ -255,8 +255,11 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let k = "\(t.machineId)|\(t.employee)"
       if map[k] == nil {
         order.append(k)
+        // 头像优先取员工目录（BlinkPeopleStore：用户自设 > 内置像素图），目录里没有
+        // 才用该 tab 工作目录自带的图标 —— 目录头像按「员工名」挂，跟 tab 挂在哪个目录无关
         map[k] = Group(employee: t.employee, machineId: t.machineId, machineName: t.machineName,
-                       avatar: t.avatar, role: roleMap[t.employee.lowercased()],
+                       avatar: BlinkPeopleStore.shared.directoryIcon(for: t.employee) ?? t.avatar,
+                       role: roleMap[t.employee.lowercased()],
                        rows: [], resting: true)
       }
       let old = statusFor(tabKey: t.tabKey)

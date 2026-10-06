@@ -1652,15 +1652,16 @@ private final class BlinkAssistantBubbleCell: UITableViewCell {
                                       status: BlinkAssistantPatrol.Status) -> UIView {
     let row = PatrolRowControl()
 
-    // 头像：用户在 ⚙️→员工头像 里设过 → 用自定义；没设过 → 首字母色块（不再 fall back 到默认 DiceBear，省得几个员工脸都一样）
+    // 头像：员工目录（BlinkPeopleStore）里有就用它（用户自设 > 内置像素图）；
+    // 目录里没有 → 首字母色块（不再 fall back 到默认 DiceBear，省得几个员工脸都一样）
     let iv = UIImageView()
     iv.translatesAutoresizingMaskIntoConstraints = false
     iv.backgroundColor = .tertiarySystemFill
     iv.layer.cornerRadius = 18
     iv.clipsToBounds = true
     iv.contentMode = .scaleAspectFill
-    if let custom = BlinkPeopleStore.shared.customIcon(for: item.employee) {
-      iv.image = custom
+    if let directory = BlinkPeopleStore.shared.directoryIcon(for: item.employee) {
+      iv.image = directory
     } else {
       iv.image = Self.fallbackAvatar(for: item.employee)
     }

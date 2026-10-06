@@ -2504,7 +2504,8 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
   }
 }
 
-/// 员工头像 store：员工名 → PNG 数据。没自定义就 fallback 到 DiceBear 自动生成（seed = 员工名）
+/// 员工头像 store：员工名 → PNG 数据。优先级：用户自设 > 内置像素图（9 人，见 pixelNames）
+/// > DiceBear 自动生成（seed = 员工名）
 @objc final class BlinkPeopleStore: NSObject {
   @objc static let shared = BlinkPeopleStore()
   private let kKey = "BlinkPeopleStore.avatars"   // [name: Data] base64-string
@@ -2581,9 +2582,31 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
     styleMap[name.lowercased()] ?? Self.defaultStyle
   }
 
-  /// 取头像（同步 fast-path）：先看自定义；没有就看 DiceBear 缓存；都没有返 nil（让调用方异步 fetch）
+  /// 内置像素头像的 9 个名字（老板 2026-10-06 拍板团队头像走像素风，同原型页
+  /// blink/avatar-v2）。图打包在 App 里：Media.xcassets/<名字>-pixel，缩到 128px ——
+  /// 512px 原图单张 250KB+，绝不进配置快照/同步文件（那会肥死每次同步）。
+  static let pixelNames: [String] = ["tom", "jack", "adam", "candy", "leo", "max", "quan", "peter", "tony"]
+
+  /// 员工目录里这个人的默认头像（内置像素图）。不在那 9 人里、或资源没打进包 → nil
+  func bundledIcon(for name: String) -> UIImage? {
+    let n = Self.canonicalName(name)
+    guard Self.pixelNames.contains(n) else { return nil }
+    return UIImage(named: "\(n)-pixel")
+  }
+
+  /// 给 UI 用（团队页员工卡 / 助手巡检行）：用户自设的 > 内置像素图；都没有返 nil，交调用方兜字母。
+  /// 故意不在这里兜 DiceBear —— 那是一条网络路径，员工卡片不该为一张脸等网络。
+  func directoryIcon(for name: String) -> UIImage? {
+    customIcon(for: name) ?? bundledIcon(for: name)
+  }
+
+  private static func canonicalName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  /// 取头像（同步 fast-path）：先看自定义/内置像素图；没有就看 DiceBear 缓存；都没有返 nil（让调用方异步 fetch）
   func iconSync(for name: String, size: Int = 96) -> UIImage? {
-    if let img = customIcon(for: name) { return img }
+    if let img = directoryIcon(for: name) { return img }
     let url = AvatarPickerViewController.urlFor(style: style(for: name), seed: name.lowercased(), size: size)
     if let d = DiceBearLoader.shared.cached(url: url), let img = UIImage(data: d) { return img }
     return nil
