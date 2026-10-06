@@ -24,6 +24,47 @@ struct TabState: Codable {
   }
 }
 
+/// 公用标签在 tab 集合里的排布规则：**公用恒在最前**（保持服务端顺序），自有在后。
+/// 纯函数，独立成类型是为了能直接对「服务端顺序 → 屏幕顺序」这一跳做单测。
+enum SharedTabLayout {
+  static let sharedSectionTitle = "公用标签"
+  static let ownSectionTitle = "我的标签"
+
+  /// tab 栏/侧栏的一行：`header` 非空表示这行前面要插一个节标题。
+  struct Row: Equatable {
+    let header: String?
+    let isShared: Bool
+  }
+
+  static func ordered(shared: [UUID], own: [UUID]) -> [UUID] {
+    shared + own
+  }
+
+  /// 落盘/上传前的那一刀：公用标签一律剔掉（它们不是账号的数据）。
+  static func ownOnly(_ keys: [UUID], sharedKeys: Set<UUID>) -> [UUID] {
+    keys.filter { !sharedKeys.contains($0) }
+  }
+
+  /// 按屏幕顺序给出每行的节标题与「是否公用」。只在两边都有内容时才标出两个节标题；
+  /// 只有自有标签时不插任何标题（跟改动前一样）。
+  static func rows(keys: [UUID], sharedKeys: Set<UUID>) -> [Row] {
+    let sharedCount = keys.filter { sharedKeys.contains($0) }.count
+    let splits = sharedCount > 0 && sharedCount < keys.count
+    var sawShared = false
+    var sawOwn = false
+    return keys.map { key in
+      if sharedKeys.contains(key) {
+        let header = (!sawShared && splits) ? "\(sharedSectionTitle) (\(sharedCount))" : nil
+        sawShared = true
+        return Row(header: header, isShared: true)
+      }
+      let header = (!sawOwn && splits) ? ownSectionTitle : nil
+      sawOwn = true
+      return Row(header: header, isShared: false)
+    }
+  }
+}
+
 final class TabStateStore {
   static let shared = TabStateStore()
 

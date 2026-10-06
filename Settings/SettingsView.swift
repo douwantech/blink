@@ -32,39 +32,36 @@
 
 import Foundation
 import SwiftUI
+#if targetEnvironment(macCatalyst)
 import LocalAuthentication
+#endif
 
+/// 经典设置页。2026-10-06 起**不再作为 iOS 的设置入口**：iPhone/iPad 的设置页是
+/// `BlinkSettingsViewController`，这里只留「订阅 / 支持 / 关于」三段，作为它
+/// 「关于与支持」那一行的叶子页（`SpaceController.presentSettings`）。
+/// Mac Catalyst 仍然整页用它，所以 Connect / Terminal / Configuration 那几段用
+/// `#if targetEnvironment(macCatalyst)` 原样留着（Style / Display / Keys & Certificates /
+/// Hosts / iCloud Sync 只有 Mac 端在用，删了就没别的入口了）。
 struct SettingsView: View {
 
-  @EnvironmentObject private var _nav: Nav
-  @State private var _biometryType = LAContext().biometryType
+  /// 推入时的导航标题：iOS 侧传「关于与支持」，Mac Catalyst 保持 Settings。
+  var navigationTitle: String = "Settings"
+
   @State private var _blinkVersion = UIApplication.blinkShortVersion() ?? ""
-  @State private var _iCloudSyncOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigiCloud)
-  @State private var _autoLockOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigAutoLock)
-  @State private var _defaultUser = BLKDefaults.defaultUserName() ?? ""
   @StateObject private var _entitlements: EntitlementsManager = .shared
   @StateObject private var _model = PurchasesUserModel.shared
   @State private var _displayBlinkClassicToPlus = false
 
+#if targetEnvironment(macCatalyst)
+  // 只有 Mac 保留的那几段在用。
+  @State private var _biometryType = LAContext().biometryType
+  @State private var _iCloudSyncOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigiCloud)
+  @State private var _autoLockOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigAutoLock)
+  @State private var _defaultUser = BLKDefaults.defaultUserName() ?? ""
+#endif
+
   var body: some View {
     List {
-      if _entitlements.earlyAccessFeatures.active && _entitlements.earlyAccessFeatures.period == .Trial {
-        Section {
-          Row {
-            Label(title: {
-                    VStack(alignment: .leading, spacing: 1) {
-                      Text("Need extra help?")
-                      Text("Don't be shy. We want Blink to work for you. Ask us questions during your trial.").foregroundColor(.secondary).font(.subheadline)
-                    }
-                  }, icon: { Image(systemName: "questionmark.bubble") })
-          } details: {
-            TrialSupportView()
-          }
-        } header: {
-          Text("Trial support")
-        }
-      }
-
       Section("Subscription") {
         HStack {
           Label(_entitlements.currentPlanName(), systemImage: "bag")
@@ -92,6 +89,10 @@ struct SettingsView: View {
           }.disabled(_entitlements.earlyAccessFeatures.period != .Normal)
         }
       }
+
+#if targetEnvironment(macCatalyst)
+      // ↓ Mac Catalyst 专属：这几段（钥匙/主机/终端外观/书签/Snips/iCloud 同步/自动锁）
+      // 只有 Mac 端有别的入口，iPhone/iPad 按 2026-10-06 的收窄口径删掉。
       Section("Connect") {
         Row {
           Label("Keys & Certificates", systemImage: "key")
@@ -141,13 +142,11 @@ struct SettingsView: View {
         } details: {
           BKNotificationsView()
         }
-#if TARGET_OS_MACCATALYST
         Row {
           Label("Gestures", systemImage: "rectangle.and.hand.point.up.left.filled")
         } details: {
           GesturesView()
         }
-#endif
       }
 
       Section("Configuration") {
@@ -156,13 +155,11 @@ struct SettingsView: View {
         } details: {
           BookmarkedLocationsView()
         }
-
         Row {
           Label("Snips", systemImage: "chevron.left.square")
         } details: {
           SnippetsConfigView()
         }
-
         RowWithStoryBoardId(content: {
           HStack {
             Label("iCloud Sync", systemImage: "icloud")
@@ -170,7 +167,6 @@ struct SettingsView: View {
             Text(_iCloudSyncOn ? "On" : "Off").foregroundColor(.secondary)
           }
         }, storyBoardId: "BKiCloudConfigurationViewController")
-
         RowWithStoryBoardId(content: {
           HStack {
             Label("Auto Lock", systemImage: _biometryType == .faceID ? "faceid" : "touchid")
@@ -179,6 +175,7 @@ struct SettingsView: View {
           }
         }, storyBoardId: "BKSecurityConfigurationViewController")
       }
+#endif
 
       Section("Get in touch") {
         Row {
@@ -191,16 +188,6 @@ struct SettingsView: View {
         } details: {
           FeedbackView()
         }
-        // HStack {
-        //   Button {
-        //     BKLinkActions.sendToAppStore()
-        //   } label: {
-        //     Label("Rate Blink", systemImage: "star")
-        //   }
-
-        //   Spacer()
-        //   Text("App Store").foregroundColor(.secondary)
-        // }
       }
 
       Section {
@@ -227,14 +214,8 @@ struct SettingsView: View {
         }
       }
     }
-    .onAppear {
-      _iCloudSyncOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigiCloud)
-      _autoLockOn = BKUserConfigurationManager.userSettingsValue(forKey: BKUserConfigAutoLock)
-      _defaultUser = BLKDefaults.defaultUserName() ?? ""
-
-    }
     .listStyle(.grouped)
-    .navigationTitle("Settings")
+    .navigationTitle(navigationTitle)
     .sheet(isPresented: $_displayBlinkClassicToPlus) {
       BlinkClassicToPlusWindow(urlHandler: blink_openurl, dismissHandler: { _displayBlinkClassicToPlus = false })
     }

@@ -1391,6 +1391,8 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let hairline = UIView()
   private var filterTitle = "全部"
   private var restingCount = 0
+  /// tag → 标签按钮。节标题也占 arrangedSubviews，所以滚动定位不能按下标取。
+  private var tabButtons: [Int: UIButton] = [:]
 
   @objc init() {
     super.init(frame: .zero)
@@ -1482,9 +1484,13 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标
+  /// headers 是每行前面的节标题（「公用标签 (N)」/「我的标签」，nil = 不插），
+  /// sharedTabs 标记哪些行是服务端注入的公用标签（带徽标、样式可区分）。
   func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int],
-              filterTitle: String?, currentTag: Int, agents: [AgentKind?]? = nil) {
+              filterTitle: String?, currentTag: Int, agents: [AgentKind?]? = nil,
+              headers: [String?]? = nil, sharedTabs: [Bool]? = nil) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    tabButtons.removeAll()
 
     self.filterTitle = filterTitle ?? "全部"
     rebuildMenu()
@@ -1495,20 +1501,39 @@ final class HorizontalOnlyScrollView: UIScrollView {
       let tag = i < tags.count ? tags[i] : i
       let icon: UIImage? = (icons.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
       let agent: AgentKind? = (agents.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
+      let isShared = (sharedTabs.flatMap { i < $0.count ? $0[i] : false }) ?? false
+      // 节标题是普通 label，跟标签一起横向滚动（这条不是 UICollectionView，没有吸顶可言）
+      if let header = headers.flatMap({ i < $0.count ? $0[i] : nil }) ?? nil {
+        if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(18, after: last) }
+        let headerView = makeSectionHeader(header)
+        stack.addArrangedSubview(headerView)
+        stack.setCustomSpacing(9, after: headerView)
+      }
       let btn = makeTabButton(title: title, icon: icon, agent: agent, index: tag,
-                              isCurrent: tag == currentTag, hasUnread: isUnread)
+                              isCurrent: tag == currentTag, hasUnread: isUnread, isShared: isShared)
       if tag == currentTag { visibleIndexOfCurrent = i }
+      tabButtons[tag] = btn
       stack.addArrangedSubview(btn)
     }
     layoutIfNeeded()
-    if visibleIndexOfCurrent >= 0 {
-      scrollToVisibleTab(at: visibleIndexOfCurrent, animated: true)
+    if visibleIndexOfCurrent >= 0, visibleIndexOfCurrent < tags.count {
+      scrollToVisibleTab(tag: tags[visibleIndexOfCurrent], animated: true)
     }
   }
 
-  private func scrollToVisibleTab(at visibleIndex: Int, animated: Bool) {
-    guard stack.arrangedSubviews.indices.contains(visibleIndex) else { return }
-    let btn = stack.arrangedSubviews[visibleIndex]
+  private func makeSectionHeader(_ title: String) -> UIView {
+    let label = UILabel()
+    label.text = title
+    label.font = .systemFont(ofSize: 11, weight: .semibold)
+    label.textColor = UIColor.white.withAlphaComponent(0.42)
+    label.setContentHuggingPriority(.required, for: .horizontal)
+    label.setContentCompressionResistancePriority(.required, for: .horizontal)
+    return label
+  }
+
+  /// 滚到某个 tag 对应的按钮。按 tag 查而不是按下标取，因为节标题也占着 arrangedSubviews。
+  private func scrollToVisibleTab(tag: Int, animated: Bool) {
+    guard let btn = tabButtons[tag] else { return }
     let frameInScroll = btn.convert(btn.bounds, to: scrollView)
     let pad: CGFloat = 24
     let target = frameInScroll.insetBy(dx: -pad, dy: 0)
@@ -1555,7 +1580,8 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   private func makeTabButton(title: String, icon: UIImage?, agent: AgentKind?,
-                             index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
+                             index: Int, isCurrent: Bool, hasUnread: Bool,
+                             isShared: Bool = false) -> UIButton {
     var cfg = UIButton.Configuration.plain()
     var at = AttributedString(title)
     at.font = UIFont.systemFont(ofSize: 14, weight: isCurrent ? .semibold : .regular)
@@ -1573,20 +1599,48 @@ final class HorizontalOnlyScrollView: UIScrollView {
     }
     cfg.imagePadding = 7
     cfg.imagePlacement = .leading
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
-    cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : 0.55)
+    // 公用标签右侧留给「公用」徽标（原先是给在岗绿点留的宽度）
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: isShared ? 42 : 24)
+    cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : (isShared ? 0.78 : 0.55))
     let btn = UIButton(configuration: cfg)
     btn.layer.cornerRadius = 19
     btn.layer.masksToBounds = false
-    btn.layer.borderWidth = isCurrent ? 1 : 0
-    btn.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
-    btn.backgroundColor = isCurrent ? UIColor.white.withAlphaComponent(0.07) : .clear
+    // 公用标签：青色描边 + 淡青底，一眼与自己的标签区分（选中时描边更亮）
+    btn.layer.borderWidth = (isCurrent || isShared) ? 1 : 0
+    btn.layer.borderColor = isShared
+      ? UIColor.systemTeal.withAlphaComponent(isCurrent ? 0.85 : 0.5).cgColor
+      : UIColor.white.withAlphaComponent(0.15).cgColor
+    btn.backgroundColor = isCurrent
+      ? UIColor.white.withAlphaComponent(0.07)
+      : (isShared ? UIColor.systemTeal.withAlphaComponent(0.10) : .clear)
     btn.heightAnchor.constraint(equalToConstant: 38).isActive = true
     btn.tag = index
     btn.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
     let longPress = UILongPressGestureRecognizer(target: self, action: #selector(tabLongPressed(_:)))
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
+
+    if isShared {
+      // 公用标签没有在岗点，位置上放「公用」徽标
+      let badge = UILabel()
+      badge.text = "公用"
+      badge.font = .systemFont(ofSize: 9, weight: .semibold)
+      badge.textColor = .systemTeal
+      badge.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.20)
+      badge.textAlignment = .center
+      badge.layer.cornerRadius = 3
+      badge.clipsToBounds = true
+      badge.isUserInteractionEnabled = false
+      badge.translatesAutoresizingMaskIntoConstraints = false
+      btn.addSubview(badge)
+      NSLayoutConstraint.activate([
+        badge.widthAnchor.constraint(equalToConstant: 32),
+        badge.heightAnchor.constraint(equalToConstant: 14),
+        badge.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -7),
+        badge.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
+      ])
+      return btn
+    }
 
     // 在岗绿点（带微光）
     let status = UIView()
