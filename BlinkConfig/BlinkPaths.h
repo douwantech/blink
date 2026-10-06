@@ -69,6 +69,8 @@
 + (NSURL *) historyURL;
 + (NSString *) historyFile;
 + (NSString *) knownHostsFile;
+// 把内置信任的公用机器主机密钥补进 known_hosts（只补缺的；见 .m 里的来由）
++ (void) ensureSeededKnownHosts;
 
 + (NSURL *) localSnippetsLocationURL;
 + (NSURL *) iCloudSnippetsLocationURL;

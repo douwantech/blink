@@ -373,6 +373,11 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   }
 }
 
+// readline: 在停等期间 _readlineSema 非 nil（答完/关掉才清），所以它就是「在等输入」的现成信号。
+- (BOOL)waitingForInput {
+  return _readlineSema != nil;
+}
+
 - (void)_EOT {
   // On EOT, a PTY on the kernel would release linereads, etc... without closing the stream.
   // We do not have that kind of access, so we "simulate" it by recycling stdin. Then we give an opportunity

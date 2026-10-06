@@ -89,6 +89,10 @@ void __setupProcessEnv(void) {
 
   [Migrator perform];
 
+  // 预置公用机器（brain 等）的主机密钥：不然手机连它会弹「是否信任该主机」，用户来不及按 Y
+  // 就被 12s 连接看门狗掐掉 → 重连死循环。只补缺的，已存在不动（见 BlinkPaths 里的说明）。
+  [BlinkPaths ensureSeededKnownHosts];
+
   [AppDelegate reloadDefaults];
   [[UIView appearance] setTintColor:[UIColor blinkTint]];
   
