@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS employees (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Employee avatars are binary PNGs in RDS. Keeping blobs in their own table
+-- leaves the directory JSON small and lets the client fetch only the image it
+-- needs. The foreign key removes the blob when an employee is deleted.
+CREATE TABLE IF NOT EXISTS employee_avatars (
+  employee_id VARCHAR(100) NOT NULL PRIMARY KEY,
+  data MEDIUMBLOB NOT NULL,
+  content_type VARCHAR(32) NOT NULL DEFAULT 'image/png',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT employee_avatars_employee_fk FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS projects (
   id VARCHAR(100) NOT NULL PRIMARY KEY,
   data JSON NOT NULL,
