@@ -376,6 +376,13 @@ final class ServerConfigSync: ObservableObject {
       } else {
         defaults.removeObject(forKey: "BlinkTabFilterMachineId")
       }
+      // 公用标签筛选的员工维度（"*" = 显式全部，缺键 = 没选过 → 默认 tom）。
+      // 跟 machineId 走同一套版本采纳语义：服务器版本没动且本地有未上传改动时保留本地。
+      if let employee = snapshot.recentSelection["employee"], !employee.isEmpty {
+        defaults.set(employee, forKey: "BlinkTabFilterEmployee")
+      } else {
+        defaults.removeObject(forKey: "BlinkTabFilterEmployee")
+      }
     }
     if retainLocalTabs && !localDirty {
       defaults.set(true, forKey: dirtyKey)
@@ -421,6 +428,7 @@ final class ServerConfigSync: ObservableObject {
     }
     let tabs = TabStateStore.shared.snapshot()
     let selection = ["machineId": defaults.string(forKey: "BlinkTabFilterMachineId") ?? "",
+                     "employee": defaults.string(forKey: "BlinkTabFilterEmployee") ?? "",
                      "tabId": tabs.currentId?.uuidString ?? ""]
     let bodies: [(String, Data?)] = [
       ("tabs", try? JSONEncoder().encode(tabs)),

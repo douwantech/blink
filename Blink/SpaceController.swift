@@ -667,6 +667,7 @@ class SpaceController: UIViewController {
     return v
   }()
   private static let kTabFilterMachineId = "BlinkTabFilterMachineId"
+  private static let kTabFilterEmployee = "BlinkTabFilterEmployee"
 
   // 被标记「休息」(😴) 的员工始终从标签栏隐藏；改回在岗用顶栏 🌙 面板。
   // 保留此计算属性（恒为 true）以复用原有的过滤判断。
@@ -682,6 +683,45 @@ class SpaceController: UIViewController {
       }
       ServerConfigSync.shared.schedulePersonalUpload()
     }
+  }
+
+  /// 公用标签筛选的员工维度。取值协议见 `SharedTabFilter`：缺键 = 没选过（走默认 tom），
+  /// `*` = 显式「全部」。机器维度复用 `_tabFilterMachineId`（它同时驱动 Mac 三栏的当前机器，
+  /// 另开一个字段会出现「坞筛 brain、rail 高亮 mac」的分裂）。
+  private var _tabFilterEmployee: String? {
+    get { UserDefaults.standard.string(forKey: SpaceController.kTabFilterEmployee) }
+    set {
+      if let v = newValue {
+        UserDefaults.standard.set(v, forKey: SpaceController.kTabFilterEmployee)
+      } else {
+        UserDefaults.standard.removeObject(forKey: SpaceController.kTabFilterEmployee)
+      }
+      ServerConfigSync.shared.schedulePersonalUpload()
+    }
+  }
+
+  /// 实际生效的筛选（存下来的两个维度 × 服务端下发的公用标签）。
+  /// **只读派生**：渲染路径绝不写回 —— 写回的话每次刷坞都会触发一次 personal 上传，
+  /// 还会跟服务端回读的值 ping-pong（旧代码的 `usedIds` 自愈就是这个问题）。
+  private var _effectiveTabFilter: SharedTabFilter {
+    SharedTabFilterModel.resolve(storedEmployee: _tabFilterEmployee,
+                                 storedMachineId: _tabFilterMachineId,
+                                 tabs: _sharedTabsForFilter,
+                                 machines: BlinkMachineStore.shared.machines)
+  }
+
+  /// 坞里那批公用标签（服务端顺序）。两个维度直接从各终端的连接参数取 —— 公用标签的
+  /// mcpParams 就是 `_syncSharedTabs` 从服务端那份填进去的，跟 `SharedTab` 同源。
+  private var _sharedTabsForFilter: [SharedTab] {
+    SharedTabLayout.dockKeys(_viewportsKeys, sharedKeys: _sharedKeys).map { key in
+      let p = (SessionRegistry.shared[key] as TermController).mcpParams
+      return SharedTab(id: key, machineId: p?.machineId ?? "", tmuxSession: p?.tmuxSession ?? "")
+    }
+  }
+
+  /// 这组筛选下坞里看得见的公用标签键（服务端顺序）。
+  private func _dockKeys(for filter: SharedTabFilter) -> [UUID] {
+    SharedTabFilterModel.visible(_sharedTabsForFilter, filter: filter).map(\.id)
   }
 
   public override func viewDidLoad() {
@@ -757,7 +797,7 @@ class SpaceController: UIViewController {
       _setupMacThreeColumn()
     } else {
       // 独立的「切换机器」浮动条：点头像直接切机器，长按换头像，可拖
-      _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+      _floatingMachineBar.onSelectMachine = { [weak self] id in self?._applyTabFilterMachine(id) }
       _floatingMachineBar.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
       _floatingMachineBar.reload(currentId: _tabFilterMachineId)
       _floatingMachineBar.isHidden = !BlinkMachineStore.showMachineBar   // 设置里可关
@@ -1284,7 +1324,7 @@ extension SpaceController: UIPageViewControllerDelegate {
     termController.resumeIfNeeded()
     _currentKey = termController.meta.key
     // swipe 跨到了另一台机器：同步 filter 到新机器
-    if let curFilter = _tabFilterMachineId,
+    if let curFilter = _effectiveTabFilter.machineId,
        let mid = termController.mcpParams?.machineId,
        mid != curFilter {
       _tabFilterMachineId = mid
@@ -1311,17 +1351,14 @@ extension SpaceController: UIPageViewControllerDataSource {
       return newCtrl
     }
     // 越界：filter 非 nil + ≥2 台机器 → 跨到下一台机器的端点 tab
-    guard let curFilter = _tabFilterMachineId else { return nil }
+    let filter = _effectiveTabFilter
+    guard let curFilter = filter.machineId else { return nil }
     let machineIds = _machineIdsWithTabs()
     guard machineIds.count > 1,
           let curMid = machineIds.firstIndex(of: curFilter) else { return nil }
     let nextMid = (curMid + (advancedBy > 0 ? 1 : -1) + machineIds.count) % machineIds.count
     let nextFilterId = machineIds[nextMid]
-    let nextFiltered = _viewportsKeys.filter { k in
-      let t: TermController = SessionRegistry.shared[k]
-      guard t.mcpParams?.machineId == nextFilterId else { return false }
-      return !(_workModeOn && TabRestStore.shared.isResting(k.uuidString))   // 跨机器也跳过休息的
-    }
+    let nextFiltered = _keysOnMachine(nextFilterId, employee: filter.employee)
     guard let targetKey = (advancedBy > 0 ? nextFiltered.first : nextFiltered.last) else { return nil }
     let newCtrl: TermController = SessionRegistry.shared[targetKey]
     newCtrl.delegate = self
@@ -1424,7 +1461,7 @@ extension SpaceController {
     guard let input = cmd.input, let n = Int(input), n >= 1 else { return }
     let machines = BlinkMachineStore.shared.machines
     guard n <= machines.count else { return }
-    _applyMachineFilter(machines[n - 1].id)
+    _applyTabFilterMachine(machines[n - 1].id)
   }
 
   @objc func onStuckOpCommand() {
@@ -1914,54 +1951,23 @@ extension SpaceController {
     var tags: [Int] = []
     var sidebarSubs: [String] = []       // Mac 三栏：每行副标题（工作目录路径）
     var sidebarIcons: [UIImage?] = []    // Mac 三栏：32pt 头像（tab 的 22pt 太小）
-    var shownKeys: [UUID] = []           // 本机这一屏真正显示的行（过滤后），用来算节标题
 
-    let allMachineIds = BlinkMachineStore.shared.machines.map { $0.id }
-    // 默认机器只看自有的标签算：公用标签在人人的机器上，不参与「这台机器有 tab」的判断。
-    let usedIds: [String] = _viewportsKeys.filter { !_sharedKeys.contains($0) }.compactMap {
-      (SessionRegistry.shared[$0] as TermController).mcpParams?.machineId
-    }
-    var filterId = _tabFilterMachineId
-    let stale = filterId == nil
-      || !(filterId.map { allMachineIds.contains($0) } ?? false)
-      || (!usedIds.isEmpty && !(filterId.map { usedIds.contains($0) } ?? false))
-    if stale {
-      filterId = usedIds.first ?? allMachineIds.first
-      if filterId != nil {
-        _tabFilterMachineId = filterId
-      }
-    }
+    // 坞是**一个平铺列表**：只铺筛选出来的公用标签，不分节、不列自有标签。
+    // 筛选是只读派生的（存下来的员工×机器 + 服务端下发的标签），渲染路径不写任何状态。
+    let filter = _effectiveTabFilter
+    let dockSet = Set(_dockKeys(for: filter))
+    let ownKeys = SharedTabLayout.ownOnly(_viewportsKeys, sharedKeys: _sharedKeys)
     let curIndex = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? -1
     for (idx, key) in _viewportsKeys.enumerated() {
       let term: TermController = SessionRegistry.shared[key]
-      // 公用标签永远显示在最前，不受机器过滤/「只显示工作中」影响（它属于所有人）。
-      let isShared = _sharedKeys.contains(key)
+      // 助手 tab 的标题照旧算出来（HUD 用），但它不占坞里的位置。
+      if term.mcpParams?.workDirId == BlinkWorkDirStore.assistantWorkDirId {
+        term.meta.tabTitle = "助手"
+      }
+      // 自有标签一律不进坞：坞尾有「我的标签 (N)」入口（可切回 / 关闭 / 新建）。
+      guard _sharedKeys.contains(key), dockSet.contains(key) else { continue }
       let title: String
       if let p = term.mcpParams {
-        // 助手 tab：标题就显示「助手」，不拼 sessionPart
-        if p.workDirId == BlinkWorkDirStore.assistantWorkDirId {
-          term.meta.tabTitle = "助手"
-          title = "助手"
-          let mid = term.mcpParams?.machineId
-          if let f = filterId, mid != f { continue }
-          titles.append(title)
-          var icon: UIImage? = nil
-          if let img = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)?.iconImage {
-            icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
-          }
-          icons.append(icon)
-          unread.append(term.meta.hasUnread)
-          tags.append(idx)
-          shownKeys.append(key)
-          if _macLayoutEnabled {
-            let wd = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)
-            sidebarSubs.append(wd?.path ?? "")
-            sidebarIcons.append(wd?.iconImage.map {
-              AvatarRenderer.roundedThumbnail(from: $0, size: CGSize(width: 32, height: 32))
-            } ?? nil)
-          }
-          continue
-        }
         let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
         let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name : ""
         var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
@@ -1987,12 +1993,6 @@ extension SpaceController {
       } else {
         title = term.meta.tabTitle ?? "Tab \(idx + 1)"
       }
-      let mid = term.mcpParams?.machineId
-      // 公用的不受机器过滤/休息隐藏影响；自有的照旧。
-      if !isShared {
-        if let f = filterId, mid != f { continue }
-        if _hiddenByWorkMode(key) { continue }   // 「只显示工作中」：藏掉标了休息(😴)的 tab
-      }
       titles.append(title)
       // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
       var icon: UIImage? = nil
@@ -2012,7 +2012,6 @@ extension SpaceController {
       }
       unread.append(term.meta.hasUnread)
       tags.append(idx)
-      shownKeys.append(key)
       if _macLayoutEnabled {
         let wd = BlinkWorkDirStore.shared.workDir(forId: term.mcpParams?.workDirId)
         sidebarSubs.append(wd?.path ?? BlinkMachineStore.effectiveTmuxSessionName(
@@ -2022,23 +2021,21 @@ extension SpaceController {
         } ?? nil)
       }
     }
-    // 节标题（「公用标签 (N)」/「我的标签」）：公用标签排在自有的前面，两边都有时才标。
-    let rows = SharedTabLayout.rows(keys: shownKeys, sharedKeys: _sharedKeys)
-    let chipTitle: String
-    if let fid = filterId, let m = BlinkMachineStore.shared.machines.first(where: { $0.id == fid }) {
-      chipTitle = m.displayName
-    } else {
-      chipTitle = "全部"
-    }
+    // 提示行只在「筛出来的组合是空的」时出现；一台公用标签都没有（老服务端/离线）不是这种情况
+    let emptyHint: String? = (titles.isEmpty && filter.isActive && !_sharedTabsForFilter.isEmpty)
+      ? "这组筛选下没有标签" : nil
     _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags,
-                   filterTitle: chipTitle, currentTag: curIndex, agents: agents,
-                   headers: rows.map { $0.header }, sharedTabs: rows.map { $0.isShared })
+                   filterTitle: SharedTabFilterModel.title(filter, machines: BlinkMachineStore.shared.machines),
+                   currentTag: curIndex, agents: agents,
+                   ownTabsCount: ownKeys.count,
+                   ownTabsCurrent: _currentKey.map { !_sharedKeys.contains($0) } ?? false,
+                   emptyHint: emptyHint)
     _syncSleepButton()
 
     if _macLayoutEnabled {
-      // 三栏与 tab 栏同源刷新：rail 高亮当前机器，sidebar 铺当前机器的会话
-      _macRail?.reload(currentId: filterId)
-      let machine = filterId.flatMap { fid in
+      // 三栏与 tab 栏同源刷新：rail 高亮生效筛选的那台机器（只读，不写回）
+      _macRail?.reload(currentId: filter.machineId)
+      let machine = filter.machineId.flatMap { fid in
         BlinkMachineStore.shared.machines.first { $0.id == fid }
       }
       var items: [MacSessionSidebarView.Item] = []
@@ -2049,21 +2046,16 @@ extension SpaceController {
           subtitle: i < sidebarSubs.count ? sidebarSubs[i] : "",
           icon: i < sidebarIcons.count ? sidebarIcons[i] : nil,
           unread: unread[i],
-          isCurrent: tags[i] == curIndex,
-          isShared: rows[i].isShared))
+          isCurrent: tags[i] == curIndex))
       }
-      // 与 iPhone tab 栏同源的分节：公用在前、自有在后，只有一边时不显示节标题。
-      var sectionList: [MacSessionSidebarView.Section] = []
-      for (i, row) in rows.enumerated() {
-        if row.header != nil || sectionList.isEmpty {
-          sectionList.append(MacSessionSidebarView.Section(title: row.header, items: [items[i]]))
-        } else {
-          sectionList[sectionList.count - 1].items.append(items[i])
-        }
-      }
-      _macSidebar?.reload(machineName: machine?.displayName ?? chipTitle,
+      // 平铺一列：不再有「公用标签 (N) / 我的标签」两个节标题。
+      let sectionList = items.isEmpty ? [] : [MacSessionSidebarView.Section(title: nil, items: items)]
+      _macSidebar?.reload(machineName: machine?.displayName ?? "（无机器）",
                           transport: machine.map { $0.usesBlinkd ? "Socket" : "SSH" },
-                          sections: sectionList)
+                          sections: sectionList,
+                          ownTabsCount: ownKeys.count,
+                          ownTabsCurrent: _currentKey.map { !_sharedKeys.contains($0) } ?? false,
+                          emptyHint: emptyHint)
       _updateMacHostLine(machine: machine)
       _updateMacStatusBar()
     }
@@ -2465,14 +2457,30 @@ extension SpaceController {
     }
   }
   
+  /// 左右滑动的集合 = 坞里看得见的公用标签 ∪ 自有标签 ∪ 当前 tab。
+  /// 公用标签不再无条件通过：坞里筛掉的那些也滑不到（反过来就成了「滑得到看不见」）。
   private func _filteredViewportsKeys() -> [UUID] {
-    guard let filterId = _tabFilterMachineId else { return _viewportsKeys }
+    let filter = _effectiveTabFilter
+    let dockSet = Set(_dockKeys(for: filter))
     return _viewportsKeys.filter { key in
-      // 公用标签不参与机器过滤：tab 栏里它们恒显示（它们属于所有人），左右滑动也必须能滑到，
-      // 否则就成了「看得见滑不到」。代价是过滤某台机器时也要先经过它们。
-      if _sharedKeys.contains(key) { return true }
+      // 当前这条永远留着 —— 切筛选的那一瞬间不能把脚下的地抽掉（否则翻页会掉进跨机器分支）
+      if key == _currentKey { return true }
+      if _sharedKeys.contains(key) { return dockSet.contains(key) }
+      let mid = (SessionRegistry.shared[key] as TermController).mcpParams?.machineId
+      return filter.machineId == nil || mid == filter.machineId
+    }
+  }
+
+  /// 某台机器上「坞里看得见的公用标签 + 自有的非休息标签」——跨机器翻页用。
+  /// 跟坞/滑动同一套判据（含员工维度），否则会跳到一台在这个员工下没有标签的机器上。
+  private func _keysOnMachine(_ machineId: String, employee: String?) -> [UUID] {
+    let probe = SharedTabFilter(employee: employee, machineId: machineId)
+    let dockSet = Set(_dockKeys(for: probe))
+    return _viewportsKeys.filter { key in
       let term: TermController = SessionRegistry.shared[key]
-      return term.mcpParams?.machineId == filterId
+      guard term.mcpParams?.machineId == machineId else { return false }
+      if _sharedKeys.contains(key) { return dockSet.contains(key) }
+      return !(_workModeOn && TabRestStore.shared.isResting(key.uuidString))
     }
   }
 
@@ -2495,14 +2503,16 @@ extension SpaceController {
       return
     }
     // 当前 filter 内走到尽头：切到下一台机器（仅当 filter 非 nil 且有 >=2 台机器有 tab）
-    guard let curFilter = _tabFilterMachineId else { return }
+    let filter = _effectiveTabFilter
+    guard let curFilter = filter.machineId else { return }
     let machineIds = _machineIdsWithTabs()
     guard machineIds.count > 1,
           let curMachinePos = machineIds.firstIndex(of: curFilter) else { return }
     let nextMachinePos = (curMachinePos + (by > 0 ? 1 : -1) + machineIds.count) % machineIds.count
     let newFilterId = machineIds[nextMachinePos]
     _tabFilterMachineId = newFilterId
-    let newFiltered = _visibleFilteredKeys()
+    // 目标键必须排除「刚离开的那条」，否则会原地不动（它作为当前 tab 永远在集合里）
+    let newFiltered = _keysOnMachine(newFilterId, employee: filter.employee)
     guard let targetKey = (by > 0 ? newFiltered.first : newFiltered.last),
           let idx = _viewportsKeys.firstIndex(of: targetKey) else { return }
     _moveToShell(idx: idx, animated: animated)
@@ -2551,10 +2561,12 @@ extension SpaceController {
     _viewportsKeys = sorted
   }
 
+  /// 「有 tab 的机器」按**当前筛选**算：跨机器跳转只落在坞里真有标签的机器上，
+  /// 否则会跳到一台在这个员工下没有标签的机器（坞空着，用户以为坏了）。
   private func _machineIdsWithTabs() -> [String] {
     var seen = Set<String>()
     var out: [String] = []
-    for key in _viewportsKeys {
+    for key in _filteredViewportsKeys() {
       let term: TermController = SessionRegistry.shared[key]
       guard let mid = term.mcpParams?.machineId else { continue }
       if seen.insert(mid).inserted {
@@ -2578,7 +2590,7 @@ extension SpaceController {
     _moveToShell(idx: idx, animated: animated)
   }
 
-  /// 切到上/下一台「有 tab 的机器」并过滤显示它（复用 _applyMachineFilter，含掉线自动重连）。
+  /// 切到上/下一台「有 tab 的机器」并过滤显示它（复用 _applyTabFilterMachine，含掉线自动重连）。
   /// 无机器 filter 时以当前 tab 所属机器为起点；少于 2 台有 tab 的机器时无操作。
   private func _advanceMachine(by: Int) {
     let machineIds = _machineIdsWithTabs()
@@ -2588,7 +2600,7 @@ extension SpaceController {
     }
     let curPos = curMid.flatMap { machineIds.firstIndex(of: $0) } ?? 0
     let nextPos = (curPos + by + machineIds.count) % machineIds.count
-    _applyMachineFilter(machineIds[nextPos])
+    _applyTabFilterMachine(machineIds[nextPos])
   }
 
 }
@@ -2891,38 +2903,117 @@ extension SpaceController: BlinkTabBarDelegate {
     tabBarDidRequestTeamStatus()
   }
 
-  public func tabBarDidRequestMachineFilter() {
-    let allMachines = BlinkMachineStore.shared.machines
-    let alert = UIAlertController(title: "选择机器", message: nil, preferredStyle: .actionSheet)
-    for m in allMachines {
-      let mark = (_tabFilterMachineId == m.id) ? " ✓" : ""
-      alert.addAction(UIAlertAction(title: m.displayName + mark, style: .default) { [weak self] _ in
-        self?._applyMachineFilter(m.id)
+  /// ⋯ 菜单「筛选」：先选员工、再选机器（两级 action sheet —— 一级塞不下笛卡尔积）。
+  /// 每一级都带「全部」，✓ 打的是「存下来的那组」；某个维度没选过就打在当前生效值上，
+  /// 否则菜单打开时一个勾都没有。
+  public func tabBarDidRequestTabFilter() {
+    let filter = _effectiveTabFilter
+    let empMark = _tabFilterEmployee == SharedTabFilter.allValue
+      ? nil : (_tabFilterEmployee ?? filter.employee)
+    let alert = UIAlertController(title: "筛选 · 员工", message: nil, preferredStyle: .actionSheet)
+    alert.addAction(UIAlertAction(title: "全部员工" + (empMark == nil ? " ✓" : ""), style: .default) { [weak self] _ in
+      self?._presentMachineStep(employee: nil)
+    })
+    for e in SharedTabFilterModel.employees(in: _sharedTabsForFilter) {
+      alert.addAction(UIAlertAction(title: e + (empMark == e ? " ✓" : ""), style: .default) { [weak self] _ in
+        self?._presentMachineStep(employee: e)
       })
     }
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    _anchorFilterSheet(alert)
+    present(alert, animated: true)
+  }
+
+  /// 筛选第二级：机器（只列真有公用标签的机器 + 「全部」）。
+  /// 用 dismiss 的回调接着弹 —— 同步 present 会撞上「already presenting」。
+  private func _presentMachineStep(employee: String?) {
+    let show = { [weak self] in
+      guard let self, let alert = self._makeMachineStep(employee: employee) else { return }
+      self.present(alert, animated: true)
+    }
+    if let presented = presentedViewController {
+      presented.dismiss(animated: false) { DispatchQueue.main.async(execute: show) }
+    } else {
+      DispatchQueue.main.async(execute: show)
+    }
+  }
+
+  private func _makeMachineStep(employee: String?) -> UIAlertController? {
+    let filter = _effectiveTabFilter
+    let machineMark = _tabFilterMachineId == SharedTabFilter.allValue
+      ? nil : (_tabFilterMachineId ?? filter.machineId)
+    let alert = UIAlertController(title: "筛选 · 机器", message: nil, preferredStyle: .actionSheet)
+    alert.addAction(UIAlertAction(title: "全部机器" + (machineMark == nil ? " ✓" : ""), style: .default) { [weak self] _ in
+      self?._applyTabFilter(employee: employee, machineId: nil)
+    })
+    let order = BlinkMachineStore.shared.machines.map { $0.id }
+    for id in SharedTabFilterModel.machineIds(in: _sharedTabsForFilter, machineOrder: order) {
+      let name = BlinkMachineStore.shared.machines.first { $0.id == id }?.displayName ?? id
+      alert.addAction(UIAlertAction(title: name + (machineMark == id ? " ✓" : ""), style: .default) { [weak self] _ in
+        self?._applyTabFilter(employee: employee, machineId: id)
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    _anchorFilterSheet(alert)
+    return alert
+  }
+
+  private func _anchorFilterSheet(_ alert: UIAlertController) {
     if let pop = alert.popoverPresentationController {
       pop.sourceView = _tabBar
       pop.sourceRect = _tabBar.bounds
     }
+  }
+
+  /// 坞尾「我的标签 (N)」入口：自有标签不在坞里逐条列，切回 / 关闭 / 新建都从这里走。
+  public func tabBarDidRequestOwnTabs() {
+    let own = SharedTabLayout.ownOnly(_viewportsKeys, sharedKeys: _sharedKeys)
+    let alert = UIAlertController(title: SharedTabLayout.ownEntryTitle, message: nil, preferredStyle: .actionSheet)
+    for key in own {
+      let term: TermController = SessionRegistry.shared[key]
+      let title = (term.meta.tabTitle?.isEmpty == false ? term.meta.tabTitle! : "标签")
+        + (key == _currentKey ? " ✓" : "")
+      alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
+        guard let self, let idx = self._viewportsKeys.firstIndex(of: key) else { return }
+        self._moveToShell(idx: idx)
+      })
+    }
+    alert.addAction(UIAlertAction(title: "关闭当前标签", style: .destructive) { [weak self] _ in
+      self?.closeShellAction()
+    })
+    alert.addAction(UIAlertAction(title: "新建标签", style: .default) { [weak self] _ in
+      self?.tabBarDidRequestNew()
+    })
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    _anchorFilterSheet(alert)
     present(alert, animated: true)
   }
 
-  // 切换 tab 过滤到某台机器（nil = 全部）；优先回到该机器上次选中的 tab
-  func _applyMachineFilter(_ machineId: String?) {
+  /// ⋯ 菜单选完两级后调用：两个维度一起定（nil = 该维度「全部」）。
+  /// 员工维度显式存 `*`：「全部」和「没选过」必须分得开，后者要走默认 tom×brain。
+  func _applyTabFilter(employee: String?, machineId: String?) {
+    _tabFilterEmployee = employee ?? SharedTabFilter.allValue
+    _applyTabFilterMachine(machineId)
+  }
+
+  // 只换机器维度（rail / 浮动机器条 / 跨机器翻页用），员工维度原样保留。
+  func _applyTabFilterMachine(_ machineId: String?) {
     // 先记住「离开的这台机器」当前停在哪个 tab
     if let curKey = _currentKey,
        let curMid = (SessionRegistry.shared[curKey] as TermController).mcpParams?.machineId {
       _lastKeyPerMachine[curMid] = curKey
     }
     _tabFilterMachineId = machineId
+    let filter = _effectiveTabFilter
     let filtered = _filteredViewportsKeys()
 
-    // A newly created account has no personal tabs yet. Open a terminal when
-    // its first machine is selected instead of leaving the empty tab in place.
-    if let machineId, filtered.isEmpty {
+    // 全新账号还没有自有标签时，选中第一台机器就顺手开一个终端（否则坞和滑动集合都是空的）。
+    // 判据是「一条自有标签都没有」，不是「筛出来是空的」—— 后者现在可能是员工×机器的空组合，
+    // 那种情况该留在原地看提示行，而不是突然冒出一个终端。
+    let ownKeys = SharedTabLayout.ownOnly(_viewportsKeys, sharedKeys: _sharedKeys)
+    if let machineId, filtered.isEmpty, ownKeys.isEmpty {
       _newShellWithMachine(machineId, workDirId: nil, tmuxSession: nil)
-      _floatingMachineBar.reload(currentId: machineId)
+      _floatingMachineBar.reload(currentId: filter.machineId)
       return
     }
 
@@ -2943,7 +3034,7 @@ extension SpaceController: BlinkTabBarDelegate {
       // Mac：点 rail 上已选中的机器（无切页）也要把键盘焦点还给终端
       if _macLayoutEnabled { _attachInputToCurrentTerm() }
     }
-    _floatingMachineBar.reload(currentId: _tabFilterMachineId)
+    _floatingMachineBar.reload(currentId: filter.machineId)
 
     // 切过去后，如果那个 tab 已经掉线（停在 blink> / 后台没连上）就重连
     if let t = target {
@@ -2974,7 +3065,7 @@ extension SpaceController: BlinkTabBarDelegate {
 // MARK: Mac 大屏三栏布局（issue #5）
 //
 // 结构：机器 rail(68pt) | 会话列表(288pt) | 终端 + 底部状态栏(24pt)。
-// 数据流全部复用现有机制 —— rail 点击 = _applyMachineFilter（含记忆各机器上次
+// 数据流全部复用现有机制 —— rail 点击 = _applyTabFilterMachine（含记忆各机器上次
 // tab + 断线重连），行点击/关闭 = tabBarDidSelect/Close，刷新挂在 _reloadTabBar。
 extension SpaceController {
 
@@ -3019,7 +3110,7 @@ extension SpaceController {
     _macStatusBar?.removeFromSuperview()
 
     let rail = MacMachineRailView()
-    rail.onSelectMachine = { [weak self] id in self?._applyMachineFilter(id) }
+    rail.onSelectMachine = { [weak self] id in self?._applyTabFilterMachine(id) }
     rail.onEditAvatar = { [weak self] id in self?._editMachineAvatar(id) }
     rail.onOpenAssistantChat = { [weak self] in self?.tabBarDidRequestAssistantChat() }
     rail.onOpenSettings = { [weak self] in self?.tabBarDidRequestSettings() }
@@ -3030,8 +3121,9 @@ extension SpaceController {
     // 不走 tabBarDidSelect：它切页后不重挂输入（手机靠手指点终端恢复焦点，Mac 没这一步，
     // 键盘会直接失灵）。_moveToShell 完成后自带 _attachInputToCurrentTerm。
     sidebar.onSelect = { [weak self] tag in self?._moveToShell(idx: tag) }
-    sidebar.onClose = { [weak self] tag in self?.tabBarDidRequestClose(index: tag) }
     sidebar.onNewSession = { [weak self] in self?.tabBarDidRequestNew() }
+    // 自有标签不在侧栏那列里（它是公用标签列表），切回/关闭/新建从这个入口走
+    sidebar.onOwnTabs = { [weak self] in self?.tabBarDidRequestOwnTabs() }
     // Mac 顶栏是隐藏的，🌙 面板只能从侧栏进；没它的话 dock 😴 标的休息 tab 改不回在岗。
     sidebar.onRestPanel = { [weak self] in self?.tabBarDidRequestRestPanel() }
     view.addSubview(sidebar)
@@ -3085,7 +3177,7 @@ extension SpaceController {
     DispatchQueue.global(qos: .utility).async { [weak self] in
       let r = BlinkMachineStore.resolveHost(for: m)
       DispatchQueue.main.async {
-        guard let self, self._tabFilterMachineId == mid else { return }
+        guard let self, self._effectiveTabFilter.machineId == mid else { return }
         self._macSidebar?.updateHostLine("\(m.user)@\(r.host) · \(r.source)")
       }
     }

@@ -129,7 +129,7 @@ final class SharedTabSnapshotTests: XCTestCase {
     XCTAssertEqual(SharedTabLayout.ownOnly(ordered, sharedKeys: []).count, 5, "没有公用标签时一刀不切")
   }
 
-  // MARK: - ③ 屏幕顺序与节标题
+  // MARK: - ③ 屏幕顺序与坞里的行
 
   func testSharedTabsComeFirstOnScreen() throws {
     let shared = [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!]
@@ -137,30 +137,19 @@ final class SharedTabSnapshotTests: XCTestCase {
     XCTAssertEqual(SharedTabLayout.ordered(shared: shared, own: own), shared + own)
   }
 
-  func testRowsLabelBothSectionsWhenBothArePresent() throws {
-    let shared = [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!]
+  func testDockListsOnlySharedTabsAndKeepsServerOrder() throws {
+    // 老板这一轮的要求：坞是「一个平铺列表」，且**个人自有标签不显示**。
+    let shared = [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!, UUID(uuidString: sharedC)!]
     let own = [UUID(uuidString: ownA)!, UUID(uuidString: ownB)!]
     let keys = SharedTabLayout.ordered(shared: shared, own: own)
-    let rows = SharedTabLayout.rows(keys: keys, sharedKeys: Set(shared))
 
-    XCTAssertEqual(rows.count, 4, "节标题是行上的字段，不该多出额外的行（tag 必须仍等于下标）")
-    XCTAssertEqual(rows[0].header, "公用标签 (2)", "第一条公用标签前是公用节标题，且带条数")
-    XCTAssertEqual(rows[1].header, nil, "第二条公用标签不再重复标题")
-    XCTAssertEqual(rows[2].header, "我的标签", "第一条自有标签前是自有节标题")
-    XCTAssertEqual(rows[3].header, nil)
-    XCTAssertEqual(rows.map(\.isShared), [true, true, false, false])
+    XCTAssertEqual(SharedTabLayout.dockKeys(keys, sharedKeys: Set(shared)), shared,
+                   "坞里只列公用标签，且保持服务端顺序")
   }
 
-  func testRowsAddNoHeadersWhenThereIsNothingToSplit() throws {
+  func testDockIsEmptyWhenThereIsNothingShared() throws {
     let own = [UUID(uuidString: ownA)!, UUID(uuidString: ownB)!]
-    XCTAssertEqual(SharedTabLayout.rows(keys: own, sharedKeys: []),
-                   [SharedTabLayout.Row(header: nil, isShared: false),
-                    SharedTabLayout.Row(header: nil, isShared: false)],
-                   "只有自有标签时不插任何标题，跟改动前一样")
-
-    let shared = [UUID(uuidString: sharedA)!]
-    XCTAssertEqual(SharedTabLayout.rows(keys: shared, sharedKeys: Set(shared)),
-                   [SharedTabLayout.Row(header: nil, isShared: true)],
-                   "只有公用标签时也不插标题")
+    XCTAssertTrue(SharedTabLayout.dockKeys(own, sharedKeys: []).isEmpty,
+                  "一条公用标签都没有时坞里是空的（自有标签只在坞尾入口里）")
   }
 }
