@@ -1,11 +1,14 @@
 import SwiftUI
 import AppKit
 
-/// 设置窗（Cmd-,）：权限、触发键、识别语言、GLM 后端。
+/// 设置窗（Cmd-,）：权限、触发键、识别语言、AI 整理开关。
+///
+/// 2026-10-06 收窄（对齐 iOS #22 `a581e685`）：**只留开关，不留参数编辑** ——
+/// GLM 的 Key / 模型 / Base URL 由服务器下发（`VoiceServerConfigSync` 的
+/// `applySharedEngineConfig` 只写不读走，本机 UserDefaults 里的存量值仍是未登录时的兜底），
+/// 「我的词表」也退成只读计数（学习与上传链路一个字没动）。
+/// **删过的东西别再往设置页加回来**：改参数 = 改服务器，不是改这里。
 struct SettingsView: View {
-    @State private var apiKey = AITextPolisher.shared.apiKey
-    @State private var model = AITextPolisher.shared.model
-    @State private var baseURL = AITextPolisher.shared.baseURL
     @State private var aiEnabled = AITextPolisher.shared.enabled
     @State private var localeID = DictationController.shared.localeID
     @State private var inputUID = DictationController.shared.selectedInputUID
@@ -16,18 +19,6 @@ struct SettingsView: View {
     @State private var serverUser = ""
     @State private var serverPassword = ""
     @State private var serverStatus = ""
-
-    // 我的词表（行内可编辑）。id 用一次性 UUID：编辑中 wrong/right 变了 id 不变，
-    // 行不重建、焦点不丢；count 只在重拉时刷新。
-    private struct TermRow: Identifiable {
-        let id = UUID()
-        var wrong: String
-        var right: String
-        var count: Int
-    }
-    @State private var rows: [TermRow] = []
-    @State private var newWrong = ""
-    @State private var newRight = ""
 
     private let locales: [(String, String)] = [
         ("zh-CN", "中文（普通话）"),
@@ -88,13 +79,7 @@ struct SettingsView: View {
             Section("GLM 后端优化（可选）") {
                 Toggle("启用 GLM 精转 + 润色", isOn: $aiEnabled)
                     .onChange(of: aiEnabled) { _, v in AITextPolisher.shared.enabled = v }
-                SecureField("智谱 API Key", text: $apiKey)
-                    .onChange(of: apiKey) { _, v in AITextPolisher.shared.apiKey = v.trimmingCharacters(in: .whitespacesAndNewlines) }
-                TextField("润色模型", text: $model)
-                    .onChange(of: model) { _, v in AITextPolisher.shared.model = v }
-                TextField("Chat Base URL", text: $baseURL)
-                    .onChange(of: baseURL) { _, v in AITextPolisher.shared.baseURL = v }
-                Text("不填 Key 也能用——只走苹果本地识别。填了 Key 会额外走智谱 GLM-ASR 精转 + GLM 润色（同音纠错更准）。")
+                Text("登录后由服务器下发模型与 Key（见「账号同步」）；未登录只走苹果本地识别。")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -105,49 +90,12 @@ struct SettingsView: View {
                 Text("登录后从服务器读取公共语音模型、API key、词表；离线继续使用本机配置。").font(.caption).foregroundColor(.secondary)
             }
 
-            Section("我的词表（听成 → 实际想说）") {
-                if rows.isEmpty {
-                    Text("词表是空的——加几条你常被听错的词，立刻生效。")
-                        .font(.callout).foregroundColor(.secondary)
-                }
-                ForEach($rows) { $row in
-                    HStack {
-                        TextField("听成", text: $row.wrong)
-                            .onChange(of: row.wrong) { old, new in
-                                LearningStore.shared.renameTerm(oldWrong: old, newWrong: new, right: row.right)
-                            }
-                        Image(systemName: "arrow.right").font(.caption).foregroundColor(.secondary)
-                        TextField("实际想说", text: $row.right)
-                            .onChange(of: row.right) { old, new in
-                                LearningStore.shared.retargetTerm(wrong: row.wrong, oldRight: old, newRight: new)
-                            }
-                        Text(row.count > 0 ? "\(row.count) 次" : "—")
-                            .font(.caption).foregroundColor(.secondary)
-                            .frame(width: 44, alignment: .trailing)
-                            .help("本地替换命中的次数")
-                        Button {
-                            LearningStore.shared.removeTerm(wrong: row.wrong, right: row.right)
-                            reloadTerms()
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("删除这条")
-                    }
-                }
-                HStack {
-                    TextField("听成", text: $newWrong)
-                    Image(systemName: "arrow.right").font(.caption).foregroundColor(.secondary)
-                    TextField("实际想说", text: $newRight)
-                    Button("加一条") {
-                        LearningStore.shared.setTerm(newWrong, right: newRight)
-                        newWrong = ""; newRight = ""
-                        reloadTerms()
-                    }
-                    .disabled(newWrong.trimmingCharacters(in: .whitespaces).isEmpty
-                              || newRight.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                Text("改完立即生效：① 喂给系统识别器，从源头少听错 ② 转写后本地直接替换，不开 GLM 也管用。首次自带一批常用预置词（蒸鸡→真机、糖床→弹窗…），可删可改。这份词表和手机 / 鸿蒙共用一份（~/.blink/sync/blink_config.json），一端改了，其他端下次同步自动带上。")
+            // 只读计数（对齐 iOS「个人纠正词 (N)」）：词表由语音自动积累 + 三端共享同步，
+            // 没有手工编辑入口了。
+            Section("我的词表") {
+                Text("已学习 \(LearningStore.shared.allTermPairs().count) 个错词 · 随语音自动积累")
+                    .font(.callout)
+                Text("喂给系统识别器（从源头少听错）+ 转写后本地直接替换，不开 GLM 也管用。这份词表和手机 / 鸿蒙共用一份（~/.blink/sync/blink_config.json），一端学到的，其他端下次同步自动带上。")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -175,13 +123,9 @@ struct SettingsView: View {
         .frame(width: 480, height: 680)
         .onAppear {
             axTrusted = AccessibilityPermission.isTrusted
-            reloadTerms()
-            Diag.log("SettingsView 出现：词表 \(rows.count) 行")
+            // 这一行同时是 TERMTEST 的「视图真求值过」证据（见 App.swift）。
+            Diag.log("SettingsView 出现：已学习 \(LearningStore.shared.allTermPairs().count) 个错词")
         }
-    }
-
-    private func reloadTerms() {
-        rows = LearningStore.shared.allTermPairs().map { TermRow(wrong: $0.wrong, right: $0.right, count: $0.count) }
     }
 
     private var versionLine: String {
