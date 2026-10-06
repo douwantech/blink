@@ -32,12 +32,71 @@ struct ServerSnapshot: Codable {
   // 共享书签（浏览器「后台」）。可选是刻意的：老缓存快照/老服务端没有这个字段 → nil，
   // 应用层据此保持本地清单不动；字段存在（哪怕是空数组）就是权威，照服务器顺序覆盖。
   let pinned: [PinnedTab]?
-  let tabs: TabState
+  // 解码前会被 ServerSnapshotDecoder 摘掉公用标签（`"shared": true`），所以这里只装
+  // 账号自己的标签 —— `var` 就是为那一步留的。
+  var tabs: TabState
   let recentSelection: [String: String]
   let agents: [String: String]
   let aiConfig: ServerAIConfig?
   let voiceCorrections: [String: [String: Int]]?
   let user: ServerUser
+}
+
+/// 服务端**读时注入**的全局公用标签（`"shared": true`，见 server/README.md「Public tabs」）。
+/// 它们不是账号的数据：不进 `TabState`、不进任何持久化文件，只由 ServerConfigSync 单独持有、
+/// 交给 UI 渲染。抽成独立类型的好处是「不回传、不落盘」由构造保证 —— 客户端的持久化只认
+/// `TabEntry`，公用标签压根不在那个模型里。
+struct SharedTab: Equatable {
+  let id: UUID
+  let machineId: String
+  let tmuxSession: String
+}
+
+/// 只带 `shared` 这个键的原始条目。`TabEntry` 是合成 Codable，未知键会被静默丢掉，
+/// 所以必须在解成 `TabEntry` 之前先按这个形状看一遍原始 JSON。
+private struct RawServerTab: Decodable {
+  let id: UUID
+  let machineId: String?
+  let tmuxSession: String?
+  let shared: Bool?
+}
+
+/// 注意 `tabs` 是**两层**：外层是 `TabState`，标签数组在它的 `tabs` 里
+///（`{"tabs":{"version":1,"tabs":[…]}}`）—— 少这一层就会整段解不出来（`try?` 吞掉后
+/// 静默退回「一条公用标签都没看见」，正是最容易漏掉的那种污染）。单测钉着这一点。
+private struct RawServerTabs: Decodable {
+  struct State: Decodable {
+    let tabs: [RawServerTab]
+  }
+  let tabs: State
+}
+
+/// `GET /v1/config` 的解码边界：把公用标签从快照里摘出来单独返回。
+/// 这是唯一该做这件事的地方 —— 之后所有下游（kSyncKey 镜像、replaceFromServer、
+/// 导出同步文件、uploadPersonal）拿到的 `TabState` 天然只有账号自己的标签。
+enum ServerSnapshotDecoder {
+  static func decode(_ data: Data) throws -> (snapshot: ServerSnapshot, shared: [SharedTab]) {
+    var snapshot = try JSONDecoder().decode(ServerSnapshot.self, from: data)
+    // 老服务端/老缓存没有 `shared` 键 → 原始形状解出来是空，快照原样返回。
+    guard let raw = try? JSONDecoder().decode(RawServerTabs.self, from: data) else {
+      // 解不出来就没法分辨哪些是公用标签，只能原样放行 —— 但这是「可能污染账号」的
+      // 状态，必须留痕，别让服务端换了形状以后无声无息地回传。
+      NSLog("[ServerConfigSync] 原始 tabs 解不出来，公用标签无法剥离（服务端响应形状变了？）")
+      return (snapshot, [])
+    }
+    let sharedTabs = raw.tabs.tabs.filter { $0.shared == true }
+    guard !sharedTabs.isEmpty else { return (snapshot, []) }
+    let sharedIds = Set(sharedTabs.map { $0.id })
+    // 服务端出口已经做过这两件事，这里是防线：账号自己的列表里不留公用副本，
+    // 墓碑里也不留公用 ID（否则本地关一次就会把它记成「已关」回传回去）。
+    snapshot.tabs.tabs.removeAll { sharedIds.contains($0.id) }
+    snapshot.tabs.closedIds?.removeAll { sharedIds.contains($0) }
+    let shared = sharedTabs.compactMap { tab -> SharedTab? in
+      guard let machineId = tab.machineId, let tmuxSession = tab.tmuxSession else { return nil }
+      return SharedTab(id: tab.id, machineId: machineId, tmuxSession: tmuxSession)
+    }
+    return (snapshot, shared)
+  }
 }
 
 /// 服务器共享书签落地：写进浏览器侧真正读的那个 key（`PinnedTabsStore.tabs`，
@@ -61,6 +120,8 @@ final class ServerConfigSync: ObservableObject {
   @Published private(set) var username: String?
   @Published private(set) var isOnline = false
   @Published private(set) var isLoading = false
+  /// 服务端注入的全局公用标签，服务端顺序（项目 → 员工）。只读影子：不落盘、不回传。
+  @Published private(set) var sharedTabs: [SharedTab] = []
 
   private let baseURL: URL = {
     #if BLINK_PUBLISHING_OPTION_DEVELOPER
@@ -128,15 +189,17 @@ final class ServerConfigSync: ObservableObject {
     return support.appendingPathComponent("blink-server-config.json")
   }
 
-  private func cachedSnapshot() -> ServerSnapshot? {
+  /// 上次落盘的完整快照（受保护文件；**含**公用标签的原始字节，供离线只读）。
+  /// 走 ServerSnapshotDecoder：每次读回来都把公用标签摘出去，口径与在线刷新一致。
+  private func cachedSnapshot() -> (snapshot: ServerSnapshot, shared: [SharedTab])? {
     guard let data = try? Data(contentsOf: cacheURL) else { return nil }
-    return try? JSONDecoder().decode(ServerSnapshot.self, from: data)
+    return try? ServerSnapshotDecoder.decode(data)
   }
 
   func restoreCachedSnapshot() {
-    guard let snapshot = cachedSnapshot(),
-          !hasSession || snapshot.user.username == username else { return }
-    apply(snapshot, replaceTabs: true)
+    guard let cached = cachedSnapshot(),
+          !hasSession || cached.snapshot.user.username == username else { return }
+    apply(cached.snapshot, shared: cached.shared, replaceTabs: true)
   }
 
   @MainActor func login(username: String, password: String) async throws {
@@ -156,7 +219,7 @@ final class ServerConfigSync: ObservableObject {
       throw NSError(domain: "BlinkServer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
     }
     let login = try JSONDecoder().decode(ServerLoginResponse.self, from: data)
-    if cachedSnapshot()?.user.id != login.user.id {
+    if cachedSnapshot()?.snapshot.user.id != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
       defaults.removeObject(forKey: dirtyKey)
       defaults.removeObject(forKey: appliedVersionKey)
@@ -195,8 +258,8 @@ final class ServerConfigSync: ObservableObject {
     // 登录循环就是这么来的。静默跳过，等下次启动/回前台有 token 再拉。
     guard let auth = bearer ?? token else { return }
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
-    if !force, let snapshot = cachedSnapshot(), snapshot.user.username == username {
-      let version = snapshot.version
+    if !force, let cached = cachedSnapshot(), cached.snapshot.user.username == username {
+      let version = cached.snapshot.version
       components.queryItems = [URLQueryItem(name: "version", value: version)]
     }
     var request = URLRequest(url: components.url!)
@@ -214,17 +277,19 @@ final class ServerConfigSync: ObservableObject {
         throw NSError(domain: "BlinkServer", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录已过期，请重新登录"])
       }
       guard http.statusCode == 200 else { throw URLError(.badServerResponse) }
-      let snapshot = try JSONDecoder().decode(ServerSnapshot.self, from: data)
+      let decoded = try ServerSnapshotDecoder.decode(data)
       let directory = cacheURL.deletingLastPathComponent()
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      // 缓存写的是服务器响应的原始字节（含公用标签）——离线冷启动时再解码一次即可
+      // 复原同一份公用标签。它是「服务器说了算」的只读副本，不是用户状态。
       try data.write(to: cacheURL, options: .atomic)
       try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: cacheURL.path)
-      apply(snapshot, replaceTabs: replaceTabs)
+      apply(decoded.snapshot, shared: decoded.shared, replaceTabs: replaceTabs)
       isOnline = true
     } catch {
       isOnline = false
-      if let snapshot = cachedSnapshot(), snapshot.user.username == username {
-        apply(snapshot, replaceTabs: replaceTabs)
+      if let cached = cachedSnapshot(), cached.snapshot.user.username == username {
+        apply(cached.snapshot, shared: cached.shared, replaceTabs: replaceTabs)
       }
       throw error
     }
@@ -237,13 +302,17 @@ final class ServerConfigSync: ObservableObject {
                                 kSecUseDataProtectionKeychain as String: true]
     SecItemDelete(query as CFDictionary)
     username = nil
+    sharedTabs = []
     defaults.removeObject(forKey: "BlinkServer.username")
     defaults.removeObject(forKey: appliedVersionKey)
   }
 
-  private func apply(_ snapshot: ServerSnapshot, replaceTabs: Bool) {
+  private func apply(_ snapshot: ServerSnapshot, shared: [SharedTab], replaceTabs: Bool) {
     applying = true
     defer { applying = false }
+    // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
+    // snapshot.tabs 已在解码边界摘干净，下面对它的每一次写都不会带上公用标签。
+    sharedTabs = shared
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
     }
