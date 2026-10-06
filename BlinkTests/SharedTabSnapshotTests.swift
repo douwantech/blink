@@ -115,19 +115,10 @@ final class SharedTabSnapshotTests: XCTestCase {
     XCTAssertTrue(lowercased.contains(ownB))
   }
 
-  func testPersistingViewportsDropsSharedKeys() throws {
-    // `_persistTabsToStore` 用的就是这一刀：屏幕上「公用在前 + 自有在后」的顺序进去，
-    // 落到 TabState 的只剩自有，且原顺序不变。
-    let ordered = SharedTabLayout.ordered(
-      shared: [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!, UUID(uuidString: sharedC)!],
-      own: [UUID(uuidString: ownA)!, UUID(uuidString: ownB)!])
-    let sharedKeys: Set<UUID> = [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!, UUID(uuidString: sharedC)!]
-
-    XCTAssertEqual(ordered.count, 5)
-    XCTAssertEqual(SharedTabLayout.ownOnly(ordered, sharedKeys: sharedKeys).map { $0.uuidString.lowercased() },
-                   [ownA, ownB])
-    XCTAssertEqual(SharedTabLayout.ownOnly(ordered, sharedKeys: []).count, 5, "没有公用标签时一刀不切")
-  }
+  // 客户端这一侧已经没有「落盘前剔公用」的第二道刀了（`_persistTabsToStore` 随自有标签
+  // 一起删掉）：红线现在**只有**解码边界这一处守卫，上面 `testSharedTabsAreStrippedFrom-
+  // TheSnapshotInServerOrder` 与 `testEncodedTabStateCarriesNoTraceOfSharedTabs` 两条
+  // 钉的就是它。要再加落盘路径，必须同时加回这一刀。
 
   // MARK: - ③ 屏幕顺序与坞里的行
 
@@ -137,19 +128,35 @@ final class SharedTabSnapshotTests: XCTestCase {
     XCTAssertEqual(SharedTabLayout.ordered(shared: shared, own: own), shared + own)
   }
 
-  func testDockListsOnlySharedTabsAndKeepsServerOrder() throws {
-    // 老板这一轮的要求：坞是「一个平铺列表」，且**个人自有标签不显示**。
-    let shared = [UUID(uuidString: sharedA)!, UUID(uuidString: sharedB)!, UUID(uuidString: sharedC)!]
-    let own = [UUID(uuidString: ownA)!, UUID(uuidString: ownB)!]
-    let keys = SharedTabLayout.ordered(shared: shared, own: own)
-
-    XCTAssertEqual(SharedTabLayout.dockKeys(keys, sharedKeys: Set(shared)), shared,
-                   "坞里只列公用标签，且保持服务端顺序")
+  func testDockTakesOnlyTomsTabsFromTheSharedList() throws {
+    // 老板掉头后的口径（2026-10-06）：坞 = 服务端公用标签里 employee 前缀为 tom 的那几条，
+    // 写死常量、不做筛选器。「其余 28 条不上坞」就是这条 —— 它们仍然是注册过的会话
+    //（「员工状态 · N 人休息中」要数它们），只是不铺进坞、不进滑动集合。
+    let tom = ["tom-ben", "tom-huum", "tom-lotly", "tom-printer", "tom-speakenglish", "tom-talkai"]
+    for s in tom {
+      XCTAssertTrue(SharedTabLayout.isDockTab(tmuxSession: s), "\(s) 是 tom 的，该上坞")
+    }
+    for s in ["jack-talkai", "carl-brain", "bob-beta", "alice-alpha"] {
+      XCTAssertFalse(SharedTabLayout.isDockTab(tmuxSession: s), "\(s) 不是 tom 的，不该上坞")
+    }
+    XCTAssertEqual(SharedTabLayout.dockEmployee, "tom", "口径就锁在这个常量上")
   }
 
-  func testDockIsEmptyWhenThereIsNothingShared() throws {
-    let own = [UUID(uuidString: ownA)!, UUID(uuidString: ownB)!]
-    XCTAssertTrue(SharedTabLayout.dockKeys(own, sharedKeys: []).isEmpty,
-                  "一条公用标签都没有时坞里是空的（自有标签只在坞尾入口里）")
+  func testDockEmployeeParsingEdges() throws {
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: "tom-ben"), "tom")
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: "TOM-BEN"), "tom", "大小写归一")
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: "tom"), "tom", "没有 '-' 时整段就是员工")
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: "-orphan"), nil, "空前缀不算员工")
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: ""), nil)
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: nil), nil)
+    // 近似（见交付说明的边界）：服务端允许 employeeId 自带 '-'，这里会截短。
+    XCTAssertEqual(SharedTabLayout.employee(ofTmuxSession: "tom-x-ben"), "tom")
+    XCTAssertTrue(SharedTabLayout.isDockTab(tmuxSession: "tom-x-ben"), "截短后仍归到 tom")
+  }
+
+  func testDockIsEmptyWhenNothingBelongsToTom() throws {
+    // 老板口径「不保留退路」：没有 tom 的标签就是空坞，不拿本地标签顶上、不铺提示行。
+    XCTAssertFalse(SharedTabLayout.isDockTab(tmuxSession: "jack-talkai"))
+    XCTAssertFalse(SharedTabLayout.isDockTab(tmuxSession: nil))
   }
 }

@@ -198,17 +198,14 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   }
 
   var onSelect: ((Int) -> Void)?
-  var onNewSession: (() -> Void)?
-  var onOwnTabs: (() -> Void)?
+  // 「＋ 新会话」与「我的标签 (N)」两个入口已按老板口径移除：侧栏是纯只读的服务端
+  // tom 公用标签列表，客户端不再造标签、也没有自有标签可切回。
   var onRestPanel: (() -> Void)?
 
   private let machineNameLabel = UILabel()
   private let transportBadge = UILabel()
   private let hostLabel = UILabel()
   private let table = UITableView(frame: .zero, style: .plain)
-  private let emptyHintLabel = UILabel()
-  private let newButton = UIButton(type: .system)
-  private let ownTabsButton = UIButton(type: .system)
   private let restPanelButton = UIButton(type: .system)
   private var items: [Item] = []
   private var sections: [Section] = []
@@ -238,37 +235,8 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     table.delegate = self
     table.register(MacSessionCell.self, forCellReuseIdentifier: "cell")
 
-    // 筛选出来的这组没有标签时的空态提示（跟 iPhone 坞里那行同一句话）
-    emptyHintLabel.font = .systemFont(ofSize: 13)
-    emptyHintLabel.textColor = UIColor(white: 0.55, alpha: 1)
-    emptyHintLabel.numberOfLines = 0
-    emptyHintLabel.isHidden = true
-
-    var cfg = UIButton.Configuration.plain()
-    cfg.title = "＋ 新会话"
-    cfg.baseForegroundColor = .systemTeal
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
-    newButton.configuration = cfg
-    newButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-    newButton.layer.cornerRadius = 8
-    newButton.layer.borderWidth = 1
-    newButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.4).cgColor
-    newButton.addTarget(self, action: #selector(newTapped), for: .touchUpInside)
-
-    // 「我的标签 (N)」：自有标签不在上面那列里（老板要求），切回/关闭/新建从这个入口走。
-    // 当前 tab 就是自有标签时它高亮 —— 否则一列里没有一行是当前项，用户看不出自己在哪。
-    var ownCfg = UIButton.Configuration.plain()
-    ownCfg.title = "\(SharedTabLayout.ownEntryTitle) (0)"
-    ownCfg.image = UIImage(systemName: "tray.full")
-    ownCfg.imagePadding = 4
-    ownCfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
-    ownCfg.baseForegroundColor = UIColor(white: 0.75, alpha: 1)
-    ownTabsButton.configuration = ownCfg
-    ownTabsButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-    ownTabsButton.layer.cornerRadius = 8
-    ownTabsButton.layer.borderWidth = 1
-    ownTabsButton.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-    ownTabsButton.addTarget(self, action: #selector(ownTabsTapped), for: .touchUpInside)
+    // 空态提示、「＋ 新会话」、「我的标签 (N)」三个控件随老板口径一起移除：
+    // 侧栏列表空就是空（不兜底、不铺提示行）。
 
     // 🌙 按钮：打开团队状态页（旧「员工在岗/休息」列表已并入，行尾月亮即开关）。
     // Mac 三栏隐藏了顶栏，没这个入口的话，dock 😴 标休息的 tab 会从侧栏消失且再也改不回在岗。
@@ -285,8 +253,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     let sep = UIView()
     sep.backgroundColor = UIColor.white.withAlphaComponent(0.08)
 
-    [machineNameLabel, transportBadge, hostLabel, sep, table, emptyHintLabel,
-     newButton, ownTabsButton, restPanelButton].forEach {
+    [machineNameLabel, transportBadge, hostLabel, sep, table, restPanelButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -322,20 +289,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
       table.leadingAnchor.constraint(equalTo: leadingAnchor),
       table.leadingAnchor.constraint(equalTo: leadingAnchor),
       table.trailingAnchor.constraint(equalTo: trailingAnchor),
-      table.bottomAnchor.constraint(equalTo: newButton.topAnchor, constant: -8),
-
-      emptyHintLabel.topAnchor.constraint(equalTo: table.topAnchor, constant: 20),
-      emptyHintLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-      emptyHintLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-
-      ownTabsButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-      ownTabsButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
-      ownTabsButton.heightAnchor.constraint(equalToConstant: 36),
-
-      newButton.leadingAnchor.constraint(equalTo: ownTabsButton.trailingAnchor, constant: 8),
-      newButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-      newButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
-      newButton.heightAnchor.constraint(equalToConstant: 36),
+      table.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
 
       hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
       hairline.topAnchor.constraint(equalTo: topAnchor),
@@ -345,21 +299,12 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   }
   required init?(coder: NSCoder) { fatalError() }
 
-  func reload(machineName: String?, transport: String?, sections: [Section],
-              ownTabsCount: Int = 0, ownTabsCurrent: Bool = false, emptyHint: String? = nil) {
+  func reload(machineName: String?, transport: String?, sections: [Section]) {
     machineNameLabel.text = machineName ?? "（无机器）"
     transportBadge.text = transport.map { "  \($0)  " }
     transportBadge.isHidden = transport == nil
     self.sections = sections.filter { !$0.items.isEmpty }
     self.items = self.sections.flatMap { $0.items }
-    emptyHintLabel.text = self.items.isEmpty ? emptyHint : nil
-    emptyHintLabel.isHidden = emptyHintLabel.text == nil
-    var ownCfg = ownTabsButton.configuration
-    ownCfg?.title = "\(SharedTabLayout.ownEntryTitle) (\(ownTabsCount))"
-    ownCfg?.baseForegroundColor = ownTabsCurrent ? UIColor.systemTeal : UIColor(white: 0.75, alpha: 1)
-    ownTabsButton.configuration = ownCfg
-    ownTabsButton.layer.borderColor = (ownTabsCurrent ? UIColor.systemTeal.withAlphaComponent(0.55)
-      : UIColor.white.withAlphaComponent(0.18)).cgColor
     table.reloadData()
     // 让当前行可见
     for (s, section) in self.sections.enumerated() {
@@ -382,10 +327,6 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     restPanelButton.configuration = cfg
     restPanelButton.tintColor = n > 0 ? .systemIndigo : .systemGray
   }
-
-  @objc private func newTapped() { onNewSession?() }
-
-  @objc private func ownTabsTapped() { onOwnTabs?() }
 
   @objc private func restPanelTapped() { onRestPanel?() }
 

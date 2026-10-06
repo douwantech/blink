@@ -26,49 +26,27 @@ struct TabState: Codable {
 
 /// 公用标签在 tab 集合里的排布规则：**公用恒在最前**（保持服务端顺序），自有在后。
 /// 纯函数，独立成类型是为了能直接对「服务端顺序 → 屏幕顺序」这一跳做单测。
+///
+/// 老板掉头后的口径（2026-10-06）：坞里**只**铺服务端 tom 的那几条，自有标签彻底退场。
+/// 「公用标签不进 TabState」这条红线现在由 `ServerSnapshotDecoder` 在解码边界保证
+///（摘出来单独返回，见 `SharedTabSnapshotTests` ①②）—— 以前还有一道
+/// `SharedTabLayout.ownOnly` 的落盘前过滤，随着 `_persistTabsToStore` 一起删了。
 enum SharedTabLayout {
-  /// 坞尾「我的标签 (N)」入口的标题。自有标签不再占坞里一格，只在这个入口的列表里。
-  static let ownEntryTitle = "我的标签"
+  /// 坞里只铺这一位员工的公用标签。老板口径：**写死常量，不做筛选器** ——
+  /// 坞=服务端 tom 的那几条（今天正好是 brain 上的 6 条），其余公用标签不上坞。
+  /// 它们仍会被 `_syncSharedTabs` 注册成会话（「员工状态」的休息计数依赖那一份），
+  /// 只是不进坞、不进滑动集合。
+  static let dockEmployee = "tom"
 
   static func ordered(shared: [UUID], own: [UUID]) -> [UUID] {
     shared + own
   }
 
-  /// 落盘/上传前的那一刀：公用标签一律剔掉（它们不是账号的数据）。
-  static func ownOnly(_ keys: [UUID], sharedKeys: Set<UUID>) -> [UUID] {
-    keys.filter { !sharedKeys.contains($0) }
-  }
-
-  /// 坞里真正列出来的键：**一个平铺列表，只列公用标签** —— 不再分「公用标签 / 我的标签」
-  /// 两节，自有标签收进坞尾的「我的标签」入口（它仍在滑动集合里，切得走也回得来）。
-  static func dockKeys(_ keys: [UUID], sharedKeys: Set<UUID>) -> [UUID] {
-    keys.filter { sharedKeys.contains($0) }
-  }
-}
-
-/// 公用标签的「员工 × 机器」筛选。两个维度都来自服务端下发的标签本身：
-/// 机器是结构化的 `machineId`，员工**不结构化** —— 只有 `tmuxSession` 的
-/// 「员工-项目」前缀（`tom-ben` → `tom`），服务端就是这么造的（server/admin_tabs.go）。
-struct SharedTabFilter: Equatable {
-  /// 「显式选了全部」的哨兵值。存储层用它区分「没选过」（走默认 tom×brain）
-  /// 和「我就是要看全部」（不过滤）—— 两者在 UserDefaults 里都是空串/缺键就分不开了。
-  static let allValue = "*"
-  static let defaultEmployee = "tom"
-  /// 默认机器按**名字**解析，不把 UUID 字面量写进代码（本仓库是 PUBLIC 的）。
-  static let defaultMachineName = "brain"
-
-  var employee: String?     // nil = 全部员工
-  var machineId: String?    // nil = 全部机器
-
-  var isActive: Bool { employee != nil || machineId != nil }
-
-  static let none = SharedTabFilter(employee: nil, machineId: nil)
-}
-
-enum SharedTabFilterModel {
   /// 从 tmuxSession 里取员工：第一个 "-" 之前（`tom-ben` → `tom`）。
-  /// 服务端允许 employeeId 自带 "-"，那种情况这里会截短（见 README「Public tabs」的限制），
-  /// 要精确得服务端给每条注入的标签补一个结构化 employeeId 字段。
+  /// 员工**不结构化** —— 服务端下发的标签只有 `tmuxSession` 的「员工-项目」前缀
+  ///（server/admin_tabs.go 就是这么造的），`GET /v1/config` 里没有 employeeId 字段。
+  /// 服务端允许 employeeId 自带 "-"，那种情况这里会截短（`tom-x-ben` → `tom`）；
+  /// 要精确得服务端给每条注入的标签补一个结构化 employeeId。
   static func employee(ofTmuxSession session: String?) -> String? {
     guard let session, !session.isEmpty else { return nil }
     let head = session.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
@@ -76,71 +54,9 @@ enum SharedTabFilterModel {
     return head.lowercased()
   }
 
-  static func matches(tmuxSession: String?, machineId: String?, filter: SharedTabFilter) -> Bool {
-    if let want = filter.employee, employee(ofTmuxSession: tmuxSession) != want { return false }
-    if let want = filter.machineId, machineId != want { return false }
-    return true
-  }
-
-  /// 过滤后仍保持服务端给的顺序。
-  static func visible(_ tabs: [SharedTab], filter: SharedTabFilter) -> [SharedTab] {
-    tabs.filter { matches(tmuxSession: $0.tmuxSession, machineId: $0.machineId, filter: filter) }
-  }
-
-  /// 筛选器菜单里的员工项：按服务端顺序去重（第一个是见过的那个，稳定）。
-  static func employees(in tabs: [SharedTab]) -> [String] {
-    var seen = Set<String>()
-    var out: [String] = []
-    for t in tabs {
-      guard let e = employee(ofTmuxSession: t.tmuxSession), seen.insert(e).inserted else { continue }
-      out.append(e)
-    }
-    return out
-  }
-
-  /// 筛选器菜单里的机器项：只列**真有公用标签**的机器，顺序跟机器清单一致。
-  static func machineIds(in tabs: [SharedTab], machineOrder: [String]) -> [String] {
-    let present = Set(tabs.map(\.machineId))
-    let ordered = machineOrder.filter { present.contains($0) }
-    // 清单里没登记过的机器（服务器加了机器但本地还没同步到）也不该漏掉。
-    let known = Set(ordered)
-    var seen = known
-    var extras: [String] = []
-    for t in tabs where seen.insert(t.machineId).inserted { extras.append(t.machineId) }
-    return ordered + extras
-  }
-
-  static func defaultMachineId(in machines: [BlinkMachine]) -> String? {
-    machines.first { $0.name.caseInsensitiveCompare(SharedTabFilter.defaultMachineName) == .orderedSame }?.id
-  }
-
-  /// stored* 是 UserDefaults 里的原值：nil = 没选过（走默认），`*` = 显式全部，其余 = 该值。
-  ///
-  /// 兜底只针对「**没选过**的默认组合」：tom×brain 在别的部署/新账号上可能是空的，
-  /// 那时候退化成不过滤（显示全部公用标签），绝不出现空坞。用户显式选出来的空组合
-  /// 照用（尊重 ✓），由坞里的提示行兜底。
-  static func resolve(storedEmployee: String?, storedMachineId: String?,
-                      tabs: [SharedTab], machines: [BlinkMachine]) -> SharedTabFilter {
-    let untouched = storedEmployee == nil && storedMachineId == nil
-    let employee = storedEmployee == nil
-      ? SharedTabFilter.defaultEmployee
-      : (storedEmployee == SharedTabFilter.allValue ? nil : storedEmployee)
-    let machineId = storedMachineId == nil
-      ? defaultMachineId(in: machines)
-      : (storedMachineId == SharedTabFilter.allValue ? nil : storedMachineId)
-    let candidate = SharedTabFilter(employee: employee, machineId: machineId)
-    if untouched, visible(tabs, filter: candidate).isEmpty { return .none }
-    return candidate
-  }
-
-  /// ⋯ 菜单/坞上那颗筛选钮的文案：显示**实际生效**的那组（不是存下来的那组），
-  /// 否则兜底之后会出现「菜单写 tom @ brain、坞里铺着 34 条」这种自相矛盾。
-  static func title(_ filter: SharedTabFilter, machines: [BlinkMachine]) -> String {
-    guard filter.isActive else { return "全部" }
-    let emp = filter.employee ?? "全部"
-    let machine = filter.machineId
-      .flatMap { id in machines.first { $0.id == id }?.displayName } ?? "全部机器"
-    return "\(emp) @ \(machine)"
+  /// 这条公用标签该不该上坞。
+  static func isDockTab(tmuxSession: String?) -> Bool {
+    employee(ofTmuxSession: tmuxSession) == dockEmployee
   }
 }
 

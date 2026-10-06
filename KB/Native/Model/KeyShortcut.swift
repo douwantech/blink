@@ -202,7 +202,8 @@ class KeyShortcut: ObservableObject, Codable, Identifiable {
       KeyShortcut(.windowClose, [.command, .shift], "w"),
       KeyShortcut(.windowFocusOther, [.command], "o"),
 
-      KeyShortcut(.tabNew, .command, "t"),
+      // ⌘T「新建标签」已按老板口径移除：坞=服务端拉下来的 tom 公用标签，客户端不再造标签。
+      // 这个动作本身（KeyBindingAction.tabNew）还在，只是不再有默认快捷键、菜单里也没了。
       KeyShortcut(.tabClose, .command, "w"),
       KeyShortcut(.tabNext, [.command, .shift], "]"),
       KeyShortcut(.tabNext, [.command, .shift], UIKeyCommand.inputRightArrow),

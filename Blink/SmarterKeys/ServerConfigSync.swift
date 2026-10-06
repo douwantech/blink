@@ -349,12 +349,10 @@ final class ServerConfigSync: ObservableObject {
     if let data = try? JSONEncoder().encode(selectedTabs) {
       defaults.set(data, forKey: TabStateStore.kSyncKey)
     }
-    // On an active scene, the existing tab reconciliation observer reads the
-    // mirror and merges remote additions/tombstones without replacing a live
-    // terminal. First login has no live scene to reconcile, so seed the store.
-    if replaceTabs && !retainLocalTabs {
-      TabStateStore.shared.replaceFromServer(snapshot.tabs)
-    }
+    // 以前这里还会把服务端的 tabs 播种进 TabStateStore（首次登录没有活跃场景可对账时）。
+    // 自有标签已按老板口径彻底丢弃，这条播种也一并删掉：否则服务端那份**旧的**自有标签
+    // 会被重新采纳、再被 uploadPersonal 回传，红线就破了。
+    // 公用标签跟这条路径无关 —— 它们由 SpaceController._syncSharedTabs 直接从快照绑定。
     // 共享 AI 配置（全局词表）跟 machines 同级：服务器说了算，空值守卫让
     // 内置词表在离线/引导期保留（#43）。
     if let glossary = snapshot.aiConfig?.userGlossary, !glossary.isEmpty {
@@ -376,13 +374,8 @@ final class ServerConfigSync: ObservableObject {
       } else {
         defaults.removeObject(forKey: "BlinkTabFilterMachineId")
       }
-      // 公用标签筛选的员工维度（"*" = 显式全部，缺键 = 没选过 → 默认 tom）。
-      // 跟 machineId 走同一套版本采纳语义：服务器版本没动且本地有未上传改动时保留本地。
-      if let employee = snapshot.recentSelection["employee"], !employee.isEmpty {
-        defaults.set(employee, forKey: "BlinkTabFilterEmployee")
-      } else {
-        defaults.removeObject(forKey: "BlinkTabFilterEmployee")
-      }
+      // 以前这里还回读员工维度（BlinkTabFilterEmployee，给「员工×机器」二级筛选器用）。
+      // 那个筛选器已按老板口径删掉，坞恒为 tom 的标签，这个键不再回读也不再上传。
     }
     if retainLocalTabs && !localDirty {
       defaults.set(true, forKey: dirtyKey)
@@ -427,8 +420,9 @@ final class ServerConfigSync: ObservableObject {
       if isOnline { schedulePendingUpload() }
     }
     let tabs = TabStateStore.shared.snapshot()
+    // selection 里只剩机器维度（Mac rail 的导航记忆）与当前 tab。员工维度已随
+    // 「员工×机器」筛选器一起删掉 —— 坞恒为 tom 的标签，没有可存的员工选择。
     let selection = ["machineId": defaults.string(forKey: "BlinkTabFilterMachineId") ?? "",
-                     "employee": defaults.string(forKey: "BlinkTabFilterEmployee") ?? "",
                      "tabId": tabs.currentId?.uuidString ?? ""]
     let bodies: [(String, Data?)] = [
       ("tabs", try? JSONEncoder().encode(tabs)),
