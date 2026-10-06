@@ -56,7 +56,13 @@ main.m
 Resources/Fonts/Pragmata*
 .swiftpm
 
-Blink.xcodeproj/project.xcworkspace/xcshareddata
+## Xcode 工作区：机器/用户私有状态继续忽略，但依赖锁文件要进仓库。
+## mac/Package.resolved、xcfs/Package.resolved 本来就跟踪了，这个之前漏了 —— 于是每台机
+## 各自解析（pbxproj 里是 upToNextMajorVersion），出包时踩过 RevenueCat 版本漂移导致编不过。
+Blink.xcodeproj/project.xcworkspace/xcshareddata/*
+!Blink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+Blink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!Blink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 build-sim/
 
 ## HarmonyOS (harmony/ — DevEco project; build/ and *.o already ignored above)
