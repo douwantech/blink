@@ -150,7 +150,7 @@ func TestSharedAIConfigWriteIncrementsGlobalVersion(t *testing.T) {
 	}
 	defer db.Close()
 	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO shared_ai_config").WithArgs([]byte(`{"userGlossary":"git"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO shared_ai_config").WithArgs([]byte(`{"userGlossary":"git","voice":{"model":"glm-4-flashx","baseURL":"https://open.bigmodel.cn/api/paas/v4/chat/completions","apiKey":"","debounce":1.5}}`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE config_versions").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	r := httptest.NewRequest(http.MethodPut, "/v1/config/ai", strings.NewReader(`{"userGlossary":"git"}`))

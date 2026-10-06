@@ -16,6 +16,14 @@ struct ServerUser: Codable {
 
 struct ServerAIConfig: Codable {
   let userGlossary: String
+  let voice: ServerVoiceConfig?
+}
+
+struct ServerVoiceConfig: Codable {
+  let model: String
+  let baseURL: String
+  let apiKey: String
+  let debounce: Double
 }
 
 struct ServerSnapshot: Codable {
@@ -274,6 +282,9 @@ final class ServerConfigSync: ObservableObject {
     // 内置词表在离线/引导期保留（#43）。
     if let glossary = snapshot.aiConfig?.userGlossary, !glossary.isEmpty {
       AITextPolisher.shared.setSharedGlossary(glossary)
+    }
+    if let voice = snapshot.aiConfig?.voice {
+      AITextPolisher.shared.applySharedEngineConfig(model: voice.model, baseURL: voice.baseURL, apiKey: voice.apiKey, debounce: voice.debounce)
     }
     // 版本前进时个人配置（agents/selection/语音纠正词）同样以服务器为准；只有
     // 服务器版本没动、本地确有未上传改动时才保留本地。voiceCorrections 是

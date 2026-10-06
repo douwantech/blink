@@ -1802,6 +1802,14 @@ final class AITextPolisher {
     userGlossary = trimmed
   }
 
+  /// Apply server-owned engine values; local UserDefaults remain the offline fallback.
+  func applySharedEngineConfig(model: String, baseURL: String, apiKey: String, debounce: Double) {
+    if !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.model = model }
+    if !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.baseURL = baseURL }
+    if !apiKey.isEmpty { self.apiKey = apiKey }
+    if debounce > 0 { self.debounceSeconds = debounce }
+  }
+
   func recordHistory(_ text: String) {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
