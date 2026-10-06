@@ -1,287 +1,212 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
 )
 
-// The public-tabs view answers one question per employee and project: the
-// account that employee signs in with should hold one tab for the session
-// <employee>-<project>. Expected comes from the employee list each public
-// project declares; actual comes from the accounts themselves.
+// Public tabs are global. A project marked public declares the employees it is
+// for, and every account that signs in gets one tab per pair, on that pair's
+// machine, named <employee>-<project>. Nothing is stored per account: the set is
+// derived from the project list on every read, so editing a project changes what
+// every client sees and no account can drift from it.
 //
-// Only projects marked public take part, so main and blink never appear.
-// Reconciliation is per account, and the account is matched by username: an
-// employee ID is a username.
-
-const (
-	// The tab is what the project's employee list calls for.
-	publicStatusOK = "ok"
-	// No tab for this employee and project exists on the account.
-	publicStatusMissing = "missing"
-	// A tab exists but points at a different machine than the pair declares,
-	// so the employee would connect to the wrong host.
-	publicStatusWrongMachine = "wrongMachine"
-	// No account has this username, so there is nobody to create the tab for.
-	publicStatusNoAccount = "noAccount"
-	// The account holds a tab for a public project its employee list does not
-	// call for: an employee who is not on that project, or a tab for someone
-	// else's session sitting on the wrong account.
-	publicStatusExtra = "extra"
-)
-
-// One tab of an account, reduced to what reconciliation reads.
-type publicTab struct {
-	ID        string
-	MachineID string
-	Session   string
-}
-
-// The link row an admin-created tab has. Empty for a tab the client created
-// itself, which reconciliation then reads off the session name.
-type publicLink struct {
-	EmployeeID string
-	ProjectID  string
-}
-
-// One account as reconciliation sees it.
-type publicAccount struct {
-	ID    uint64
-	Name  string
-	Tabs  []publicTab
-	Links map[string]publicLink
-}
-
-// One line of the view.
-type publicTabRow struct {
-	ProjectID     string `json:"projectId"`
-	ProjectName   string `json:"projectName"`
-	EmployeeID    string `json:"employeeId"`
-	AccountID     uint64 `json:"accountId"`
-	AccountName   string `json:"accountName"`
-	MachineID     string `json:"machineId"`
-	ActualMachine string `json:"actualMachineId,omitempty"`
-	Session       string `json:"session"`
-	TabID         string `json:"tabId,omitempty"`
-	Status        string `json:"status"`
-}
-
-type publicSummary struct {
-	Projects     int `json:"projects"`
-	Expected     int `json:"expected"`
-	Missing      int `json:"missing"`
-	WrongMachine int `json:"wrongMachine"`
-	NoAccount    int `json:"noAccount"`
-	Extra        int `json:"extra"`
-}
-
-type publicReport struct {
-	Rows    []publicTabRow `json:"rows"`
-	Extras  []publicTabRow `json:"extras"`
-	Summary publicSummary  `json:"summary"`
-}
-
-// publicPairKey identifies an employee and project pair inside one account.
-// The separator cannot occur in either ID, so no two pairs collide.
-func publicPairKey(employee, project string) string { return employee + "\x00" + project }
-
-// resolvePublicPair reads the employee and project a tab stands for, and
-// reports false for a tab that is not one of the public projects at all.
+// There is deliberately no reconciliation here. There is no per-account status,
+// no "missing" to backfill and no "extra" to clean up, because there is nothing
+// per account to compare against: the set is the same for everybody.
 //
-// A link row wins when the tab has one, because it is what the admin page
-// recorded. Other tabs only have a session name, whose project half is matched
-// whole against the known project IDs so that an employee ID containing a dash
-// still resolves.
-func resolvePublicPair(tab publicTab, link publicLink, public map[string]bool, longest []string) (string, string, bool) {
-	if link.ProjectID != "" || link.EmployeeID != "" {
-		if link.EmployeeID == "" || !public[link.ProjectID] {
-			return "", "", false
-		}
-		return link.EmployeeID, link.ProjectID, true
-	}
-	for _, project := range longest {
-		suffix := "-" + project
-		if len(tab.Session) > len(suffix) && strings.HasSuffix(tab.Session, suffix) {
-			return tab.Session[:len(tab.Session)-len(suffix)], project, true
-		}
-	}
-	return "", "", false
+// The derivation is a pure function of the projects, so the read path
+// (config.go) and the admin page agree by construction and both can be tested
+// without a database.
+
+// publicTabNamespace is the fixed UUIDv5 namespace for public tab IDs:
+// uuid5(NAMESPACE_URL, "https://blink.douwantech.com/public-tab") =
+// 924f04d2-3134-500d-b88c-c008790adaac. Changing it renames every public tab on
+// every account at once, so it is a constant of the data, not a detail.
+var publicTabNamespace = [16]byte{
+	0x92, 0x4f, 0x04, 0xd2, 0x31, 0x34, 0x50, 0x0d,
+	0xb8, 0x8c, 0xc0, 0x08, 0x79, 0x0a, 0xda, 0xac,
 }
 
-// publicTabsOf reads an account's own tab state. Unreadable state yields no
-// tabs rather than an error: this view only reports, and the accounts card
-// already shows the account.
-func publicTabsOf(raw []byte) []publicTab {
-	state, err := decodeAdminTabs(raw)
-	if err != nil {
-		return nil
+// publicTabID is the stable UUID a public tab is known by on every client.
+//
+// It is derived from the pair rather than generated and stored, so the same tab
+// keeps the same ID across restarts and redeploys and a client that already
+// holds the tab recognises it instead of appending a second copy. It has to be
+// a well-formed v5 UUID and not the session name: TabEntry.id is a UUID in the
+// client's model, and a client that cannot decode the snapshot discards it.
+func publicTabID(employee, project string) string {
+	h := sha1.New()
+	h.Write(publicTabNamespace[:])
+	h.Write([]byte(employee))
+	h.Write([]byte{0}) // in neither ID, so no two pairs collide
+	h.Write([]byte(project))
+	sum := h.Sum(nil)
+	var id [16]byte
+	copy(id[:], sum[:16])
+	id[6] = id[6]&0x0f | 0x50 // version 5: name based, SHA-1
+	id[8] = id[8]&0x3f | 0x80 // RFC 4122 variant
+	return hex.EncodeToString(id[:4]) + "-" + hex.EncodeToString(id[4:6]) + "-" +
+		hex.EncodeToString(id[6:8]) + "-" + hex.EncodeToString(id[8:10]) + "-" +
+		hex.EncodeToString(id[10:])
+}
+
+// One public tab as a client receives it: the fields of the client's TabEntry
+// that the server fills in, exactly like the tab an admin creates for a single
+// account. shared marks it as belonging to everybody; the client is expected to
+// treat it as fixed (phase two), and a client that does not know the field
+// ignores it and shows an ordinary tab.
+type publicTabEntry struct {
+	ID          string `json:"id"`
+	MachineID   string `json:"machineId"`
+	TmuxSession string `json:"tmuxSession"`
+	Shared      bool   `json:"shared"`
+}
+
+// One public tab as the admin page lists it. The page must not re-parse the
+// session name to find out what a tab is, so the pair it came from is spelled
+// out here, and the project name is resolved for display.
+type publicTabView struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	EmployeeID  string `json:"employeeId"`
+	MachineID   string `json:"machineId"`
+	Session     string `json:"session"`
+	TabID       string `json:"tabId"`
+}
+
+// buildPublicTabView expands the public projects into the tab set every account
+// gets. Order is project ID then employee ID, so the list is identical for
+// every account and does not move between reads.
+func buildPublicTabView(projects []projectEntry) []publicTabView {
+	public := make([]projectEntry, 0, len(projects))
+	for _, p := range projects {
+		if p.Public {
+			public = append(public, p)
+		}
 	}
-	out := make([]publicTab, 0, len(state.tabs))
-	for _, entry := range state.tabs {
-		var tab struct {
-			ID          string `json:"id"`
-			MachineID   string `json:"machineId"`
-			TmuxSession string `json:"tmuxSession"`
+	sort.Slice(public, func(i, j int) bool { return public[i].ID < public[j].ID })
+	out := make([]publicTabView, 0)
+	for _, p := range public {
+		employees := append([]projectEmployee(nil), p.Employees...)
+		sort.Slice(employees, func(i, j int) bool { return employees[i].ID < employees[j].ID })
+		for _, e := range employees {
+			out = append(out, publicTabView{
+				ProjectID:   p.ID,
+				ProjectName: p.Name,
+				EmployeeID:  e.ID,
+				MachineID:   e.MachineID,
+				Session:     e.ID + "-" + p.ID,
+				TabID:       publicTabID(e.ID, p.ID),
+			})
 		}
-		if json.Unmarshal(entry, &tab) != nil {
-			continue
-		}
-		out = append(out, publicTab{ID: tab.ID, MachineID: tab.MachineID, Session: tab.TmuxSession})
 	}
 	return out
 }
 
-// buildPublicReport reconciles the declared employee lists against what the
-// accounts hold. It is pure so the rules can be tested without a database.
-func buildPublicReport(projects []projectEntry, accounts []publicAccount) publicReport {
-	report := publicReport{Rows: []publicTabRow{}, Extras: []publicTabRow{}}
-	public := map[string]bool{}
-	for _, p := range projects {
-		if p.Public {
-			public[p.ID] = true
-		}
+// clientPublicTabs projects the view onto the entries a client decodes.
+func clientPublicTabs(view []publicTabView) []publicTabEntry {
+	out := make([]publicTabEntry, 0, len(view))
+	for _, v := range view {
+		out = append(out, publicTabEntry{
+			ID:          v.TabID,
+			MachineID:   v.MachineID,
+			TmuxSession: v.Session,
+			Shared:      true,
+		})
 	}
-	// Longest first so a project ID that is the suffix of another cannot win
-	// the match on the shorter one.
-	longest := make([]string, 0, len(public))
-	for id := range public {
-		longest = append(longest, id)
-	}
-	sort.Slice(longest, func(i, j int) bool {
-		if len(longest[i]) != len(longest[j]) {
-			return len(longest[i]) > len(longest[j])
-		}
-		return longest[i] < longest[j]
-	})
-
-	byName := map[string]*publicAccount{}
-	for i := range accounts {
-		byName[accounts[i].Name] = &accounts[i]
-	}
-
-	// What each account actually holds, keyed by employee and project. The
-	// first tab for a pair wins, so an accidental duplicate is not also
-	// reported as an extra.
-	actual := map[uint64]map[string]publicTab{}
-	for i := range accounts {
-		account := &accounts[i]
-		for _, tab := range account.Tabs {
-			employee, project, ok := resolvePublicPair(tab, account.Links[tab.ID], public, longest)
-			if !ok {
-				continue
-			}
-			if actual[account.ID] == nil {
-				actual[account.ID] = map[string]publicTab{}
-			}
-			key := publicPairKey(employee, project)
-			if _, seen := actual[account.ID][key]; !seen {
-				actual[account.ID][key] = tab
-			}
-		}
-	}
-
-	expected := map[uint64]map[string]bool{}
-	ordered := make([]projectEntry, 0, len(projects))
-	for _, p := range projects {
-		if p.Public {
-			ordered = append(ordered, p)
-		}
-	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
-	for _, p := range ordered {
-		for _, want := range p.Employees {
-			row := publicTabRow{
-				ProjectID:   p.ID,
-				ProjectName: p.Name,
-				EmployeeID:  want.ID,
-				MachineID:   want.MachineID,
-				Session:     want.ID + "-" + p.ID,
-			}
-			account := byName[want.ID]
-			switch {
-			case account == nil:
-				row.Status = publicStatusNoAccount
-			default:
-				row.AccountID, row.AccountName = account.ID, account.Name
-				if expected[account.ID] == nil {
-					expected[account.ID] = map[string]bool{}
-				}
-				expected[account.ID][publicPairKey(want.ID, p.ID)] = true
-				tab, held := actual[account.ID][publicPairKey(want.ID, p.ID)]
-				switch {
-				case !held:
-					row.Status = publicStatusMissing
-				case tab.MachineID != want.MachineID:
-					row.Status = publicStatusWrongMachine
-					row.ActualMachine = tab.MachineID
-					row.TabID = tab.ID
-				default:
-					row.Status = publicStatusOK
-					row.TabID = tab.ID
-				}
-			}
-			report.Rows = append(report.Rows, row)
-			report.Summary.Expected++
-			switch row.Status {
-			case publicStatusMissing:
-				report.Summary.Missing++
-			case publicStatusWrongMachine:
-				report.Summary.WrongMachine++
-			case publicStatusNoAccount:
-				report.Summary.NoAccount++
-			}
-		}
-	}
-	report.Summary.Projects = len(ordered)
-
-	// Anything an account holds for a public project that its own list does
-	// not call for.
-	for i := range accounts {
-		account := &accounts[i]
-		for key, tab := range actual[account.ID] {
-			if expected[account.ID][key] {
-				continue
-			}
-			employee, project, _ := strings.Cut(key, "\x00")
-			report.Extras = append(report.Extras, publicTabRow{
-				ProjectID:   project,
-				ProjectName: projectNameOf(projects, project),
-				EmployeeID:  employee,
-				AccountID:   account.ID,
-				AccountName: account.Name,
-				MachineID:   tab.MachineID,
-				Session:     employee + "-" + project,
-				TabID:       tab.ID,
-				Status:      publicStatusExtra,
-			})
-		}
-	}
-	sort.Slice(report.Extras, func(i, j int) bool {
-		a, b := report.Extras[i], report.Extras[j]
-		if a.AccountName != b.AccountName {
-			return a.AccountName < b.AccountName
-		}
-		if a.ProjectID != b.ProjectID {
-			return a.ProjectID < b.ProjectID
-		}
-		return a.EmployeeID < b.EmployeeID
-	})
-	report.Summary.Extra = len(report.Extras)
-	return report
+	return out
 }
 
-func projectNameOf(projects []projectEntry, id string) string {
+// employeeMachines maps an employee to the machines the project lists put that
+// employee on, in project ID order. More than one entry means the lists
+// disagree; the page shows every one of them rather than picking a winner,
+// because a machine nobody declares would otherwise hide the disagreement that
+// sends somebody to the wrong host.
+func employeeMachines(projects []projectEntry) map[string][]string {
+	public := make([]projectEntry, 0, len(projects))
 	for _, p := range projects {
-		if p.ID == id {
-			return p.Name
+		if p.Public {
+			public = append(public, p)
 		}
 	}
-	return id
+	sort.Slice(public, func(i, j int) bool { return public[i].ID < public[j].ID })
+	out := map[string][]string{}
+	for _, p := range public {
+		for _, e := range p.Employees {
+			seen := false
+			for _, id := range out[e.ID] {
+				if id == e.MachineID {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				out[e.ID] = append(out[e.ID], e.MachineID)
+			}
+		}
+	}
+	return out
+}
+
+// mergePublicTabs puts the public tabs in front of the account's own tabs and
+// returns the state a client receives. The stored state is never rewritten:
+// this runs on the read path only, so an account's own tabs stay exactly as it
+// uploaded them.
+//
+// Two things are adjusted on the way out. A stored tab whose ID is a public tab
+// ID is dropped, because the ID is derived rather than stored: a client that
+// adopts a public tab and later uploads its whole state would otherwise get the
+// same tab back twice. And public IDs are dropped from closedIds, the client's
+// tombstones, so a public tab closed on one device is back the next time that
+// device syncs — the set is global, and closing one is not a permanent choice.
+//
+// Unknown top-level fields and the stored updatedAt are preserved: the phone
+// owns the TabState format, and the merge must not look like a local edit.
+func mergePublicTabs(stored []byte, shared []publicTabEntry) ([]byte, error) {
+	state, err := decodeAdminTabs(stored)
+	if err != nil {
+		return nil, err
+	}
+	sharedIDs := make(map[string]bool, len(shared))
+	tabs := make([]json.RawMessage, 0, len(shared)+len(state.tabs))
+	for _, t := range shared {
+		b, err := json.Marshal(t)
+		if err != nil {
+			return nil, err
+		}
+		sharedIDs[strings.ToLower(t.ID)] = true
+		tabs = append(tabs, b)
+	}
+	for _, raw := range state.tabs {
+		if sharedIDs[strings.ToLower(tabID(raw))] {
+			continue
+		}
+		tabs = append(tabs, raw)
+	}
+	closed := make([]string, 0, len(state.closed))
+	for _, id := range state.closed {
+		if !sharedIDs[strings.ToLower(id)] {
+			closed = append(closed, id)
+		}
+	}
+	state.fields["tabs"], err = json.Marshal(tabs)
+	if err != nil {
+		return nil, err
+	}
+	state.fields["closedIds"], err = json.Marshal(closed)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(state.fields)
 }
 
 // decodeProjects reads the stored project rows. A row that does not parse is
-// skipped: this view reports, and a broken row must not blank the whole page.
+// skipped: the tab set is derived from what it can read, and one broken row must
+// not blank every client's tabs.
 func decodeProjects(raw []json.RawMessage) []projectEntry {
 	out := make([]projectEntry, 0, len(raw))
 	for _, entry := range raw {

@@ -424,7 +424,9 @@ func TestDirectoryRoutesThroughRouter(t *testing.T) {
 		}
 		defer db.Close()
 		r := adminRequest(t, mock, "DELETE", "/admin/api/projects/nothing", "")
+		mock.ExpectBegin()
 		mock.ExpectExec("DELETE FROM projects").WithArgs("nothing").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectRollback()
 		w := httptest.NewRecorder()
 		(&app{db: db}).routes().ServeHTTP(w, r)
 		if w.Code != 404 {

@@ -189,6 +189,12 @@ func (a *app) putProject(w http.ResponseWriter, r *http.Request, u user) {
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `INSERT INTO projects(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, id, stored)
 	}
+	// The public tab set every client receives is derived from this list, and a
+	// client that already holds a snapshot sends its version back and is served
+	// 304. Without a bump the edit would reach nobody who has synced before.
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -210,13 +216,31 @@ func (a *app) deleteDirectoryEntry(table string) handler {
 		if !requireAdmin(w, u) {
 			return
 		}
-		result, err := a.db.ExecContext(r.Context(), `DELETE FROM `+table+` WHERE id=?`, r.PathValue("id"))
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			http.Error(w, "internal error", 500)
+			return
+		}
+		defer tx.Rollback()
+		result, err := tx.ExecContext(r.Context(), `DELETE FROM `+table+` WHERE id=?`, r.PathValue("id"))
 		if err != nil {
 			http.Error(w, "internal error", 500)
 			return
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
 			http.Error(w, "not found", 404)
+			return
+		}
+		// Removing a project drops the public tabs derived from it, so the shared
+		// version has to move for clients to stop sending back the old one.
+		if table == "projects" {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`); err != nil {
+				http.Error(w, "internal error", 500)
+				return
+			}
+		}
+		if err = tx.Commit(); err != nil {
+			http.Error(w, "internal error", 500)
 			return
 		}
 		w.WriteHeader(204)

@@ -383,12 +383,7 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	usernameByID := make(map[uint64]string, len(users))
-	for _, v := range users {
-		usernameByID[v.ID] = v.Username
-	}
 	personal := make([]map[string]any, 0)
-	accounts := make([]publicAccount, 0, len(users))
 	for rows.Next() {
 		var id uint64
 		var tabs, selection []byte
@@ -406,11 +401,6 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 			account = map[string]map[string]string{}
 		}
 		personal = append(personal, map[string]any{"userId": id, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "links": account})
-		accountLinks := make(map[string]publicLink, len(account))
-		for tabID, ref := range account {
-			accountLinks[tabID] = publicLink{EmployeeID: ref["employeeId"], ProjectID: ref["projectId"]}
-		}
-		accounts = append(accounts, publicAccount{ID: id, Name: usernameByID[id], Tabs: publicTabsOf(tabs), Links: accountLinks})
 	}
 	if err == nil {
 		err = rows.Err()
@@ -420,6 +410,9 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	report := buildPublicReport(decodeProjects(projects), accounts)
-	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "pinned": pinned, "personal": personal, "employees": employees, "projects": projects, "publicTabs": report})
+	// Public tabs are the same on every account, so the page lists them once
+	// instead of per account. The machine each employee sits on comes from the
+	// same project lists, so the employee table and the tab list cannot disagree.
+	projectEntries := decodeProjects(projects)
+	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "pinned": pinned, "personal": personal, "employees": employees, "projects": projects, "publicTabs": buildPublicTabView(projectEntries), "employeeMachines": employeeMachines(projectEntries)})
 }

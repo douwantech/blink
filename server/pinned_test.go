@@ -246,6 +246,9 @@ func TestConfigSnapshotShipsPinnedToEveryAccount(t *testing.T) {
 			AddRow([]byte(`{"id":"p2","title":"二号后台","url":"https://b.test/"}`)))
 		mock.ExpectQuery("SELECT tabs,recent_selection,agents FROM user_configs").WithArgs(viewer.ID).
 			WillReturnRows(sqlmock.NewRows([]string{"tabs", "recent_selection", "agents"}))
+		// 公用标签由项目目录推导，读快照时并进去：没有项目行就是空表，不是错误。
+		mock.ExpectQuery("SELECT data FROM projects").
+			WillReturnRows(sqlmock.NewRows([]string{"data"}))
 		// #43 起快照还带个人语音纠正与共享 AI 配置；共享那份必须有一行（ErrNoRows 会 500）。
 		mock.ExpectQuery("SELECT data FROM voice_corrections").WithArgs(viewer.ID).
 			WillReturnRows(sqlmock.NewRows([]string{"data"}))

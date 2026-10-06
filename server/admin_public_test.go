@@ -3,8 +3,6 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
-
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,8 +10,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// Two public projects plus one that is not public, which must stay out of the
-// view entirely.
+// Two public projects plus one that is not public, which must stay out of every
+// list.
 func publicProjectsFixture() []projectEntry {
 	return []projectEntry{
 		{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1"}, {ID: "tom", MachineID: "m2"}}},
@@ -22,219 +20,260 @@ func publicProjectsFixture() []projectEntry {
 	}
 }
 
-// publicAcct describes an account's tabs compactly:
-//
-//	"jack-huum@m1"            a tab the client created, known by its session name
-//	"jack-huum@m1|jack>huum"  the same tab with the link row an admin-created tab has
-func publicAcct(id uint64, name string, specs ...string) publicAccount {
-	account := publicAccount{ID: id, Name: name, Links: map[string]publicLink{}}
-	for i, spec := range specs {
-		tabPart, linkPart, _ := strings.Cut(spec, "|")
-		session, machine, _ := strings.Cut(tabPart, "@")
-		tab := publicTab{ID: fmt.Sprintf("tab-%d-%d", id, i), MachineID: machine, Session: session}
-		if linkPart != "" {
-			employee, project, ok := strings.Cut(linkPart, ">")
-			if !ok {
-				panic("bad link spec: " + spec)
-			}
-			account.Links[tab.ID] = publicLink{EmployeeID: employee, ProjectID: project}
-		}
-		account.Tabs = append(account.Tabs, tab)
-	}
-	return account
+func sharedFixture() []publicTabEntry {
+	return clientPublicTabs(buildPublicTabView(publicProjectsFixture()))
 }
 
-func publicRow(t *testing.T, report publicReport, employee, project string) publicTabRow {
+func decodeMerged(t *testing.T, out []byte) (fields map[string]json.RawMessage, tabs []map[string]any, closed []string) {
 	t.Helper()
-	for _, row := range report.Rows {
-		if row.EmployeeID == employee && row.ProjectID == project {
-			return row
+	if err := json.Unmarshal(out, &fields); err != nil {
+		t.Fatalf("merged state is not an object: %v (%s)", err, out)
+	}
+	if err := json.Unmarshal(fields["tabs"], &tabs); err != nil {
+		t.Fatalf("merged tabs are not an array: %v", err)
+	}
+	if b, ok := fields["closedIds"]; ok {
+		if err := json.Unmarshal(b, &closed); err != nil {
+			t.Fatalf("merged closedIds are not an array: %v", err)
 		}
 	}
-	t.Fatalf("no row for %s-%s in %+v", employee, project, report.Rows)
-	return publicTabRow{}
+	return fields, tabs, closed
 }
 
-func TestPublicReportFindsMissingTabs(t *testing.T) {
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{publicAcct(1, "jack"), publicAcct(2, "tom")})
-	if report.Summary.Projects != 2 || report.Summary.Expected != 3 || report.Summary.Missing != 3 {
-		t.Fatalf("summary %+v, want 2 projects and 3 missing", report.Summary)
+func TestPublicTabViewExpandsEveryList(t *testing.T) {
+	view := buildPublicTabView(publicProjectsFixture())
+	if len(view) != 3 {
+		t.Fatalf("view %+v, want one tab per public pair", view)
 	}
-	if len(report.Extras) != 0 {
-		t.Fatalf("unexpected extras: %+v", report.Extras)
+	bySession := map[string]publicTabView{}
+	for _, v := range view {
+		bySession[v.Session] = v
 	}
-	row := publicRow(t, report, "jack", "huum")
-	if row.Status != publicStatusMissing || row.Session != "jack-huum" || row.MachineID != "m1" {
-		t.Fatalf("row %+v, want a missing jack-huum on m1", row)
+	jack := bySession["jack-huum"]
+	if jack.ProjectID != "huum" || jack.EmployeeID != "jack" || jack.MachineID != "m1" || jack.ProjectName != "Huum" {
+		t.Fatalf("jack-huum %+v", jack)
 	}
-	if row.AccountID != 1 || row.AccountName != "jack" {
-		t.Fatalf("row must name the account to create the tab for: %+v", row)
+	if tom := bySession["tom-lotly"]; tom.MachineID != "m2" || tom.ProjectName != "Lotly" {
+		t.Fatalf("tom-lotly %+v", tom)
 	}
-	// The non-public project contributes nothing.
-	for _, r := range report.Rows {
-		if r.ProjectID == "blink" {
-			t.Fatalf("blink must not appear: %+v", r)
+	for _, v := range view {
+		if v.ProjectID == "blink" {
+			t.Fatalf("a project that is not public must contribute nothing: %+v", v)
 		}
 	}
 }
 
-func TestPublicReportMarksTabsThatAreReady(t *testing.T) {
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-huum@m1"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	if report.Summary.Missing != 0 || report.Summary.Expected != 3 {
-		t.Fatalf("summary %+v, want everything ready", report.Summary)
-	}
-	for _, row := range report.Rows {
-		if row.Status != publicStatusOK {
-			t.Fatalf("row %+v, want ok", row)
-		}
-	}
-	if len(report.Extras) != 0 {
-		t.Fatalf("unexpected extras: %+v", report.Extras)
-	}
-}
-
-func TestPublicReportFlagsWrongMachine(t *testing.T) {
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-huum@m9"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	row := publicRow(t, report, "jack", "huum")
-	if row.Status != publicStatusWrongMachine || row.ActualMachine != "m9" || row.MachineID != "m1" {
-		t.Fatalf("row %+v, want a machine mismatch m1 -> m9", row)
-	}
-	if report.Summary.WrongMachine != 1 || report.Summary.Missing != 0 {
-		t.Fatalf("summary %+v, want one mismatch and nothing missing", report.Summary)
-	}
-}
-
-func TestPublicReportFlagsEmployeeWithoutAnAccount(t *testing.T) {
-	// The list names ben, but no account has that username, so there is nobody
-	// to create the tab for.
-	projects := []projectEntry{{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "ben", MachineID: "m1"}}}}
-	report := buildPublicReport(projects, []publicAccount{publicAcct(1, "jack")})
-	row := publicRow(t, report, "ben", "huum")
-	if row.Status != publicStatusNoAccount || row.AccountID != 0 {
-		t.Fatalf("row %+v, want noAccount", row)
-	}
-	if report.Summary.NoAccount != 1 || report.Summary.Missing != 0 {
-		t.Fatalf("summary %+v, want one accountless row", report.Summary)
-	}
-}
-
-func TestPublicReportLeavesNonPublicProjectsAlone(t *testing.T) {
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-blink@m1"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	for _, row := range report.Rows {
-		if row.ProjectID == "blink" {
-			t.Fatalf("blink must not appear: %+v", row)
-		}
-	}
-	// A tab for a project outside the view is not an extra either.
-	if len(report.Extras) != 0 {
-		t.Fatalf("a tab for a non-public project must not be flagged: %+v", report.Extras)
-	}
-}
-
-func TestPublicReportFlagsTabsOutsideTheEmployeeList(t *testing.T) {
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		// adam is on no list, and jack holds a session that belongs to tom.
-		publicAcct(1, "jack", "jack-huum@m1", "tom-lotly@m2"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-		publicAcct(3, "adam", "adam-huum@m1"),
-	})
-	if report.Summary.Extra != 2 {
-		t.Fatalf("summary %+v, want 2 extras: %+v", report.Summary, report.Extras)
-	}
-	byAccount := map[string][]publicTabRow{}
-	for _, extra := range report.Extras {
-		byAccount[extra.AccountName] = append(byAccount[extra.AccountName], extra)
-	}
-	if len(byAccount["adam"]) != 1 || byAccount["adam"][0].Session != "adam-huum" || byAccount["adam"][0].Status != publicStatusExtra {
-		t.Fatalf("adam's out-of-list tab must be flagged: %+v", byAccount["adam"])
-	}
-	if len(byAccount["jack"]) != 1 || byAccount["jack"][0].EmployeeID != "tom" || byAccount["jack"][0].ProjectID != "lotly" {
-		t.Fatalf("tom's session sitting on jack's account must be flagged: %+v", byAccount["jack"])
-	}
-	if _, ok := byAccount["tom"]; ok {
-		t.Fatalf("tom holds only what his list calls for: %+v", byAccount["tom"])
-	}
-}
-
-func TestPublicReportReadsTheLinkRowBeforeTheSessionName(t *testing.T) {
-	// The link row is what the admin page recorded, so it wins over a session
-	// name that says something else.
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-wrong@m1|jack>huum"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	if row := publicRow(t, report, "jack", "huum"); row.Status != publicStatusOK {
-		t.Fatalf("row %+v, want ok from the link row", row)
-	}
-	if len(report.Extras) != 0 {
-		t.Fatalf("the session name must not also be read as a project: %+v", report.Extras)
-	}
-}
-
-func TestPublicReportIgnoresALinkToANonPublicProject(t *testing.T) {
-	// The link row is authoritative: it says blink, so the session name that
-	// looks like huum must not be used as a fallback.
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-huum@m1|jack>blink"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	if row := publicRow(t, report, "jack", "huum"); row.Status != publicStatusMissing {
-		t.Fatalf("row %+v, want missing: the link says this tab is not the huum one", row)
-	}
-}
-
-func TestPublicReportResolvesDashedEmployeeIDs(t *testing.T) {
-	// An employee ID may contain a dash, so the project half is matched whole
-	// and the employee half is whatever is left.
-	projects := []projectEntry{{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "a-b", MachineID: "m1"}}}}
-	report := buildPublicReport(projects, []publicAccount{publicAcct(1, "a-b", "a-b-huum@m1")})
-	row := publicRow(t, report, "a-b", "huum")
-	if row.Status != publicStatusOK {
-		t.Fatalf("row %+v, want ok", row)
-	}
-	if report.Summary.Extra != 0 {
-		t.Fatalf("a-huum must not be read as a separate pair: %+v", report.Extras)
-	}
-}
-
-func TestPublicReportMatchesTheLongestProjectID(t *testing.T) {
+func TestPublicTabViewIsOrderedAndSkipsNonPublicProjects(t *testing.T) {
+	// Deliberately unsorted, with the employee list unsorted too: the set has to
+	// come out in the same order for every account or the tab bar would shuffle
+	// between clients.
 	projects := []projectEntry{
-		{ID: "ben", Name: "Ben", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1"}}},
-		{ID: "xx-ben", Name: "XX Ben", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1"}}},
+		{ID: "talkai", Name: "Talk", Public: true, Employees: []projectEmployee{{ID: "tom", MachineID: "m2"}, {ID: "adam", MachineID: "m1"}}},
+		{ID: "ben", Name: "Ben", Public: true, Employees: []projectEmployee{{ID: "quan", MachineID: "m3"}}},
+		{ID: "main", Name: "Main"},
 	}
-	report := buildPublicReport(projects, []publicAccount{publicAcct(1, "jack", "jack-xx-ben@m1")})
-	if row := publicRow(t, report, "jack", "xx-ben"); row.Status != publicStatusOK {
-		t.Fatalf("row %+v, want the longer project ID to win", row)
+	var got []string
+	for _, v := range buildPublicTabView(projects) {
+		got = append(got, v.Session)
 	}
-	if row := publicRow(t, report, "jack", "ben"); row.Status != publicStatusMissing {
-		t.Fatalf("row %+v, jack-ben does not exist", row)
+	want := []string{"quan-ben", "adam-talkai", "tom-talkai"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order %v, want %v", got, want)
 	}
 }
 
-func TestPublicReportCountsARepeatedTabOnce(t *testing.T) {
-	// Two tabs for the same pair, on different machines. The first one is the
-	// one reported, so the row follows the order the account lists its tabs in
-	// rather than flipping with the map.
-	report := buildPublicReport(publicProjectsFixture(), []publicAccount{
-		publicAcct(1, "jack", "jack-huum@m1", "jack-huum@m9"),
-		publicAcct(2, "tom", "tom-huum@m2", "tom-lotly@m2"),
-	})
-	row := publicRow(t, report, "jack", "huum")
-	if row.Status != publicStatusOK || row.TabID != "tab-1-0" {
-		t.Fatalf("row %+v, want the first tab and an ok status", row)
+// The IDs are UUIDv5 in a fixed namespace and are checked against values
+// computed independently (python uuid.uuid5 over the same namespace and name),
+// because a client decodes TabEntry.id as a UUID and a wrong one would be
+// dropped or rejected.
+func TestPublicTabIDsAreStableNameBasedUUIDs(t *testing.T) {
+	cases := []struct{ employee, project, want string }{
+		{"jack", "huum", "c58c3b7b-a2f3-57c9-9cdb-c80dc468c20e"},
+		{"tom", "printer", "30cc71d4-8b19-5ac1-8464-7fac3535f758"},
 	}
-	if len(report.Extras) != 0 {
-		t.Fatalf("a duplicate of an expected tab is not an extra: %+v", report.Extras)
+	for _, c := range cases {
+		got := publicTabID(c.employee, c.project)
+		if got != c.want {
+			t.Errorf("publicTabID(%q, %q) = %q, want %q", c.employee, c.project, got, c.want)
+		}
+		if len(got) != 36 || strings.Count(got, "-") != 4 {
+			t.Errorf("%q is not a UUID", got)
+		}
+		if got[14] != '5' || !strings.ContainsRune("89ab", rune(got[19])) {
+			t.Errorf("%q is not a version 5 RFC 4122 UUID", got)
+		}
+		if got != strings.ToLower(got) {
+			t.Errorf("%q is not lowercase", got)
+		}
 	}
+	// Derived, not generated: the same pair is the same ID on every read, and
+	// two pairs never share one.
+	if publicTabID("jack", "huum") != publicTabID("jack", "huum") {
+		t.Error("the same pair must get the same ID every time")
+	}
+	if publicTabID("jack", "huum") == publicTabID("tom", "huum") {
+		t.Error("two employees on one project must not share an ID")
+	}
+}
+
+// A separator has to be used when hashing, or the pair (a-b, c) and the pair
+// (a, b-c) produce one ID and a client loses a tab.
+func TestPublicTabIDsSeparateAmbiguousPairs(t *testing.T) {
+	first := publicTabID("a-b", "c")
+	second := publicTabID("a", "b-c")
+	if first == second {
+		t.Fatalf("a-b|c and a|b-c must not collide: %q", first)
+	}
+	if first != "3b72ee12-f0d8-5380-86da-e69b1203cd62" || second != "7889f261-c458-51ea-9a07-7f10015d24c1" {
+		t.Fatalf("unexpected IDs: %q %q", first, second)
+	}
+}
+
+func TestClientPublicTabsAreSharedEntries(t *testing.T) {
+	entries := sharedFixture()
+	if len(entries) != 3 {
+		t.Fatalf("entries %+v", entries)
+	}
+	for _, e := range entries {
+		if !e.Shared {
+			t.Errorf("%+v must be marked shared", e)
+		}
+		if e.ID == "" || e.MachineID == "" || e.TmuxSession == "" {
+			t.Errorf("%+v is missing a field a client needs to open the tab", e)
+		}
+	}
+	// Only the three fields the client's TabEntry knows, so an old client that
+	// does not model `shared` still decodes an ordinary tab.
+	b, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 && strings.Contains(string(b), "position") {
+		t.Fatalf("entry JSON %s carries a field the client does not model", b)
+	}
+}
+
+func TestEmployeeMachinesAreDerivedFromTheLists(t *testing.T) {
+	got := employeeMachines(publicProjectsFixture())
+	if len(got["jack"]) != 1 || got["jack"][0] != "m1" {
+		t.Fatalf("jack %v, want m1", got["jack"])
+	}
+	if len(got["tom"]) != 1 || got["tom"][0] != "m2" {
+		t.Fatalf("tom %v, want m2 once even though two lists name him", got["tom"])
+	}
+	if _, ok := got["ben"]; ok {
+		t.Fatalf("ben is on no list: %v", got)
+	}
+}
+
+// Two lists putting one employee on different machines is a data error that
+// would send somebody to the wrong host, so both are reported rather than one
+// being picked.
+func TestEmployeeMachinesReportsADisagreementWithBoth(t *testing.T) {
+	projects := []projectEntry{
+		{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1"}}},
+		{ID: "ben", Name: "Ben", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m9"}}},
+		{ID: "talkai", Name: "Talk", Employees: []projectEmployee{{ID: "jack", MachineID: "m3"}}},
+	}
+	got := employeeMachines(projects)
+	if strings.Join(got["jack"], ",") != "m9,m1" {
+		t.Fatalf("jack %v, want both machines in project order", got["jack"])
+	}
+}
+
+func TestMergePublicTabsPutsThemFirstAndKeepsTheAccountsOwn(t *testing.T) {
+	stored := `{"version":1,"updatedAt":1234.5,"tabs":[{"id":"11111111-1111-4111-8111-111111111111","machineId":"m1","tmuxSession":"mine"}],"closedIds":["22222222-2222-4222-8222-222222222222"]}`
+	fields, tabs, closed := decodeMerged(t, mustMerge(t, stored, sharedFixture()))
+	if len(tabs) != 4 {
+		t.Fatalf("tabs %+v, want the three public ones and the account's own", tabs)
+	}
+	for i := 0; i < 3; i++ {
+		if tabs[i]["shared"] != true {
+			t.Fatalf("tab %d is not a public tab first: %+v", i, tabs[i])
+		}
+	}
+	if tabs[3]["tmuxSession"] != "mine" {
+		t.Fatalf("the account's own tab must follow: %+v", tabs[3])
+	}
+	if len(closed) != 1 || closed[0] != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("a tombstone for the account's own tab must survive: %v", closed)
+	}
+	// The read path must not look like a local edit: the client gates its merge
+	// on updatedAt, and the stored version is untouched.
+	if string(fields["updatedAt"]) != "1234.5" || string(fields["version"]) != "1" {
+		t.Fatalf("updatedAt/version must be preserved: %s %s", fields["updatedAt"], fields["version"])
+	}
+}
+
+func TestMergePublicTabsDropsAnAdoptedCopyOfAPublicTab(t *testing.T) {
+	// A client that adopted a public tab and uploaded its whole state comes back
+	// with the same derived ID. Two tabs under one ID would show twice.
+	id := publicTabID("jack", "huum")
+	stored := `{"version":1,"tabs":[{"id":"` + id + `","machineId":"m1","tmuxSession":"jack-huum"},{"id":"11111111-1111-4111-8111-111111111111","machineId":"m1","tmuxSession":"mine"}]}`
+	_, tabs, _ := decodeMerged(t, mustMerge(t, stored, sharedFixture()))
+	if len(tabs) != 4 {
+		t.Fatalf("tabs %+v, want three public plus one own", tabs)
+	}
+	count := 0
+	for _, tab := range tabs {
+		if tab["id"] == id {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the public tab appears %d times", count)
+	}
+	// The uppercase form of an ID is the same tab to the client, so it must be
+	// recognised too.
+	upper := strings.ToUpper(id)
+	stored = `{"version":1,"tabs":[{"id":"` + upper + `","machineId":"m1","tmuxSession":"jack-huum"}]}`
+	_, tabs, _ = decodeMerged(t, mustMerge(t, stored, sharedFixture()))
+	if len(tabs) != 3 {
+		t.Fatalf("tabs %+v, want only the three public ones", tabs)
+	}
+}
+
+func TestMergePublicTabsDropsTombstonesOfPublicTabs(t *testing.T) {
+	// Closing a public tab is not a permanent choice: the set is global, so the
+	// tombstone is not carried back or it would suppress the tab on a client
+	// that honours it.
+	id := publicTabID("jack", "huum")
+	stored := `{"version":1,"tabs":[],"closedIds":["` + id + `","22222222-2222-4222-8222-222222222222"]}`
+	_, _, closed := decodeMerged(t, mustMerge(t, stored, sharedFixture()))
+	if len(closed) != 1 || closed[0] != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("closedIds %v, want only the account's own tombstone", closed)
+	}
+}
+
+func TestMergePublicTabsKeepsUnreadableStateAnError(t *testing.T) {
+	if _, err := mergePublicTabs([]byte(`not json`), sharedFixture()); err == nil {
+		t.Fatal("an unreadable state must not be replaced silently")
+	}
+}
+
+func TestMergePublicTabsOnAnEmptyAccount(t *testing.T) {
+	// An account with no config row at all still gets the public tabs.
+	_, tabs, closed := decodeMerged(t, mustMerge(t, "", sharedFixture()))
+	if len(tabs) != 3 || len(closed) != 0 {
+		t.Fatalf("tabs %+v closed %v", tabs, closed)
+	}
+}
+
+func TestMergePublicTabsWithNoPublicProjects(t *testing.T) {
+	stored := `{"version":1,"tabs":[{"id":"11111111-1111-4111-8111-111111111111","machineId":"m1","tmuxSession":"mine"}]}`
+	_, tabs, closed := decodeMerged(t, mustMerge(t, stored, nil))
+	if len(tabs) != 1 || len(closed) != 0 {
+		t.Fatalf("tabs %+v, want the account's own untouched", tabs)
+	}
+}
+
+func mustMerge(t *testing.T, stored string, shared []publicTabEntry) []byte {
+	t.Helper()
+	out, err := mergePublicTabs([]byte(stored), shared)
+	if err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+	return out
 }
 
 // putProject is a read-modify-write, so a request that names only some fields
@@ -251,6 +290,7 @@ func TestPutProjectKeepsFieldsTheRequestOmits(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT data FROM projects").WithArgs("huum").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(stored)))
 	mock.ExpectExec("INSERT INTO projects").WithArgs("huum", jsonArg(`{"id":"huum","name":"Huum 2","public":true,"employees":[{"id":"jack","machineId":"m1"}],"future":"keep"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE config_versions").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	w := httptest.NewRecorder()
 	(&app{db: db}).routes().ServeHTTP(w, r)
@@ -275,10 +315,78 @@ func TestPutProjectReplacesTheEmployeeList(t *testing.T) {
 		mock.ExpectQuery("SELECT id FROM " + ref.table).WithArgs(ref.id).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(ref.id))
 	}
 	mock.ExpectExec("INSERT INTO projects").WithArgs("huum", jsonArg(`{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"m1"},{"id":"tom","machineId":"m2"}]}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE config_versions").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	w := httptest.NewRecorder()
 	(&app{db: db}).routes().ServeHTTP(w, r)
 	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The public tab set is derived from the project list, so a project write that
+// does not move the shared version reaches nobody who has already synced.
+func TestPutProjectBumpsTheSharedVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r := adminRequest(t, mock, "PUT", "/admin/api/projects/huum", `{"id":"huum","name":"Huum","public":false}`)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT data FROM projects").WithArgs("huum").WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO projects").WithArgs("huum", jsonArg(`{"id":"huum","name":"Huum","public":false}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE config_versions SET version=version\\+1 WHERE id=1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	w := httptest.NewRecorder()
+	(&app{db: db}).routes().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeletingAProjectBumpsTheSharedVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r := adminRequest(t, mock, "DELETE", "/admin/api/projects/huum", "")
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM projects").WithArgs("huum").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE config_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	w := httptest.NewRecorder()
+	(&app{db: db}).routes().ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An employee carries no client-visible state, so removing one must not make
+// every client re-fetch.
+func TestDeletingAnEmployeeDoesNotBumpTheSharedVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r := adminRequest(t, mock, "DELETE", "/admin/api/employees/jack", "")
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM employees").WithArgs("jack").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	w := httptest.NewRecorder()
+	(&app{db: db}).routes().ServeHTTP(w, r)
+	if w.Code != 204 {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -365,8 +473,10 @@ func TestGenericDirectoryHandlerRefusesProjects(t *testing.T) {
 	}
 }
 
-// The route has to actually carry the reconciliation, not just the directories.
-func TestAdminStateCarriesThePublicReport(t *testing.T) {
+// The state the page reads carries the global tab list, not a per-account
+// reconciliation, and the machines the employee table shows come from the same
+// project lists.
+func TestAdminStateCarriesTheGlobalPublicTabs(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -386,25 +496,50 @@ func TestAdminStateCarriesThePublicReport(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	var payload struct {
-		PublicTabs publicReport `json:"publicTabs"`
+		PublicTabs       []publicTabView     `json:"publicTabs"`
+		EmployeeMachines map[string][]string `json:"employeeMachines"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.PublicTabs.Rows) != 1 {
-		t.Fatalf("rows %+v, want the jack-huum row", payload.PublicTabs.Rows)
+	if len(payload.PublicTabs) != 1 {
+		t.Fatalf("publicTabs %+v, want the jack-huum tab", payload.PublicTabs)
 	}
-	row := payload.PublicTabs.Rows[0]
-	if row.ProjectID != "huum" || row.EmployeeID != "jack" || row.Status != publicStatusMissing {
-		t.Fatalf("row %+v, want a missing jack-huum", row)
+	row := payload.PublicTabs[0]
+	if row.ProjectID != "huum" || row.EmployeeID != "jack" || row.Session != "jack-huum" || row.MachineID != "m1" || row.ProjectName != "Huum" {
+		t.Fatalf("row %+v", row)
 	}
-	if row.AccountID != 1 || row.AccountName != "jack" {
-		t.Fatalf("row %+v must point at jack's account", row)
+	if row.TabID != publicTabID("jack", "huum") {
+		t.Fatalf("row %+v must carry the ID the client will see", row)
 	}
-	if payload.PublicTabs.Summary.Expected != 1 || payload.PublicTabs.Summary.Missing != 1 {
-		t.Fatalf("summary %+v", payload.PublicTabs.Summary)
+	if got := payload.EmployeeMachines["jack"]; len(got) != 1 || got[0] != "m1" {
+		t.Fatalf("employeeMachines %v, want jack on m1", payload.EmployeeMachines)
+	}
+	// The same tab goes to every account, so it is listed once and never per
+	// account.
+	if strings.Contains(w.Body.String(), `"status"`) || strings.Contains(w.Body.String(), `"extras"`) {
+		t.Fatalf("the reconciliation vocabulary is gone: %s", w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The admin page reads the derived list rather than reconciling, so it must not
+// offer the per-account buttons that went with the report.
+func TestAdminPageShowsTheGlobalPublicTabs(t *testing.T) {
+	page, err := adminPage.ReadFile("web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"public-rows", "public-summary", "employeeMachines", "state.publicTabs"} {
+		if !strings.Contains(string(page), want) {
+			t.Fatalf("admin page is missing %q", want)
+		}
+	}
+	for _, gone := range []string{"PUBLIC_STATUS", "fillProject", "createPublicTab", "extra-rows"} {
+		if strings.Contains(string(page), gone) {
+			t.Fatalf("admin page still carries %q from the reconciliation view", gone)
+		}
 	}
 }
