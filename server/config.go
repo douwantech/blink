@@ -1,12 +1,37 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+// rowQueryer is the part of *sql.DB and *sql.Tx that queryJSON needs, so the
+// same helper reads inside a transaction and outside one.
+type rowQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// queryJSON collects one JSON column from every row of a query.
+func queryJSON(ctx context.Context, q rowQueryer, query string) ([]json.RawMessage, error) {
+	rows, err := q.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var data []byte
+		if err = rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		out = append(out, json.RawMessage(data))
+	}
+	return out, rows.Err()
+}
 
 // Machine JSON uses BlinkMachine's Codable field names. Unknown fields are
 // retained so clients can extend the shared model without a database migration.
@@ -83,6 +108,19 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	if len(tabs) == 0 {
 		tabs = []byte(`{"version":1,"tabs":[]}`)
+	}
+	// The public tabs are derived from the project directory and put in front of
+	// the account's own on the way out. They are never written to user_configs:
+	// the next upload from the client stores only what the client itself holds.
+	projects, err := queryJSON(r.Context(), tx, `SELECT data FROM projects ORDER BY id`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	tabs, err = mergePublicTabs(tabs, clientPublicTabs(buildPublicTabView(decodeProjects(projects))))
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
 	}
 	if len(selection) == 0 {
 		selection = []byte(`{}`)
