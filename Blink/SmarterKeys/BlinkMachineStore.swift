@@ -308,7 +308,10 @@ enum HostReachability {
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
-  /// 「切换机器」浮动条是否显示。默认 true；在设置页可开关，改动发下面的通知让 SpaceController 实时响应。
+  /// 「切换机器」浮动条是否显示。默认 true。
+  /// **现在没有生产者**：浮动机器条随标签坞掉头一起移除，设置页那个开关也撤了；
+  /// 只剩同样无人实例化的 `FloatingMachineBar` 读它。留着是为了不打断已同步的默认值，
+  /// 以后要复活浮动机器条时这里就是现成的位置。
   @objc static var showMachineBar: Bool {
     get {
       if UserDefaults.standard.object(forKey: "BlinkShowMachineBar") == nil { return true }
@@ -1225,10 +1228,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
 @objc protocol BlinkTabBarDelegate: AnyObject {
   func tabBarDidSelect(index: Int)
-  func tabBarDidRequestNew()
   func tabBarDidRequestClose(index: Int)
   func tabBarDidRequestSettings()
-  func tabBarDidRequestMachineFilter()
+  // tabBarDidRequestNew / tabBarDidRequestTabFilter / tabBarDidRequestOwnTabs 已按老板口径删除：
+  // 坞=服务端 tom 的公用标签，不做筛选器、没有「我的标签」尾入口、也不能从坞里造标签。
   func tabBarDidRequestAssistant()
   /// 顶栏 sparkles 入口 → 打开气泡 chat UI（与 kAssistantTabTag 的终端 tab 互补）
   func tabBarDidRequestAssistantChat()
@@ -1389,7 +1392,6 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let stack = UIStackView()
   private let menuButton = UIButton(type: .system)
   private let hairline = UIView()
-  private var filterTitle = "全部"
   private var restingCount = 0
   /// tag → 标签按钮。节标题也占 arrangedSubviews，所以滚动定位不能按下标取。
   private var tabButtons: [Int: UIButton] = [:]
@@ -1452,15 +1454,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
     ])
   }
 
-  /// ⋯ 菜单：筛选标题 / 休息人数变化时重建
+  /// ⋯ 菜单：休息人数变化时重建。老板口径下只剩「员工状态」与「设置」两条 ——
+  /// 「新建 tab」与「筛选」已移除（坞=服务端 tom 的公用标签，纯只读、无筛选器）。
   private func rebuildMenu() {
-    let newTab = UIAction(title: "新建 tab", image: UIImage(systemName: "plus")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestNew()
-    }
-    let filter = UIAction(title: "按机器筛选 · \(filterTitle)",
-                          image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestMachineFilter()
-    }
     // 旧「在岗/休息」列表已并入团队状态页；这条入口现在直接开员工状态页（行尾月亮即开关）
     let rest = UIAction(title: restingCount > 0 ? "员工状态 · \(restingCount) 人休息中" : "员工状态",
                         image: UIImage(systemName: "person.2")) { [weak self] _ in
@@ -1470,29 +1466,26 @@ final class HorizontalOnlyScrollView: UIScrollView {
     let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestSettings()
     }
-    menuButton.menu = UIMenu(children: [newTab, filter, rest, settings])
+    menuButton.menu = UIMenu(children: [rest, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
     reload(titles: titles, icons: nil, unread: unread,
-           tags: Array(0..<titles.count), filterTitle: nil, currentTag: currentIndex)
+           tags: Array(0..<titles.count), currentTag: currentIndex)
   }
 
-  @objc func reload(titles: [String], unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
-    reload(titles: titles, icons: nil, unread: unread, tags: tags,
-           filterTitle: filterTitle, currentTag: currentTag)
+  @objc func reload(titles: [String], unread: [Bool], tags: [Int], currentTag: Int) {
+    reload(titles: titles, icons: nil, unread: unread, tags: tags, currentTag: currentTag)
   }
 
-  /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标
-  /// headers 是每行前面的节标题（「公用标签 (N)」/「我的标签」，nil = 不插），
-  /// sharedTabs 标记哪些行是服务端注入的公用标签（带徽标、样式可区分）。
+  /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标。
+  /// 坞是**一个平铺列表**（没有节标题、没有「公用」徽标），铺的就是服务端 tom 的那几条
+  /// 公用标签（SpaceController 侧筛好再传进来）。自有标签、筛选器、尾入口都按老板口径移除。
   func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int],
-              filterTitle: String?, currentTag: Int, agents: [AgentKind?]? = nil,
-              headers: [String?]? = nil, sharedTabs: [Bool]? = nil) {
+              currentTag: Int, agents: [AgentKind?]? = nil) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     tabButtons.removeAll()
 
-    self.filterTitle = filterTitle ?? "全部"
     rebuildMenu()
 
     var visibleIndexOfCurrent = -1
@@ -1501,34 +1494,17 @@ final class HorizontalOnlyScrollView: UIScrollView {
       let tag = i < tags.count ? tags[i] : i
       let icon: UIImage? = (icons.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
       let agent: AgentKind? = (agents.flatMap { i < $0.count ? $0[i] : nil }) ?? nil
-      let isShared = (sharedTabs.flatMap { i < $0.count ? $0[i] : false }) ?? false
-      // 节标题是普通 label，跟标签一起横向滚动（这条不是 UICollectionView，没有吸顶可言）
-      if let header = headers.flatMap({ i < $0.count ? $0[i] : nil }) ?? nil {
-        if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(18, after: last) }
-        let headerView = makeSectionHeader(header)
-        stack.addArrangedSubview(headerView)
-        stack.setCustomSpacing(9, after: headerView)
-      }
       let btn = makeTabButton(title: title, icon: icon, agent: agent, index: tag,
-                              isCurrent: tag == currentTag, hasUnread: isUnread, isShared: isShared)
+                              isCurrent: tag == currentTag, hasUnread: isUnread)
       if tag == currentTag { visibleIndexOfCurrent = i }
       tabButtons[tag] = btn
       stack.addArrangedSubview(btn)
     }
+    // 空坞就是空坞：老板口径「不保留退路」，不铺提示行、不拿本地标签顶上。
     layoutIfNeeded()
     if visibleIndexOfCurrent >= 0, visibleIndexOfCurrent < tags.count {
       scrollToVisibleTab(tag: tags[visibleIndexOfCurrent], animated: true)
     }
-  }
-
-  private func makeSectionHeader(_ title: String) -> UIView {
-    let label = UILabel()
-    label.text = title
-    label.font = .systemFont(ofSize: 11, weight: .semibold)
-    label.textColor = UIColor.white.withAlphaComponent(0.42)
-    label.setContentHuggingPriority(.required, for: .horizontal)
-    label.setContentCompressionResistancePriority(.required, for: .horizontal)
-    return label
   }
 
   /// 滚到某个 tag 对应的按钮。按 tag 查而不是按下标取，因为节标题也占着 arrangedSubviews。
@@ -1580,8 +1556,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
   }
 
   private func makeTabButton(title: String, icon: UIImage?, agent: AgentKind?,
-                             index: Int, isCurrent: Bool, hasUnread: Bool,
-                             isShared: Bool = false) -> UIButton {
+                             index: Int, isCurrent: Bool, hasUnread: Bool) -> UIButton {
     var cfg = UIButton.Configuration.plain()
     var at = AttributedString(title)
     at.font = UIFont.systemFont(ofSize: 14, weight: isCurrent ? .semibold : .regular)
@@ -1599,48 +1574,21 @@ final class HorizontalOnlyScrollView: UIScrollView {
     }
     cfg.imagePadding = 7
     cfg.imagePlacement = .leading
-    // 公用标签右侧留给「公用」徽标（原先是给在岗绿点留的宽度）
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: isShared ? 42 : 24)
-    cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : (isShared ? 0.78 : 0.55))
+    // 右侧留给在岗绿点/未读红点（原先还留给公用标签的「公用」徽标，坞平铺后不需要了）
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
+    cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : 0.55)
     let btn = UIButton(configuration: cfg)
     btn.layer.cornerRadius = 19
     btn.layer.masksToBounds = false
-    // 公用标签：青色描边 + 淡青底，一眼与自己的标签区分（选中时描边更亮）
-    btn.layer.borderWidth = (isCurrent || isShared) ? 1 : 0
-    btn.layer.borderColor = isShared
-      ? UIColor.systemTeal.withAlphaComponent(isCurrent ? 0.85 : 0.5).cgColor
-      : UIColor.white.withAlphaComponent(0.15).cgColor
-    btn.backgroundColor = isCurrent
-      ? UIColor.white.withAlphaComponent(0.07)
-      : (isShared ? UIColor.systemTeal.withAlphaComponent(0.10) : .clear)
+    btn.layer.borderWidth = isCurrent ? 1 : 0
+    btn.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
+    btn.backgroundColor = isCurrent ? UIColor.white.withAlphaComponent(0.07) : .clear
     btn.heightAnchor.constraint(equalToConstant: 38).isActive = true
     btn.tag = index
     btn.addTarget(self, action: #selector(tabTapped(_:)), for: .touchUpInside)
     let longPress = UILongPressGestureRecognizer(target: self, action: #selector(tabLongPressed(_:)))
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
-
-    if isShared {
-      // 公用标签没有在岗点，位置上放「公用」徽标
-      let badge = UILabel()
-      badge.text = "公用"
-      badge.font = .systemFont(ofSize: 9, weight: .semibold)
-      badge.textColor = .systemTeal
-      badge.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.20)
-      badge.textAlignment = .center
-      badge.layer.cornerRadius = 3
-      badge.clipsToBounds = true
-      badge.isUserInteractionEnabled = false
-      badge.translatesAutoresizingMaskIntoConstraints = false
-      btn.addSubview(badge)
-      NSLayoutConstraint.activate([
-        badge.widthAnchor.constraint(equalToConstant: 32),
-        badge.heightAnchor.constraint(equalToConstant: 14),
-        badge.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -7),
-        badge.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
-      ])
-      return btn
-    }
 
     // 在岗绿点（带微光）
     let status = UIView()

@@ -26,42 +26,37 @@ struct TabState: Codable {
 
 /// 公用标签在 tab 集合里的排布规则：**公用恒在最前**（保持服务端顺序），自有在后。
 /// 纯函数，独立成类型是为了能直接对「服务端顺序 → 屏幕顺序」这一跳做单测。
+///
+/// 老板掉头后的口径（2026-10-06）：坞里**只**铺服务端 tom 的那几条，自有标签彻底退场。
+/// 「公用标签不进 TabState」这条红线现在由 `ServerSnapshotDecoder` 在解码边界保证
+///（摘出来单独返回，见 `SharedTabSnapshotTests` ①②）—— 以前还有一道
+/// `SharedTabLayout.ownOnly` 的落盘前过滤，随着 `_persistTabsToStore` 一起删了。
 enum SharedTabLayout {
-  static let sharedSectionTitle = "公用标签"
-  static let ownSectionTitle = "我的标签"
-
-  /// tab 栏/侧栏的一行：`header` 非空表示这行前面要插一个节标题。
-  struct Row: Equatable {
-    let header: String?
-    let isShared: Bool
-  }
+  /// 坞里只铺这一位员工的公用标签。老板口径：**写死常量，不做筛选器** ——
+  /// 坞=服务端 tom 的那几条（今天正好是 brain 上的 6 条），其余公用标签不上坞。
+  /// 它们仍会被 `_syncSharedTabs` 注册成会话（「员工状态」的休息计数依赖那一份），
+  /// 只是不进坞、不进滑动集合。
+  static let dockEmployee = "tom"
 
   static func ordered(shared: [UUID], own: [UUID]) -> [UUID] {
     shared + own
   }
 
-  /// 落盘/上传前的那一刀：公用标签一律剔掉（它们不是账号的数据）。
-  static func ownOnly(_ keys: [UUID], sharedKeys: Set<UUID>) -> [UUID] {
-    keys.filter { !sharedKeys.contains($0) }
+  /// 从 tmuxSession 里取员工：第一个 "-" 之前（`tom-ben` → `tom`）。
+  /// 员工**不结构化** —— 服务端下发的标签只有 `tmuxSession` 的「员工-项目」前缀
+  ///（server/admin_tabs.go 就是这么造的），`GET /v1/config` 里没有 employeeId 字段。
+  /// 服务端允许 employeeId 自带 "-"，那种情况这里会截短（`tom-x-ben` → `tom`）；
+  /// 要精确得服务端给每条注入的标签补一个结构化 employeeId。
+  static func employee(ofTmuxSession session: String?) -> String? {
+    guard let session, !session.isEmpty else { return nil }
+    let head = session.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
+    guard let head, !head.isEmpty else { return nil }
+    return head.lowercased()
   }
 
-  /// 按屏幕顺序给出每行的节标题与「是否公用」。只在两边都有内容时才标出两个节标题；
-  /// 只有自有标签时不插任何标题（跟改动前一样）。
-  static func rows(keys: [UUID], sharedKeys: Set<UUID>) -> [Row] {
-    let sharedCount = keys.filter { sharedKeys.contains($0) }.count
-    let splits = sharedCount > 0 && sharedCount < keys.count
-    var sawShared = false
-    var sawOwn = false
-    return keys.map { key in
-      if sharedKeys.contains(key) {
-        let header = (!sawShared && splits) ? "\(sharedSectionTitle) (\(sharedCount))" : nil
-        sawShared = true
-        return Row(header: header, isShared: true)
-      }
-      let header = (!sawOwn && splits) ? ownSectionTitle : nil
-      sawOwn = true
-      return Row(header: header, isShared: false)
-    }
+  /// 这条公用标签该不该上坞。
+  static func isDockTab(tmuxSession: String?) -> Bool {
+    employee(ofTmuxSession: tmuxSession) == dockEmployee
   }
 }
 

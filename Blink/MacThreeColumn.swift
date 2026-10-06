@@ -176,8 +176,9 @@ final class MacMachineRailView: UIView {
 
 // MARK: - 会话列表 sidebar（中栏）
 
-/// 当前机器的所有会话铺成列表：头像 + 标题 + 目录 + 未读点，行尾 ✕ 关闭。
-/// 顶部 header 显示机器名 / 连接方式 / 当前选用地址；底部「+ 新会话」。
+/// 当前机器（筛选生效的那台）的公用会话铺成列表：头像 + 标题 + 目录 + 未读点。
+/// 平铺一列，没有节标题；自有标签不在这里，走底部的「我的标签 (N)」入口。
+/// 顶部 header 显示机器名 / 连接方式 / 当前选用地址；底部「我的标签 / ＋ 新会话」。
 final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDelegate {
   static let sidebarW: CGFloat = 288
 
@@ -188,26 +189,23 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     let icon: UIImage?
     let unread: Bool
     let isCurrent: Bool
-    /// 服务端注入的公用标签：行尾没有 ✕（不可关），带「公用」徽标。
-    let isShared: Bool
   }
 
-  /// 「公用标签 (N)」/「我的标签」两节；`title` 为 nil 表示不显示节标题（只有一节时）。
+  /// 平铺列表恒只有一节，`title` 恒为 nil（留着字段是为了以后真要分节时不用改调用点）。
   struct Section {
     let title: String?
     var items: [Item]
   }
 
   var onSelect: ((Int) -> Void)?
-  var onClose: ((Int) -> Void)?
-  var onNewSession: (() -> Void)?
+  // 「＋ 新会话」与「我的标签 (N)」两个入口已按老板口径移除：侧栏是纯只读的服务端
+  // tom 公用标签列表，客户端不再造标签、也没有自有标签可切回。
   var onRestPanel: (() -> Void)?
 
   private let machineNameLabel = UILabel()
   private let transportBadge = UILabel()
   private let hostLabel = UILabel()
   private let table = UITableView(frame: .zero, style: .plain)
-  private let newButton = UIButton(type: .system)
   private let restPanelButton = UIButton(type: .system)
   private var items: [Item] = []
   private var sections: [Section] = []
@@ -237,16 +235,8 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     table.delegate = self
     table.register(MacSessionCell.self, forCellReuseIdentifier: "cell")
 
-    var cfg = UIButton.Configuration.plain()
-    cfg.title = "＋ 新会话"
-    cfg.baseForegroundColor = .systemTeal
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
-    newButton.configuration = cfg
-    newButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-    newButton.layer.cornerRadius = 8
-    newButton.layer.borderWidth = 1
-    newButton.layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.4).cgColor
-    newButton.addTarget(self, action: #selector(newTapped), for: .touchUpInside)
+    // 空态提示、「＋ 新会话」、「我的标签 (N)」三个控件随老板口径一起移除：
+    // 侧栏列表空就是空（不兜底、不铺提示行）。
 
     // 🌙 按钮：打开团队状态页（旧「员工在岗/休息」列表已并入，行尾月亮即开关）。
     // Mac 三栏隐藏了顶栏，没这个入口的话，dock 😴 标休息的 tab 会从侧栏消失且再也改不回在岗。
@@ -263,7 +253,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     let sep = UIView()
     sep.backgroundColor = UIColor.white.withAlphaComponent(0.08)
 
-    [machineNameLabel, transportBadge, hostLabel, sep, table, newButton, restPanelButton].forEach {
+    [machineNameLabel, transportBadge, hostLabel, sep, table, restPanelButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       addSubview($0)
     }
@@ -297,13 +287,9 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
 
       table.topAnchor.constraint(equalTo: sep.bottomAnchor),
       table.leadingAnchor.constraint(equalTo: leadingAnchor),
+      table.leadingAnchor.constraint(equalTo: leadingAnchor),
       table.trailingAnchor.constraint(equalTo: trailingAnchor),
-      table.bottomAnchor.constraint(equalTo: newButton.topAnchor, constant: -8),
-
-      newButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-      newButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-      newButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
-      newButton.heightAnchor.constraint(equalToConstant: 36),
+      table.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
 
       hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
       hairline.topAnchor.constraint(equalTo: topAnchor),
@@ -342,8 +328,6 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     restPanelButton.tintColor = n > 0 ? .systemIndigo : .systemGray
   }
 
-  @objc private func newTapped() { onNewSession?() }
-
   @objc private func restPanelTapped() { onRestPanel?() }
 
   // MARK: table
@@ -377,9 +361,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
 
   func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
     let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath) as! MacSessionCell
-    let item = item(at: indexPath)
-    cell.configure(item: item)
-    cell.onClose = { [weak self] in self?.onClose?(item.tag) }
+    cell.configure(item: item(at: indexPath))
     return cell
   }
 
@@ -393,20 +375,16 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   }
 }
 
-/// sidebar 单行：头像 + 标题 + 目录 + 未读点 + ✕
+/// sidebar 单行：头像 + 标题 + 目录 + 未读点。
+/// 行尾没有 ✕ 也没有「公用」徽标 —— 这一列铺的全是公用标签（关不掉），
+/// 自有标签在底部「我的标签」入口里，关闭也从那里走。
 final class MacSessionCell: UITableViewCell {
-  var onClose: (() -> Void)?
-
   private let avatar = UIImageView()
   private let initialLabel = UILabel()
   private let titleLbl = UILabel()
   private let subtitleLbl = UILabel()
   private let unreadDot = UIView()
-  private let closeButton = UIButton(type: .system)
   private let currentBar = UIView()
-  /// 公用标签的「公用」徽标，占住 ✕ 的位置（公用标签没有关闭入口）。
-  private let sharedBadge = UILabel()
-  private var showsBadge = false
 
   override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
     super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -438,21 +416,7 @@ final class MacSessionCell: UITableViewCell {
     unreadDot.layer.cornerRadius = 4
     unreadDot.isHidden = true
 
-    closeButton.setImage(UIImage(systemName: "xmark",
-      withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)), for: .normal)
-    closeButton.tintColor = UIColor(white: 0.55, alpha: 1)
-    closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
-
-    sharedBadge.text = "公用"
-    sharedBadge.font = .systemFont(ofSize: 10, weight: .semibold)
-    sharedBadge.textColor = .systemTeal
-    sharedBadge.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.18)
-    sharedBadge.textAlignment = .center
-    sharedBadge.layer.cornerRadius = 4
-    sharedBadge.clipsToBounds = true
-    sharedBadge.isHidden = true
-
-    [currentBar, avatar, initialLabel, titleLbl, subtitleLbl, unreadDot, closeButton, sharedBadge].forEach {
+    [currentBar, avatar, initialLabel, titleLbl, subtitleLbl, unreadDot].forEach {
       contentView.addSubview($0)
     }
   }
@@ -464,10 +428,8 @@ final class MacSessionCell: UITableViewCell {
     currentBar.frame = CGRect(x: 0, y: 10, width: 3, height: contentView.bounds.height - 20)
     avatar.frame = CGRect(x: 14, y: 12, width: 32, height: 32)
     initialLabel.frame = avatar.frame
-    closeButton.frame = CGRect(x: w - 36, y: (contentView.bounds.height - 28) / 2, width: 28, height: 28)
-    sharedBadge.frame = CGRect(x: w - 14 - 34, y: (contentView.bounds.height - 16) / 2, width: 34, height: 16)
     let textX: CGFloat = 54
-    let textW = (showsBadge ? sharedBadge.frame.minX : closeButton.frame.minX) - textX - 14
+    let textW = w - 14 - textX
     titleLbl.frame = CGRect(x: textX, y: 9, width: textW, height: 20)
     subtitleLbl.frame = CGRect(x: textX, y: 31, width: textW, height: 16)
     unreadDot.frame = CGRect(x: textX + min(titleLbl.intrinsicContentSize.width, textW) + 6, y: 15, width: 8, height: 8)
@@ -478,10 +440,6 @@ final class MacSessionCell: UITableViewCell {
     subtitleLbl.text = item.subtitle
     unreadDot.isHidden = !item.unread
     currentBar.isHidden = !item.isCurrent
-    // 公用标签由服务端下发，个人关不掉：不给 ✕，改用「公用」徽标占位。
-    showsBadge = item.isShared
-    closeButton.isHidden = item.isShared
-    sharedBadge.isHidden = !item.isShared
     contentView.backgroundColor = item.isCurrent ? UIColor.systemTeal.withAlphaComponent(0.12) : .clear
     titleLbl.font = .systemFont(ofSize: 15, weight: item.isCurrent ? .semibold : .medium)
     if let icon = item.icon {
@@ -505,8 +463,6 @@ final class MacSessionCell: UITableViewCell {
     for u in s.unicodeScalars { h = (h &* 31 &+ Int(u.value)) & 0x7fffffff }
     return palette[h % palette.count]
   }
-
-  @objc private func closeTapped() { onClose?() }
 }
 
 // MARK: - 底部状态栏（终端列下方）

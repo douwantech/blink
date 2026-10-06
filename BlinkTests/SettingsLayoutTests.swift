@@ -13,13 +13,12 @@ final class SettingsLayoutTests: XCTestCase {
   private func sections(username: String? = "alice",
                         aiEnabled: Bool = true,
                         autoReconnect: Bool = true,
-                        machineBar: Bool = false,
                         corrections: Int = 3,
                         machine: (user: String, host: String)? = (user: "root", host: "10.0.0.9"),
                         workDirCount: Int = 2,
                         language: String = "中文（普通话）") -> [SettingsSection] {
     SettingsLayout.sections(username: username, aiEnabled: aiEnabled, autoReconnect: autoReconnect,
-                            machineBar: machineBar, corrections: corrections, machine: machine,
+                            corrections: corrections, machine: machine,
                             workDirCount: workDirCount, language: language)
   }
 
@@ -42,6 +41,11 @@ final class SettingsLayoutTests: XCTestCase {
     }
     // 段名里也不能再出现「实验」。
     XCTAssertFalse(sections().contains { $0.title.contains("实验") })
+
+    // 「切换机器条」：浮动机器条随标签坞掉头一起移除后，这个开关不再控制任何东西，
+    // 留一个按了没反应的开关比没有更糟 —— 别再让它回到设置页（Mac 看的是 rail，与它无关）。
+    XCTAssertFalse(labels.contains("切换机器条"), "浮动机器条已移除，这个开关不该再出现")
+    XCTAssertFalse(SettingsToggle.allCases.contains { $0.rawValue == "machineBar" })
   }
 
   func testSurvivingRowsKeepTheirBehaviour() throws {
@@ -51,8 +55,7 @@ final class SettingsLayoutTests: XCTestCase {
     XCTAssertEqual(all[2].rows, [.personalCorrections(count: 3)])
     XCTAssertEqual(all[3].rows, [.shortcuts])
     XCTAssertEqual(all[4].rows, [.machine(user: "root", host: "10.0.0.9"),
-                                 .toggle(.autoReconnect, isOn: true),
-                                 .toggle(.machineBar, isOn: false)])
+                                 .toggle(.autoReconnect, isOn: true)])
     XCTAssertEqual(all[5].rows, [.workDirs(count: 2)])
     XCTAssertEqual(all[6].rows, [.language(title: "中文（普通话）")])
     XCTAssertEqual(all[7].rows, [.about])
@@ -89,7 +92,7 @@ final class SettingsLayoutTests: XCTestCase {
 
   func testToggleTagsMatchTheirIndex() throws {
     // 开关行靠 tag 找回自己是哪个开关（cellForRowAt 里写 tag，toggleSwitched 里读回来）。
-    XCTAssertEqual(SettingsToggle.allCases, [.ai, .autoReconnect, .machineBar])
+    XCTAssertEqual(SettingsToggle.allCases, [.ai, .autoReconnect])
     for (i, t) in SettingsToggle.allCases.enumerated() {
       XCTAssertEqual(SettingsToggle.allCases.firstIndex(of: t), i)
     }

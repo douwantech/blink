@@ -43,7 +43,7 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
   enum ShellMenu: String, CaseIterable {
     case windowNew
     case windowClose
-    case tabNew
+    // tabNew 已按老板口径从菜单移除（坞=服务端公用标签，客户端不再造标签）
     case tabClose
     case configShow
   }

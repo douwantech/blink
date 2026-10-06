@@ -2125,14 +2125,15 @@ final class AITextPolisher {
 // MARK: - 设置页的行模型
 
 /// 设置页里的一个开关。tag 用 allCases 下标，回调里再换回来。
+/// 原来的 `.machineBar`（「切换机器条」）已删：浮动机器条按老板口径移除后它不再控制任何东西
+///（Mac 三栏看的是 rail，与它无关），留一个按了没反应的开关比没有更糟。
 enum SettingsToggle: String, CaseIterable {
-  case ai, autoReconnect, machineBar
+  case ai, autoReconnect
 
   var label: String {
     switch self {
     case .ai: return "AI 整理"
     case .autoReconnect: return "断线自动重连"
-    case .machineBar: return "切换机器条"
     }
   }
 }
@@ -2202,7 +2203,6 @@ enum SettingsLayout {
   static func sections(username: String?,
                        aiEnabled: Bool,
                        autoReconnect: Bool,
-                       machineBar: Bool,
                        corrections: Int,
                        machine: (user: String, host: String)?,
                        workDirCount: Int,
@@ -2221,7 +2221,6 @@ enum SettingsLayout {
       SettingsSection(title: titles[4], rows: [
         .machine(user: machine?.user ?? "", host: machine?.host ?? ""),
         .toggle(.autoReconnect, isOn: autoReconnect),
-        .toggle(.machineBar, isOn: machineBar),
       ]),
       SettingsSection(title: titles[5], rows: [.workDirs(count: workDirCount)]),
       SettingsSection(title: titles[6], rows: [.language(title: language)]),
@@ -2251,7 +2250,6 @@ final class BlinkSettingsViewController: UITableViewController, UIAdaptivePresen
       aiEnabled: AITextPolisher.shared.enabled,
       // 默认值 true：没写过这个键时开关是打开的（与改动前的 setter 语义一致）。
       autoReconnect: UserDefaults.standard.object(forKey: "BlinkAutoReconnect") as? Bool ?? true,
-      machineBar: BlinkMachineStore.showMachineBar,
       corrections: AITextPolisher.shared.correctionEntries.count,
       machine: BlinkMachineStore.shared.currentMachine.map { (user: $0.user, host: $0.host) },
       workDirCount: BlinkWorkDirStore.shared.workDirs.count,
@@ -2394,9 +2392,6 @@ final class BlinkSettingsViewController: UITableViewController, UIAdaptivePresen
     case .autoReconnect:
       UserDefaults.standard.set(sw.isOn, forKey: "BlinkAutoReconnect")
       voiceView?.setHintForSettingsChange(sw.isOn ? "断线自动重连已开启" : "断线自动重连已关闭")
-    case .machineBar:
-      BlinkMachineStore.showMachineBar = sw.isOn   // setter 会发通知，SpaceController 实时显隐
-      voiceView?.setHintForSettingsChange(sw.isOn ? "切换机器条已显示" : "切换机器条已隐藏")
     }
   }
 
