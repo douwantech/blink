@@ -2230,6 +2230,9 @@ extension SpaceController {
 
     DispatchQueue.main.async {
       self.currentTerm()?.resignInput()
+#if targetEnvironment(macCatalyst)
+      // Mac 侧仍是经典设置页：Style / Display / Keys & Certificates / Hosts / iCloud Sync
+      // 这些只有 Mac 端在用的入口都还在那里（见 2026-10-06 的设置页收窄口径）。
       let navCtrl = UINavigationController()
       navCtrl.navigationBar.prefersLargeTitles = true
       let s = SettingsHostingController.createSettings(nav: navCtrl, onDismiss: {
@@ -2237,7 +2240,20 @@ extension SpaceController {
       })
       navCtrl.setViewControllers([s], animated: false)
       self.present(navCtrl, animated: true, completion: nil)
+#else
+      self.presentSettings()
+#endif
     }
+  }
+
+  /// 全 App 唯一的设置页（iPhone/iPad）。⌘, / ⋯ 菜单「Show Config」/ shell 的 `config`
+  /// 命令 / 语音坞齿轮都走这里。
+  public func presentSettings() {
+    let vc = BlinkSettingsViewController(voiceView: voiceDock)
+    vc.onClose = { [weak self] in self?.focusOnShellAction() }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .pageSheet
+    present(nav, animated: true)
   }
   
 //  @objc func showWalkthroughAction() {
@@ -2682,10 +2698,9 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 
   public func tabBarDidRequestSettings() {
-    let vc = VoiceSettingsViewController(voiceView: nil)
-    let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .fullScreen
-    present(nav, animated: true)
+    // 齿轮和 ⌘, / ⋯ 菜单 / `config` 命令进的是同一个设置页：传真实 voiceDock，
+    // 「识别语言」才不会永远显示「—」（此前这里传的是 nil）。
+    presentSettings()
   }
 
   public func tabBarDidRequestTeamStatus() {

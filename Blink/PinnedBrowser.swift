@@ -466,7 +466,6 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   private let tabBarScroll = UIScrollView()
   private let tabStack = UIStackView()
   private let addTabButton = UIButton(type: .system)
-  private let manageTabsButton = UIButton(type: .system)
   private let urlBar = UIView()
   private let urlField = UITextField()
   private let urlLockIcon = UIImageView()
@@ -579,15 +578,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     addTabButton.translatesAutoresizingMaskIntoConstraints = false
     topBar.addSubview(addTabButton)
 
-    manageTabsButton.setImage(UIImage(systemName: "list.bullet"), for: .normal)
-    manageTabsButton.tintColor = .secondaryLabel
-    manageTabsButton.backgroundColor = .secondarySystemFill
-    manageTabsButton.layer.cornerRadius = 15
-    manageTabsButton.addTarget(self, action: #selector(manageTabsTapped), for: .touchUpInside)
-    manageTabsButton.translatesAutoresizingMaskIntoConstraints = false
-    topBar.addSubview(manageTabsButton)
-
-    // Mac：顶栏加窗口最大化按钮（浮层 ↔ 占满整个 Blink 窗口），放在 list 按钮左边
+    // Mac：顶栏加窗口最大化按钮（浮层 ↔ 占满整个 Blink 窗口）
     if isMacBrowser {
       maximizeButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right"), for: .normal)
       maximizeButton.tintColor = .secondaryLabel
@@ -598,7 +589,7 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       topBar.addSubview(maximizeButton)
       NSLayoutConstraint.activate([
         maximizeButton.topAnchor.constraint(equalTo: topBar.topAnchor),
-        maximizeButton.trailingAnchor.constraint(equalTo: manageTabsButton.leadingAnchor, constant: -8),
+        maximizeButton.trailingAnchor.constraint(equalTo: addTabButton.leadingAnchor, constant: -8),
         maximizeButton.widthAnchor.constraint(equalToConstant: 30),
         maximizeButton.heightAnchor.constraint(equalToConstant: 30),
       ])
@@ -758,11 +749,6 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
       addTabButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
       addTabButton.widthAnchor.constraint(equalToConstant: 30),
       addTabButton.heightAnchor.constraint(equalToConstant: 30),
-
-      manageTabsButton.topAnchor.constraint(equalTo: topBar.topAnchor),
-      manageTabsButton.trailingAnchor.constraint(equalTo: addTabButton.leadingAnchor, constant: -8),
-      manageTabsButton.widthAnchor.constraint(equalToConstant: 30),
-      manageTabsButton.heightAnchor.constraint(equalToConstant: 30),
 
       tabBarScroll.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
       tabBarScroll.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
@@ -1315,18 +1301,8 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
     sidebar.reloadPinned()
   }
 
-  @objc private func manageTabsTapped() {
-    let vc = PinnedTabsManagerViewController()
-    vc.onClose = { [weak self] in self?.reloadPinnedTabsFromStore() }
-    let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .pageSheet
-    if let sheet = nav.sheetPresentationController {
-      sheet.detents = [.medium(), .large()]
-      sheet.prefersGrabberVisible = true
-    }
-    present(nav, animated: true)
-  }
-
+  /// 用 `PinnedTabsStore` 重建浏览器自己的标签列表（服务端下发的固定标签走这条路）。
+  /// 固定标签管理页删掉后暂时没有调用者，先留着 —— 别顺手删。
   private func reloadPinnedTabsFromStore() {
     let newPinned: [BrowserTabItem] = PinnedTabsStore.shared.tabs.map {
       BrowserTabItem(title: $0.title, url: $0.url, authUser: $0.authUser, authPassword: $0.authPassword, isTransient: false)
@@ -1511,142 +1487,3 @@ final class PinnedBrowserViewController: UIViewController, WKNavigationDelegate,
   }
 }
 
-final class PinnedTabsManagerViewController: UITableViewController {
-  var onClose: (() -> Void)?
-  private var items: [PinnedTab] = []
-
-  init() { super.init(style: .insetGrouped) }
-  required init?(coder: NSCoder) { fatalError() }
-
-  override func viewDidLoad() {
-    super.viewDidLoad()
-    title = "固定标签"
-    items = PinnedTabsStore.shared.tabs
-    navigationItem.leftBarButtonItem = editButtonItem
-    navigationItem.rightBarButtonItems = [
-      UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(doneTapped)),
-      UIBarButtonItem(image: UIImage(systemName: "plus"), style: .plain, target: self, action: #selector(addTapped)),
-    ]
-    tableView.allowsSelectionDuringEditing = true
-  }
-
-  @objc private func doneTapped() {
-    onClose?()
-    dismiss(animated: true)
-  }
-
-  @objc private func addTapped() {
-    presentEditor(forIndex: nil)
-  }
-
-  private func save() {
-    PinnedTabsStore.shared.tabs = items
-  }
-
-  override func numberOfSections(in tv: UITableView) -> Int { items.isEmpty ? 1 : 1 }
-
-  override func tableView(_ tv: UITableView, titleForFooterInSection section: Int) -> String? {
-    "拖动排序，左滑删除，点击编辑。\n网址前可加 https://，留空时自动补。\nHTTP Basic 用户名/密码会在加载需要鉴权的页面时自动填入。"
-  }
-
-  override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { items.count }
-
-  override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-    let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-    let it = items[ip.row]
-    let title = it.title.isEmpty ? it.url : it.title
-    cell.textLabel?.text = title
-    cell.textLabel?.font = .systemFont(ofSize: 16, weight: .medium)
-    cell.detailTextLabel?.text = it.title.isEmpty ? nil : it.url
-    cell.detailTextLabel?.textColor = .secondaryLabel
-    cell.detailTextLabel?.font = .systemFont(ofSize: 12)
-    cell.detailTextLabel?.lineBreakMode = .byTruncatingMiddle
-    if it.authUser?.isEmpty == false {
-      cell.imageView?.image = UIImage(systemName: "lock.fill")
-      cell.imageView?.tintColor = .systemIndigo
-    } else {
-      cell.imageView?.image = UIImage(systemName: "bookmark.fill")
-      cell.imageView?.tintColor = .systemIndigo
-    }
-    cell.accessoryType = .disclosureIndicator
-    return cell
-  }
-
-  override func tableView(_ tv: UITableView, didSelectRowAt ip: IndexPath) {
-    tv.deselectRow(at: ip, animated: true)
-    presentEditor(forIndex: ip.row)
-  }
-
-  override func tableView(_ tv: UITableView, canMoveRowAt ip: IndexPath) -> Bool { true }
-
-  override func tableView(_ tv: UITableView, moveRowAt from: IndexPath, to: IndexPath) {
-    let item = items.remove(at: from.row)
-    items.insert(item, at: to.row)
-    save()
-  }
-
-  override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
-    if editingStyle == .delete {
-      items.remove(at: ip.row)
-      save()
-      tv.deleteRows(at: [ip], with: .automatic)
-    }
-  }
-
-  private func presentEditor(forIndex i: Int?) {
-    let existing = i.flatMap { items.indices.contains($0) ? items[$0] : nil }
-    let alert = UIAlertController(
-      title: existing == nil ? "添加标签" : "编辑标签",
-      message: nil,
-      preferredStyle: .alert)
-    alert.addTextField { tf in
-      tf.placeholder = "名称（可空，会用网址）"
-      tf.text = existing?.title
-      tf.autocapitalizationType = .none
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "网址 (如 google.com)"
-      tf.text = existing?.url
-      tf.keyboardType = .URL
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "HTTP Basic 用户名（可空）"
-      tf.text = existing?.authUser
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "HTTP Basic 密码（可空）"
-      tf.text = existing?.authPassword
-      tf.isSecureTextEntry = true
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-    }
-    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
-      guard let self else { return }
-      let fields = alert.textFields ?? []
-      let title = (fields.indices.contains(0) ? (fields[0].text ?? "") : "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let url = (fields.indices.contains(1) ? (fields[1].text ?? "") : "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let user = fields.indices.contains(2) ? (fields[2].text ?? "") : ""
-      let pwd = fields.indices.contains(3) ? (fields[3].text ?? "") : ""
-      guard !url.isEmpty else { return }
-      let item = PinnedTab(
-        title: title,
-        url: url,
-        authUser: user.isEmpty ? nil : user,
-        authPassword: pwd.isEmpty ? nil : pwd)
-      if let i = i, self.items.indices.contains(i) {
-        self.items[i] = item
-        self.tableView.reloadRows(at: [IndexPath(row: i, section: 0)], with: .none)
-      } else {
-        self.items.append(item)
-        self.tableView.insertRows(at: [IndexPath(row: self.items.count - 1, section: 0)], with: .automatic)
-      }
-      self.save()
-    })
-    present(alert, animated: true)
-  }
-}

@@ -224,7 +224,7 @@ final class ServerConfigSync: ObservableObject {
       defaults.removeObject(forKey: dirtyKey)
       defaults.removeObject(forKey: appliedVersionKey)
       // 换账号立即清掉旧账号的语音纠正词（跨账号隔离）。用 replaceTerms([:])
-      // 而不是 clearTerms()：后者会触发上传调度，此刻 keychain 里还是旧账号
+      // 而不是先清 key 再排上传：此刻 keychain 里还是旧账号
       // token，0.8s 后会把空词条写到旧账号名下（#43 e3cfe496）。
       AITextPolisher.shared.replaceTerms([:])
     }
@@ -240,6 +240,14 @@ final class ServerConfigSync: ObservableObject {
     // 首拉直接用响应里的 token（bearer 直传），不回读 Keychain：2026-10-05 Mac 端
     // Keychain 写读分区不一致时回读 nil，用户刚登录就撞「登录已过期」死循环。
     try await refresh(replaceTabs: true, force: true, bearer: login.token)
+  }
+
+  /// 退出登录（设置页「账号」段的入口）。清理语义与换账号时一致：清 Keychain token、
+  /// 账号名、公用标签、已采纳版本号；**不动**已缓存的快照与机器/标签，所以离线仍能照旧
+  /// 打开上次缓存，重新登录后 `login` 会 `refresh(replaceTabs: true)` 覆盖回来。
+  /// 调用方（设置页）负责把登录页弹出来，这里只清状态。
+  func logout() {
+    clearSession()
   }
 
   @MainActor func refresh(replaceTabs: Bool = false, force: Bool = false, bearer: String? = nil) async throws {
