@@ -129,7 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let fixture = ProcessInfo.processInfo.environment["BLINKMAC_DIAG_FIXTURE"] ?? ""
             if !fixture.isEmpty {
                 if let data = FileManager.default.contents(atPath: fixture) {
+                    // applySnapshot 会把 version 记进 UserDefaults（真跑时是对的，下次才好走 304）。
+                    // 自测是只读检查，BLINKMAC_SYNC_FILE 只兜得住同步文件、兜不住偏好 —— 在**已经登录**
+                    // 的机器上跑一次 fixture，就会把真账号的 appliedVersion 改成 fixture 的版本号，
+                    // 于是下次真启动带着它去拉、服务器回 304，这一轮真配置就应用不上。所以前后夹住还原。
+                    let defaults = UserDefaults.standard
+                    let savedVersion = defaults.string(forKey: "BlinkServer.appliedVersion")
                     let shared = ServerSync.shared.applySnapshot(data)
+                    if let savedVersion { defaults.set(savedVersion, forKey: "BlinkServer.appliedVersion") }
+                    else { defaults.removeObject(forKey: "BlinkServer.appliedVersion") }
                     let written = SyncConfig.read() ?? [:]
                     let outTabs = (written["tabs"] as? [[String: Any]]) ?? []
                     let outClosed = (written["closedIds"] as? [String]) ?? []
