@@ -384,8 +384,9 @@ class SpaceController: UIViewController {
   }
 
   //（浮动机器条已移除：`_showMachineBarChanged` / `_toggleFloatingBars` 两个观察者
-  // 与其 watch 的 BlinkMachineStore.showMachineBarChanged 一起退休；那条设置项暂时留着，
-  // 但手机上不再有任何东西受它控制。）
+  // 与其 watch 的 BlinkMachineStore.showMachineBarChanged 一起退休；设置页里那个
+  // 「切换机器条」开关也一并撤掉了 —— 按了没反应的开关比没有更糟。
+  // `BlinkMachineStore.showMachineBar` 留着（FloatingMachineBar 那个已无人实例化的类还读它）。）
 
   // 录音状态变化：浮动条 mic 钮切 停止/mic 图标
   @objc private func _voiceRecordingStateChanged(_ note: Notification) {

@@ -308,7 +308,10 @@ enum HostReachability {
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
-  /// 「切换机器」浮动条是否显示。默认 true；在设置页可开关，改动发下面的通知让 SpaceController 实时响应。
+  /// 「切换机器」浮动条是否显示。默认 true。
+  /// **现在没有生产者**：浮动机器条随标签坞掉头一起移除，设置页那个开关也撤了；
+  /// 只剩同样无人实例化的 `FloatingMachineBar` 读它。留着是为了不打断已同步的默认值，
+  /// 以后要复活浮动机器条时这里就是现成的位置。
   @objc static var showMachineBar: Bool {
     get {
       if UserDefaults.standard.object(forKey: "BlinkShowMachineBar") == nil { return true }
