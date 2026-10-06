@@ -116,7 +116,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   private let tableView = UITableView(frame: .zero, style: .grouped)
   private let segmented = UISegmentedControl(items: ["按员工", "按项目", "按机器"])
-  private let subtitleLabel = UILabel()
 
   init(tabs: [TeamStatusTab]) {
     self.tabs = tabs
@@ -180,7 +179,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.addGestureRecognizer(swipeR)
     view.addSubview(tableView)
 
-    // 固定表头（挂在 view 上而不是 tableHeaderView）：统计条 + 视图切换 + 更新时间。
+    // 固定表头（挂在 view 上而不是 tableHeaderView）：视图切换。
     // 切视图的推入动画只加在 tableView.layer 上，表头因此纹丝不动。
     let header = UIView()
     header.backgroundColor = bg
@@ -195,25 +194,15 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     segmented.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(segmented)
 
-    subtitleLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-    subtitleLabel.textColor = sub
-    subtitleLabel.textAlignment = .center
-    subtitleLabel.text = "正在读取角色表…"
-    subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-    header.addSubview(subtitleLabel)
-
     NSLayoutConstraint.activate([
       header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      header.heightAnchor.constraint(equalToConstant: 64),
+      header.heightAnchor.constraint(equalToConstant: 52),
 
       segmented.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
       segmented.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
       segmented.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-      subtitleLabel.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 8),
-      subtitleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-      subtitleLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
 
       tableView.topAnchor.constraint(equalTo: header.bottomAnchor),
       tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -364,8 +353,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   /// 串行会被一台挂起的 ssh（Tailscale 节点离线时 TCP 黑洞）卡住整页「读取中」。
   private var probeGeneration = 0
   private var pendingMachines: Set<String> = []
-  private var probeMachinesTotal = 0
-  private var probeReachedCount = 0
 
   private func probe() {
     let machineIds = Array(Set(tabs.map(\.machineId)))
@@ -375,9 +362,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     probeGeneration += 1
     let gen = probeGeneration
     pendingMachines = Set(machines.map(\.id))
-    probeMachinesTotal = machines.count
-    probeReachedCount = 0
-    subtitleLabel.text = "正在读取 \(machines.count) 台机器…"
     for m in machines {
       Task { [weak self] in
 
@@ -408,19 +392,36 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     }
   }
 
-  /// 单个 op 的硬超时；超时后原任务可能还在后台跑完（execRemote 不可取消），结果直接丢弃
+  /// 竞速只 resume 一次的闸（withTimeout 用；泛型函数里不能嵌类型，放类作用域）
+  private final class TimeoutOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func run(_ f: () -> Void) {
+      lock.lock(); defer { lock.unlock() }
+      if !done { done = true; f() }
+    }
+  }
+
+  /// 单个 op 的硬超时。op 跑在**非结构化** Task 里：execRemote / BlinkdExecOnce 底层是
+  /// 不可取消的回调式 IO，机器 TCP 黑洞（Tailscale 掉线）时永远不回来；而结构化
+  /// task group 在作用域退出时会隐式等所有子任务结束，超时分支抛了也一样卡在这里 ——
+  /// applyMachine 永远不被调，subtitle 就停在「正在读取 N 台机器…」。这里让结果和
+  /// 超时竞速、只 resume 一次 continuation，迟到的直接丢弃，20s 必返回。
   private static func withTimeout<T: Sendable>(_ seconds: Double,
                                                _ op: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-      group.addTask { try await op() }
-      group.addTask {
-        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-        throw NSError(domain: "TeamStatusProbe", code: 8,
-                      userInfo: [NSLocalizedDescriptionKey: "连接超时(\(Int(seconds))s)"])
+    return try await withCheckedThrowingContinuation { cont in
+      let once = TimeoutOnce()
+      Task<Void, Never> {
+        do { let r = try await op(); once.run { cont.resume(returning: r) } }
+        catch { once.run { cont.resume(throwing: error) } }
       }
-      let r = try await group.next()!
-      group.cancelAll()
-      return r
+      Task<Void, Never> {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        once.run {
+          cont.resume(throwing: NSError(domain: "TeamStatusProbe", code: 8,
+                                        userInfo: [NSLocalizedDescriptionKey: "连接超时(\(Int(seconds))s)"]))
+        }
+      }
     }
   }
 
@@ -428,22 +429,12 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private func applyMachine(machineId: String, roles: [String: String], failure: String?, gen: Int) {
     guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
     pendingMachines.remove(machineId)
-    if failure == nil { probeReachedCount += 1 }
     if !roles.isEmpty { roleMap.merge(roles) { _, new in new } }
     for gi in groups.indices where groups[gi].role == nil {
       groups[gi].role = roleMap[groups[gi].employee.lowercased()]
     }
 
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm"
-    if pendingMachines.isEmpty {
-      subtitleLabel.text = probeReachedCount == probeMachinesTotal
-        ? "更新 \(f.string(from: Date())) · \(probeMachinesTotal) 台机器"
-        : "更新 \(f.string(from: Date())) · \(probeReachedCount)/\(probeMachinesTotal) 台机器可达"
-      tableView.refreshControl?.endRefreshing()
-    } else {
-      subtitleLabel.text = "已回 \(probeMachinesTotal - pendingMachines.count)/\(probeMachinesTotal) 台，其余读取中…"
-    }
+    if pendingMachines.isEmpty { tableView.refreshControl?.endRefreshing() }
     updateStats()
     tableView.reloadData()
   }

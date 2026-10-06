@@ -27,15 +27,13 @@ struct TabState: Codable {
 /// 公用标签在 tab 集合里的排布规则：**公用恒在最前**（保持服务端顺序），自有在后。
 /// 纯函数，独立成类型是为了能直接对「服务端顺序 → 屏幕顺序」这一跳做单测。
 ///
-/// 老板掉头后的口径（2026-10-06）：坞里**只**铺服务端 tom 的那几条，自有标签彻底退场。
+/// 老板掉头后的口径（2026-10-06）：坞里铺的是**在岗**的公用标签，自有标签彻底退场。
 /// 「公用标签不进 TabState」这条红线现在由 `ServerSnapshotDecoder` 在解码边界保证
 ///（摘出来单独返回，见 `SharedTabSnapshotTests` ①②）—— 以前还有一道
 /// `SharedTabLayout.ownOnly` 的落盘前过滤，随着 `_persistTabsToStore` 一起删了。
 enum SharedTabLayout {
-  /// 坞里只铺这一位员工的公用标签。老板口径：**写死常量，不做筛选器** ——
-  /// 坞=服务端 tom 的那几条（今天正好是 brain 上的 6 条），其余公用标签不上坞。
-  /// 它们仍会被 `_syncSharedTabs` 注册成会话（「员工状态」的休息计数依赖那一份），
-  /// 只是不进坞、不进滑动集合。
+  /// 默认在岗的员工。老板口径：没在团队页切过开关时，坞=服务端 tom 的那几条；
+  /// 切过之后以 SharedRestStore 的在岗名单（服务端权威）为准，tom 也能被关掉。
   static let dockEmployee = "tom"
 
   static func ordered(shared: [UUID], own: [UUID]) -> [UUID] {
@@ -54,9 +52,13 @@ enum SharedTabLayout {
     return head.lowercased()
   }
 
-  /// 这条公用标签该不该上坞。
+  /// 这条公用标签该不该上坞：在岗名单（`SharedRestStore`，服务端权威）说了算。
+  /// 默认规则（从未切过开关）= `dockEmployee`（tom）前缀；团队页把别人开进来、
+  /// 把 tom 关掉，坞跟着变。**这里不能再写死 tom** —— 那会让休息中的 tom 标签
+  /// 仍然挂在坞里（2026-10-06 老板实测踩过）。
   static func isDockTab(tmuxSession: String?) -> Bool {
-    employee(ofTmuxSession: tmuxSession) == dockEmployee
+    guard let session = tmuxSession, !session.isEmpty else { return false }
+    return SharedRestStore.shared.isActive(session)
   }
 }
 

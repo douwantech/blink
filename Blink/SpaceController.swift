@@ -101,9 +101,10 @@ class SpaceController: UIViewController {
 
   /// 把服务端的公用标签同步进 tab 集合：新来的建终端并排到最前，服务器不再给的移除。
   /// 这是公用标签进入 `_viewportsKeys` 的唯一入口，也是它们唯一的生命周期管理点 ——
-  /// 不走墓碑（它们不是用户关掉的）。
+  /// 不走墓碑（它们不是用户关掉的）。**休息的标签不进坞**（SharedRestStore 过滤，
+  /// 团队页月亮开关管的就是它；默认只有 tom 的在岗）。
   private func _syncSharedTabs() {
-    let shared = ServerConfigSync.shared.sharedTabs
+    let shared = ServerConfigSync.shared.sharedTabs.filter { SharedRestStore.shared.isActive($0.tmuxSession) }
     let newKeys = shared.map { $0.id }
     let newSet = Set(newKeys)
     let previous = _sharedKeys
@@ -2613,36 +2614,37 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 
   public func tabBarDidRequestTeamStatus() {
-    // 员工=tab 标题冒号前那截（workDir 名），项目=冒号后（session 后缀），跟 tab 栏同一套规则
+    // 团队页全量吃远程数据：服务端注入的公用标签（ServerConfigSync.sharedTabs，登录即有，
+    // 员工×项目 全覆盖），不再看本地开了哪些 tab —— 本地 viewport 只代表「我开着谁」，
+    // 不是团队。员工/项目从 tmuxSession「员工-项目」拆：员工取首个 `-` 前、项目取末个
+    // `-` 后（与 #49 筛选器同口径；员工 ID 带 `-` 时归到前段，够用）。
     var items: [TeamStatusTab] = []
-    for key in _viewportsKeys {
-      let term: TermController = SessionRegistry.shared[key]
-      guard let p = term.mcpParams, let mid = p.machineId,
-            let m = BlinkMachineStore.shared.machines.first(where: { $0.id == mid }) else { continue }
-      if p.workDirId == BlinkWorkDirStore.assistantWorkDirId { continue }
-      let workDir = BlinkWorkDirStore.shared.workDir(forId: p.workDirId)
-      let dirPart = (workDir?.name.isEmpty == false) ? workDir!.name
-        : ((p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : "tab")
-      var sessionPart = (p.tmuxSession?.isEmpty == false) ? p.tmuxSession! : ""
-      if let lastDash = sessionPart.lastIndex(of: "-") {
-        sessionPart = String(sessionPart[sessionPart.index(after: lastDash)...])
-      }
-      if sessionPart == dirPart { sessionPart = "" }
-      let title = BlinkMachineStore.ccTitle(machine: m, workDirId: p.workDirId, tmuxSession: p.tmuxSession)
+    for tab in ServerConfigSync.shared.sharedTabs {
+      guard let m = BlinkMachineStore.shared.machines.first(where: { $0.id == tab.machineId }) else { continue }
+      let s = tab.tmuxSession
+      let employee = s.firstIndex(of: "-").map { String(s[s.startIndex..<$0]) } ?? s
+      let project = s.lastIndex(of: "-").map { String(s[s.index(after: $0)...]) } ?? s
       items.append(TeamStatusTab(
-        tabKey: key, machineId: mid, machineName: m.displayName,
-        employee: dirPart, project: sessionPart.isEmpty ? dirPart : sessionPart,
-        outerSession: "cc-\(title)", avatar: workDir?.iconImage,
-        resting: TabRestStore.shared.isResting(key.uuidString)))
+        tabKey: tab.id, machineId: tab.machineId, machineName: m.displayName,
+        employee: employee, project: project,
+        outerSession: "cc-\(s)", avatar: nil,
+        resting: !SharedRestStore.shared.isActive(s)))
     }
     let vc = TeamStatusViewController(tabs: items)
-    vc.onOpenTab = { [weak self] key in
-      guard let self, let idx = self._viewportsKeys.firstIndex(of: key) else { return }
-      self._moveToShell(idx: idx, animated: false)
-    }
+    // 休息开关 = 服务端真数据：写 SharedRestStore（随个人配置队列 PUT recentSelection 的
+    // restSessions 键），在岗的标签才进坞 —— 关掉的人即刻从坞里消失，开的人即刻出现。
+    // 首次切换前先把「默认只有 tom 在岗」物化成显式集合，默认规则到此让位。
     vc.onToggleRest = { [weak self] key, resting in
-      TabRestStore.shared.setResting(resting, key: key.uuidString)
-      self?._reloadTabBar()
+      let store = SharedRestStore.shared
+      store.materializeDefault(from: ServerConfigSync.shared.sharedTabs.map(\.tmuxSession))
+      if let s = ServerConfigSync.shared.sharedTabs.first(where: { $0.id == key })?.tmuxSession {
+        store.setActive(!resting, session: s)
+        // 必须重跑 sync（重画不够：_viewportsKeys/_sharedKeys 只有它更新），当前页若
+        // 落在刚被休息掉的标签上，还要挪回第一个在岗的。
+        self?._syncSharedTabs()
+        self?._selectDockFirstIfNeeded()
+        self?._reloadTabBar()
+      }
     }
     let nav = UINavigationController(rootViewController: vc)
     nav.modalPresentationStyle = .fullScreen

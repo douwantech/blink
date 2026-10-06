@@ -374,6 +374,12 @@ final class ServerConfigSync: ObservableObject {
       } else {
         defaults.removeObject(forKey: "BlinkTabFilterMachineId")
       }
+      // 公用标签休息名单回读（团队页月亮开关的服务端侧）：在岗集合随账号走，
+      // 换设备登录也是同一份。**键不在（老账号/从未切过）不物化** —— 保持「默认只有
+      // tom 在岗」的规则活着，别让空集把默认体验清掉；键在了才以服务端为准。
+      if let joined = snapshot.recentSelection["restSessions"] {
+        SharedRestStore.shared.applyServer(joined)
+      }
       // 以前这里还回读员工维度（BlinkTabFilterEmployee，给「员工×机器」二级筛选器用）。
       // 那个筛选器已按老板口径删掉，坞恒为 tom 的标签，这个键不再回读也不再上传。
     }
@@ -420,10 +426,12 @@ final class ServerConfigSync: ObservableObject {
       if isOnline { schedulePendingUpload() }
     }
     let tabs = TabStateStore.shared.snapshot()
-    // selection 里只剩机器维度（Mac rail 的导航记忆）与当前 tab。员工维度已随
-    // 「员工×机器」筛选器一起删掉 —— 坞恒为 tom 的标签，没有可存的员工选择。
-    let selection = ["machineId": defaults.string(forKey: "BlinkTabFilterMachineId") ?? "",
+    // selection 里只剩机器维度（Mac rail 的导航记忆）、当前 tab 与公用标签的休息名单
+    // （restSessions：在岗的 tmuxSession 集合，逗号拼接 —— 团队页月亮开关的服务端持久化）。
+    // 未物化（从未在团队页切过）**不带这个键**：传空集会把「默认 tom 在岗」覆盖成全休息。
+    var selection = ["machineId": defaults.string(forKey: "BlinkTabFilterMachineId") ?? "",
                      "tabId": tabs.currentId?.uuidString ?? ""]
+    if SharedRestStore.shared.loaded { selection["restSessions"] = SharedRestStore.shared.joinedActive }
     let bodies: [(String, Data?)] = [
       ("tabs", try? JSONEncoder().encode(tabs)),
       ("selection", try? JSONEncoder().encode(selection)),

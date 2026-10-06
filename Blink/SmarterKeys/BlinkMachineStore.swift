@@ -1285,6 +1285,66 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
   }
 }
 
+// MARK: - 公用标签的休息名单（服务端权威）
+
+/// 员工×项目（公用标签）的在岗名单。休息的标签**不进坞**（`_syncSharedTabs` 过滤），
+/// 团队页的行尾月亮切的就是这里。跟 TabRestStore（本地 viewport UUID）不同：键是
+/// tmuxSession 名（跨设备一致），且**服务端持久化**——随 recentSelection 的
+/// `restSessions` 键上传/回读（ServerConfigSync 的个人配置队列，自带版本对齐）。
+/// 默认（从未写过）只有 tom 的在岗；首次切换前先把默认物化成显式集合再改。
+@objc final class SharedRestStore: NSObject {
+  @objc static let shared = SharedRestStore()
+  private let kKey = "SharedRestStore.activeSessions"   // 逗号拼接的 tmuxSession
+  private(set) var loaded = false   // 本地存过或服务端回读过 → 显式集合；否则走默认规则
+  private var active: Set<String> = []
+
+  /// 默认在岗规则：tom（含 tom-xxx；员工段用 SharedTabLayout 的同一套拆法）。
+  /// 与「默认坞 = tom 的标签」口径一致，单一常量来源。
+  static func isDefaultActive(_ session: String) -> Bool {
+    SharedTabLayout.employee(ofTmuxSession: session) == SharedTabLayout.dockEmployee
+  }
+
+  private override init() {
+    if let s = UserDefaults.standard.string(forKey: kKey) {
+      active = Set(s.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+      loaded = true
+    }
+    super.init()
+  }
+
+  func isActive(_ session: String) -> Bool {
+    loaded ? active.contains(session) : Self.isDefaultActive(session)
+  }
+
+  /// 上传用的拼接串（稳定排序，diff 友好）
+  var joinedActive: String { active.sorted().joined(separator: ",") }
+
+  /// 服务端快照回读（recentSelection["restSessions"]，逗号拼接；空串 = 全员休息）。
+  /// 调用点在 ServerConfigSync.apply 的「以服务器为准」分支里 —— 本地刚改未上传时
+  /// 不会被服务端旧值冲掉（版本采纳语义已保证）。
+  func applyServer(_ joined: String) {
+    active = Set(joined.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    loaded = true
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+  }
+
+  /// 首次改动前物化默认集合（需要公用标签全量名单，由调用方给）。
+  func materializeDefault(from sessions: [String]) {
+    guard !loaded else { return }
+    active = Set(sessions.filter(Self.isDefaultActive))
+    loaded = true
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+  }
+
+  func setActive(_ on: Bool, session: String) {
+    guard loaded, !session.isEmpty else { return }
+    let changed = on ? active.insert(session).inserted : active.remove(session) != nil
+    guard changed else { return }
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+    ServerConfigSync.shared.schedulePersonalUpload()   // 真改数据：随个人配置队列 PUT 服务端
+  }
+}
+
 // MARK: - 员工在岗/休息管理面板（已退役）
 
 /// 已退役：所有入口（⋯ 菜单、Mac 侧栏 🌙）改开团队状态页 TeamStatusViewController，
