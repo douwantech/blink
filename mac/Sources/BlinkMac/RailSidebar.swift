@@ -71,33 +71,23 @@ struct SessionSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // header
+            // header：形态照旧（机器名 + host + 在岗/休息计数），计数口径 = 列出来的 tom 公用标签
             VStack(alignment: .leading, spacing: 3) {
                 Text(state.activeMachine.name).font(Theme.ui(17, .bold))
-                Text("\(state.activeMachine.host) · \(state.sidebarSessions.count) 在岗"
-                     + (state.restingCount > 0 ? " · \(state.restingCount) 休息" : ""))
+                Text("\(state.activeMachine.host) · \(state.dockSharedSessions.count) 在岗"
+                     + (state.dockRestingCount > 0 ? " · \(state.dockRestingCount) 休息" : ""))
                     .font(Theme.mono(11)).foregroundColor(Theme.dim)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
 
-            // list：公用标签是服务端注入的全局只读集合，放在最上面（服务端顺序）
+            // list：与手机坞完全同口径（老板 2026-10-06）——只铺 tom 的那几条公用标签，
+            // 服务端顺序、不分节、不挂徽标；Mac 自有标签彻底不显示。
+            // 「只是把配置放到服务器，逻辑保持之前一样」：点行进终端、右键菜单照旧。
             ScrollView {
                 VStack(spacing: 4) {
-                    if !state.sharedSessions.isEmpty {
-                        SidebarSectionLabel(title: "公用标签", count: state.sharedSessions.count)
-                        ForEach(state.sharedSessions) { s in
-                            SessionRow(session: s)
-                        }
-                    }
-                    if !state.sidebarSessions.isEmpty {
-                        // 只有两节都在时才加标题，单节时不给噪音
-                        if !state.sharedSessions.isEmpty {
-                            SidebarSectionLabel(title: "我的标签", count: state.sidebarSessions.count)
-                        }
-                        ForEach(state.sidebarSessions) { s in
-                            SessionRow(session: s)
-                        }
+                    ForEach(state.dockSharedSessions) { s in
+                        SessionRow(session: s)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -123,20 +113,6 @@ struct SessionSidebar: View {
     }
 }
 
-struct SidebarSectionLabel: View {
-    var title: String
-    var count: Int
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(title.uppercased()).font(Theme.ui(10, .bold)).foregroundColor(Theme.dim)
-            Text("\(count)").font(Theme.mono(10)).foregroundColor(Theme.dim.opacity(0.7))
-            Spacer()
-        }
-        .padding(.horizontal, 4).padding(.top, 8).padding(.bottom, 1)
-    }
-}
-
 struct SessionRow: View {
     @EnvironmentObject var state: AppState
     var session: Session
@@ -145,7 +121,7 @@ struct SessionRow: View {
     var isActive: Bool { session.id == state.activeSessionID }
 
     /// 公用标签可能挂在别的员工的机器上 —— 那台不在本机清单里就没有 transport，
-    /// 行照样列出来（老板要「全部」），但置灰，点它只给一句提示。
+    /// 行照样列出来，但置灰，点它只给一句提示。
     var machineKnown: Bool { state.machines.contains { $0.id == session.machineID } }
     var machineName: String { state.machines.first { $0.id == session.machineID }?.name ?? session.machineID }
 
@@ -163,16 +139,7 @@ struct SessionRow: View {
                        image: state.avatar(session.owner),
                        agent: state.agent(for: session), ring: Theme.panel2)
                 VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
-                        if session.isShared {
-                            Text("公用")
-                                .font(Theme.ui(9, .bold))
-                                .foregroundColor(Theme.teal)
-                                .padding(.horizontal, 5).padding(.vertical, 1.5)
-                                .background(Capsule().fill(Theme.teal.opacity(0.14)))
-                        }
-                    }
+                    Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
                     Text(subtitle).font(Theme.mono(11)).foregroundColor(Theme.sub)
                         .lineLimit(1).truncationMode(.middle)
                 }
@@ -196,29 +163,25 @@ struct SessionRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
-        // 公用标签的条目是只读的（不可休息 / 切 CLI / 关闭）—— 只给一句说明，
-        // 菜单里不放任何能点的项（能点但报错不如根本不给）。
+        // 菜单形态与改造前一致（老板 2026-10-06）：休息 / 打开时进哪个 CLI / 关闭。
+        // 公用标签的这几样都只落本地（休息表/CLI 配置/关闭墓碑），服务端目录不受影响。
         .contextMenu {
-            if session.isShared {
-                Text("公用标签 · 由管理员维护")
-            } else {
-                Button { state.toggleRest(sessionID: session.id) } label: {
-                    Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
-                          systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
-                }
-                // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
-                Menu("打开时进…") {
-                    ForEach(AgentKind.allCases) { k in
-                        Button { state.setAgent(k, for: session) } label: {
-                            Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
-                                  systemImage: k.symbol)
-                        }
+            Button { state.toggleRest(sessionID: session.id) } label: {
+                Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
+                      systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
+            }
+            // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
+            Menu("打开时进…") {
+                ForEach(AgentKind.allCases) { k in
+                    Button { state.setAgent(k, for: session) } label: {
+                        Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
+                              systemImage: k.symbol)
                     }
                 }
-                Divider()
-                Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
-                    Label("关闭标签", systemImage: "xmark")
-                }
+            }
+            Divider()
+            Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
+                Label("关闭标签", systemImage: "xmark")
             }
         }
     }

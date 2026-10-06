@@ -29,13 +29,36 @@ import SwiftUI
 // token 存 UserDefaults 而非 Keychain：SPM dev 版（swift run）无 entitlement，
 // dataProtection keychain 会 errSecMissingEntitlement，出现「存了读不回」；正式版也没配
 // keychain-access-groups。Preferences 目录 0700 用户级保护，与 ~/.secrets 同级强度。
-/// 服务端读时注入的全局公用标签（`"shared": true`）。**只读影子**：不进同步文件、
-/// 不进 iCloud KV、不可关闭/休息/切 CLI。`tmuxSession` 就是 `cc-title` 那条会话名
+/// 服务端读时注入的全局公用标签（`"shared": true`）。**上行只读**：不进同步文件、
+/// 不进 iCloud KV；关闭/休息/切 CLI 只在本地生效（本地墓碑/本地休息表），服务端
+/// 目录才是这份列表的权威。`tmuxSession` 就是 `cc-title` 那条会话名
 /// （`<员工>-<项目>`），所以它天然能对上 blinkd 枚举出来的同名活会话。
 struct SharedTab: Equatable, Codable {
   let id: String          // 服务端 UUIDv5（跨端稳定），仅用于防御性比对
   let machineId: String
   let tmuxSession: String
+}
+
+/// 侧栏列表口径（老板 2026-10-06：与 iPhone 坞完全同口径，只是把配置放到服务器，
+/// 逻辑保持之前一样）：**只铺 tom 的那几条公用标签**，非 tom 的不上列表；Mac 自有
+/// 标签彻底不显示。全部公用标签仍注册成会话（休息计数 / 团队面板用），这里只管列不列。
+enum DockTabs {
+  /// 坞/侧栏只列这一位员工。写死常量、不做筛选器 —— 与 iOS `SharedTabLayout.dockEmployee` 同值同由。
+  static let employee = "tom"
+
+  /// 从 tmuxSession 里取员工：第一个 "-" 之前（`tom-ben` → `tom`）。服务端允许员工 id
+  /// 自带 "-"，那种情况会截短（`tom-x-ben` → `tom`）—— 与 iOS 同款取舍。
+  static func employee(ofTmuxSession session: String) -> String? {
+    let head = session.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+      .first.map(String.init)?
+      .trimmingCharacters(in: .whitespaces)
+    guard let head, !head.isEmpty else { return nil }
+    return head.lowercased()
+  }
+
+  static func isDockTab(_ t: SharedTab) -> Bool {
+    employee(ofTmuxSession: t.tmuxSession) == employee
+  }
 }
 
 final class ServerSync: ObservableObject {

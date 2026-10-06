@@ -158,7 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 本地缓存这份是「重启只回 304」时的唯一来源：正常跑过一次后这里应等于服务端那份。
             lines.append("SHARED-TABS 服务端=\(ServerSync.shared.sharedTabs.count)"
                          + " 本地缓存=\(ServerSync.shared.cachedSharedTabs().count)"
-                         + " 侧栏公用行=\(s.sharedSessions.count)"
+                         + " 侧栏tom行=\(s.dockSharedSessions.count)"
+                         + " 公用会话行=\(s.sharedSessions.count)"
                          + " 本机会话=\(s.sessions.filter { !$0.isShared }.count)")
             FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
             exit(0)
