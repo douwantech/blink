@@ -93,10 +93,27 @@ static BOOL BlinkAutoReconnectEnabled(void) {
   return self;
 }
 
+// TODO(teamfix): 临时诊断日志（黑屏 tab 排查），定位完删
+static void MCPDebugLog(NSString *s) {
+  NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+  if (!docs) return;
+  static NSDateFormatter *fmt = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ fmt = [[NSDateFormatter alloc] init]; fmt.dateFormat = @"MM-dd HH:mm:ss.SSS"; });
+  FILE *f = fopen([[docs stringByAppendingPathComponent:@"teamdebug.log"] UTF8String], "a");
+  if (f) {
+    fputs([[NSString stringWithFormat:@"[%@] %@\n", [fmt stringFromDate:[NSDate date]], s] UTF8String], f);
+    fclose(f);
+  }
+}
+
 - (void)executeWithArgs:(NSString *)args {
   dispatch_async(_cmdQueue, ^{
     [self setActiveSession];
     ios_setStreams(_stream.in, _stream.out, _stream.out);
+    MCPDebugLog([NSString stringWithFormat:@"exec: machine=%@ sess=%@ initialCmd=%@ child=%@",
+                 self.sessionParams.machineId, self.sessionParams.tmuxSession,
+                 self.sessionParams.initialCommand ?: @"-", self.sessionParams.childSessionType ?: @"-"]);
 
     NSString *homePath = [BlinkPaths homePath];
     ios_setMiniRoot(homePath);
@@ -154,9 +171,12 @@ static BOOL BlinkAutoReconnectEnabled(void) {
         }
         // 开了「用 blinkd」就走 blinkd 传输(不走 SSH,绕 MDM);没开或没配 blinkd 主机则回退 ssh
         NSString *cmd = [BlinkMachineStore.shared blinkdCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
+        BOOL viaBlinkd = cmd.length > 0;
         if (cmd.length == 0) {
           cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
         }
+        MCPDebugLog([NSString stringWithFormat:@"cmd: sess=%@ resolvedMachine=%@ via=%@ cmd=%@",
+                     self.sessionParams.tmuxSession, machineId, viaBlinkd ? @"blinkd" : @"ssh", cmd ?: @"(nil)"]);
         if (cmd) {
           NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
           if (hostInfo) {
@@ -193,6 +213,9 @@ static BOOL BlinkAutoReconnectEnabled(void) {
     self->_currentCmdLine = cmd;
     [self _runCommand:cmd skipHistoryRecord:skipHistoryRecord];
     self->_currentCmdLine = nil;
+    // TODO(teamfix): 临时诊断日志（黑屏排查）：命令退出（连接断开/失败都走这里），定位完删
+    NSString *head = cmd.length > 24 ? [cmd substringToIndex:24] : cmd;
+    MCPDebugLog([NSString stringWithFormat:@"cmdDone: sess=%@ cmdHead=%@ sawConnect=%d", self.sessionParams.tmuxSession, head, self->_sawConnect]);
   });
 }
 
@@ -325,6 +348,7 @@ static BOOL BlinkAutoReconnectEnabled(void) {
 // 连接成功回调（ssh.swift 在连上后调）：喂给看门狗，标记本次尝试已连上
 - (void)sshClientDidConnect {
   _sawConnect = YES;
+  MCPDebugLog([NSString stringWithFormat:@"connected: sess=%@ machine=%@", self.sessionParams.tmuxSession, self.sessionParams.machineId]);
 }
 
 // 按机器重新生成 ssh 命令（重新解析 host：LAN 坏了自动降级外网/tailscale）；非机器型返回原命令
@@ -369,6 +393,7 @@ static BOOL BlinkAutoReconnectEnabled(void) {
       return;
     }
     [self->_device writeOutLn:@"\r\n\033[33m⚠️ 连接卡住（12s 没连上），重连中…\033[0m"];
+    MCPDebugLog([NSString stringWithFormat:@"watchdogKill: sess=%@ waitingInput=%d", self.sessionParams.tmuxSession, self->_device.waitingForInput]);
     dispatch_sync(self->_sshQueue, ^{
       for (id client in self->_sshClients) { [client kill]; }
     });

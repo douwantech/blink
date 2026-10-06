@@ -105,6 +105,8 @@ class SpaceController: UIViewController {
   /// 团队页月亮开关管的就是它；默认只有 tom 的在岗）。
   private func _syncSharedTabs() {
     let shared = ServerConfigSync.shared.sharedTabs.filter { SharedRestStore.shared.isActive($0.tmuxSession) }
+    // TODO(teamfix): 临时诊断日志（非 tom 在岗不显示的排查），定位完删
+    Self.teamDebugLog("sync: serverTabs=\(ServerConfigSync.shared.sharedTabs.count) activeAfter=\(shared.map(\.tmuxSession).sorted().joined(separator: ","))")
     let newKeys = shared.map { $0.id }
     let newSet = Set(newKeys)
     let previous = _sharedKeys
@@ -124,6 +126,15 @@ class SpaceController: UIViewController {
     }
 
     let dropped = previous.subtracting(newSet)
+    // TODO(teamfix): 临时诊断日志（终端反复重建排查），定位完删
+    if !dropped.isEmpty {
+      var names: [String] = []
+      for k in dropped {
+        let t: TermController? = SessionRegistry.shared[k]
+        names.append(t?.mcpParams?.tmuxSession ?? "?")
+      }
+      Self.teamDebugLog("dropTabs: count=\(dropped.count) sessions=\(names.sorted().joined(separator: ","))")
+    }
     for key in dropped {
       let term: TermController = SessionRegistry.shared[key]
       term.delegate = nil
@@ -654,7 +665,11 @@ class SpaceController: UIViewController {
   /// Mac rail 选定的那台机器再从里面收窄；手机上恒为 nil，所以就是 tom 的那 6 条。
   /// **只读派生**：渲染路径绝不写回 —— 写回会让每次刷坞都触发一次 personal 上传。
   private func _dockKeySet() -> Set<UUID> {
-    let machineId = _tabFilterMachineId
+    // 机器收窄只属于 Mac rail（选定机器高亮用）。手机坞 = **全部**在岗标签跨机器平铺；
+    // 别让 selection 回读来的 machineId 把手机坞锁死在一台机器上（2026-10-06 踩过：
+    // Mac 端 rail 选过 brain 后 iPhone 坞永远只剩 brain 的 tom 三条，其他员工开在岗
+    // 也不显示 —— _tabFilterMachineId 底层是 UserDefaults，会被 ServerConfigSync 回写）。
+    let machineId = _macRail != nil ? _tabFilterMachineId : nil
     return Set(_viewportsKeys.filter { key in
       guard _sharedKeys.contains(key) else { return false }
       let p = (SessionRegistry.shared[key] as TermController).mcpParams
@@ -1116,6 +1131,7 @@ Please go to your subscriptions and cancel one of them!
     term.bgColor = view.backgroundColor ?? .black
     _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     _currentKey = survivors[newIdx]
+    term.resumeIfNeeded()   // 补位的也可能是没启动过的，同上要踢一脚
     if _macLayoutEnabled { _attachInputToCurrentTerm() }
   }
   
@@ -1136,22 +1152,18 @@ Please go to your subscriptions and cancel one of them!
       return
     }
 
-    let direction: UIPageViewController.NavigationDirection
-    let term: TermController
-    
-    if idx < _viewportsKeys.endIndex {
-      direction = .forward
-      term = SessionRegistry.shared[_viewportsKeys[idx]]
-    } else {
-      direction = .reverse
-      term = SessionRegistry.shared[_viewportsKeys[idx - 1]]
-    }
+    // 落位 = 与手动滑动**同一条**路径与顺序（老板口径 2026-10-07：别自成一派）：
+    // completion 里 先 resumeIfNeeded（旁边 tab 可能是没启动过的新建）→ 再设
+    // _currentKey → HUD/输入焦点。旧实现把 _currentKey 提前到切页之前写，
+    // didSet 的整套副作用（持久化/刷坞）会跟切页动画赛跑，是黑屏来源之一。
+    let neighborIdx = min(idx, _viewportsKeys.count - 1)
+    let term: TermController = SessionRegistry.shared[_viewportsKeys[neighborIdx]]
+    term.delegate = self
     term.bgColor = view.backgroundColor ?? .black
-    
-    self._currentKey = term.meta.key
-    
     _spaceControllerAnimating = true
-    _viewportsController.setViewControllers([term], direction: direction, animated: true) { (didComplete) in
+    _viewportsController.setViewControllers([term], direction: .forward, animated: true) { _ in
+      term.resumeIfNeeded()
+      self._currentKey = term.meta.key
       self._displayHUD()
       if attachInput {
         self._attachInputToCurrentTerm()
@@ -1273,7 +1285,7 @@ extension SpaceController: UIPageViewControllerDataSource {
     guard let ctrl = controller as? TermController else { return nil }
     let key = ctrl.meta.key
     // 与 tab 栏一致：左右滑动也跳过被「只显示工作中」隐藏（休息）的 tab
-    let filtered = _visibleFilteredKeys(current: key)
+    let filtered = _visibleFilteredKeys()
     if let pos = filtered.firstIndex(of: key)?.advanced(by: advancedBy),
        filtered.indices.contains(pos) {
       let newCtrl: TermController = SessionRegistry.shared[filtered[pos]]
@@ -1819,12 +1831,24 @@ extension SpaceController {
   public func toggleRestCurrentTab() { _toggleRestForCurrentTab() }
 
   /// dock 😴 钮：把当前 tab 标记 / 取消标记「休息」。
-  /// 若「只显示工作中」开着且刚标为休息，立刻跳到下一个「工作中」tab，让这个 tab 被过滤隐藏。
+  /// 公用标签走 SharedRestStore（服务端权威）：休息的标签从坞里消失，重新在岗再回来
+  ///（与团队页月亮开关同一条链）。其它 tab 才走旧的本地标记路径。
   @objc private func _toggleRestForCurrentTab() {
     guard let key = _currentKey else { return }
-    let nowResting = TabRestStore.shared.toggle(key.uuidString)
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
+    if _sharedKeys.contains(key),
+       let sess = (SessionRegistry.shared[key] as TermController).mcpParams?.tmuxSession {
+      let store = SharedRestStore.shared
+      store.materializeDefault(from: ServerConfigSync.shared.sharedTabs.map(\.tmuxSession))
+      store.setActive(!store.isActive(sess), session: sess)
+      _syncSharedTabs()
+      _selectDockFirstIfNeeded()
+      _reloadTabBar()
+      return
+    }
+
+    let nowResting = TabRestStore.shared.toggle(key.uuidString)
     let target = nowResting && _workModeOn ? _nextWorkingKey(excluding: key) : nil
     if let target = target {
       // 切走后 _currentKey.didSet 会自动 _reloadTabBar，原 tab 即被隐藏
@@ -1915,9 +1939,16 @@ extension SpaceController {
         title = term.meta.tabTitle ?? "Tab \(idx + 1)"
       }
       titles.append(title)
-      // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
+      // 头像：员工目录（内置像素图）优先 —— 从 tmuxSession「员工-项目」拆员工，
+      // 公用标签没有 workDir 图标可退（_syncSharedTabs 建的 terminal workDirId 为
+      // nil，chip 会只剩文字）；自有标签再退 workDir 自带图标；都没有给 nil。
       var icon: UIImage? = nil
-      if let wid = term.mcpParams?.workDirId,
+      if let sess = term.mcpParams?.tmuxSession,
+         let emp = SharedTabLayout.employee(ofTmuxSession: sess),
+         let img = BlinkPeopleStore.shared.directoryIcon(for: emp) {
+        icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
+      }
+      if icon == nil, let wid = term.mcpParams?.workDirId,
          let img = BlinkWorkDirStore.shared.workDir(forId: wid)?.iconImage {
         icon = AvatarRenderer.roundedThumbnail(from: img, size: CGSize(width: 26, height: 26))
       }
@@ -2395,11 +2426,12 @@ extension SpaceController {
 
   /// 机器过滤后再排除「只显示工作中」隐藏（休息）的 tab；`current` 永远保留（哪怕它被标了休息），
   /// 这样左右滑动翻页遍历的集合与 tab 栏显示的一致。
-  private func _visibleFilteredKeys(current: UUID? = nil) -> [UUID] {
-    _filteredViewportsKeys().filter { k in
-      if k == (current ?? _currentKey) { return true }
-      return !(_workModeOn && TabRestStore.shared.isResting(k.uuidString))
-    }
+  private func _visibleFilteredKeys() -> [UUID] {
+    // 休息已由 SharedRestStore 统一管（_syncSharedTabs/_dockKeySet 层面过滤，服务端
+    // 权威）。这里不再叠旧的 TabRestStore（本地 UUID 休息标记）过滤 —— 旧面板时代的
+    // 残留标记会污染翻页集合，造成「chip 看得见、滑动却跳过」（2026-10-06 老板实测
+    // tom-ben 被跳过：坞渲染不读旧 store，翻页集合读，两边不一致）。
+    _filteredViewportsKeys()
   }
 
   private func _advanceShell(by: Int, animated: Bool = true) {
@@ -2447,11 +2479,18 @@ extension SpaceController {
 
     let indexed = _viewportsKeys.enumerated().map { (offset: $0.offset, key: $0.element) }
     let sorted = indexed.sorted { a, b in
-      // 公用标签永远排在自有标签前面，内部保持服务端顺序（_syncSharedTabs 写入的顺序）。
+      // 公用标签永远排在自有标签前面，内部按名字排（tmuxSession 字母序：
+      // adam-blink < candy-blink < jack-ben < tom-ben…，老板口径 2026-10-06），
+      // 大小写不敏感；同名再按原顺序保持稳定。
       let sharedA = _sharedKeys.contains(a.key)
       let sharedB = _sharedKeys.contains(b.key)
       if sharedA != sharedB { return sharedA }
-      if sharedA && sharedB { return a.offset < b.offset }
+      if sharedA && sharedB {
+        let sa = (SessionRegistry.shared[a.key] as TermController).mcpParams?.tmuxSession ?? ""
+        let sb = (SessionRegistry.shared[b.key] as TermController).mcpParams?.tmuxSession ?? ""
+        if sa != sb { return sa.localizedCaseInsensitiveCompare(sb) == .orderedAscending }
+        return a.offset < b.offset
+      }
       let ta: TermController = SessionRegistry.shared[a.key]
       let tb: TermController = SessionRegistry.shared[b.key]
       let mka = ta.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
@@ -2594,12 +2633,17 @@ extension SpaceController: BlinkTabBarDelegate {
     let key = _viewportsKeys[index]
     if key == _currentKey { return }
     let term: TermController = SessionRegistry.shared[key]
+    // TODO(teamfix): 临时诊断日志（黑屏 tab 排查），定位完删
+    Self.teamDebugLog("select: sess=\(term.mcpParams?.tmuxSession ?? "-") suspended=\(term.meta.isSuspended) payload=\(term.mcpParams != nil) viewLoaded=\(term.isViewLoaded)")
     term.delegate = self
     term.bgColor = view.backgroundColor ?? .black
     let curIdx = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? 0
     let direction: UIPageViewController.NavigationDirection = (index >= curIdx) ? .forward : .reverse
     _viewportsController.setViewControllers([term], direction: direction, animated: true) { [weak self] _ in
+      // 与滑动翻页（didFinishAnimating）完全同序：先踢启动，再设 currentKey。
+      term.resumeIfNeeded()
       self?._currentKey = key
+      self?._attachInputToCurrentTerm()
     }
   }
 
@@ -2611,6 +2655,20 @@ extension SpaceController: BlinkTabBarDelegate {
     // 齿轮和 ⌘, / ⋯ 菜单 / `config` 命令进的是同一个设置页：传真实 voiceDock，
     // 「识别语言」才不会永远显示「—」（此前这里传的是 nil）。
     presentSettings()
+  }
+
+  /// TODO(teamfix): 临时诊断日志（写 Documents/teamdebug.log，真机可拉容器），定位完删
+  static func teamDebugLog(_ s: String) {
+    let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss.SSS"
+    let line = "[\(f.string(from: Date()))] \(s)\n"
+    guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+    let url = dir.appendingPathComponent("teamdebug.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+      h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+    } else {
+      try? Data(line.utf8).write(to: url)
+    }
+    NSLog("[teamfix] \(s)")
   }
 
   public func tabBarDidRequestTeamStatus() {
@@ -2639,6 +2697,8 @@ extension SpaceController: BlinkTabBarDelegate {
       store.materializeDefault(from: ServerConfigSync.shared.sharedTabs.map(\.tmuxSession))
       if let s = ServerConfigSync.shared.sharedTabs.first(where: { $0.id == key })?.tmuxSession {
         store.setActive(!resting, session: s)
+        // TODO(teamfix): 临时诊断日志，定位完删
+        Self.teamDebugLog("toggle: sess=\(s) toResting=\(resting) loaded=\(store.loaded) joined=\(store.joinedActive) dockSet=\(self?._dockKeySet().count ?? -1)")
         // 必须重跑 sync（重画不够：_viewportsKeys/_sharedKeys 只有它更新），当前页若
         // 落在刚被休息掉的标签上，还要挪回第一个在岗的。
         self?._syncSharedTabs()

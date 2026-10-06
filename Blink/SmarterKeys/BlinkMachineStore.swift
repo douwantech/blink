@@ -1563,17 +1563,21 @@ final class HorizontalOnlyScrollView: UIScrollView {
     // 空坞就是空坞：老板口径「不保留退路」，不铺提示行、不拿本地标签顶上。
     layoutIfNeeded()
     if visibleIndexOfCurrent >= 0, visibleIndexOfCurrent < tags.count {
-      scrollToVisibleTab(tag: tags[visibleIndexOfCurrent], animated: true)
+      scrollToVisibleTab(tag: tags[visibleIndexOfCurrent])
     }
   }
 
   /// 滚到某个 tag 对应的按钮。按 tag 查而不是按下标取，因为节标题也占着 arrangedSubviews。
-  private func scrollToVisibleTab(tag: Int, animated: Bool) {
+  /// 距离近（约一屏内）带动画滑过去；跨机大跳（字母序后 adam↔tom 隔了整排 chips）直接
+  /// 跳到位 —— scrollRectToVisible 的长距离动画会滚过所有中间 chips，视觉上「转一大圈」
+  /// （2026-10-06 老板反馈）。
+  private func scrollToVisibleTab(tag: Int) {
     guard let btn = tabButtons[tag] else { return }
     let frameInScroll = btn.convert(btn.bounds, to: scrollView)
     let pad: CGFloat = 24
     let target = frameInScroll.insetBy(dx: -pad, dy: 0)
-    scrollView.scrollRectToVisible(target, animated: animated)
+    let near = abs(target.midX - scrollView.bounds.midX) <= scrollView.bounds.width * 2
+    scrollView.scrollRectToVisible(target, animated: near)
   }
 
   /// 外部（SpaceController）刷新休息人数（显示在 ⋯ 菜单的「在岗/休息」项里）。
@@ -1634,7 +1638,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     }
     cfg.imagePadding = 7
     cfg.imagePlacement = .leading
-    // 右侧留给在岗绿点/未读红点（原先还留给公用标签的「公用」徽标，坞平铺后不需要了）
+    // 右侧留给未读红点（原先是在岗绿点/「公用」徽标的地盘，都已按老板口径删除）
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
     cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : 0.55)
     let btn = UIButton(configuration: cfg)
@@ -1650,24 +1654,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
 
-    // 在岗绿点（带微光）
-    let status = UIView()
-    status.translatesAutoresizingMaskIntoConstraints = false
-    status.backgroundColor = UIColor(red: 0.23, green: 0.82, blue: 0.50, alpha: 1)   // #3ad07f
-    status.layer.cornerRadius = 3.5
-    status.layer.shadowColor = status.backgroundColor?.cgColor
-    status.layer.shadowOpacity = 0.7
-    status.layer.shadowRadius = 3
-    status.layer.shadowOffset = .zero
-    status.isUserInteractionEnabled = false
-    btn.addSubview(status)
-    NSLayoutConstraint.activate([
-      status.widthAnchor.constraint(equalToConstant: 7),
-      status.heightAnchor.constraint(equalToConstant: 7),
-      status.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -11),
-      status.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
-    ])
-
+    // 右侧不再画在岗绿点（老板口径 2026-10-06 删）；未读红点还在，trailing 留白只为它。
     if hasUnread {
       let dot = UIView()
       dot.translatesAutoresizingMaskIntoConstraints = false

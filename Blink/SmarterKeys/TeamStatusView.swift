@@ -100,6 +100,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       if active.isEmpty { return .rest }
       return active.map(\.status).min(by: { $0.rawValue < $1.rawValue }) ?? .idle
     }
+    /// 「按项目」视图用：裁剪到只显示该项目行（卡片样式不变，休息态按剩余行重算）
+    func trimmed(toProject p: String) -> Group {
+      var c = self
+      c.rows = rows.filter { $0.project == p }
+      c.resting = c.rows.allSatisfy(\.resting)
+      return c
+    }
   }
 
   private var tabs: [TeamStatusTab]
@@ -541,56 +548,44 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     tableView.reloadData()
   }
 
-  // MARK: 视图数据（按员工 = 状态分段；按项目 = 项目分段）
+  // MARK: 视图数据 —— 三个视图用同一张员工卡片，只有分组维度不同（老板口径 2026-10-07：
+  // 按项目/按机器的显示和按员工一样）。
 
-  /// 原来按 等你拍板/干活中/空闲/休息中 分四段——探测出来的档位不准，分段等于把人乱放，
-  /// 现在一段列全，顺序就是 groups 的顺序。
+  /// 按员工：一段列全，顺序就是 groups 的顺序（机器序 → 员工名）。
   private var employeeSections: [(status: TeamWorkStatus, items: [Group])] {
     groups.isEmpty ? [] : [(.work, groups)]
   }
 
-  private struct MemberEntry { let group: Group; let row: ProjectRow }
-  private var projectSections: [(project: String, items: [MemberEntry])] {
+  /// 按项目：项目分 section，组内 = 参与该项目的员工卡（裁剪到只显示该项目行，
+  /// 卡片与按员工视图同款：头像/角色/月亮开关/齿轮全在）。
+  private var projectSections: [(project: String, items: [Group])] {
     var order: [String] = []
-    var map: [String: [MemberEntry]] = [:]
+    var map: [String: [Group]] = [:]
     for g in groups {
       for r in g.rows {
-        // 项目按名字合并：不同机器上的同一个项目放一组（成员行里带机器名区分）
         let k = r.project
         if map[k] == nil { order.append(k); map[k] = [] }
-        map[k]?.append(MemberEntry(group: g, row: r))
+        if !(map[k]?.contains { $0.employee == g.employee && $0.machineId == g.machineId } ?? false) {
+          map[k]?.append(g.trimmed(toProject: r.project))
+        }
       }
-    }
-    // 每个项目组内按紧急度排；有等你的项目整组置顶
-    for k in map.keys {
-      map[k]?.sort { memberStatus($0).rawValue < memberStatus($1).rawValue }
     }
     // 一组里混着几台机器，用组里最靠前的那台定位次，跟机器列表同序
     let ranks = Self.machineRanks()
     return order.sorted { a, b in
-      let ra = map[a]?.map { ranks[$0.group.machineId] ?? Int.max }.min() ?? Int.max
-      let rb = map[b]?.map { ranks[$0.group.machineId] ?? Int.max }.min() ?? Int.max
+      let ra = map[a]?.map { ranks[$0.machineId] ?? Int.max }.min() ?? Int.max
+      let rb = map[b]?.map { ranks[$0.machineId] ?? Int.max }.min() ?? Int.max
       return ra != rb ? ra < rb : a < b
     }.map { ($0, map[$0] ?? []) }
   }
-  private func memberStatus(_ e: MemberEntry) -> TeamWorkStatus {
-    e.row.effective
-  }
 
-  /// 按机器：机器分 section，行=tab（员工×项目），在岗排前休息沉底（旧在岗/休息面板并入这里）
-  private var machineSections: [(machine: String, items: [MemberEntry])] {
+  /// 按机器：机器分 section，组内 = 该机器上的员工卡（Group 本来就是 机器×员工，原样列）。
+  private var machineSections: [(machine: String, items: [Group])] {
     var order: [String] = []
-    var map: [String: [MemberEntry]] = [:]
-    // groups 已经按机器列表排过序，这里照它的顺序收就行
+    var map: [String: [Group]] = [:]
     for g in groups {
       if map[g.machineName] == nil { order.append(g.machineName); map[g.machineName] = [] }
-      for r in g.rows { map[g.machineName]?.append(MemberEntry(group: g, row: r)) }
-    }
-    for k in map.keys {
-      map[k]?.sort {
-        if $0.row.resting != $1.row.resting { return !$0.row.resting }
-        return $0.row.effective.rawValue < $1.row.effective.rawValue
-      }
+      map[g.machineName]?.append(g)
     }
     return order.map { ($0, map[$0] ?? []) }
   }
@@ -619,14 +614,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       return nil
     case .project:
       let s = projectSections[section]
-      let waitCount = s.items.filter { memberStatus($0) == .wait }.count
-      let hint = waitCount > 0 ? "\(s.items.count) 人 · \(waitCount) 个等你" : "\(s.items.count) 人"
+      let restCount = s.items.filter(\.resting).count
+      let hint = restCount > 0 ? "\(s.items.count) 人 · \(restCount) 休息" : "\(s.items.count) 人"
       return SectionHeader(symbol: "folder", color: UIColor.white.withAlphaComponent(0.75),
                            title: s.project, hint: hint)
     case .machine:
       let s = machineSections[section]
-      let restCount = s.items.filter { $0.row.resting }.count
-      let hint = restCount > 0 ? "\(s.items.count) 个 tab · \(restCount) 休息" : "\(s.items.count) 个 tab"
+      let restCount = s.items.filter(\.resting).count
+      let hint = restCount > 0 ? "\(s.items.count) 人 · \(restCount) 休息" : "\(s.items.count) 人"
       return SectionHeader(symbol: "desktopcomputer", color: UIColor.white.withAlphaComponent(0.75),
                            title: s.machine, hint: hint)
     }
@@ -641,27 +636,21 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   }
 
   func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    // 三个视图同一张员工卡片（老板口径 2026-10-07），只是分组维度不同。
+    // 「按项目」的节标题就是项目名，卡片行里不再重复显示。
+    let g: Group
     switch mode {
-    case .employee:
-      let g = employeeSections[indexPath.section].items[indexPath.row]
-      let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
-      cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
-      cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
-      cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
-      cell.onRowAgent = { [weak self] key, anchor in self?.pickAgent(tabKey: key, anchor: anchor) }
-      return cell
-    case .project:
-      let e = projectSections[indexPath.section].items[indexPath.row]
-      let cell = tv.dequeueReusableCell(withIdentifier: "mem", for: indexPath) as! MemberRowCell
-      cell.configure(entry: (e.group, e.row), status: memberStatus(e), panel: panel, sub: sub)
-      return cell
-    case .machine:
-      let e = machineSections[indexPath.section].items[indexPath.row]
-      let cell = tv.dequeueReusableCell(withIdentifier: "mch", for: indexPath) as! MachineRowCell
-      cell.configure(entry: (e.group, e.row), status: memberStatus(e), panel: panel, sub: sub)
-      cell.onToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
-      return cell
+    case .employee: g = employeeSections[indexPath.section].items[indexPath.row]
+    case .project:  g = projectSections[indexPath.section].items[indexPath.row]
+    case .machine:  g = machineSections[indexPath.section].items[indexPath.row]
     }
+    let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
+    cell.configure(group: g, panel: panel, panel2: panel2, sub: sub,
+                   hideProjectNames: mode == .project)
+    cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
+    cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
+    cell.onRowAgent = { [weak self] key, anchor in self?.pickAgent(tabKey: key, anchor: anchor) }
+    return cell
   }
 
   // 点击跳 tab 已去掉：页面纯看状态 + 拨休息开关，不再响应行选中。
@@ -808,6 +797,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     private let machineLabel = UILabel()
     private let pill = StatusPill()
     private let projStack = UIStackView()
+    /// 单项目卡（按项目视图）专用：行尾控件上移到卡片头，整卡压成一行
+    private let tailGear = UIButton(type: .system)
+    private let tailMoon = UIButton(type: .system)
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
       super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -844,7 +836,22 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let who = UIStackView(arrangedSubviews: [nameRow, machineLabel])
       who.axis = .vertical
       who.spacing = 1
-      let row1 = UIStackView(arrangedSubviews: [avatarView, who, pill])
+      // 单项目卡（按项目视图）：月亮/齿轮上移到这里，整卡一行（老板口径 2026-10-07）
+      tailGear.tag = -1
+      tailGear.setImage(UIImage(systemName: "gearshape",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)), for: .normal)
+      tailGear.addTarget(self, action: #selector(rowAgentTapped(_:)), for: .touchUpInside)
+      tailGear.setContentHuggingPriority(.required, for: .horizontal)
+      tailGear.setContentCompressionResistancePriority(.required, for: .horizontal)
+      tailMoon.tag = -1
+      tailMoon.addTarget(self, action: #selector(rowToggleTapped(_:)), for: .touchUpInside)
+      tailMoon.setContentHuggingPriority(.required, for: .horizontal)
+      tailMoon.setContentCompressionResistancePriority(.required, for: .horizontal)
+      let tail = UIStackView(arrangedSubviews: [pill, tailGear, tailMoon])
+      tail.axis = .horizontal
+      tail.spacing = 10
+      tail.alignment = .center
+      let row1 = UIStackView(arrangedSubviews: [avatarView, who, tail])
       row1.axis = .horizontal
       row1.spacing = 9
       row1.alignment = .center
@@ -895,7 +902,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       onRowAgent?(info.key, b)
     }
 
-    fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor) {
+    fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor,
+                               hideProjectNames: Bool = false) {
       card.backgroundColor = panel
       let st = g.status
       card.alpha = st == .rest ? 0.55 : 1
@@ -935,6 +943,25 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         return a.offset < b.offset
       }.map(\.element)
       rowInfoByTag.removeAll()
+      if hideProjectNames {
+        // 单项目卡（按项目视图）：项目行整个拿掉，整卡压成一行 ——
+        // 月亮/齿轮上移到卡片头（tailGear/tailMoon，tag=-1 复用行级 target）。
+        projStack.isHidden = true
+        tailGear.isHidden = false
+        tailMoon.isHidden = false
+        if let only = ordered.first {
+          rowInfoByTag[-1] = (only.tabKey, only.resting)
+          tailMoon.setImage(UIImage(systemName: only.resting ? "moon.zzz.fill" : "moon",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)), for: .normal)
+          tailMoon.tintColor = only.resting ? TeamWorkStatus.rest.color : UIColor.white.withAlphaComponent(0.4)
+          tailGear.tintColor = only.agent == .claude ? UIColor.white.withAlphaComponent(0.4)
+                                                     : AgentMark.brand(only.agent)
+        }
+        return
+      }
+      projStack.isHidden = false
+      tailGear.isHidden = true
+      tailMoon.isHidden = true
       for (i, r) in ordered.enumerated() {
         let line = UIView()
         line.layer.cornerRadius = 9

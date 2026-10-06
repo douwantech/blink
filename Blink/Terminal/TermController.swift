@@ -418,6 +418,8 @@ extension TermController: TermDeviceDelegate {
   }
 
   public func deviceIsReady() {
+    // TODO(teamfix): 临时诊断日志（黑屏 tab 排查），定位完删
+    SpaceController.teamDebugLog("ready: id=\(Unmanaged.passUnretained(self).toOpaque()) sess=\((mcpParams?.tmuxSession) ?? "-") payload=\(_sessionPayload != nil) session=\(_session != nil)")
     if _sessionPayload != nil {
       _startSession()
     } else {
@@ -533,8 +535,14 @@ extension TermController: SuspendableSession {
 
   func _startSession() {
     guard let payload = _sessionPayload,
-          _session == nil else { return }
+          _session == nil else {
+      // TODO(teamfix): 临时诊断日志（黑屏 tab 排查），定位完删
+      SpaceController.teamDebugLog("startSkip: sess=\((mcpParams?.tmuxSession) ?? "-") payloadNil=\(_sessionPayload == nil) sessionAlive=\(_session != nil)")
+      return
+    }
 
+    // TODO(teamfix): 临时诊断日志（黑屏 tab 排查），定位完删
+    SpaceController.teamDebugLog("start: sess=\((mcpParams?.tmuxSession) ?? "-")")
     payload.start(in: _termDevice, sessionKey: meta.key.uuidString)
     _session?.delegate = self
 
