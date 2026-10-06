@@ -81,11 +81,23 @@ struct SessionSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
 
-            // list
+            // list：公用标签是服务端注入的全局只读集合，放在最上面（服务端顺序）
             ScrollView {
                 VStack(spacing: 4) {
-                    ForEach(state.sidebarSessions) { s in
-                        SessionRow(session: s)
+                    if !state.sharedSessions.isEmpty {
+                        SidebarSectionLabel(title: "公用标签", count: state.sharedSessions.count)
+                        ForEach(state.sharedSessions) { s in
+                            SessionRow(session: s)
+                        }
+                    }
+                    if !state.sidebarSessions.isEmpty {
+                        // 只有两节都在时才加标题，单节时不给噪音
+                        if !state.sharedSessions.isEmpty {
+                            SidebarSectionLabel(title: "我的标签", count: state.sidebarSessions.count)
+                        }
+                        ForEach(state.sidebarSessions) { s in
+                            SessionRow(session: s)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -111,12 +123,36 @@ struct SessionSidebar: View {
     }
 }
 
+struct SidebarSectionLabel: View {
+    var title: String
+    var count: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title.uppercased()).font(Theme.ui(10, .bold)).foregroundColor(Theme.dim)
+            Text("\(count)").font(Theme.mono(10)).foregroundColor(Theme.dim.opacity(0.7))
+            Spacer()
+        }
+        .padding(.horizontal, 4).padding(.top, 8).padding(.bottom, 1)
+    }
+}
+
 struct SessionRow: View {
     @EnvironmentObject var state: AppState
     var session: Session
     @State private var hovering = false
 
     var isActive: Bool { session.id == state.activeSessionID }
+
+    /// 公用标签可能挂在别的员工的机器上 —— 那台不在本机清单里就没有 transport，
+    /// 行照样列出来（老板要「全部」），但置灰，点它只给一句提示。
+    var machineKnown: Bool { state.machines.contains { $0.id == session.machineID } }
+    var machineName: String { state.machines.first { $0.id == session.machineID }?.name ?? session.machineID }
+
+    var subtitle: String {
+        guard session.isShared else { return session.dir }
+        return machineKnown ? machineName : "\(machineName) · 未在本机配置"
+    }
 
     var body: some View {
         Button {
@@ -127,8 +163,17 @@ struct SessionRow: View {
                        image: state.avatar(session.owner),
                        agent: state.agent(for: session), ring: Theme.panel2)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
-                    Text(session.dir).font(Theme.mono(11)).foregroundColor(Theme.sub)
+                    HStack(spacing: 5) {
+                        Text(session.name).font(Theme.ui(14, .semibold)).foregroundColor(Theme.fg)
+                        if session.isShared {
+                            Text("公用")
+                                .font(Theme.ui(9, .bold))
+                                .foregroundColor(Theme.teal)
+                                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                .background(Capsule().fill(Theme.teal.opacity(0.14)))
+                        }
+                    }
+                    Text(subtitle).font(Theme.mono(11)).foregroundColor(Theme.sub)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
@@ -146,27 +191,34 @@ struct SessionRow: View {
                 }
             }
             .contentShape(Rectangle())   // 整行(含空白/Spacer)都可点
+            .opacity(session.isShared && !machineKnown ? 0.45 : 1)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
+        // 公用标签的条目是只读的（不可休息 / 切 CLI / 关闭）—— 只给一句说明，
+        // 菜单里不放任何能点的项（能点但报错不如根本不给）。
         .contextMenu {
-            Button { state.toggleRest(sessionID: session.id) } label: {
-                Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
-                      systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
-            }
-            // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
-            Menu("打开时进…") {
-                ForEach(AgentKind.allCases) { k in
-                    Button { state.setAgent(k, for: session) } label: {
-                        Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
-                              systemImage: k.symbol)
+            if session.isShared {
+                Text("公用标签 · 由管理员维护")
+            } else {
+                Button { state.toggleRest(sessionID: session.id) } label: {
+                    Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
+                          systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
+                }
+                // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
+                Menu("打开时进…") {
+                    ForEach(AgentKind.allCases) { k in
+                        Button { state.setAgent(k, for: session) } label: {
+                            Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
+                                  systemImage: k.symbol)
+                        }
                     }
                 }
-            }
-            Divider()
-            Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
-                Label("关闭标签", systemImage: "xmark")
+                Divider()
+                Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
+                    Label("关闭标签", systemImage: "xmark")
+                }
             }
         }
     }

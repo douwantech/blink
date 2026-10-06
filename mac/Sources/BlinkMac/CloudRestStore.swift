@@ -96,7 +96,10 @@ enum CloudRestStore {
     /// 返回是否真的写了（无映射/无 KV → false，调用方回退本地）。
     @discardableResult
     static func setResting(key: String, on: Bool, mapping: Mapping) -> Bool {
-        guard available, let ids = mapping.ccToUUIDs[key.lowercased()], !ids.isEmpty else { return false }
+        guard available, let mapped = mapping.ccToUUIDs[key.lowercased()], !mapped.isEmpty else { return false }
+        // 第二道闸：公用标签不进映射（上游已剥），万一漏进来也绝不写进 resting。
+        let ids = mapped.filter { !PublicTabIDs.contains($0) }
+        guard !ids.isEmpty else { return false }
         let upper = Set(ids.map { $0.uppercased() })
         // 同步文件：各端采纳时整份替换 resting，所以写完整数组
         var fileDone = false

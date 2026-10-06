@@ -120,6 +120,9 @@ struct Session: Identifiable {
     var tmuxName: String? = nil
     /// 枚举完成前的占位会话，不建终端后端。
     var placeholder: Bool = false
+    /// 服务端注入的**公用标签**（管理员维护，全局共享）。能点开当终端用，但标签条目本身只读：
+    /// 不可关闭 / 休息 / 切 CLI，也不进同步文件与 iCloud KV。见 AppState.applySharedTabs()。
+    var isShared: Bool = false
 
     /// owner = 会话名第一段（jack-talkai → jack），用来对上 iOS 配的头像。
     var owner: String { name.split(separator: "-").first.map(String.init) ?? name }
