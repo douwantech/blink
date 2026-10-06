@@ -360,6 +360,14 @@ static BOOL BlinkAutoReconnectEnabled(void) {
     dispatch_sync(self->_sshQueue, ^{ clientCount = self->_sshClients.count; });
     if (clientCount == 0) { return; }
     if (![cmdline isEqualToString:self->_autoConnectCommand]) { return; }  // 已经换了命令
+    // 正停在交互提示上等用户输入（主机密钥确认 / 密码 / passphrase）—— 那是「等输入」不是「卡住」，
+    // 用户看截图、按 Y 要多久都得等。这里放行并重新计时，别掐（掐了弹框就没了，用户永远来不及按 Y，
+    // 接着自动重连再来一遍 → 死循环）。用户答 y 后握手继续，sshClientDidConnect 置 _sawConnect，
+    // 下一次看门狗自然放行；一直不答就一直重新计时（等同于用户自己的 prompt 无限期有效）。
+    if (self->_device.waitingForInput) {
+      [self _armConnectWatchdogFor:cmdline];
+      return;
+    }
     [self->_device writeOutLn:@"\r\n\033[33m⚠️ 连接卡住（12s 没连上），重连中…\033[0m"];
     dispatch_sync(self->_sshQueue, ^{
       for (id client in self->_sshClients) { [client kill]; }

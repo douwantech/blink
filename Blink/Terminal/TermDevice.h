@@ -96,6 +96,11 @@
 - (NSString *)readline:(NSString *)prompt secure:(BOOL)secure;
 - (void)closeReadline;
 
+// YES = 设备正阻塞在 readline 上等用户输入（主机密钥确认 / 密码 / passphrase /
+// keyboard-interactive）。连接看门狗据此把「在等用户」排除在「连接卡住」之外，
+// 别把会话掐在提示框上。
+@property (nonatomic, readonly) BOOL waitingForInput;
+
 - (void)focus;
 - (void)blur;
 
