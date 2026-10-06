@@ -188,6 +188,14 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
     let icon: UIImage?
     let unread: Bool
     let isCurrent: Bool
+    /// 服务端注入的公用标签：行尾没有 ✕（不可关），带「公用」徽标。
+    let isShared: Bool
+  }
+
+  /// 「公用标签 (N)」/「我的标签」两节；`title` 为 nil 表示不显示节标题（只有一节时）。
+  struct Section {
+    let title: String?
+    var items: [Item]
   }
 
   var onSelect: ((Int) -> Void)?
@@ -202,6 +210,7 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   private let newButton = UIButton(type: .system)
   private let restPanelButton = UIButton(type: .system)
   private var items: [Item] = []
+  private var sections: [Section] = []
 
   init() {
     super.init(frame: .zero)
@@ -304,15 +313,19 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   }
   required init?(coder: NSCoder) { fatalError() }
 
-  func reload(machineName: String?, transport: String?, items: [Item]) {
+  func reload(machineName: String?, transport: String?, sections: [Section]) {
     machineNameLabel.text = machineName ?? "（无机器）"
     transportBadge.text = transport.map { "  \($0)  " }
     transportBadge.isHidden = transport == nil
-    self.items = items
+    self.sections = sections.filter { !$0.items.isEmpty }
+    self.items = self.sections.flatMap { $0.items }
     table.reloadData()
     // 让当前行可见
-    if let cur = items.firstIndex(where: { $0.isCurrent }) {
-      table.scrollToRow(at: IndexPath(row: cur, section: 0), at: .none, animated: false)
+    for (s, section) in self.sections.enumerated() {
+      if let cur = section.items.firstIndex(where: { $0.isCurrent }) {
+        table.scrollToRow(at: IndexPath(row: cur, section: s), at: .none, animated: false)
+        break
+      }
     }
   }
 
@@ -334,11 +347,37 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
   @objc private func restPanelTapped() { onRestPanel?() }
 
   // MARK: table
-  func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { items.count }
+  func numberOfSections(in tv: UITableView) -> Int { max(sections.count, 1) }
+
+  func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
+    sections.indices.contains(section) ? sections[section].items.count : 0
+  }
+
+  func tableView(_ tv: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+    guard sections.indices.contains(section), let title = sections[section].title else { return nil }
+    let container = UIView()
+    container.backgroundColor = UIColor(white: 0.12, alpha: 1)
+    let label = UILabel()
+    label.text = title
+    label.font = .systemFont(ofSize: 11, weight: .semibold)
+    label.textColor = UIColor(white: 0.62, alpha: 1)
+    label.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(label)
+    NSLayoutConstraint.activate([
+      label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+      label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
+    ])
+    return container
+  }
+
+  func tableView(_ tv: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+    guard sections.indices.contains(section), sections[section].title != nil else { return 0 }
+    return 26
+  }
 
   func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
     let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath) as! MacSessionCell
-    let item = items[indexPath.row]
+    let item = item(at: indexPath)
     cell.configure(item: item)
     cell.onClose = { [weak self] in self?.onClose?(item.tag) }
     return cell
@@ -346,7 +385,11 @@ final class MacSessionSidebarView: UIView, UITableViewDataSource, UITableViewDel
 
   func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: false)
-    onSelect?(items[indexPath.row].tag)
+    onSelect?(item(at: indexPath).tag)
+  }
+
+  private func item(at indexPath: IndexPath) -> Item {
+    sections[indexPath.section].items[indexPath.row]
   }
 }
 
@@ -361,6 +404,9 @@ final class MacSessionCell: UITableViewCell {
   private let unreadDot = UIView()
   private let closeButton = UIButton(type: .system)
   private let currentBar = UIView()
+  /// 公用标签的「公用」徽标，占住 ✕ 的位置（公用标签没有关闭入口）。
+  private let sharedBadge = UILabel()
+  private var showsBadge = false
 
   override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
     super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -397,7 +443,16 @@ final class MacSessionCell: UITableViewCell {
     closeButton.tintColor = UIColor(white: 0.55, alpha: 1)
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
 
-    [currentBar, avatar, initialLabel, titleLbl, subtitleLbl, unreadDot, closeButton].forEach {
+    sharedBadge.text = "公用"
+    sharedBadge.font = .systemFont(ofSize: 10, weight: .semibold)
+    sharedBadge.textColor = .systemTeal
+    sharedBadge.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.18)
+    sharedBadge.textAlignment = .center
+    sharedBadge.layer.cornerRadius = 4
+    sharedBadge.clipsToBounds = true
+    sharedBadge.isHidden = true
+
+    [currentBar, avatar, initialLabel, titleLbl, subtitleLbl, unreadDot, closeButton, sharedBadge].forEach {
       contentView.addSubview($0)
     }
   }
@@ -410,8 +465,9 @@ final class MacSessionCell: UITableViewCell {
     avatar.frame = CGRect(x: 14, y: 12, width: 32, height: 32)
     initialLabel.frame = avatar.frame
     closeButton.frame = CGRect(x: w - 36, y: (contentView.bounds.height - 28) / 2, width: 28, height: 28)
+    sharedBadge.frame = CGRect(x: w - 14 - 34, y: (contentView.bounds.height - 16) / 2, width: 34, height: 16)
     let textX: CGFloat = 54
-    let textW = closeButton.frame.minX - textX - 14
+    let textW = (showsBadge ? sharedBadge.frame.minX : closeButton.frame.minX) - textX - 14
     titleLbl.frame = CGRect(x: textX, y: 9, width: textW, height: 20)
     subtitleLbl.frame = CGRect(x: textX, y: 31, width: textW, height: 16)
     unreadDot.frame = CGRect(x: textX + min(titleLbl.intrinsicContentSize.width, textW) + 6, y: 15, width: 8, height: 8)
@@ -422,6 +478,10 @@ final class MacSessionCell: UITableViewCell {
     subtitleLbl.text = item.subtitle
     unreadDot.isHidden = !item.unread
     currentBar.isHidden = !item.isCurrent
+    // 公用标签由服务端下发，个人关不掉：不给 ✕，改用「公用」徽标占位。
+    showsBadge = item.isShared
+    closeButton.isHidden = item.isShared
+    sharedBadge.isHidden = !item.isShared
     contentView.backgroundColor = item.isCurrent ? UIColor.systemTeal.withAlphaComponent(0.12) : .clear
     titleLbl.font = .systemFont(ofSize: 15, weight: item.isCurrent ? .semibold : .medium)
     if let icon = item.icon {

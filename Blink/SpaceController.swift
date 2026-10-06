@@ -75,14 +75,72 @@ class SpaceController: UIViewController {
         let term: TermController = SessionRegistry.shared[key]
         term.meta.hasUnread = false
       }
-      TabStateStore.shared.update { $0.currentId = self._currentKey }
+      // 公用标签不是账号的数据：停在它上面也不写 currentId（否则会把公用标签的 ID
+      // 当成自己的选中项回传）。当前选中项保持在上一个自有标签。
+      if let key = _currentKey, !_sharedKeys.contains(key) {
+        TabStateStore.shared.update { $0.currentId = self._currentKey }
+      }
       _reloadTabBar()
       NotificationCenter.default.post(name: .blinkActiveSessionDidChange, object: nil)
     }
   }
 
+  /// 服务端读时注入的全局公用标签（见 server/README.md「Public tabs」）。它们会进
+  /// `_viewportsKeys` 供查看/翻页，但**不落盘、不回传、不可关闭**：
+  /// 持久化与上传只认自有标签（`_persistTabsToStore` / `_currentKey` 两处守卫）。
+  private var _sharedKeys = Set<UUID>()
+
+  /// 自有标签的第一位（公用恒在最前，见 `_syncSharedTabs`）。给「把某个标签提到最前」
+  /// 那几处用，别让自有的新标签插到公用标签前面去。
+  private var _firstOwnIndex: Int {
+    _viewportsKeys.firstIndex { !_sharedKeys.contains($0) } ?? _viewportsKeys.count
+  }
+
+  /// 把服务端的公用标签同步进 tab 集合：新来的建终端并排到最前，服务器不再给的移除。
+  /// 这是公用标签进入 `_viewportsKeys` 的唯一入口，也是它们唯一的生命周期管理点 ——
+  /// 不走墓碑（它们不是用户关掉的）。
+  private func _syncSharedTabs() {
+    let shared = ServerConfigSync.shared.sharedTabs
+    let newKeys = shared.map { $0.id }
+    let newSet = Set(newKeys)
+    let previous = _sharedKeys
+
+    for tab in shared {
+      let term: TermController = SessionRegistry.shared[tab.id]
+      if term.mcpParams == nil {
+        let p = MCPParams()
+        p.machineId = tab.machineId
+        p.workDirId = nil
+        p.tmuxSession = tab.tmuxSession
+        p.useTmux = true
+        term.bindRestoredMcpParams(p)
+      }
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .black
+    }
+
+    let dropped = previous.subtracting(newSet)
+    for key in dropped {
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = nil
+      term.terminate()
+      SessionRegistry.shared.remove(forKey: key)
+    }
+
+    _sharedKeys = newSet
+    let own = _viewportsKeys.filter { !previous.contains($0) && !newSet.contains($0) }
+    let merged = SharedTabLayout.ordered(shared: newKeys, own: own)
+    if merged != _viewportsKeys {
+      _viewportsKeys = merged   // didSet → 持久化 + 刷新 tab 栏/三栏
+    }
+    _sortTabsByMachineAndDir()
+  }
+
   private func _persistTabsToStore() {
-    let entries: [TabEntry] = _viewportsKeys.map { key in
+    // 公用标签不进 TabState：这一处同时保住 Documents/blink_tabs.json、iCloud KV 镜像
+    // 和 PUT /v1/config/tabs 的报文（三者都从 TabStateStore 出发）。
+    let own = SharedTabLayout.ownOnly(_viewportsKeys, sharedKeys: _sharedKeys)
+    let entries: [TabEntry] = own.map { key in
       let term: TermController = SessionRegistry.shared[key]
       let p = term.mcpParams
       return TabEntry(id: key,
@@ -678,6 +736,9 @@ class SpaceController: UIViewController {
       term.bgColor = view.backgroundColor ?? .black
       _viewportsController.setViewControllers([term], direction: .forward, animated: false)
     }
+    // 公用标签：登录/冷启动时先补进 tab 集合。这个场景走不到 didApply（见
+    // _serverConfigDidApply），通知只在 App 已经活着时到。
+    _syncSharedTabs()
     _sortTabsByMachineAndDir()
     _hideAssistantTabs()
 
@@ -791,6 +852,8 @@ Please go to your subscriptions and cancel one of them!
 
   @objc private func _serverConfigDidApply() {
     _cloudConfigDidRestore()
+    // 服务端每次采纳完（登录/回前台刷新）都重放一遍公用标签：新增的进来、撤下的移走。
+    _syncSharedTabs()
     _floatingMachineBar.reload(currentId: _tabFilterMachineId)
     _macRail?.reload(currentId: _tabFilterMachineId)
     _reloadTabBar()
@@ -846,7 +909,8 @@ Please go to your subscriptions and cancel one of them!
   private func _appendNewSyncedTabs() {
     guard let syncedState = TabStateStore.shared.syncedState() else { return }
     let synced = syncedState.tabs
-    let closed = Set(syncedState.closedIds ?? [])
+    // 墓碑里可能留着公用 ID（跨设备的旧记录），先剔掉：公用标签不是用户关掉的。
+    let closed = Set(syncedState.closedIds ?? []).subtracting(_sharedKeys)
 
     // 采纳别处的关闭：墓碑并进本地（本机后续 push 不再带这些），并把本机还留着的删掉。
     // 仅当有新墓碑、或本机还留着被墓碑标记的 tab 时才动，避免每次云端变更都无谓回写（防 ping-pong）。
@@ -872,6 +936,9 @@ Please go to your subscriptions and cancel one of them!
 
     var appended: [UUID] = []
     for entry in synced {
+      // 公用标签由 _syncSharedTabs 管，绝不从这里（iCloud 镜像 / 别的设备推来的列表）追加：
+      // 否则它们会以自有标签的身份进 _viewportsKeys，被持久化、被回传。
+      guard !_sharedKeys.contains(entry.id) else { continue }
       // 空白 shell（无机器/目录/会话）不追加
       guard entry.machineId != nil || entry.workDirId != nil || entry.tmuxSession != nil else { continue }
       if closed.contains(entry.id) { continue }   // 已被墓碑标记的别再加回来
@@ -1035,6 +1102,12 @@ Please go to your subscriptions and cancel one of them!
   }
   
   func _closeCurrentSpace() {
+    // 公用标签不可关（服务端也会把它们从 closedIds 里剔除，但本机就不该走到这里）：
+    // 不记墓碑、不终止会话。Tab 栏/侧栏本来也不给关闭入口，这里是最后一道闸。
+    if let k = _currentKey, _sharedKeys.contains(k) {
+      _reloadTabBar()
+      return
+    }
     // 墓碑：记下这次关闭，跨设备传播删除（否则别的设备没删、又会把它推回来复活）。
     // 只在真·关闭时记；窗口移动走的是 _removeCurrentSpace，不记墓碑。
     if let k = _currentKey { TabStateStore.shared.closeTabs([k]) }
@@ -1045,7 +1118,9 @@ Please go to your subscriptions and cancel one of them!
   /// 采纳别处的关闭：把这些 key 从本机 UI 移除（终止会话、修当前 tab）。
   /// 与 _removeCurrentSpace 不同，这里可一次删多个、且要处理「删到当前 tab」的补位。
   private func _removeKeys(_ toRemove: Set<UUID>) {
-    guard _viewportsKeys.contains(where: { toRemove.contains($0) }) else { return }
+    let toRemove = toRemove.subtracting(_sharedKeys)   // 公用标签不受别处墓碑影响
+    guard !toRemove.isEmpty,
+          _viewportsKeys.contains(where: { toRemove.contains($0) }) else { return }
     let oldCurrentIdx = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) }
     let currentRemoved = _currentKey.map { toRemove.contains($0) } ?? false
 
@@ -1074,6 +1149,8 @@ Please go to your subscriptions and cancel one of them!
   }
   
   private func _removeCurrentSpace(attachInput: Bool = true) {
+    // 公用标签不参与「移走当前 tab」（移到别的窗口/外接屏）：它们由服务端列表决定去留。
+    if let currentKey = _currentKey, _sharedKeys.contains(currentKey) { return }
     guard
       let currentKey = _currentKey,
       let idx = _viewportsKeys.firstIndex(of: currentKey)
@@ -1837,9 +1914,11 @@ extension SpaceController {
     var tags: [Int] = []
     var sidebarSubs: [String] = []       // Mac 三栏：每行副标题（工作目录路径）
     var sidebarIcons: [UIImage?] = []    // Mac 三栏：32pt 头像（tab 的 22pt 太小）
+    var shownKeys: [UUID] = []           // 本机这一屏真正显示的行（过滤后），用来算节标题
 
     let allMachineIds = BlinkMachineStore.shared.machines.map { $0.id }
-    let usedIds: [String] = _viewportsKeys.compactMap {
+    // 默认机器只看自有的标签算：公用标签在人人的机器上，不参与「这台机器有 tab」的判断。
+    let usedIds: [String] = _viewportsKeys.filter { !_sharedKeys.contains($0) }.compactMap {
       (SessionRegistry.shared[$0] as TermController).mcpParams?.machineId
     }
     var filterId = _tabFilterMachineId
@@ -1855,6 +1934,8 @@ extension SpaceController {
     let curIndex = _currentKey.flatMap { _viewportsKeys.firstIndex(of: $0) } ?? -1
     for (idx, key) in _viewportsKeys.enumerated() {
       let term: TermController = SessionRegistry.shared[key]
+      // 公用标签永远显示在最前，不受机器过滤/「只显示工作中」影响（它属于所有人）。
+      let isShared = _sharedKeys.contains(key)
       let title: String
       if let p = term.mcpParams {
         // 助手 tab：标题就显示「助手」，不拼 sessionPart
@@ -1871,6 +1952,7 @@ extension SpaceController {
           icons.append(icon)
           unread.append(term.meta.hasUnread)
           tags.append(idx)
+          shownKeys.append(key)
           if _macLayoutEnabled {
             let wd = BlinkWorkDirStore.shared.workDir(forId: BlinkWorkDirStore.assistantWorkDirId)
             sidebarSubs.append(wd?.path ?? "")
@@ -1906,8 +1988,11 @@ extension SpaceController {
         title = term.meta.tabTitle ?? "Tab \(idx + 1)"
       }
       let mid = term.mcpParams?.machineId
-      if let f = filterId, mid != f { continue }
-      if _hiddenByWorkMode(key) { continue }   // 「只显示工作中」：藏掉标了休息(😴)的 tab
+      // 公用的不受机器过滤/休息隐藏影响；自有的照旧。
+      if !isShared {
+        if let f = filterId, mid != f { continue }
+        if _hiddenByWorkMode(key) { continue }   // 「只显示工作中」：藏掉标了休息(😴)的 tab
+      }
       titles.append(title)
       // 找到对应 workDir 的头像；没配就给 nil（tab 显示纯文字）
       var icon: UIImage? = nil
@@ -1927,6 +2012,7 @@ extension SpaceController {
       }
       unread.append(term.meta.hasUnread)
       tags.append(idx)
+      shownKeys.append(key)
       if _macLayoutEnabled {
         let wd = BlinkWorkDirStore.shared.workDir(forId: term.mcpParams?.workDirId)
         sidebarSubs.append(wd?.path ?? BlinkMachineStore.effectiveTmuxSessionName(
@@ -1936,6 +2022,8 @@ extension SpaceController {
         } ?? nil)
       }
     }
+    // 节标题（「公用标签 (N)」/「我的标签」）：公用标签排在自有的前面，两边都有时才标。
+    let rows = SharedTabLayout.rows(keys: shownKeys, sharedKeys: _sharedKeys)
     let chipTitle: String
     if let fid = filterId, let m = BlinkMachineStore.shared.machines.first(where: { $0.id == fid }) {
       chipTitle = m.displayName
@@ -1943,7 +2031,8 @@ extension SpaceController {
       chipTitle = "全部"
     }
     _tabBar.reload(titles: titles, icons: icons, unread: unread, tags: tags,
-                   filterTitle: chipTitle, currentTag: curIndex, agents: agents)
+                   filterTitle: chipTitle, currentTag: curIndex, agents: agents,
+                   headers: rows.map { $0.header }, sharedTabs: rows.map { $0.isShared })
     _syncSleepButton()
 
     if _macLayoutEnabled {
@@ -1960,11 +2049,21 @@ extension SpaceController {
           subtitle: i < sidebarSubs.count ? sidebarSubs[i] : "",
           icon: i < sidebarIcons.count ? sidebarIcons[i] : nil,
           unread: unread[i],
-          isCurrent: tags[i] == curIndex))
+          isCurrent: tags[i] == curIndex,
+          isShared: rows[i].isShared))
+      }
+      // 与 iPhone tab 栏同源的分节：公用在前、自有在后，只有一边时不显示节标题。
+      var sectionList: [MacSessionSidebarView.Section] = []
+      for (i, row) in rows.enumerated() {
+        if row.header != nil || sectionList.isEmpty {
+          sectionList.append(MacSessionSidebarView.Section(title: row.header, items: [items[i]]))
+        } else {
+          sectionList[sectionList.count - 1].items.append(items[i])
+        }
       }
       _macSidebar?.reload(machineName: machine?.displayName ?? chipTitle,
                           transport: machine.map { $0.usesBlinkd ? "Socket" : "SSH" },
-                          items: items)
+                          sections: sectionList)
       _updateMacHostLine(machine: machine)
       _updateMacStatusBar()
     }
@@ -2131,6 +2230,9 @@ extension SpaceController {
 
     DispatchQueue.main.async {
       self.currentTerm()?.resignInput()
+#if targetEnvironment(macCatalyst)
+      // Mac 侧仍是经典设置页：Style / Display / Keys & Certificates / Hosts / iCloud Sync
+      // 这些只有 Mac 端在用的入口都还在那里（见 2026-10-06 的设置页收窄口径）。
       let navCtrl = UINavigationController()
       navCtrl.navigationBar.prefersLargeTitles = true
       let s = SettingsHostingController.createSettings(nav: navCtrl, onDismiss: {
@@ -2138,7 +2240,20 @@ extension SpaceController {
       })
       navCtrl.setViewControllers([s], animated: false)
       self.present(navCtrl, animated: true, completion: nil)
+#else
+      self.presentSettings()
+#endif
     }
+  }
+
+  /// 全 App 唯一的设置页（iPhone/iPad）。⌘, / ⋯ 菜单「Show Config」/ shell 的 `config`
+  /// 命令 / 语音坞齿轮都走这里。
+  public func presentSettings() {
+    let vc = BlinkSettingsViewController(voiceView: voiceDock)
+    vc.onClose = { [weak self] in self?.focusOnShellAction() }
+    let nav = UINavigationController(rootViewController: vc)
+    nav.modalPresentationStyle = .pageSheet
+    present(nav, animated: true)
   }
   
 //  @objc func showWalkthroughAction() {
@@ -2353,6 +2468,9 @@ extension SpaceController {
   private func _filteredViewportsKeys() -> [UUID] {
     guard let filterId = _tabFilterMachineId else { return _viewportsKeys }
     return _viewportsKeys.filter { key in
+      // 公用标签不参与机器过滤：tab 栏里它们恒显示（它们属于所有人），左右滑动也必须能滑到，
+      // 否则就成了「看得见滑不到」。代价是过滤某台机器时也要先经过它们。
+      if _sharedKeys.contains(key) { return true }
       let term: TermController = SessionRegistry.shared[key]
       return term.mcpParams?.machineId == filterId
     }
@@ -2411,6 +2529,11 @@ extension SpaceController {
 
     let indexed = _viewportsKeys.enumerated().map { (offset: $0.offset, key: $0.element) }
     let sorted = indexed.sorted { a, b in
+      // 公用标签永远排在自有标签前面，内部保持服务端顺序（_syncSharedTabs 写入的顺序）。
+      let sharedA = _sharedKeys.contains(a.key)
+      let sharedB = _sharedKeys.contains(b.key)
+      if sharedA != sharedB { return sharedA }
+      if sharedA && sharedB { return a.offset < b.offset }
       let ta: TermController = SessionRegistry.shared[a.key]
       let tb: TermController = SessionRegistry.shared[b.key]
       let mka = ta.mcpParams?.machineId.flatMap { machineOrder[$0] } ?? Int.max
@@ -2575,10 +2698,9 @@ extension SpaceController: BlinkTabBarDelegate {
   }
 
   public func tabBarDidRequestSettings() {
-    let vc = VoiceSettingsViewController(voiceView: nil)
-    let nav = UINavigationController(rootViewController: vc)
-    nav.modalPresentationStyle = .fullScreen
-    present(nav, animated: true)
+    // 齿轮和 ⌘, / ⋯ 菜单 / `config` 命令进的是同一个设置页：传真实 voiceDock，
+    // 「识别语言」才不会永远显示「—」（此前这里传的是 nil）。
+    presentSettings()
   }
 
   public func tabBarDidRequestTeamStatus() {
@@ -2660,15 +2782,17 @@ extension SpaceController: BlinkTabBarDelegate {
       let p = term.mcpParams
       return p?.machineId == machineId && p?.tmuxSession == session
     }) {
-      if curIdx != 0 {
+      // 「最前」= 自有标签的最前（公用标签恒在最前，不能被顶到后面去）
+      let head = _firstOwnIndex
+      if curIdx != head {
         let key = _viewportsKeys.remove(at: curIdx)
-        _viewportsKeys.insert(key, at: 0)
+        _viewportsKeys.insert(key, at: min(head, _viewportsKeys.count))
       }
-      if switchTo { tabBarDidSelect(index: 0) }
+      if switchTo { tabBarDidSelect(index: head) }
       return
     }
 
-    // 不存在 → 创建并放到 index 0
+    // 不存在 → 创建并放到自有标签的最前
     let params = MCPParams()
     params.machineId = machineId
     params.workDirId = workDirId
@@ -2679,7 +2803,7 @@ extension SpaceController: BlinkTabBarDelegate {
     term.delegate = self
     term.bgColor = view.backgroundColor ?? .black
     SessionRegistry.shared.track(session: term)
-    _viewportsKeys.insert(term.meta.key, at: 0)
+    _viewportsKeys.insert(term.meta.key, at: min(_firstOwnIndex, _viewportsKeys.count))
     if switchTo {
       _currentKey = term.meta.key
       _viewportsController.setViewControllers([term], direction: .forward, animated: true) { [weak self] _ in
@@ -2692,6 +2816,8 @@ extension SpaceController: BlinkTabBarDelegate {
   public func tabBarDidRequestClose(index: Int) {
     guard _viewportsKeys.indices.contains(index) else { return }
     let key = _viewportsKeys[index]
+    // 公用标签不给关闭入口（tab 栏/侧栏本来也不显示 ✕，这里是兜底）
+    guard !_sharedKeys.contains(key) else { return }
     if key != _currentKey {
       let term: TermController = SessionRegistry.shared[key]
       term.delegate = self
@@ -2707,6 +2833,9 @@ extension SpaceController: BlinkTabBarDelegate {
   public func tabBarDidRequestTabMenu(index: Int, anchor: UIView) {
     guard _viewportsKeys.indices.contains(index) else { return }
     let key = _viewportsKeys[index]
+    // 公用标签不弹菜单：菜单里的休息/换 CLI/关闭都按「这个标签是我的」记账
+    //（写 TabRestStore / TabAgentStore 并按 uuid 回传），公用标签一条都不适用。
+    guard !_sharedKeys.contains(key) else { return }
     let term: TermController = SessionRegistry.shared[key]
     let p = term.mcpParams
     let machine = p?.machineId.flatMap { id in BlinkMachineStore.shared.machines.first { $0.id == id } }

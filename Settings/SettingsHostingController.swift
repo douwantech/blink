@@ -33,6 +33,9 @@ import SwiftUI
 import UIKit
 
 
+/// 把经典 `SettingsView` 包成一个可模态呈现的控制器。
+/// 2026-10-06 起只有 **Mac Catalyst** 在用（iPhone/iPad 的设置页是
+/// `BlinkSettingsViewController`，它只在「关于与支持」里把 `SettingsView` 推入导航栈）。
 class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIAdaptivePresentationControllerDelegate {
   private let onDismiss: (() -> Void)?
 
