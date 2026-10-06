@@ -299,7 +299,7 @@ final class DictationController: NSObject, ObservableObject, AVCaptureAudioDataO
         finalizeGuard?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.finalizeStreaming() }
         finalizeGuard = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + AITextPolisher.shared.debounceSeconds, execute: w)
     }
 
     private func teardownSession() {

@@ -26,6 +26,8 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /admin", a.adminAuth(a.adminHome))
 	m.HandleFunc("DELETE /admin/session", a.adminAuth(a.adminLogout))
 	m.HandleFunc("GET /admin/api/state", a.adminAuth(a.adminState))
+	m.HandleFunc("GET /admin/api/voice", a.adminAuth(a.adminVoice))
+	m.HandleFunc("PUT /admin/api/voice", a.adminAuth(a.putAdminVoice))
 	m.HandleFunc("POST /admin/api/users", a.adminAuth(a.createUser))
 	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.updateUser))
 	m.HandleFunc("POST /admin/api/users/{id}/tabs", a.adminAuth(a.addUserTab))
@@ -38,6 +40,105 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))
 	m.HandleFunc("PUT /admin/api/pinned/{id}", a.adminAuth(a.putPinnedLink))
 	m.HandleFunc("DELETE /admin/api/pinned/{id}", a.adminAuth(a.deletePinnedLink))
+}
+
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 4 {
+		return strings.Repeat("•", len(s))
+	}
+	return strings.Repeat("•", len(s)-4) + s[len(s)-4:]
+}
+
+func (a *app) adminVoice(w http.ResponseWriter, r *http.Request, _ user) {
+	var data []byte
+	if err := a.db.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&data); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	var doc sharedAIConfigDocument
+	if json.Unmarshal(data, &doc) != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	voice := map[string]any{"model": doc.Voice.Model, "baseURL": doc.Voice.BaseURL, "debounce": doc.Voice.Debounce, "apiKeyMasked": maskSecret(doc.Voice.APIKey), "hasApiKey": doc.Voice.APIKey != ""}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT u.id,u.username,COALESCE(v.data, JSON_OBJECT()) FROM users u LEFT JOIN voice_corrections v ON v.user_id=u.id ORDER BY u.username`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	accounts := make([]map[string]any, 0)
+	defer rows.Close()
+	for rows.Next() {
+		var id uint64
+		var name string
+		var corrections []byte
+		if err = rows.Scan(&id, &name, &corrections); err != nil {
+			http.Error(w, "internal error", 500)
+			return
+		}
+		accounts = append(accounts, map[string]any{"userId": id, "username": name, "corrections": json.RawMessage(corrections)})
+	}
+	if err = rows.Err(); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"config": map[string]any{"userGlossary": doc.UserGlossary, "voice": voice}, "accounts": accounts})
+}
+
+func (a *app) putAdminVoice(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireWrite(w, u) {
+		return
+	}
+	var req struct {
+		UserGlossary string `json:"userGlossary"`
+		Voice        struct {
+			Model    string  `json:"model"`
+			BaseURL  string  `json:"baseURL"`
+			APIKey   string  `json:"apiKey"`
+			Debounce float64 `json:"debounce"`
+		} `json:"voice"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	var current []byte
+	if err := a.db.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&current); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	var old sharedAIConfigDocument
+	if json.Unmarshal(current, &old) != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if req.Voice.APIKey == "" {
+		req.Voice.APIKey = old.Voice.APIKey
+	}
+	raw, _ := json.Marshal(sharedAIConfigDocument{UserGlossary: req.UserGlossary, Voice: sharedVoiceConfig{Model: req.Voice.Model, BaseURL: req.Voice.BaseURL, APIKey: req.Voice.APIKey, Debounce: req.Voice.Debounce}})
+	normalized, err := normalizeSharedAIConfig(raw)
+	if err != nil {
+		http.Error(w, "invalid config", 400)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO shared_ai_config(id,data) VALUES(1,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, normalized)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func serveAdminPage(w http.ResponseWriter) {

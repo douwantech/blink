@@ -115,4 +115,7 @@ INSERT IGNORE INTO shared_ai_config (id, data) VALUES (1, JSON_OBJECT('userGloss
 - 主分支（主分词）；原型（圆形）；弹窗（糖床 / 棒糖窗 / 棒糖 / 堂装 / 半弹窗听成堂装）
 - 真机（蒸鸡）；横幅（红福 / banner）；均摊（金汤）
 - 边距（的编辑）；错题（彻底）
-规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。'));
+规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。', 'voice', JSON_OBJECT('model', 'glm-4-flashx', 'baseURL', 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'apiKey', '', 'debounce', 1.5)));
+-- Older deployments seeded only userGlossary. Fill the new voice object without
+-- replacing any administrator document that already has one.
+UPDATE shared_ai_config SET data=JSON_SET(data, '$.voice', JSON_OBJECT('model', 'glm-4-flashx', 'baseURL', 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'apiKey', '', 'debounce', 1.5)) WHERE id=1 AND JSON_EXTRACT(data, '$.voice') IS NULL;
