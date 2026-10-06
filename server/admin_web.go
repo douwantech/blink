@@ -36,6 +36,7 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("PUT /admin/api/machines/{id}", a.adminAuth(a.putMachine))
 	m.HandleFunc("DELETE /admin/api/machines/{id}", a.adminAuth(a.deleteMachine))
 	m.HandleFunc("PUT /admin/api/employees/{id}", a.adminAuth(a.putDirectoryEntry("employees")))
+	m.HandleFunc("PUT /admin/api/employees/{id}/avatar", a.adminAuth(a.putEmployeeAvatar))
 	m.HandleFunc("DELETE /admin/api/employees/{id}", a.adminAuth(a.deleteDirectoryEntry("employees")))
 	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putProject))
 	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))

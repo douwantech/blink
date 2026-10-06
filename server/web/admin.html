@@ -80,7 +80,7 @@
       </section>
       <section class="card">
         <div class="row between"><div><h2>员工</h2><p class="muted">全员共享。员工 ID 会成为会话名的另一半。</p></div><button id="add-employee">添加员工</button></div>
-        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>机器</th><th>操作</th></tr></thead><tbody id="employee-rows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>机器</th><th>头像</th><th>操作</th></tr></thead><tbody id="employee-rows"></tbody></table></div>
       </section>
       <section class="card">
         <div class="row between"><div><h2>后台书签</h2><p class="muted">浏览器「后台」列表，全员共享。认证用户名/密码是可选的 HTTP Basic，留空表示这个网址不需要登录。</p></div><button id="add-pinned">添加书签</button></div>
@@ -164,6 +164,7 @@
     <h2 id="directory-heading">添加项目</h2>
     <label for="dir-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="dir-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
     <label for="dir-name">名称</label><input id="dir-name" required maxlength="100" autocomplete="off">
+    <label for="dir-avatar">PNG 头像（可选，最大 2MB）</label><input id="dir-avatar" type="file" accept="image/png">
     <div id="directory-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="directory-cancel">取消</button><button type="submit">保存</button></div>
   </form></dialog>
@@ -220,7 +221,7 @@
         const rows = $(meta.rows); rows.replaceChildren();
         for (const entry of state[kind]) {
           const tr = document.createElement('tr'); td(tr, entry.id); td(tr, entry.name);
-          if (kind === 'employees') td(tr, employeeMachine(entry.id));
+          if (kind === 'employees') { td(tr, employeeMachine(entry.id)); td(tr, entry.avatar ? '已上传' : '未上传'); }
           const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
           row.append(button('编辑', () => openDirectory(kind, entry)), button('删除', () => removeDirectory(kind, entry), 'danger'));
           cell.append(row); rows.append(tr);
@@ -252,7 +253,16 @@
     async function saveDirectory(event) {
       event.preventDefault(); const { kind, entry } = state.directory;
       const id = entry ? entry.id : $('dir-id').value.trim();
-      try { await api(`/admin/api/${kind}/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('dir-name').value.trim() }) }); $('directory-dialog').close(); await load(); notify('已保存'); }
+      try {
+        await api(`/admin/api/${kind}/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('dir-name').value.trim() }) });
+        const avatar = $('dir-avatar').files[0];
+        if (kind === 'employees' && avatar) {
+          if (avatar.type !== 'image/png') throw new Error('头像必须是 PNG');
+          const response = await fetch(`/admin/api/employees/${encodeURIComponent(id)}/avatar`, { method:'PUT', body:avatar, credentials:'same-origin', headers:{'Content-Type':'image/png','X-Blink-Admin':'1'} });
+          if (!response.ok) throw new Error((await response.text()).trim() || `头像上传失败 (${response.status})`);
+        }
+        $('directory-dialog').close(); await load(); notify('已保存');
+      }
       catch (error) { $('directory-error').textContent = error.message; }
     }
     async function removeDirectory(kind, entry) {
