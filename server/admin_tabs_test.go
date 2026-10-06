@@ -559,6 +559,7 @@ func TestAdminStateExposesDirectoriesAndTabLinks(t *testing.T) {
 	mock.ExpectQuery("SELECT position,data FROM pinned_bookmarks").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
 	mock.ExpectQuery("SELECT user_id,tab_id,employee_id,project_id FROM tab_links").WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}).AddRow(7, "22222222-2222-4222-8222-222222222222", "jack", "blink"))
 	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection").WillReturnRows(sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}).AddRow(7, []byte(linkedTabState), nil))
+	mock.ExpectQuery("SELECT u.username,COALESCE\\(c.agents").WillReturnRows(sqlmock.NewRows([]string{"username", "agents"}))
 	w := httptest.NewRecorder()
 	(&app{db: db}).routes().ServeHTTP(w, r)
 	if w.Code != 200 {

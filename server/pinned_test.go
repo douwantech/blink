@@ -316,6 +316,9 @@ func TestAdminStateAndPageExposePinned(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}))
 	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection FROM users u LEFT JOIN user_configs").WillReturnRows(
 		sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}))
+	// 公用标签的引擎列要各账号的 agents 配置，所以 state 多读一次。
+	mock.ExpectQuery("SELECT u.username,COALESCE\\(c.agents").WillReturnRows(
+		sqlmock.NewRows([]string{"username", "agents"}))
 	w := httptest.NewRecorder()
 	a.adminState(w, httptest.NewRequest(http.MethodGet, "/admin/api/state", nil), user{ID: 1, Admin: true, CanWrite: true})
 	if w.Code != http.StatusOK {

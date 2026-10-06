@@ -34,6 +34,8 @@
     td .row button { padding:6px 9px; font-size:12px }
     .pill { display:inline-block; padding:4px 8px; border-radius:20px; background:#eff3fc; font-size:12px }
     .pill.off { color:#b42834; background:#fff0f1 }
+    .pill.engine { white-space:nowrap }
+    .pill.engine .version { color:#64748b }
     .login-wrap { max-width:400px; margin:11vh auto; padding:20px }
     .login-wrap .card { padding:30px }
     .login-wrap button { width:100%; margin-top:20px }
@@ -104,7 +106,7 @@
         <h2>公用标签</h2>
         <p class="muted">「公用」项目名单里的每个 员工×项目 就是一条全局标签。所有账号登录后默认都有这一套，不用逐个账号去建；改了项目名单，所有人下次同步就跟着变。未被标为「公用」的项目（如 main/blink）不在这里出现。</p>
         <p id="public-summary" class="muted"></p>
-        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>机器</th><th>标签 ID</th></tr></thead><tbody id="public-rows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>引擎</th><th>机器</th><th>标签 ID</th></tr></thead><tbody id="public-rows"></tbody></table></div>
       </section>
     </main>
   </div>
@@ -185,6 +187,17 @@
     // 员工是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
     // 项目也是目录，但比员工多「公用」标记和有效员工名单，所以有自己的弹窗。
     const DIRECTORY = { employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' } };
+    // 每个标签开会话进哪家 CLI，是客户端（团队状态页那排齿轮）按「机器×会话」
+    // 记在账号的 agents 配置里的，服务端把各账号的合并后随 publicTabs 一起下发。
+    // 这张表只管显示，改名字/版本号/图标就改这里。
+    const ENGINES = {
+      claude: { icon:'🧠', name:'Claude', version:'glm-5.3' },
+      codex: { icon:'⚡', name:'Codex', version:'GPT-6' },
+      deepseek: { icon:'🐋', name:'DeepSeek', version:'flash' },
+    };
+    // 客户端从不存「选的就是 claude」（选回 claude 是把键删掉），所以服务端下发的
+    // claude 一律等于「没单独配过」，按默认显示。
+    const DEFAULT_ENGINE = 'claude';
     const state = { machines: [], pinned: [], users: [], personal: [], employees: [], projects: [], publicTabs: [], employeeMachines: {}, me: null, editing: null, tabUser: null, directory: null, project: null, openAccounts: new Set(), pinnedEditing: null, voice: null };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
@@ -194,6 +207,17 @@
     }
     const json = value => JSON.stringify(value);
     const td = (tr, value) => { const cell = document.createElement('td'); cell.textContent = value ?? ''; tr.append(cell); return cell; };
+    // 引擎列：图标 + 名字 + 具体版本。认不出的 id 照原样显示（以后加了第四家
+    // CLI 时页面直接就能看见），别谎报成默认的那家。
+    function engineBadge(id) {
+      const info = ENGINES[id] || { icon:'🧩', name:id, version:'' };
+      const pill = document.createElement('span'); pill.className = 'pill engine';
+      if (!info.name) { pill.textContent = '—'; return pill; }
+      pill.textContent = `${info.icon} ${info.name}`;
+      if (info.version) { const version = document.createElement('span'); version.className = 'version'; version.textContent = ` · ${info.version}`; pill.append(version); }
+      pill.title = id === DEFAULT_ENGINE ? `没单独配置，按默认的 ${DEFAULT_ENGINE} 起会话` : `按 ${id} 起会话`;
+      return pill;
+    }
     const button = (label, action, className = 'secondary') => { const b = document.createElement('button'); b.type = 'button'; b.className = className; b.textContent = label; b.addEventListener('click', action); return b; };
     const notify = message => { $('notice').textContent = message; };
     async function load() {
@@ -313,12 +337,13 @@
         if (tab.projectId !== current) {
           current = tab.projectId;
           const group = document.createElement('tr'); group.className = 'group';
-          const cell = td(group, ''); cell.colSpan = 5;
+          const cell = td(group, ''); cell.colSpan = 6;
           const title = document.createElement('strong'); title.textContent = tab.projectName === tab.projectId ? tab.projectId : `${tab.projectName}（${tab.projectId}）`;
           cell.append(title); rows.append(group);
         }
         const tr = document.createElement('tr');
         td(tr, tab.projectName); td(tr, nameOf(state.employees, tab.employeeId)); td(tr, tab.session);
+        td(tr, '').append(engineBadge(tab.engine));
         td(tr, nameOf(state.machines, tab.machineId, '未知机器')); td(tr, tab.tabId);
         rows.append(tr);
       }

@@ -443,9 +443,41 @@ func (a *app) adminState(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
+	// Which CLI each public tab opens is stored per account (the agents column),
+	// and the tab list is global, so every account's map is read and merged. A
+	// row that does not parse is skipped rather than failing the page: it costs
+	// that tab its engine and nothing else, the same way one broken project row
+	// must not blank every client's tabs.
+	agentRows, err := a.db.QueryContext(r.Context(), `SELECT u.username,COALESCE(c.agents, JSON_OBJECT()) FROM users u LEFT JOIN user_configs c ON c.user_id=u.id ORDER BY u.username`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	accounts := make([]accountAgents, 0)
+	for agentRows.Next() {
+		var name string
+		var raw []byte
+		if err = agentRows.Scan(&name, &raw); err != nil {
+			break
+		}
+		var agents map[string]string
+		if json.Unmarshal(raw, &agents) != nil {
+			continue
+		}
+		accounts = append(accounts, accountAgents{Username: name, Agents: agents})
+	}
+	if err == nil {
+		err = agentRows.Err()
+	}
+	agentRows.Close()
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	// Public tabs are the same on every account, so the page lists them once
 	// instead of per account. The machine each employee sits on comes from the
 	// same project lists, so the employee table and the tab list cannot disagree.
 	projectEntries := decodeProjects(projects)
-	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "pinned": pinned, "personal": personal, "employees": employees, "projects": projects, "publicTabs": buildPublicTabView(projectEntries), "employeeMachines": employeeMachines(projectEntries)})
+	publicTabs := withEngines(buildPublicTabView(projectEntries), mergeTabEngines(accounts))
+	writeJSON(w, 200, map[string]any{"me": u, "users": users, "machines": machines, "pinned": pinned, "personal": personal, "employees": employees, "projects": projects, "publicTabs": publicTabs, "employeeMachines": employeeMachines(projectEntries)})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -490,6 +491,9 @@ func TestAdminStateCarriesTheGlobalPublicTabs(t *testing.T) {
 	mock.ExpectQuery("SELECT position,data FROM pinned_bookmarks").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
 	mock.ExpectQuery("SELECT user_id,tab_id,employee_id,project_id FROM tab_links").WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}))
 	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection").WillReturnRows(sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}).AddRow(1, []byte(`{"version":1,"tabs":[]}`), nil).AddRow(7, []byte(`{"version":1,"tabs":[]}`), nil))
+	// 引擎列：没人配过这个标签，所以每条都落默认，但字段必须在。
+	mock.ExpectQuery("SELECT u.username,COALESCE\\(c.agents").WillReturnRows(
+		sqlmock.NewRows([]string{"username", "agents"}).AddRow("laoda", []byte(`{}`)))
 	w := httptest.NewRecorder()
 	(&app{db: db}).routes().ServeHTTP(w, r)
 	if w.Code != 200 {
@@ -511,6 +515,9 @@ func TestAdminStateCarriesTheGlobalPublicTabs(t *testing.T) {
 	}
 	if row.TabID != publicTabID("jack", "huum") {
 		t.Fatalf("row %+v must carry the ID the client will see", row)
+	}
+	if row.Engine != defaultEngine {
+		t.Fatalf("row %+v must carry the engine, defaulted when nobody configured it", row)
 	}
 	if got := payload.EmployeeMachines["jack"]; len(got) != 1 || got[0] != "m1" {
 		t.Fatalf("employeeMachines %v, want jack on m1", payload.EmployeeMachines)
@@ -541,5 +548,145 @@ func TestAdminPageShowsTheGlobalPublicTabs(t *testing.T) {
 		if strings.Contains(string(page), gone) {
 			t.Fatalf("admin page still carries %q from the reconciliation view", gone)
 		}
+	}
+}
+
+// The agents column is keyed by the client, so the server has to build the key
+// the client builds: "<machineId>|<title>", the title lowercased. A mismatch
+// here shows every tab as claude and looks like nobody configured anything.
+func TestEngineKeyMatchesTheClientsStoreKey(t *testing.T) {
+	if got := engineKey("m2", "tom-lotly"); got != "m2|tom-lotly" {
+		t.Fatalf("engineKey %q", got)
+	}
+	if got := engineKey("m2", "TOM-Lotly"); got != engineKey("m2", "tom-lotly") {
+		t.Fatalf("title must be matched case-insensitively, got %q", got)
+	}
+	// The machine ID is a UUID and the client does not touch its case.
+	if got := engineKey("M2", "tom-lotly"); got != "M2|tom-lotly" {
+		t.Fatalf("engineKey %q, want the machine ID left alone", got)
+	}
+}
+
+// The tab list is global and the agent choice is per account, so the page reads
+// every account's map as one table. Two accounts naming one tab differently is
+// settled by the order the query returns (username order), which only has to be
+// stable: there is no per-account row for a disagreement to be reported on.
+func TestMergeTabEnginesFoldsEveryAccountInOrder(t *testing.T) {
+	engines := mergeTabEngines([]accountAgents{
+		{Username: "ann", Agents: map[string]string{"m2|tom-lotly": "deepseek", "m1|jack-huum": "codex"}},
+		{Username: "bob", Agents: map[string]string{"m2|tom-lotly": "codex"}},
+		{Username: "cid", Agents: map[string]string{"m2|tom-huum": ""}},
+	})
+	if engines["m2|tom-lotly"] != "codex" {
+		t.Fatalf("the later account must win: %v", engines)
+	}
+	if engines["m1|jack-huum"] != "codex" {
+		t.Fatalf("an account only has to name a tab to be heard: %v", engines)
+	}
+	if _, ok := engines["m2|tom-huum"]; ok {
+		t.Fatalf("an empty value means nothing and must not shadow a real one: %v", engines)
+	}
+	if got := mergeTabEngines(nil); len(got) != 0 {
+		t.Fatalf("no accounts, no engines: %v", got)
+	}
+}
+
+func TestWithEnginesFillsEveryRowAndLeavesTheViewAlone(t *testing.T) {
+	view := buildPublicTabView(publicProjectsFixture())
+	filled := withEngines(view, map[string]string{
+		"m2|tom-lotly": "deepseek",
+		"m1|jack-huum": "some-new-cli",
+	})
+	bySession := map[string]string{}
+	for _, v := range filled {
+		bySession[v.Session] = v.Engine
+	}
+	if bySession["tom-lotly"] != "deepseek" {
+		t.Fatalf("configured tab: %v", bySession)
+	}
+	// An id the server does not know is passed through rather than rewritten to
+	// the default: the page then shows the new CLI instead of a wrong name.
+	if bySession["jack-huum"] != "some-new-cli" {
+		t.Fatalf("unknown id: %v", bySession)
+	}
+	if bySession["tom-huum"] != defaultEngine {
+		t.Fatalf("unconfigured tab must show the default: %v", bySession)
+	}
+	for _, v := range view {
+		if v.Engine != "" {
+			t.Fatalf("the derivation the read path sees must stay engine-free: %+v", v)
+		}
+	}
+}
+
+// The badge is display-only and lives on the page, so a CLI the server passes
+// through but the page has never heard of must still render as itself.
+func TestAdminPageRendersTheEngineBadge(t *testing.T) {
+	page, err := adminPage.ReadFile("web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(page)
+	for _, want := range []string{"<th>引擎</th>", "const ENGINES = {", "engineBadge", "tab.engine"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin page is missing %q", want)
+		}
+	}
+	for _, engine := range []string{"claude:", "codex:", "deepseek:"} {
+		if !strings.Contains(html, engine) {
+			t.Fatalf("admin page has no display entry for %q", engine)
+		}
+	}
+}
+
+// The wiring end to end: what the page gets per row is the engine the accounts
+// named for that machine and session, and the default for the rest.
+func TestAdminStateFillsPublicTabEngines(t *testing.T) {
+	a, mock := mustApp(t)
+	mock.ExpectQuery("SELECT id,username,is_admin,can_write,disabled FROM users").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "username", "is_admin", "can_write", "disabled"}).AddRow(1, "boss", true, true, false))
+	mock.ExpectQuery("SELECT position,data FROM machines").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
+	mock.ExpectQuery("SELECT data FROM employees ORDER BY id").WillReturnRows(sqlmock.NewRows([]string{"data"}))
+	mock.ExpectQuery("SELECT data FROM projects ORDER BY id").WillReturnRows(sqlmock.NewRows([]string{"data"}).
+		AddRow([]byte(`{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"m1"},{"id":"kim","machineId":"m3"},{"id":"tom","machineId":"m2"}]}`)))
+	mock.ExpectQuery("SELECT position,data FROM pinned_bookmarks").WillReturnRows(sqlmock.NewRows([]string{"position", "data"}))
+	mock.ExpectQuery("SELECT user_id,tab_id,employee_id,project_id FROM tab_links").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "tab_id", "employee_id", "project_id"}))
+	mock.ExpectQuery("SELECT u.id,c.tabs,c.recent_selection FROM users u LEFT JOIN user_configs").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "tabs", "recent_selection"}))
+	// 两个账号各配了一部分：合并后才覆盖到两条，剩下的落默认。
+	mock.ExpectQuery("SELECT u.username,COALESCE\\(c.agents").WillReturnRows(
+		sqlmock.NewRows([]string{"username", "agents"}).
+			AddRow("ann", []byte(`{"m1|jack-huum":"deepseek"}`)).
+			AddRow("bob", []byte(`{"m2|tom-huum":"codex"}`)).
+			AddRow("cid", []byte(`{"m2|tom-other":"codex"}`)))
+
+	w := httptest.NewRecorder()
+	a.adminState(w, httptest.NewRequest(http.MethodGet, "/admin/api/state", nil), user{ID: 1, Admin: true, CanWrite: true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var state struct {
+		PublicTabs []publicTabView `json:"publicTabs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PublicTabs) != 3 {
+		t.Fatalf("one public project with three employees: %+v", state.PublicTabs)
+	}
+	engines := map[string]string{}
+	for _, tab := range state.PublicTabs {
+		engines[tab.Session] = tab.Engine
+	}
+	if engines["jack-huum"] != "deepseek" || engines["tom-huum"] != "codex" {
+		t.Fatalf("engines %v", engines)
+	}
+	// 一个账号配的是别的会话（tom-other），不该串到同名以外的行上；没人配的落默认。
+	if engines["kim-huum"] != defaultEngine {
+		t.Fatalf("unconfigured row must show the default: %v", engines)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -76,6 +76,10 @@ type publicTabView struct {
 	MachineID   string `json:"machineId"`
 	Session     string `json:"session"`
 	TabID       string `json:"tabId"`
+	// Engine is the CLI this tab opens, filled in by withEngines rather than by
+	// the derivation below: it comes from the accounts, not from the projects,
+	// and the read path (config.go) must keep seeing the view without it.
+	Engine string `json:"engine"`
 }
 
 // buildPublicTabView expands the public projects into the tab set every account
@@ -102,6 +106,67 @@ func buildPublicTabView(projects []projectEntry) []publicTabView {
 				Session:     e.ID + "-" + p.ID,
 				TabID:       publicTabID(e.ID, p.ID),
 			})
+		}
+	}
+	return out
+}
+
+// Which CLI a tab opens — claude, codex or deepseek — is a per-account choice,
+// not a property of the tab: the client keeps it in TabAgentStore (gear on the
+// team-status row) and uploads the whole map to its account's agents column.
+// The public tab list is global, so the page has to answer for every account at
+// once, and the maps are merged into one table. Where two accounts name the
+// same tab differently the alphabetically later username wins; the tie-break
+// only has to be stable, because a public tab belongs to no account in
+// particular and there is no per-account row to report a disagreement against.
+//
+// Absent means the default below: that is what the client falls back to, and
+// claude is the one value it never uploads (TabAgentStore drops the key instead
+// of storing "claude").
+const defaultEngine = "claude"
+
+// accountAgents is one account's uploaded map, as stored in user_configs.agents.
+type accountAgents struct {
+	Username string
+	Agents   map[string]string
+}
+
+// engineKey mirrors the client's TabAgentStore.storeKey: "<machineId>|<title>",
+// title lowercased. A public tab's title is its session name (the client
+// derives it from tmuxSession, not from a work dir). Employee and project IDs
+// are restricted to [a-z0-9._-], so lowercasing is the whole of it.
+func engineKey(machineID, session string) string {
+	return machineID + "|" + strings.ToLower(session)
+}
+
+// mergeTabEngines folds every account's map into one, in the order given (the
+// query orders by username, so the last account to name a tab wins). An empty
+// value is skipped rather than stored: it would otherwise shadow a real answer
+// from another account and mean nothing on the page.
+func mergeTabEngines(accounts []accountAgents) map[string]string {
+	out := map[string]string{}
+	for _, a := range accounts {
+		for key, engine := range a.Agents {
+			if engine != "" {
+				out[key] = engine
+			}
+		}
+	}
+	return out
+}
+
+// withEngines returns the view with each row's engine filled in. Unknown ids
+// are passed through: the page maps an id it does not know to the id itself, so
+// a fourth CLI shows up as configured the day somebody configures it instead of
+// silently reading as claude here.
+func withEngines(view []publicTabView, engines map[string]string) []publicTabView {
+	out := make([]publicTabView, len(view))
+	copy(out, view)
+	for i := range out {
+		if engine := engines[engineKey(out[i].MachineID, out[i].Session)]; engine != "" {
+			out[i].Engine = engine
+		} else {
+			out[i].Engine = defaultEngine
 		}
 	}
 	return out
