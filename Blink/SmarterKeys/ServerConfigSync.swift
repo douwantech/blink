@@ -377,7 +377,11 @@ final class ServerConfigSync: ObservableObject {
       // 公用标签休息名单回读（团队页月亮开关的服务端侧）：在岗集合随账号走，
       // 换设备登录也是同一份。**键不在（老账号/从未切过）不物化** —— 保持「默认只有
       // tom 在岗」的规则活着，别让空集把默认体验清掉；键在了才以服务端为准。
-      if let joined = snapshot.recentSelection["restSessions"] {
+      // dirty（本地有未上传的开关改动）时**跳过**：uploadPersonal 上传前会对齐版本，
+      // 服务器版本已被上一轮 PUT 推进 → 这里拉到的是上一轮值，覆盖掉会让本轮开关
+      // 静默回弹且永不上传（2026-10-06 老板实测「休息的标签又显示出来」的根因）。
+      if !defaults.bool(forKey: dirtyKey),
+         let joined = snapshot.recentSelection["restSessions"] {
         SharedRestStore.shared.applyServer(joined)
       }
       // 以前这里还回读员工维度（BlinkTabFilterEmployee，给「员工×机器」二级筛选器用）。
@@ -453,6 +457,10 @@ final class ServerConfigSync: ObservableObject {
         }
       } catch { defaults.set(true, forKey: dirtyKey); isOnline = false; return }
     }
+    // PUT 成功后立刻对齐一次版本：服务器 version 已被这轮 PUT 推进，不拉回来的话
+    // 下一轮上传前的 syncFromServer 会 200 全量、apply 误判 serverAdvanced。这次
+    // 拉回来的就是刚传上去的内容（回读无感），appliedVersion 从此跟上，竞态消除。
+    try? await syncFromServer()
   }
 }
 
