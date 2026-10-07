@@ -30,12 +30,13 @@ func (a *app) employeeAvatar(w http.ResponseWriter, r *http.Request, _ user) {
 	_, _ = w.Write(data)
 }
 
-// putEmployeeAvatar accepts only PNG bytes. The directory JSON gets a stable
+// storeEmployeeAvatar accepts only PNG bytes. The directory JSON gets a stable
 // URL marker while the bytes remain in the dedicated RDS table.
-func (a *app) putEmployeeAvatar(w http.ResponseWriter, r *http.Request, u user) {
-	if !requireAdmin(w, u) {
-		return
-	}
+//
+// It deliberately checks no permission: the two entry points below decide who
+// may call it (admin session vs. Bearer with canWrite), so the validation and
+// write path stay in one place and cannot drift apart.
+func (a *app) storeEmployeeAvatar(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validDirectoryID(id) || !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "image/png") {
 		http.Error(w, "PNG image required", http.StatusBadRequest)
@@ -81,4 +82,24 @@ func (a *app) putEmployeeAvatar(w http.ResponseWriter, r *http.Request, u user) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// putEmployeeAvatar is the admin page's upload route. The session cookie alone
+// is not enough: adminAuth already rejected non-admins, and the account must
+// still be an administrator here.
+func (a *app) putEmployeeAvatar(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireAdmin(w, u) {
+		return
+	}
+	a.storeEmployeeAvatar(w, r)
+}
+
+// putEmployeeAvatarV1 is the Bearer route used by tooling when no admin browser
+// session exists. Same authorization as PUT /v1/machines/{id}: admin with
+// canWrite. The admin route above keeps its own (requireAdmin) semantics.
+func (a *app) putEmployeeAvatarV1(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireWrite(w, u) {
+		return
+	}
+	a.storeEmployeeAvatar(w, r)
 }
