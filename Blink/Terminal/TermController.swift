@@ -401,6 +401,11 @@ extension TermController: TermDeviceDelegate {
     (_session as? MCPSession)?.reconnectIfDisconnected()
   }
 
+  /// 切换 CLI 后强制重连：底层 MCP 杀掉当前连接，走自动重连链用新配置重开会话
+  func restartConnection() {
+    (_session as? MCPSession)?.restartConnection()
+  }
+
   func apiCall(_ api: String!, andRequest request: String!) {
     guard
       let session = _session as? MCPSession,

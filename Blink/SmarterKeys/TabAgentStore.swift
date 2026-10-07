@@ -152,8 +152,9 @@ enum AgentKind: Int, CaseIterable {
     }
     run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
     run += "fi; "   // elif 串起来的整条只收一个 fi
-    // envPrefix 放在 cd 前面：它以 `&& ` 收尾，没配 key 时整条短路，不会往下把 TUI 起起来
-    return envPrefix + "cd \(cdTarget) && { \(path)\(miss)\(fullAccessNudge)\(run)}"
+    // envPrefix 放在 cd 前面：它以 `&& ` 收尾，没配 key 时整条短路，不会往下把 TUI 起起来。
+    // cd 带引号：cdTarget 可能是 $(…) 兜底表达式，目录带空格时不加引号会被拆碎
+    return envPrefix + "cd \"\(cdTarget)\" && { \(path)\(miss)\(fullAccessNudge)\(run)}"
   }
 
   /// UI 图标（禁 emoji，统一 SF Symbols）

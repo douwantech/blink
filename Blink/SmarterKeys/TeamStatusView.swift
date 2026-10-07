@@ -76,6 +76,8 @@ enum TeamWorkStatus: Int {
 final class TeamStatusViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
   var onOpenTab: ((UUID) -> Void)?
   var onToggleRest: ((UUID, Bool) -> Void)?
+  /// 切换 CLI 后杀完远端旧进程回调：让对应 tab 的连接强制断开重连（新启动脚本生效）
+  var onRestartSession: ((UUID) -> Void)?
 
   fileprivate struct ProjectRow {
     let tabKey: UUID
@@ -468,18 +470,24 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         self.tableView.reloadData()
-        // 直接切：把远端那个 tmux 会话杀掉，终端那边自动重连时就会用新 CLI 重跑启动脚本。
-        // 不杀的话 `tmux new-session -A` 只 attach 回原来那个，里面跑的还是旧的。
+        // 直接切：只杀 pane 里跑着的 CLI 进程（pkill -P pane_pid），**不 kill-session** ——
+        // 会话和它的工作目录都保活，掉到 boot 链的兜底 shell。随后让手机端强制重连：
+        // 重新生成的启动脚本（此时 TabAgentStore 已是新 CLI）attach 回这个活会话，
+        // heal 检测到裸 shell 就 source 新 boot，新 CLI 在原目录起来。
+        // （以前 kill-session 整个杀掉：公用标签不带 workDir，重建时 cd 退化到 $HOME，
+        // claude 起在家目录还弹 trust 页。）
         guard let m = BlinkMachineStore.shared.machines.first(where: { $0.id == t.machineId }) else { return }
         let kill = """
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        tmux kill-session -t \(t.outerSession) 2>/dev/null
+        P=$(tmux display-message -p -t \(t.outerSession) #{pane_pid} 2>/dev/null)
+        if [ -n "$P" ]; then pkill -TERM -P $P 2>/dev/null; sleep 1; pkill -KILL -P $P 2>/dev/null; fi
         printf '@TSB64@@TSB64E@\\n'
         """
         Task { [weak self] in
           _ = try? await Self.exec(script: kill, machine: m)
           await MainActor.run {
-            self?.toast("已切到 \(k.label)，会话正在用它重开")
+            self?.toast("已切到 \(k.label)，正在原会话里重开")
+            self?.onRestartSession?(tabKey)
           }
         }
       }

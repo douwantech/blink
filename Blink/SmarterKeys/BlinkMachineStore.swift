@@ -220,8 +220,10 @@ enum HostReachability {
       // inner 被外层 `$SHELL -ic '...'` 单引号包裹，里面只能用双引号；TITLE 由 Swift 端预先算好。
       // rename 注入不再盲等固定秒数：新建 tab 进新目录时 claude 会先弹「信任此文件夹」，
       // 加上 MCP 加载慢，盲发的 /rename 会被弹窗/加载屏吃掉。改成轮询 capture-pane：
-      // 见到 trust 弹窗先回车放行，见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，
-      // 20s 兜底。_snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
+      // 见到 trust 弹窗先放行（旧文案 trust the files 直接回车；新版「Yes, I trust this
+      // folder」默认停在 No, exit 上，要先按下箭头选中 Yes 再回车，盲回车会把 claude 退出），
+      // 见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，20s 兜底。
+      // _snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
       // （claude 都带 --dangerously-skip-permissions：多数情况下 trust 弹窗被自动跳过，轮询是双保险。）
       //
       // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
@@ -229,7 +231,8 @@ enum HostReachability {
       if !agent.supportsResume { return agent.launchSnippet(cdTarget: cdTarget) }
       // DeepSeek 档也走这条（它就是 claude），只是前面多几个 ANTHROPIC_* 环境变量
       // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
-      return agent.envPrefix + #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+      // cd 带引号：cdTarget 可能是 $(…) 兜底表达式，目录带空格时不加引号会被拆碎
+      return agent.envPrefix + #"cd "\#(cdTarget)" && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) _snd "$T" Down; sleep 0.3; _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -238,7 +241,18 @@ enum HostReachability {
 
     if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
-      let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
+      // cd 目标：tab 带了 workDir 就直接用。公用标签（SharedTab）只有 machineId/tmuxSession，
+      // workDirId=nil —— 以前无脑退 $HOME，切 CLI 杀掉会话后重建就 cd 到家目录（claude 起在
+      // /Users/apple 还弹 trust 页）。改成三级兜底：① 会话活着 → pane 当前目录（切 CLI 只换
+      // 进程不换地方）；② pane 目录缺失**或就是 $HOME**（会话被杀过、new-session 把新 pane
+      // 建在了家目录）→ 拿 customTitle 去 ~/.claude/projects 的 jsonl 反查 cwd；
+      // ③ 都没有才 $HOME。
+      let pathArg: String
+      if let wp = workPath, !wp.isEmpty {
+        pathArg = wp
+      } else {
+        pathArg = "$(D=$(tmux display-message -p -t \(outerSession) #{pane_current_path} 2>/dev/null); if [ -z \"$D\" ] || [ \"x$D\" = \"x$HOME\" ]; then F=$(find $HOME/.claude/projects -maxdepth 2 -name \"*.jsonl\" -type f -exec grep -lF \"\\\"customTitle\\\":\\\"\(title)\\\"\" {} + 2>/dev/null | head -1); if [ -n \"$F\" ]; then W=$(grep -o \"\\\"cwd\\\":\\\"[^\\\"]*\\\"\" \"$F\" | head -1 | cut -d'\"' -f4); [ -n \"$W\" ] && D=$W; fi; fi; echo \"${D:-$HOME}\")"
+      }
       let inner = resumeOrNew(pathArg)
       // 启动脚本落到远端固定路径（boot 文件）。session 已存在时 `tmux new-session -A` 只会
       // attach，inner（cd + claude resume）不会重跑——坏 session（cd 失败/claude 退出后

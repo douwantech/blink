@@ -2706,6 +2706,14 @@ extension SpaceController: BlinkTabBarDelegate {
         self?._reloadTabBar()
       }
     }
+    // 切 CLI 的收尾：团队页那边已把远端旧 CLI 进程杀掉（保会话保目录），这里让对应
+    // tab 强制断开重连 —— 重连命令重新生成（新 CLI 启动脚本），attach 回活会话后
+    // heal 自愈起新 CLI。用非创建式查询：休息中不在坞里的标签没有 term，跳过
+    //（远端进程已杀，下次打开时 heal 自然用新配置起）。
+    vc.onRestartSession = { key in
+      let term: TermController? = SessionRegistry.shared.sessionFromIndexWith(key: key)
+      term?.restartConnection()
+    }
     let nav = UINavigationController(rootViewController: vc)
     nav.modalPresentationStyle = .fullScreen
     present(nav, animated: true)

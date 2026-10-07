@@ -462,6 +462,21 @@ static void MCPDebugLog(NSString *s) {
   return 0;
 }
 
+// 切换 CLI 后强制走一次重连：杀掉当前活的 ssh/blinkd 子连接，命令退出后由
+// _runCommand 尾部的 willReconnect 自动链重跑 _freshAutoConnectCommand ——
+// 命令此刻重新生成，读到的新 CLI 配置（TabAgentStore）随之生效；远端那边
+// attach 回活会话 + heal 自愈（见 BlinkMachineStore.sshCommand 的 boot/heal 段）。
+- (void)restartConnection {
+  if (!_device) { return; }
+  if (_sshClients.count > 0) {
+    dispatch_sync(_sshQueue, ^{
+      for (id client in self->_sshClients) { [client kill]; }
+    });
+  } else if (_childSession) {
+    [_childSession kill];
+  }
+}
+
 - (void)registerSSHClient:(id __weak)sshClient {
   dispatch_sync(_sshQueue, ^(void){
     [_sshClients addObject:sshClient];
