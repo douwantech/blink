@@ -102,7 +102,9 @@ func (a *app) putDirectoryEntry(table string) handler {
 			http.Error(w, "internal error", 500)
 			return
 		}
-		if _, err = a.db.ExecContext(r.Context(), `INSERT INTO `+table+`(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, id, stored); err != nil {
+		// Merge the edited fields so metadata added by another endpoint (such as
+		// the avatar URL) survives a later name edit.
+		if _, err = a.db.ExecContext(r.Context(), `INSERT INTO `+table+`(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=JSON_MERGE_PATCH(`+table+`.data,VALUES(data))`, id, stored); err != nil {
 			http.Error(w, "internal error", 500)
 			return
 		}
