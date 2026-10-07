@@ -217,7 +217,13 @@ func (a *app) adminSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminMutation(w http.ResponseWriter, r *http.Request) bool {
-	if r.Header.Get("X-Blink-Admin") != "1" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") && r.Method != "DELETE" {
+	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	jsonBody := strings.HasPrefix(contentType, "application/json")
+	avatarPNG := r.Method == http.MethodPut &&
+		strings.HasPrefix(r.URL.Path, "/admin/api/employees/") &&
+		strings.HasSuffix(r.URL.Path, "/avatar") &&
+		strings.HasPrefix(contentType, "image/png")
+	if r.Header.Get("X-Blink-Admin") != "1" || (r.Method != http.MethodDelete && !jsonBody && !avatarPNG) {
 		http.Error(w, "forbidden", 403)
 		return false
 	}

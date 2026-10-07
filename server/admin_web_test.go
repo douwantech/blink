@@ -130,3 +130,23 @@ func TestAdminMutationRequiresCustomHeader(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 }
+
+func TestAdminMutationAllowsPNGOnlyForEmployeeAvatar(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		header string
+		want   bool
+	}{
+		{"/admin/api/employees/jack/avatar", "1", true},
+		{"/admin/api/employees/jack", "1", false},
+		{"/admin/api/employees/jack/avatar", "", false},
+	} {
+		r := httptest.NewRequest(http.MethodPut, tc.path, nil)
+		r.Header.Set("Content-Type", "image/png")
+		r.Header.Set("X-Blink-Admin", tc.header)
+		w := httptest.NewRecorder()
+		if got := adminMutation(w, r); got != tc.want {
+			t.Errorf("%s header=%q: got %v, want %v", tc.path, tc.header, got, tc.want)
+		}
+	}
+}
