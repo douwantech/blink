@@ -273,7 +273,7 @@ enum AgentKind: Int, CaseIterable {
     switch self {
     case .claude: return nil   // 能开会话说明本来就装着
     case .codex:
-      return "if command -v npm >/dev/null 2>&1; then npm i -g --prefix \"$HOME/.local\" @openai/codex; elif command -v brew >/dev/null 2>&1; then brew install codex; fi"
+      return "if command -v npm >/dev/null 2>&1; then npm install -g --include=optional --prefix \"$HOME/.local\" @openai/codex@latest; elif command -v brew >/dev/null 2>&1; then brew reinstall codex; fi"
     case .deepseek:
       // README 给的官方装法，装到 ~/.local/bin
       return "if command -v curl >/dev/null 2>&1; then curl -fsSL https://codewhale.net/install.sh | sh; fi"
@@ -285,7 +285,7 @@ enum AgentKind: Int, CaseIterable {
   var installHint: String {
     switch self {
     case .claude: return "装一下 claude code"
-    case .codex: return "手动装：npm i -g --prefix \"$HOME/.local\" @openai/codex"
+    case .codex: return "手动装：npm install -g --include=optional --prefix \"$HOME/.local\" @openai/codex@latest"
     case .deepseek: return "手动装：curl -fsSL https://codewhale.net/install.sh | sh"
     case .glm: return "装一下 claude code"
     }
@@ -341,11 +341,14 @@ enum AgentKind: Int, CaseIterable {
   /// 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
   /// 外层是 `$SHELL -lic '...'`，里面只能用双引号——别引入单引号。
   func launchSnippet(cdTarget: String, title: String = "") -> String {
-    let has = bins.map { "command -v \($0) >/dev/null 2>&1" }.joined(separator: " || ")
+    // npm 主包存在但平台可选包缺失时 command -v 仍成功，真正运行却立刻报错。
+    let has = self == .codex
+      ? "command -v codex >/dev/null 2>&1 && codex --version >/dev/null 2>&1"
+      : bins.map { "command -v \($0) >/dev/null 2>&1" }.joined(separator: " || ")
     // 官方安装脚本装到 ~/.local/bin，登录 shell 未必带它
     let path = "case \":$PATH:\" in *:\"$HOME/.local/bin\":*) ;; *) PATH=\"$HOME/.local/bin:$PATH\";; esac; "
     let miss = installCommand.map {
-      "if ! { \(has); }; then echo \"[blink] 这台机器没装 \(bins[0])，正在装…\"; \($0); hash -r 2>/dev/null; fi; "
+      "if ! { \(has); }; then echo \"[blink] \(bins[0]) 未安装或已损坏，正在修复…\"; \($0); hash -r 2>/dev/null; fi; "
     } ?? ""
     var run = ""
     for b in bins {
@@ -363,7 +366,8 @@ enum AgentKind: Int, CaseIterable {
       } else {
         cmd = b + args
       }
-      run += "if command -v \(b) >/dev/null 2>&1; then \(cmd); el"
+      let usable = self == .codex ? has : "command -v \(b) >/dev/null 2>&1"
+      run += "if \(usable); then \(cmd); el"
     }
     run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
     run += "fi; "   // elif 串起来的整条只收一个 fi
