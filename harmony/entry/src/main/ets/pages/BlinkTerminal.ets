@@ -3045,6 +3045,8 @@ struct BlinkTerminal {
         .onClick(() => this.setAgent(t, 'codex'))
       MenuItem({ content: this.agentOf(t) === 'deepseek' ? 'DeepSeek（当前）' : 'DeepSeek' })
         .onClick(() => this.setAgent(t, 'deepseek'))
+      MenuItem({ content: this.agentOf(t) === 'glm' ? 'GLM (Claude Code)（当前）' : 'GLM (Claude Code)' })
+        .onClick(() => this.setAgent(t, 'glm'))
     }
   }
 

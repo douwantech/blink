@@ -89,7 +89,7 @@ export interface SeedConfig {
   tabs: TabModel[];
   currentId: string;
   pinned: PinnedTab[];
-  agents?: Record<string, string>;   // "<machineId>|<title>" -> claude|codex|deepseek
+  agents?: Record<string, string>;   // "<machineId>|<title>" -> claude|codex|deepseek|glm
   favorites: string[];
   history: string[];
   terms: Record<string, Record<string, number>>;
@@ -111,6 +111,15 @@ export interface SeedConfig {
 const P_KEY: string = 'blink_store';   // preferences file name
 
 // DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
+
+const BLINK_CLAUDE_STATUS_B64: string = 'aW1wb3J0IGpzb24sIG9zLCBzdWJwcm9jZXNzLCBzeXMKdHJ5OgogICAgZCA9IGpzb24ubG9hZChzeXMuc3RkaW4pCmV4Y2VwdCBFeGNlcHRpb246CiAgICBkID0ge30KZGVmIGdldCgqcGF0aCk6CiAgICB2ID0gZAogICAgZm9yIGtleSBpbiBwYXRoOgogICAgICAgIHYgPSB2LmdldChrZXksIHt9KSBpZiBpc2luc3RhbmNlKHYsIGRpY3QpIGVsc2Uge30KICAgIHJldHVybiB2CmRlZiBwY3Qodik6CiAgICB0cnk6IHJldHVybiBtYXgoMCwgbWluKDEwMCwgcm91bmQoZmxvYXQodikpKSkKICAgIGV4Y2VwdCBFeGNlcHRpb246IHJldHVybiBOb25lCmRlZiBtZXRlcihsYWJlbCwgdmFsdWUpOgogICAgbiA9IHBjdCh2YWx1ZSkKICAgIGlmIG4gaXMgTm9uZTogcmV0dXJuIGYie2xhYmVsfSAtLSIKICAgIGJsb2NrcyA9IHJvdW5kKG4gKiA3IC8gMTAwKQogICAgcmV0dXJuIGYie2xhYmVsfSB7J+KWsCcqYmxvY2tzfXsn4paxJyooNy1ibG9ja3MpfSB7bn0lIgptb2RlbCA9IGdldCgnbW9kZWwnLCAnZGlzcGxheV9uYW1lJykgb3IgJ0NsYXVkZScKY3dkID0gZ2V0KCd3b3Jrc3BhY2UnLCAnY3VycmVudF9kaXInKSBvciBvcy5nZXRjd2QoKQp0cnk6IGJyYW5jaCA9IHN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywgJy1DJywgY3dkLCAnYnJhbmNoJywgJy0tc2hvdy1jdXJyZW50J10sIHN0ZGVycj1zdWJwcm9jZXNzLkRFVk5VTEwsIHRleHQ9VHJ1ZSwgdGltZW91dD0xKS5zdHJpcCgpCmV4Y2VwdCBFeGNlcHRpb246IGJyYW5jaCA9ICcnCnByaW50KGYi8J+RviB7b3MudW5hbWUoKS5ub2RlbmFtZS5zcGxpdCgnLicpWzBdfTp7b3MucGF0aC5iYXNlbmFtZShjd2QpfSAgIPCfp6Age21vZGVsfSIgKyAoZiIgICDwn4y/IHticmFuY2h9IiBpZiBicmFuY2ggZWxzZSAnJykpCnByaW50KCcgICAnLmpvaW4oW21ldGVyKCdDVFgnLCBnZXQoJ2NvbnRleHRfd2luZG93JywgJ3VzZWRfcGVyY2VudGFnZScpKSwgbWV0ZXIoJzVIJywgZ2V0KCdyYXRlX2xpbWl0cycsICdmaXZlX2hvdXInLCAndXNlZF9wZXJjZW50YWdlJykpLCBtZXRlcignN0QnLCBnZXQoJ3JhdGVfbGltaXRzJywgJ3NldmVuX2RheScsICd1c2VkX3BlcmNlbnRhZ2UnKSldKSk=';
+const BLINK_CODEWHALE_STATUS_B64: string = 'aW1wb3J0IG9zLCBwYXRobGliLCByZQpob21lID0gcGF0aGxpYi5QYXRoLmhvbWUoKQpzb3VyY2UgPSBwYXRobGliLlBhdGgob3MuZW52aXJvbi5nZXQoJ0NPREVXSEFMRV9DT05GSUdfUEFUSCcpIG9yIG9zLmVudmlyb24uZ2V0KCdERUVQU0VFS19DT05GSUdfUEFUSCcpIG9yIHN0cihob21lIC8gJy5jb2Rld2hhbGUvY29uZmlnLnRvbWwnKSkKaWYgbm90IHNvdXJjZS5leGlzdHMoKTogc291cmNlID0gaG9tZSAvICcuZGVlcHNlZWsvY29uZmlnLnRvbWwnCnRleHQgPSBzb3VyY2UucmVhZF90ZXh0KCkgaWYgc291cmNlLmV4aXN0cygpIGVsc2UgJycKaXRlbXMgPSAnc3RhdHVzX2l0ZW1zID0gWyJtb2RlbCIsICJ0b2tlbnMiLCAiY29zdCJdJwptZXRyaWNzID0gJ21ldHJpY3NfbGluZSA9ICJmdWxsIicKbWF0Y2ggPSByZS5zZWFyY2gocicoP20pXlxbdHVpXF1bIFx0XSooPzojLiopPyQnLCB0ZXh0KQppZiBtYXRjaDoKICAgIGVuZF9tYXRjaCA9IHJlLnNlYXJjaChyJyg/bSleXFsnLCB0ZXh0W21hdGNoLmVuZCgpOl0pCiAgICBlbmQgPSBtYXRjaC5lbmQoKSArIGVuZF9tYXRjaC5zdGFydCgpIGlmIGVuZF9tYXRjaCBlbHNlIGxlbih0ZXh0KQogICAgYm9keSA9IHRleHRbbWF0Y2guZW5kKCk6ZW5kXQogICAgZm9yIGtleSwgbGluZSBpbiBbKCdzdGF0dXNfaXRlbXMnLCBpdGVtcyksICgnbWV0cmljc19saW5lJywgbWV0cmljcyldOgogICAgICAgIHBhdHRlcm4gPSByJyg/bSleWyBcdF0qJyArIGtleSArIHInWyBcdF0qPVsgXHRdKig/OlxbW15cXV0qXF18W15cbl0qKScKICAgICAgICBib2R5LCBjb3VudCA9IHJlLnN1Ym4ocGF0dGVybiwgbGluZSwgYm9keSwgY291bnQ9MSkKICAgICAgICBpZiBub3QgY291bnQ6IGJvZHkgKz0gJ1xuJyArIGxpbmUgKyAnXG4nCiAgICB0ZXh0ID0gdGV4dFs6bWF0Y2guZW5kKCldICsgYm9keSArIHRleHRbZW5kOl0KZWxzZToKICAgIHRleHQgKz0gJ1xuW3R1aV1cbicgKyBpdGVtcyArICdcbicgKyBtZXRyaWNzICsgJ1xuJwp0YXJnZXQgPSBob21lIC8gJy5ibGluay9jb2Rld2hhbGUtc3RhdHVzLnRvbWwnCnRhcmdldC5wYXJlbnQubWtkaXIobW9kZT0wbzcwMCwgZXhpc3Rfb2s9VHJ1ZSkKZmQgPSBvcy5vcGVuKHRhcmdldCwgb3MuT19XUk9OTFkgfCBvcy5PX0NSRUFUIHwgb3MuT19UUlVOQywgMG82MDApCndpdGggb3MuZmRvcGVuKGZkLCAndycpIGFzIG91dDogb3V0LndyaXRlKHRleHQp';
+
+const BLINK_CODEX_RESUME_B64: string = 'aW1wb3J0IGpzb24sIG9zLCBwYXRobGliLCBzeXMsIHV1aWQKaWYgbGVuKHN5cy5hcmd2KSAhPSAzOiBzeXMuZXhpdCgwKQpuYW1lLCBjd2QgPSBzeXMuYXJndlsxOl0KY3dkID0gb3MucGF0aC5yZWFscGF0aChjd2QpCnJvb3QgPSBwYXRobGliLlBhdGgob3MuZW52aXJvbi5nZXQoJ0NPREVYX0hPTUUnKSBvciBwYXRobGliLlBhdGguaG9tZSgpIC8gJy5jb2RleCcpCm1hdGNoZXMgPSB7fQpmb3IgZmlsZSBpbiAocm9vdCAvICdzZXNzaW9ucycpLmdsb2IoJyovKi8qL3JvbGxvdXQtKi5qc29ubCcpOgogICAgdHJ5OgogICAgICAgIHdpdGggZmlsZS5vcGVuKCkgYXMgc3RyZWFtOiBtZXRhID0ganNvbi5sb2FkcyhzdHJlYW0ucmVhZGxpbmUoKSkKICAgICAgICBwYXlsb2FkID0gbWV0YS5nZXQoJ3BheWxvYWQnKSBvciB7fQogICAgICAgIHNpZCA9IHN0cih1dWlkLlVVSUQocGF5bG9hZFsnaWQnXSkpCiAgICAgICAgaWYgbWV0YS5nZXQoJ3R5cGUnKSA9PSAnc2Vzc2lvbl9tZXRhJyBhbmQgb3MucGF0aC5yZWFscGF0aChwYXlsb2FkWydjd2QnXSkgPT0gY3dkOgogICAgICAgICAgICBtYXRjaGVzW3NpZF0gPSBmaWxlCiAgICBleGNlcHQgKE9TRXJyb3IsIEtleUVycm9yLCBWYWx1ZUVycm9yLCBUeXBlRXJyb3IpOiBwYXNzCmluZGV4ID0gcm9vdCAvICdzZXNzaW9uX2luZGV4Lmpzb25sJwpuYW1lZCA9IFtdCmlmIGluZGV4LmV4aXN0cygpOgogICAgdHJ5OgogICAgICAgIHdpdGggaW5kZXgub3BlbigpIGFzIHN0cmVhbTogbGluZXMgPSBzdHJlYW0ucmVhZGxpbmVzKCkKICAgICAgICBzZWVuID0gc2V0KCkKICAgICAgICBmb3IgbGluZSBpbiByZXZlcnNlZChsaW5lcyk6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGl0ZW0gPSBqc29uLmxvYWRzKGxpbmUpCiAgICAgICAgICAgICAgICBzaWQgPSBzdHIodXVpZC5VVUlEKGl0ZW1bJ2lkJ10pKQogICAgICAgICAgICAgICAgaWYgc2lkIGluIHNlZW46IGNvbnRpbnVlCiAgICAgICAgICAgICAgICBzZWVuLmFkZChzaWQpCiAgICAgICAgICAgICAgICBpZiBpdGVtLmdldCgndGhyZWFkX25hbWUnKSA9PSBuYW1lOiBuYW1lZC5hcHBlbmQoc2lkKQogICAgICAgICAgICBleGNlcHQgKEtleUVycm9yLCBWYWx1ZUVycm9yLCBUeXBlRXJyb3IpOiBwYXNzCiAgICBleGNlcHQgT1NFcnJvcjogcGFzcwpzYW1lX2RpciA9IFtzaWQgZm9yIHNpZCBpbiBuYW1lZCBpZiBzaWQgaW4gbWF0Y2hlc10KaWYgc2FtZV9kaXI6CiAgICAjIOWQjeWtl+WFqOWxgOWUr+S4gOaXtuebtOaOpeaMieWQjeWtl+aBouWkje+8m+mHjeWQjeaXtueUqCBJRCDplIHlrprlvZPliY3nm67lvZXjgIIKICAgIHByaW50KCdOOicgKyBuYW1lIGlmIGxlbihuYW1lZCkgPT0gMSBlbHNlICdJOicgKyBzYW1lX2RpclswXSkKICAgIHN5cy5leGl0KDApCiMg5Y+q6K+75pen54mI5pig5bCE5Lul6L+B56e75bey57uR5a6a55qE5Lya6K+d77yb5paw54mI5pys5LiN5YaN5YaZ5pig5bCE5paH5Lu244CCCnRyeToKICAgIHdpdGggKHBhdGhsaWIuUGF0aC5ob21lKCkgLyAnLmJsaW5rL2NvZGV4LXNlc3Npb25zLmpzb24nKS5vcGVuKCkgYXMgc3RyZWFtOiBtYXBwaW5nID0ganNvbi5sb2FkKHN0cmVhbSkKICAgIGlmIG5vdCBpc2luc3RhbmNlKG1hcHBpbmcsIGRpY3QpOiBtYXBwaW5nID0ge30KZXhjZXB0IChPU0Vycm9yLCBWYWx1ZUVycm9yKTogbWFwcGluZyA9IHt9CnJlY29yZCA9IG1hcHBpbmcuZ2V0KG5hbWUpIG9yIHt9CmlmIGlzaW5zdGFuY2UocmVjb3JkLCBkaWN0KSBhbmQgcmVjb3JkLmdldCgnY3dkJykgPT0gY3dkIGFuZCByZWNvcmQuZ2V0KCdpZCcpIGluIG1hdGNoZXM6CiAgICBwcmludCgnSTonICsgcmVjb3JkWydpZCddKQogICAgc3lzLmV4aXQoMCkKcmVzZXJ2ZWQgPSB7ZW50cnkuZ2V0KCdpZCcpIGZvciB0aXRsZSwgZW50cnkgaW4gbWFwcGluZy5pdGVtcygpCiAgICAgICAgICAgIGlmIHRpdGxlICE9IG5hbWUgYW5kIGlzaW5zdGFuY2UoZW50cnksIGRpY3QpIGFuZCBlbnRyeS5nZXQoJ2N3ZCcpID09IGN3ZH0KIyDml6fkvJror53ku4XlnKjlvZPliY3nm67lvZXllK/kuIDjgIHkuJTmnKrnu5Hlrprlhbbku5bmoIfnrb7ml7bmjqXlm57lubblkb3lkI3jgIIKaWYgbGVuKG1hdGNoZXMpID09IDE6CiAgICBzaWQgPSBuZXh0KGl0ZXIobWF0Y2hlcykpCiAgICBpZiBzaWQgbm90IGluIHJlc2VydmVkOiBwcmludCgnSTonICsgc2lkKQ==';
+
+const BLINK_CODEWHALE_RESUME_B64: string = 'aW1wb3J0IGpzb24sIG9zLCBwYXRobGliLCBzeXMsIHV1aWQKaWYgbGVuKHN5cy5hcmd2KSAhPSAzOiBzeXMuZXhpdCgwKQpuYW1lLCBjd2QgPSBzeXMuYXJndlsxOl0KY3dkID0gb3MucGF0aC5yZWFscGF0aChjd2QpCmhvbWUgPSBwYXRobGliLlBhdGguaG9tZSgpCnNlc3Npb25zID0ge30KZm9yIHJvb3QgaW4gKGhvbWUgLyAnLmRlZXBzZWVrL3Nlc3Npb25zJywgaG9tZSAvICcuY29kZXdoYWxlL3Nlc3Npb25zJyk6CiAgICBmb3IgZmlsZSBpbiByb290Lmdsb2IoJyouanNvbicpOgogICAgICAgIHRyeToKICAgICAgICAgICAgc2lkID0gc3RyKHV1aWQuVVVJRChmaWxlLnN0ZW0pKQogICAgICAgICAgICB3aXRoIGZpbGUub3BlbigpIGFzIHN0cmVhbTogaGVhZCA9IHN0cmVhbS5yZWFkKDEzMTA3MikKICAgICAgICAgICAgc3RhcnQgPSBoZWFkLmluZGV4KCcibWV0YWRhdGEiJykgKyBsZW4oJyJtZXRhZGF0YSInKQogICAgICAgICAgICBzdGFydCA9IGhlYWQuaW5kZXgoJzonLCBzdGFydCkgKyAxCiAgICAgICAgICAgIG1ldGEsIF8gPSBqc29uLkpTT05EZWNvZGVyKCkucmF3X2RlY29kZShoZWFkW3N0YXJ0Ol0ubHN0cmlwKCkpCiAgICAgICAgICAgIGlmIHN0cih1dWlkLlVVSUQobWV0YVsnaWQnXSkpICE9IHNpZDogY29udGludWUKICAgICAgICAgICAgaWYgb3MucGF0aC5yZWFscGF0aChtZXRhWyd3b3Jrc3BhY2UnXSkgIT0gY3dkOiBjb250aW51ZQogICAgICAgICAgICBzZXNzaW9uc1tzaWRdID0gKG1ldGEuZ2V0KCd0aXRsZScpIG9yICcnLCBmaWxlLnN0YXQoKS5zdF9tdGltZSkKICAgICAgICBleGNlcHQgKE9TRXJyb3IsIEtleUVycm9yLCBWYWx1ZUVycm9yLCBUeXBlRXJyb3IpOiBwYXNzCm5hbWVkID0gWyhzaWQsIG10aW1lKSBmb3Igc2lkLCAodGl0bGUsIG10aW1lKSBpbiBzZXNzaW9ucy5pdGVtcygpIGlmIHRpdGxlID09IG5hbWVdCmlmIG5hbWVkOgogICAgcHJpbnQoJ046JyArIG1heChuYW1lZCwga2V5PWxhbWJkYSBpdGVtOiBpdGVtWzFdKVswXSkKZWxpZiBsZW4oc2Vzc2lvbnMpID09IDE6CiAgICAjIOWPquaOpeWbnuWwmuacquWRveWQjeeahOWUr+S4gOaXp+S8muivne+8jOmBv+WFjeWkmuS4qiBCbGluayDmoIfnrb7lhbHnlKjkuIDkuKrlt7Llkb3lkI3kvJror53jgIIKICAgIHNpZCA9IG5leHQoaXRlcihzZXNzaW9ucykpCiAgICBpZiBzZXNzaW9uc1tzaWRdWzBdIGluICgnJywgJ05ldyBTZXNzaW9uJyk6IHByaW50KCdJOicgKyBzaWQp';
+
+const BLINK_DEEPSEEK_KEY_B64: string = 'c2stYmEwMjhmMmI2ZDNkNDI0MDg5ODQ4YjAyZmE0NThhOGM=';
 
 export class BlinkStore {
   machines: Machine[] = [];
@@ -564,14 +573,17 @@ export class BlinkStore {
   }
 
   // The inner claude resume-or-new script (iOS resumeOrNew, :205).
-  // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
-  // 直接在工作目录里裸起；tab 的身份仍由外层 tmux session 名 cc-<TITLE> 保证。
+  // Codex 通过 ~/.blink/codex-resume.py 查找同名会话，再由 Codex 按名称恢复；
+  // DeepSeek 由外层 tmux session 名 cc-<TITLE> 保持标签身份。
   static agentLabel(agent: string): string {
     if (agent === 'codex') {
       return 'Codex';
     }
     if (agent === 'deepseek') {
       return 'DeepSeek';
+    }
+    if (agent === 'glm') {
+      return 'GLM (Claude Code)';
     }
     return 'Claude Code';
   }
@@ -595,6 +607,9 @@ export class BlinkStore {
     if (agent === 'deepseek') {
       return '#4D6BFE';
     }
+    if (agent === 'glm') {
+      return '#29A982';
+    }
     return '#D97757';
   }
 
@@ -615,10 +630,16 @@ export class BlinkStore {
   // fullAccessNudge 补一下。
   static agentArgs(agent: string): string {
     if (agent === 'codex') {
-      return ' --dangerously-bypass-approvals-and-sandbox';
+      return ' -c "tui.status_line=[\\"model\\",\\"context-used\\",\\"five-hour-limit\\",\\"weekly-limit\\"]" --dangerously-bypass-approvals-and-sandbox';
     }
     if (agent === 'deepseek') {
-      return ' --sandbox-mode danger-full-access';
+      return ' --provider deepseek --model deepseek-flash --sandbox-mode danger-full-access';
+    }
+    if (agent === 'claude') {
+      return ' --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions';
+    }
+    if (agent === 'glm') {
+      return ' --settings ~/.blink/statusline-settings.json --dangerously-skip-permissions';
     }
     return ' --dangerously-skip-permissions';
   }
@@ -645,14 +666,13 @@ export class BlinkStore {
   }
 
   // 可执行名候选（按顺序 command -v，第一个找得到的就用它起）。
-  // 「deepseek tui」实际是 Codewhale（github.com/Hmbown/Codewhale）：自己装了叫
-  // deepseek 的就用它，否则用 codewhale。
+  // 优先使用新版 Codewhale；旧 deepseek 命令仅作兼容回退。
   static agentBins(agent: string): string[] {
     if (agent === 'codex') {
       return ['codex'];
     }
     if (agent === 'deepseek') {
-      return ['deepseek', 'codewhale'];
+      return ['codewhale', 'deepseek'];
     }
     return ['claude'];
   }
@@ -660,7 +680,7 @@ export class BlinkStore {
   // 没装时自动装的命令；空串 = 不自动装
   static agentInstall(agent: string): string {
     if (agent === 'codex') {
-      return 'if command -v npm >/dev/null 2>&1; then npm i -g @openai/codex; ' +
+      return 'if command -v npm >/dev/null 2>&1; then npm i -g --prefix "$HOME/.local" @openai/codex; ' +
         'elif command -v brew >/dev/null 2>&1; then brew install codex; fi';
     }
     if (agent === 'deepseek') {
@@ -672,7 +692,7 @@ export class BlinkStore {
 
   static agentHint(agent: string): string {
     if (agent === 'codex') {
-      return '手动装：npm i -g @openai/codex 或 brew install codex';
+      return '手动装：npm i -g --prefix "$HOME/.local" @openai/codex';
     }
     if (agent === 'deepseek') {
       return '手动装：curl -fsSL https://codewhale.net/install.sh | sh';
@@ -682,7 +702,7 @@ export class BlinkStore {
 
   // 起这个 CLI 的整段 shell：没装先装（能自动装的话），装不上就把原因留在屏上。
   // 外层是 `$SHELL -lic '...'`，里面只能用双引号——别引入单引号。
-  static agentLaunch(agent: string, cdTarget: string): string {
+  static agentLaunch(agent: string, cdTarget: string, title: string): string {
     const bins: string[] = BlinkStore.agentBins(agent);
     const ins: string = BlinkStore.agentInstall(agent);
     let has: string = '';
@@ -696,45 +716,88 @@ export class BlinkStore {
       ins + '; hash -r 2>/dev/null; fi; ';
     let run: string = '';
     for (let i = 0; i < bins.length; i++) {
-      const cmd: string = bins[i] + BlinkStore.agentArgs(agent);
+      let cmd: string;
+      if (agent === 'codex') {
+        cmd = 'TITLE="' + title + '"; MATCH=""; if command -v python3 >/dev/null 2>&1; then MATCH=$(python3 "$HOME/.blink/codex-resume.py" "$TITLE" "$PWD" 2>/dev/null); fi; ' +
+          '_cxren() { T="$1"; P="$2"; i=0; while [ $i -lt 60 ]; do sleep 0.5; C=$(tmux capture-pane -p -t "$P" 2>/dev/null); case "$C" in *"Ask Codex to do anything"*|*"Got something you want to try?"*|*"? for shortcuts"*) tmux send-keys -t "$P" "/rename $T" Enter; return 0;; esac; i=$((i+1)); done; }; ' +
+          'case "$MATCH" in N:*) codex' + BlinkStore.agentArgs(agent) + ' resume "$TITLE";; I:*) if [ -n "$TMUX_PANE" ]; then ( _cxren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; codex' + BlinkStore.agentArgs(agent) + ' resume "${MATCH#I:}";; *) if [ -n "$TMUX_PANE" ]; then ( _cxren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; codex' + BlinkStore.agentArgs(agent) + ';; esac';
+      } else if (agent === 'deepseek') {
+        cmd = 'TITLE="' + title + '"; MATCH=""; if command -v python3 >/dev/null 2>&1; then MATCH=$(python3 "$HOME/.blink/codewhale-resume.py" "$TITLE" "$PWD" 2>/dev/null); fi; ' +
+          '_cwren() { T="$1"; P="$2"; i=0; while [ $i -lt 60 ]; do sleep 0.5; C=$(tmux capture-pane -p -t "$P" 2>/dev/null); case "$C" in *"Full Access"*) break;; esac; i=$((i+1)); done; tmux send-keys -t "$P" "/rename $T" Enter; }; ' +
+          'case "$MATCH" in N:*) ' + bins[i] + BlinkStore.agentArgs(agent) + ' resume "${MATCH#N:}";; I:*) if [ -n "$TMUX_PANE" ]; then ( _cwren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; ' + bins[i] + BlinkStore.agentArgs(agent) + ' resume "${MATCH#I:}";; *) if [ -n "$TMUX_PANE" ]; then ( _cwren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; ' + bins[i] + BlinkStore.agentArgs(agent) + ';; esac';
+      } else if (agent === 'glm') {
+        cmd = 'if [ "$BLINK_GLM_USE_USER_SETTINGS" = 1 ]; then claude' + BlinkStore.agentArgs(agent) + '; else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi';
+      } else {
+        cmd = bins[i] + BlinkStore.agentArgs(agent);
+      }
       run += 'if command -v ' + bins[i] + ' >/dev/null 2>&1; then ' + cmd + '; el';
     }
     run += 'se echo "[blink] 没有 ' + bins.join('/') + '：' + BlinkStore.agentHint(agent) + '"; ';
     run += 'fi; ';   // elif 串起来的整条只收一个 fi
     // deepseekEnv 以 '&& ' 收尾，放 cd 前面：没配 key 时整条短路，不会往下把 TUI 起起来
-    return BlinkStore.deepseekEnv(agent) + 'cd ' + cdTarget + ' && { ' + path + miss +
+    return BlinkStore.agentEnv(agent) + 'cd ' + cdTarget + ' && { ' + path + miss +
       BlinkStore.fullAccessNudge(agent) + run + '}';
   }
 
   // Codewhale 自己认 $DEEPSEEK_API_KEY（auth status 里 provider=deepseek、来源 env），
   // 所以只要确保这个变量在就行。
-  // key 不由 App 下发，从那台机器自己的 ~/.zshrc 读：
-  // 每台机器用自己的 key，App 里不存、不同步，也就不会再被哪一端的旧值盖回去。
-  // 没配就不启动、把怎么配留在屏上。
-  // 结尾是 '&& '，接在后面的 cd … && { … } 前面，没 key 时整条短路。
-  private static deepseekEnv(agent: string): string {
+  // DeepSeek Key 由 App 内置并在启动 Codewhale 前注入远端进程环境。
+  private static agentEnv(agent: string): string {
+    const status: string = BlinkStore.statusEnv(agent);
+    if (agent === 'codex') {
+      return 'mkdir -p "$HOME/.blink"; printf %s "' + BLINK_CODEX_RESUME_B64 + '" | base64 -d > "$HOME/.blink/codex-resume.py"; ';
+    }
+    if (agent === 'claude') {
+      return status + 'unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_REASONING_MODEL; ';
+    }
+    if (agent === 'glm') {
+      return status + 'if [ -n "$ZHIPU_API_KEY" ]; then ' +
+        'export ANTHROPIC_AUTH_TOKEN="$ZHIPU_API_KEY" ANTHROPIC_BASE_URL="https://open.bigmodel.cn/api/anthropic"; BLINK_GLM_USE_USER_SETTINGS=0; ' +
+        'elif [ -n "$ZAI_API_KEY" ]; then ' +
+        'export ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"; BLINK_GLM_USE_USER_SETTINGS=0; ' +
+        'elif [ -f "$HOME/.claude/settings.json" ] && grep -Eq "open.bigmodel.cn|api.z.ai" "$HOME/.claude/settings.json" && grep -q "ANTHROPIC_AUTH_TOKEN" "$HOME/.claude/settings.json"; then ' +
+        'BLINK_GLM_USE_USER_SETTINGS=1; unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL ANTHROPIC_REASONING_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL; ' +
+        'else echo "[blink] 未找到 GLM Key：请在远端 ~/.zshrc 配置 ZHIPU_API_KEY 或 ZAI_API_KEY"; false; fi && ' +
+        'if [ "$BLINK_GLM_USE_USER_SETTINGS" = 0 ]; then ' +
+        'unset ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_REASONING_MODEL; ' +
+        'export ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.3 ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.3 ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.3-flash; fi && ';
+    }
     if (agent !== 'deepseek') {
       return '';
     }
-    // 往现有 shell 里 source 启动文件时（会话还在的自愈路径），那个 shell 可能是
-    // 在 ~/.zshrc 加 key 之前开的，没有这个变量——先自己去 ~/.zshrc 捞一次。
-    return '[ -z "$DEEPSEEK_API_KEY" ] && [ -f "$HOME/.zshrc" ] && eval "$(grep "^export DEEPSEEK_API_KEY=" "$HOME/.zshrc" | tail -1)"; ' +
-      'if [ -z "$DEEPSEEK_API_KEY" ]; then ' +
-      'echo "[blink] 这台机器还没配 DeepSeek key：在 ~/.zshrc 里加一行 export DEEPSEEK_API_KEY=sk-…，再重开这个会话"; false; ' +
-      'else export DEEPSEEK_API_KEY; fi && ';
+    return status + 'export DEEPSEEK_API_KEY="$(printf %s "' + BLINK_DEEPSEEK_KEY_B64 + '" | base64 -d)"; ';
+  }
+
+  private static statusEnv(agent: string): string {
+    if (agent === 'claude' || agent === 'glm') {
+      return 'mkdir -p "$HOME/.blink"; BLINK_STATUS_SETTINGS=""; ' +
+        'if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude/settings.json" ]; then ' +
+        'BLINK_STATUS_SETTINGS=$(jq -c "select(.statusLine.type == \\"command\\") | {statusLine:.statusLine}" "$HOME/.claude/settings.json" 2>/dev/null); fi; ' +
+        'if [ -z "$BLINK_STATUS_SETTINGS" ]; then ' +
+        'printf %s "' + BLINK_CLAUDE_STATUS_B64 + '" | base64 -d > "$HOME/.blink/statusline.py"; ' +
+        'BLINK_STATUS_SETTINGS="{\\"statusLine\\":{\\"type\\":\\"command\\",\\"command\\":\\"python3 ~/.blink/statusline.py\\"}}"; fi; ' +
+        'printf %s "$BLINK_STATUS_SETTINGS" > "$HOME/.blink/statusline-settings.json"; chmod 600 "$HOME/.blink/statusline-settings.json"; ';
+    }
+    if (agent === 'deepseek') {
+      return 'mkdir -p "$HOME/.blink"; printf %s "' + BLINK_CODEWHALE_RESUME_B64 + '" | base64 -d > "$HOME/.blink/codewhale-resume.py"; ' +
+        'printf %s "' + BLINK_CODEWHALE_STATUS_B64 + '" | base64 -d > "$HOME/.blink/codewhale-status-config.py"; ' +
+        'if command -v python3 >/dev/null 2>&1 && python3 "$HOME/.blink/codewhale-status-config.py"; then ' +
+        'export CODEWHALE_CONFIG_PATH="$HOME/.blink/codewhale-status.toml" DEEPSEEK_CONFIG_PATH="$HOME/.blink/codewhale-status.toml"; fi; ';
+    }
+    return '';
   }
 
   private static innerScript(cdTarget: string, title: string, agent: string): string {
-    // 只有 claude 有 customTitle → resume 那套；codex 和 DeepSeek（Codewhale）裸起。
+    // Claude 走 customTitle 恢复；Codex 和 Codewhale 在 agentLaunch 里按标签恢复。
     // DeepSeek 档不再用 claude 接 DeepSeek 后端：那样每轮都要把整段上下文重发，
     // 一天光缓存读就 5 亿 token，太费。
     if (agent !== 'claude') {
-      return BlinkStore.agentLaunch(agent, cdTarget);
+      return BlinkStore.agentLaunch(agent, cdTarget, title);
     }
     // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
-    return 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
+    return BlinkStore.agentEnv(agent) + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
-    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --dangerously-skip-permissions\\""; fi; fi; }';
+    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions\\""; fi; fi; }';
   }
 
   // Full remote script for a (machine, workDir, session) triple — identical to

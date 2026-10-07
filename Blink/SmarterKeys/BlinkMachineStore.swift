@@ -226,13 +226,12 @@ enum HostReachability {
       // _snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
       // （claude 都带 --dangerously-skip-permissions：多数情况下 trust 弹窗被自动跳过，轮询是双保险。）
       //
-      // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
-      // 直接在工作目录里裸起；tab 的身份仍由外层 tmux session 名 cc-<TITLE> 保证。
-      if !agent.supportsResume { return agent.launchSnippet(cdTarget: cdTarget) }
+      // Codex 自己从 ~/.codex/sessions 按标签名恢复；DeepSeek 直接在工作目录里启动。
+      if !agent.supportsResume { return agent.launchSnippet(cdTarget: cdTarget, title: title) }
       // DeepSeek 档也走这条（它就是 claude），只是前面多几个 ANTHROPIC_* 环境变量
       // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
       // cd 带引号：cdTarget 可能是 $(…) 兜底表达式，目录带空格时不加引号会被拆碎
-      return agent.envPrefix + #"cd "\#(cdTarget)" && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) _snd "$T" Down; sleep 0.3; _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+      return agent.envPrefix + #"cd "\#(cdTarget)" && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) _snd "$T" Down; sleep 0.3; _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -241,17 +240,28 @@ enum HostReachability {
 
     if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
-      // cd 目标：tab 带了 workDir 就直接用。公用标签（SharedTab）只有 machineId/tmuxSession，
-      // workDirId=nil —— 以前无脑退 $HOME，切 CLI 杀掉会话后重建就 cd 到家目录（claude 起在
-      // /Users/apple 还弹 trust 页）。改成三级兜底：① 会话活着 → pane 当前目录（切 CLI 只换
-      // 进程不换地方）；② pane 目录缺失**或就是 $HOME**（会话被杀过、new-session 把新 pane
-      // 建在了家目录）→ 拿 customTitle 去 ~/.claude/projects 的 jsonl 反查 cwd；
-      // ③ 都没有才 $HOME。
+      // 公用标签没有 workDir：先在 boot 文件中解析目录，再让 CLI 使用变量。
+      // 不能把带引号的命令替换直接嵌进 `cd "..."`，否则会生成 unmatched quote。
       let pathArg: String
+      let workDirSetup: String
       if let wp = workPath, !wp.isEmpty {
         pathArg = wp
+        workDirSetup = ""
       } else {
-        pathArg = "$(D=$(tmux display-message -p -t \(outerSession) #{pane_current_path} 2>/dev/null); if [ -z \"$D\" ] || [ \"x$D\" = \"x$HOME\" ]; then F=$(find $HOME/.claude/projects -maxdepth 2 -name \"*.jsonl\" -type f -exec grep -lF \"\\\"customTitle\\\":\\\"\(title)\\\"\" {} + 2>/dev/null | head -1); if [ -n \"$F\" ]; then W=$(grep -o \"\\\"cwd\\\":\\\"[^\\\"]*\\\"\" \"$F\" | head -1 | cut -d'\"' -f4); [ -n \"$W\" ] && D=$W; fi; fi; echo \"${D:-$HOME}\")"
+        pathArg = "$BLINK_WORK_DIR"
+        // ① 活会话的 pane 目录；② 缺失或退到 HOME 时从 Claude 记录反查；③ HOME。
+        // 这里是独立的 boot 文件内容，不在外层 `$SHELL -lic '...'` 的单引号内。
+        workDirSetup = """
+        BLINK_WORK_DIR=$(tmux display-message -p -t "\(outerSession)" '#{pane_current_path}' 2>/dev/null)
+        if [ -z "$BLINK_WORK_DIR" ] || [ "$BLINK_WORK_DIR" = "$HOME" ]; then
+          F=$(find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -type f -exec grep -lF '"customTitle":"\(title)"' {} + 2>/dev/null | head -1)
+          if [ -n "$F" ]; then
+            W=$(grep -o '"cwd":"[^"]*"' "$F" | head -1 | cut -d'"' -f4)
+            [ -n "$W" ] && BLINK_WORK_DIR=$W
+          fi
+        fi
+        BLINK_WORK_DIR=${BLINK_WORK_DIR:-$HOME}
+        """
       }
       let inner = resumeOrNew(pathArg)
       // 启动脚本落到远端固定路径（boot 文件）。session 已存在时 `tmux new-session -A` 只会
@@ -270,6 +280,7 @@ enum HostReachability {
       PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
       \(migrate)
       cat > \(bootFile).$$ <<'BLINKBOOT'
+      \(workDirSetup)
       \(inner)
       BLINKBOOT
       mv -f \(bootFile).$$ \(bootFile)

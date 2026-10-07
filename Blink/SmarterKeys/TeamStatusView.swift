@@ -358,6 +358,29 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     return s
   }
 
+  /// 团队页与底部工具栏共用：结束旧 CLI 的整个 pane，保留 tmux 会话和工作目录。
+  /// 返回 OK / NO_SESSION / FAILED；传输失败时返回 nil。
+  static func resetPane(outerSession: String, machine m: BlinkMachine) async -> String? {
+    let script = """
+    export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+    S="\(outerSession)"
+    if tmux has-session -t "$S" 2>/dev/null; then
+      D=$(tmux display-message -p -t "$S" '#{pane_current_path}' 2>/dev/null)
+      D=${D:-$HOME}
+      if tmux respawn-pane -k -t "$S" -c "$D" "$SHELL -il" 2>/dev/null; then
+        RESULT=OK
+      else
+        RESULT=FAILED
+      fi
+    else
+      RESULT=NO_SESSION
+    fi
+    EB64=$(printf '%s' "$RESULT" | base64 | tr -d '\\n')
+    printf '@TSB64@%s@TSB64E@\\n' "$EB64"
+    """
+    return try? await exec(script: script, machine: m)
+  }
+
   /// 并行探测：每台机器各自一个 Task + 20s 硬超时，谁先回来先刷谁的行。
   /// 串行会被一台挂起的 ssh（Tailscale 节点离线时 TCP 黑洞）卡住整页「读取中」。
   private var probeGeneration = 0
@@ -450,15 +473,13 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   // MARK: CLI 选择（行尾齿轮）
 
-  /// 这个员工（机器 × tab）下次开会话进 claude / codex / deepseek。
-  /// 只改配置，不动已经跑着的 tmux 会话——那里面 claude 的上下文还在，
-  /// 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
+  /// 切换员工 tab 的 CLI，并在原 tmux 会话里重建 pane。
   private func pickAgent(tabKey: UUID, anchor: UIView) {
     guard let t = tabs.first(where: { $0.tabKey == tabKey }) else { return }
     let title = TabAgentStore.title(fromOuterSession: t.outerSession)
     let cur = TabAgentStore.shared.agent(machineId: t.machineId, title: title)
     let ac = UIAlertController(title: "\(t.employee) · \(t.project)",
-                               message: "下次打开这个会话时进哪个 CLI", preferredStyle: .actionSheet)
+                               message: "切换后在原目录重新启动会话", preferredStyle: .actionSheet)
     for k in AgentKind.allCases {
       let a = UIAlertAction(title: k == cur ? "\(k.label)（当前）" : k.label, style: .default) { [weak self] _ in
         guard let self, k != cur else { return }
@@ -470,24 +491,22 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         self.tableView.reloadData()
-        // 直接切：只杀 pane 里跑着的 CLI 进程（pkill -P pane_pid），**不 kill-session** ——
-        // 会话和它的工作目录都保活，掉到 boot 链的兜底 shell。随后让手机端强制重连：
-        // 重新生成的启动脚本（此时 TabAgentStore 已是新 CLI）attach 回这个活会话，
-        // heal 检测到裸 shell 就 source 新 boot，新 CLI 在原目录起来。
-        // （以前 kill-session 整个杀掉：公用标签不带 workDir，重建时 cd 退化到 $HOME，
-        // claude 起在家目录还弹 trust 页。）
+        // pkill -P pane_pid 只碰直接子进程，CLI 的启动器/子进程会漏掉。
+        // respawn-pane -k 由 tmux 重建整个 pane，保留 session，并用原目录起裸 shell；
+        // 手机随后重连、写入新 boot 文件，heal 再启动新 CLI。
         guard let m = BlinkMachineStore.shared.machines.first(where: { $0.id == t.machineId }) else { return }
-        let kill = """
-        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        P=$(tmux display-message -p -t \(t.outerSession) #{pane_pid} 2>/dev/null)
-        if [ -n "$P" ]; then pkill -TERM -P $P 2>/dev/null; sleep 1; pkill -KILL -P $P 2>/dev/null; fi
-        printf '@TSB64@@TSB64E@\\n'
-        """
         Task { [weak self] in
-          _ = try? await Self.exec(script: kill, machine: m)
+          let result = await Self.resetPane(outerSession: t.outerSession, machine: m)
           await MainActor.run {
-            self?.toast("已切到 \(k.label)，正在原会话里重开")
-            self?.onRestartSession?(tabKey)
+            switch result {
+            case "OK":
+              self?.onRestartSession?(tabKey)
+              self?.toast("已切到 \(k.label)，正在原目录重开")
+            case "NO_SESSION":
+              self?.toast("已切到 \(k.label)，下次打开生效")
+            default:
+              self?.toast("模型已保存，重启会话失败；请刷新标签")
+            }
           }
         }
       }

@@ -1,0 +1,60 @@
+diff --git a/crates/tui/src/tools/subagent/mod.rs b/crates/tui/src/tools/subagent/mod.rs
+index e7df47e..6a13825 100644
+--- a/crates/tui/src/tools/subagent/mod.rs
++++ b/crates/tui/src/tools/subagent/mod.rs
+@@ -1734,7 +1734,7 @@ impl SubAgentInput {
+     /// Mark this input as consumed by the child loop.
+     fn mark_taken(&self) {
+         if let Some(pending) = self.pending.as_ref() {
+-            let _ = pending.fetch_update(
++            let _ = pending.try_update(
+                 std::sync::atomic::Ordering::AcqRel,
+                 std::sync::atomic::Ordering::Acquire,
+                 |value| Some(value.saturating_sub(1)),
+diff --git a/crates/tui/src/tools/workflow/mod.rs b/crates/tui/src/tools/workflow/mod.rs
+index 7460606..ed64e53 100644
+--- a/crates/tui/src/tools/workflow/mod.rs
++++ b/crates/tui/src/tools/workflow/mod.rs
+@@ -4543,7 +4543,7 @@ impl SubAgentWorkflowDriver {
+         self.ensure_admission_open()?;
+         let workflow_child_index = self
+             .child_counter
+-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
++            .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                 (count < self.max_children).then_some(count + 1)
+             })
+             .map_err(|_| DriverError::Rejected(format!(
+diff --git a/crates/tui/src/tui/phase_strip.rs b/crates/tui/src/tui/phase_strip.rs
+index 6149984..636c313 100644
+--- a/crates/tui/src/tui/phase_strip.rs
++++ b/crates/tui/src/tui/phase_strip.rs
+@@ -53,7 +53,12 @@ pub(crate) fn route_identity_fields(
+     tier: ShellTier,
+     budget: usize,
+ ) -> Option<Vec<RouteIdentityField>> {
+-    let (provider, model) = app.effective_route_identity_display();
++    let (provider, mut model) = app.effective_route_identity_display();
++    // Keep the API model ID unchanged; only the route label in Codewhale's
++    // status line names the actual DeepSeek release behind this stable ID.
++    if provider == "DeepSeek" && model == "deepseek-flash" {
++        model = "DeepSeek V4.1 Flash".to_string();
++    }
+     // A route that cannot prove its effective tier states no effort field
+     // rather than `high→effective unavailable` (#5950): a placeholder that
+     // can never resolve is noise, not a reading. First-party routes keep
+@@ -489,6 +494,15 @@ mod tests {
+         }
+     }
+
++    #[test]
++    fn deepseek_flash_status_names_the_release_without_changing_the_api_id() {
++        let mut app = test_app();
++        app.model = "deepseek-flash".to_string();
++        let fields = route_identity_fields(&app, ShellTier::Compact, 80).unwrap();
++        assert!(fields.iter().any(|field| field.text == "DeepSeek V4.1 Flash"));
++        assert_eq!(app.model, "deepseek-flash");
++    }
++
+     /// A named custom route can carry a long provider identity next to a
+     /// long model id; whole fields shed (provider first, effort label next)
+     /// and neither name is ever clipped. Ported from the identity band to

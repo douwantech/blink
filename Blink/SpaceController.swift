@@ -1830,6 +1830,50 @@ extension SpaceController {
   /// 语音条「功能」组的 🌙 pill：切当前 tab 在岗⇄休息（复用 dock 😴 逻辑）
   public func toggleRestCurrentTab() { _toggleRestForCurrentTab() }
 
+  /// 语音条睡眠按钮右侧：为当前标签选择 CLI，并立即在原目录重开远端 pane。
+  func presentModelPickerForCurrentTab(anchor: UIView) {
+    guard let term = currentTerm(), let params = term.mcpParams,
+          let machineId = params.machineId,
+          let machine = BlinkMachineStore.shared.machines.first(where: { $0.id == machineId }) else {
+      _voiceDock.showToast("当前标签没有可切换的机器", isError: true)
+      return
+    }
+    let title = BlinkMachineStore.ccTitle(
+      machine: machine, workDirId: params.workDirId, tmuxSession: params.tmuxSession)
+    let current = TabAgentStore.shared.agent(machineId: machineId, title: title)
+    let picker = UIAlertController(title: title, message: "切换后在原目录重新启动会话",
+                                   preferredStyle: .actionSheet)
+    for kind in AgentKind.allCases {
+      let action = UIAlertAction(title: kind == current ? "\(kind.label)（当前）" : kind.label,
+                                 style: .default) { [weak self] _ in
+        guard let self, kind != current else { return }
+        TabAgentStore.shared.setAgent(kind, machineId: machineId, title: title)
+        Task { [weak self] in
+          let result = await TeamStatusViewController.resetPane(
+            outerSession: "cc-\(title)", machine: machine)
+          await MainActor.run {
+            guard let self else { return }
+            switch result {
+            case "OK":
+              term.restartConnection()
+              self._voiceDock.showToast("已切到 \(kind.label)，正在原目录重开")
+            case "NO_SESSION":
+              self._voiceDock.showToast("已切到 \(kind.label)，下次打开生效")
+            default:
+              self._voiceDock.showToast("模型已保存，重启会话失败；请刷新标签", isError: true)
+            }
+          }
+        }
+      }
+      if kind == current { action.setValue(true, forKey: "checked") }
+      picker.addAction(action)
+    }
+    picker.addAction(UIAlertAction(title: "取消", style: .cancel))
+    picker.popoverPresentationController?.sourceView = anchor
+    picker.popoverPresentationController?.sourceRect = anchor.bounds
+    present(picker, animated: true)
+  }
+
   /// dock 😴 钮：把当前 tab 标记 / 取消标记「休息」。
   /// 公用标签走 SharedRestStore（服务端权威）：休息的标签从坞里消失，重新在岗再回来
   ///（与团队页月亮开关同一条链）。其它 tab 才走旧的本地标记路径。
@@ -2706,7 +2750,7 @@ extension SpaceController: BlinkTabBarDelegate {
         self?._reloadTabBar()
       }
     }
-    // 切 CLI 的收尾：团队页那边已把远端旧 CLI 进程杀掉（保会话保目录），这里让对应
+    // 切 CLI 的收尾：团队页已重建远端 pane（保会话保目录），这里让对应
     // tab 强制断开重连 —— 重连命令重新生成（新 CLI 启动脚本），attach 回活会话后
     // heal 自愈起新 CLI。用非创建式查询：休息中不在坞里的标签没有 term，跳过
     //（远端进程已杀，下次打开时 heal 自然用新配置起）。

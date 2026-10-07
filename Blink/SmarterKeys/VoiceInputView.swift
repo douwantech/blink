@@ -24,6 +24,7 @@ protocol VoiceInputViewDelegate: AnyObject {
   func voiceInputDidRequestDumpTranscript(_ view: VoiceInputView)
   func voiceInputDidRequestTeamStatus(_ view: VoiceInputView)
   func voiceInputDidRequestToggleRest(_ view: VoiceInputView)
+  func voiceInputDidRequestSwitchModel(_ view: VoiceInputView, anchor: UIView)
   func voiceInput(_ view: VoiceInputView, didRequestSendArrow direction: VoiceInputArrow)
   func voiceInputDidRequestSendReturn(_ view: VoiceInputView)
   func voiceInputDidRequestCopyLastResponse(_ view: VoiceInputView)
@@ -408,6 +409,7 @@ final class VoiceInputView: UIView {
     Tool(act: "history", symbol: "clock", text: nil, warn: false),
     nil,
     Tool(act: "rest", symbol: "moon.zzz", text: nil, warn: false),   // 当前 tab 在岗⇄休息
+    Tool(act: "model", symbol: "cpu", text: nil, warn: false),       // 当前 tab 切换 CLI
     Tool(act: "browser", symbol: "globe", text: nil, warn: false),
     Tool(act: "desktop", symbol: "display", text: nil, warn: false),
   ]
@@ -468,6 +470,7 @@ final class VoiceInputView: UIView {
   private func makePill(_ t: Tool) -> UIButton {
     let b = UIButton(type: .system)
     b.accessibilityIdentifier = t.act
+    if t.act == "model" { b.accessibilityLabel = "切换模型" }
     b.backgroundColor = UIColor.white.withAlphaComponent(0.035)
     b.layer.cornerRadius = 13
     b.layer.borderWidth = 1
@@ -524,6 +527,7 @@ final class VoiceInputView: UIView {
     case "browser": delegate?.voiceInputDidRequestOpenBrowser(self)
     case "desktop": delegate?.voiceInputDidRequestOpenDesktop(self)
     case "rest": delegate?.voiceInputDidRequestToggleRest(self)
+    case "model": delegate?.voiceInputDidRequestSwitchModel(self, anchor: sender)
     case "up": delegate?.voiceInput(self, didRequestSendArrow: .up)
     case "down": delegate?.voiceInput(self, didRequestSendArrow: .down)
     case "left": delegate?.voiceInput(self, didRequestSendArrow: .left)

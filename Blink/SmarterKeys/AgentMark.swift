@@ -59,13 +59,14 @@ enum AgentMark {
     case .claude: return UIColor(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
     case .codex: return .white
     case .deepseek: return UIColor(red: 0x4D / 255, green: 0x6B / 255, blue: 0xFE / 255, alpha: 1)
+    case .glm: return UIColor(red: 0x29 / 255, green: 0xA9 / 255, blue: 0x82 / 255, alpha: 1)
     }
   }
 
   /// 压在品牌色上的图形色
   static func ink(_ k: AgentKind) -> UIColor {
     switch k {
-    case .claude, .deepseek: return .white
+    case .claude, .deepseek, .glm: return .white
     case .codex: return UIColor(red: 0x0B / 255, green: 0x0C / 255, blue: 0x0E / 255, alpha: 1)
     }
   }
@@ -75,6 +76,7 @@ enum AgentMark {
     case .claude: return claude
     case .codex: return codex
     case .deepseek: return deepseek
+    case .glm: return claude
     }
   }
 

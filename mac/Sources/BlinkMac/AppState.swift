@@ -750,8 +750,7 @@ final class AppState: ObservableObject {
     ///
     /// 不杀会话的话 `tmux new-session -A` 只会 attach 回原来那个，里面跑的还是旧 CLI，
     /// 环境变量也是旧的。杀掉后重连会重跑一遍启动脚本，新 CLI 立刻起来。
-    /// claude / DeepSeek 那两档杀了不心疼：启动脚本会按 customTitle 把上一轮的
-    /// 会话 resume 回来，上下文还在；codex 没有这套，等于开个新的。
+    /// Claude 按 customTitle、Codex 按标签名恢复已有对话；DeepSeek 启动新会话。
     func setAgent(_ kind: AgentKind, for s: Session) {
         guard agent(for: s) != kind else { return }
         TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)

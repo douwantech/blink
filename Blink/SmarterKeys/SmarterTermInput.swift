@@ -771,6 +771,10 @@ extension SmarterTermInput: VoiceInputViewDelegate {
     spaceController?.toggleRestCurrentTab()
   }
 
+  func voiceInputDidRequestSwitchModel(_ view: VoiceInputView, anchor: UIView) {
+    spaceController?.presentModelPickerForCurrentTab(anchor: anchor)
+  }
+
   func voiceInputDidRequestOpenBrowser(_ view: VoiceInputView) {
     spaceController?._openPinnedBrowser()
   }

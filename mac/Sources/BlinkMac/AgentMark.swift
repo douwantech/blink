@@ -73,6 +73,7 @@ extension AgentKind {
         case .claude: return Color(hex: 0xD97757)
         case .codex: return Color(hex: 0xFFFFFF)
         case .deepseek: return Color(hex: 0x4D6BFE)
+        case .glm: return Color(hex: 0x29A982)
         }
     }
     /// 压在品牌色上的图形色
@@ -81,6 +82,7 @@ extension AgentKind {
         case .claude: return .white
         case .codex: return Color(hex: 0x0B0C0E)
         case .deepseek: return .white
+        case .glm: return .white
         }
     }
     var markCommands: String {
@@ -88,6 +90,7 @@ extension AgentKind {
         case .claude: return AgentMark.claude
         case .codex: return AgentMark.codex
         case .deepseek: return AgentMark.deepseek
+        case .glm: return AgentMark.claude
         }
     }
 }
