@@ -33,6 +33,7 @@
     th { color:#59677f; font-weight:600; font-size:12px }
     td .row button { padding:6px 9px; font-size:12px }
     .pill { display:inline-block; padding:4px 8px; border-radius:20px; background:#eff3fc; font-size:12px }
+    img.avatar { display:block; width:40px; height:40px; border-radius:50%; object-fit:cover; background:#eef1f7 }
     .pill.off { color:#b42834; background:#fff0f1 }
     .login-wrap { max-width:400px; margin:11vh auto; padding:20px }
     .login-wrap .card { padding:30px }
@@ -166,6 +167,7 @@
     <label for="dir-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="dir-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
     <label for="dir-name">名称</label><input id="dir-name" required maxlength="100" autocomplete="off">
     <label for="dir-avatar">PNG 头像（可选，最大 2MB）</label><input id="dir-avatar" type="file" accept="image/png">
+    <div id="dir-avatar-preview" class="row" hidden><img id="dir-avatar-current" class="avatar" alt="当前头像"><span class="muted">当前头像，选择新文件可替换</span></div>
     <div id="directory-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="directory-cancel">取消</button><button type="submit">保存</button></div>
   </form></dialog>
@@ -196,6 +198,8 @@
     }
     const json = value => JSON.stringify(value);
     const td = (tr, value) => { const cell = document.createElement('td'); cell.textContent = value ?? ''; tr.append(cell); return cell; };
+    // 头像列直接看图，不再只写「已上传」。未上传仍返回文字，空图框会被当成加载失败。
+    const avatarCell = (tr, entry) => { const cell = document.createElement('td'); if (entry.avatar) { const img = document.createElement('img'); img.className = 'avatar'; img.src = `/admin/api/employees/${encodeURIComponent(entry.id)}/avatar`; img.alt = `${entry.name || entry.id} 头像`; cell.append(img); } else { cell.textContent = '未上传'; } tr.append(cell); return cell; };
     const button = (label, action, className = 'secondary') => { const b = document.createElement('button'); b.type = 'button'; b.className = className; b.textContent = label; b.addEventListener('click', action); return b; };
     const notify = message => { $('notice').textContent = message; };
     async function load() {
@@ -222,7 +226,7 @@
         const rows = $(meta.rows); rows.replaceChildren();
         for (const entry of state[kind]) {
           const tr = document.createElement('tr'); td(tr, entry.id); td(tr, entry.name);
-          if (kind === 'employees') { td(tr, employeeMachine(entry.id)); td(tr, entry.avatar ? '已上传' : '未上传'); }
+          if (kind === 'employees') { td(tr, employeeMachine(entry.id)); avatarCell(tr, entry); }
           const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
           row.append(button('编辑', () => openDirectory(kind, entry)), button('删除', () => removeDirectory(kind, entry), 'danger'));
           cell.append(row); rows.append(tr);
@@ -249,6 +253,10 @@
       $('directory-heading').textContent = `${entry ? '编辑' : '添加'}${DIRECTORY[kind].title}`;
       $('dir-id').disabled = !!entry;
       $('dir-id').value = entry?.id ?? ''; $('dir-name').value = entry?.name ?? '';
+      // 编辑已有头像的员工时先把当前图摆出来，不然「保存」会让管理员以为头像没了。
+      const hasAvatar = kind === 'employees' && !!entry?.avatar;
+      $('dir-avatar-preview').hidden = !hasAvatar;
+      if (hasAvatar) $('dir-avatar-current').src = `/admin/api/employees/${encodeURIComponent(entry.id)}/avatar`;
       $('directory-dialog').showModal();
     }
     async function saveDirectory(event) {

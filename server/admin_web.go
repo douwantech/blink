@@ -37,6 +37,12 @@ func (a *app) adminRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /admin/api/machines/{id}", a.adminAuth(a.deleteMachine))
 	m.HandleFunc("PUT /admin/api/employees/{id}", a.adminAuth(a.putDirectoryEntry("employees")))
 	m.HandleFunc("PUT /admin/api/employees/{id}/avatar", a.adminAuth(a.putEmployeeAvatar))
+	// The employee table shows the avatar as an <img>. That request carries the
+	// admin session cookie instead of a bearer token, so it needs its own entry
+	// point: the /v1 route would answer 401 to the browser and the column would
+	// stay blank even after a successful upload. adminAuth already proved the
+	// caller is an administrator before employeeAvatar runs.
+	m.HandleFunc("GET /admin/api/employees/{id}/avatar", a.adminAuth(a.employeeAvatar))
 	m.HandleFunc("DELETE /admin/api/employees/{id}", a.adminAuth(a.deleteDirectoryEntry("employees")))
 	m.HandleFunc("PUT /admin/api/projects/{id}", a.adminAuth(a.putProject))
 	m.HandleFunc("DELETE /admin/api/projects/{id}", a.adminAuth(a.deleteDirectoryEntry("projects")))
@@ -152,7 +158,9 @@ func serveAdminPage(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	// img-src is not optional: with default-src 'none' an <img> falls back to it
+	// and the employee avatars would be blocked, leaving the column empty.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	_, _ = w.Write(b)
 }
 

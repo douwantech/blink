@@ -53,6 +53,7 @@ Both `/v1/login` and `/admin/session` share a MySQL-backed limit of 10 attempts 
 | --- | --- | --- |
 | PUT | `/admin/api/employees/{id}` | Create or replace an employee, `{"id":"jack","name":"Jack"}` |
 | PUT | `/admin/api/employees/{id}/avatar` | Admin-only PNG upload (max 2 MiB) |
+| GET | `/admin/api/employees/{id}/avatar` | Serve the avatar to the admin page's `<img>`, `404` when none is stored |
 | DELETE | `/admin/api/employees/{id}` | Remove an employee |
 | PUT | `/admin/api/projects/{id}` | Create or replace a project, `{"id":"huum","name":"Huum","public":true,"employees":[{"id":"jack","machineId":"mac-mini","workDir":"/Users/apple/Codes/jack"}]}` |
 | DELETE | `/admin/api/projects/{id}` | Remove a project |
@@ -61,7 +62,7 @@ Both directories are org-wide and shared like `machines`, ordered by ID, and car
 
 A project carries two more fields than an employee: `public` and `employees`, a list of `{"id":"jack","machineId":"mac-mini","workDir":"/Users/apple/Codes/jack"}`. The machine and optional absolute work directory sit on the employee/project pair because two employees on one project may run on different hosts and paths. Public tabs include that `workDir` in `/v1/config`; clients enter it before starting the CLI. Existing pairs without `workDir` keep the legacy directory fallback until configured in the admin page. `PUT /admin/api/projects/{id}` merges rather than replaces: `public` and `employees` are only written when the request names them, so a request that changes only the name cannot empty the employee list, and fields another writer added survive. An omitted field keeps its stored value; `PUT /admin/api/employees/{id}` cannot write a project at all, because it would drop those two fields.
 
-Employee avatars use the existing RDS as the smallest deployment change: PNG bytes live in `employee_avatars` with a foreign key to `employees`, while the directory JSON carries only `/v1/employees/{id}/avatar`. Signed-in clients fetch that endpoint after login; the admin page uploads PNGs from the employee editor. This avoids adding OSS credentials or a second storage lifecycle, and employee deletion cascades to the blob.
+Employee avatars use the existing RDS as the smallest deployment change: PNG bytes live in `employee_avatars` with a foreign key to `employees`, while the directory JSON carries only `/v1/employees/{id}/avatar`. Signed-in clients fetch that endpoint after login; the admin page uploads PNGs from the employee editor and shows the stored image as a 40px thumbnail in the 头像 column and in the edit dialog. This avoids adding OSS credentials or a second storage lifecycle, and employee deletion cascades to the blob. The thumbnail uses `GET /admin/api/employees/{id}/avatar` rather than the `/v1` endpoint: a browser `<img>` carries the admin session cookie, not a bearer token, and `/v1` would answer it `401`.
 
 `POST /admin/api/users/{id}/tabs` accepts `{"machineId":"...","employeeId":"...","projectId":"..."}` — all three are required, must already exist, and the created tab's `tmuxSession` is `<employeeId>-<projectId>`. The `cc-` prefix belongs to the remote startup convention and is not part of this field. Adding the same employee, project, and machine twice for one account returns `409`. `DELETE /admin/api/users/{id}/tabs/{tabId}` closes one tab.
 
