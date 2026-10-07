@@ -677,14 +677,20 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
     cell.configure(group: g, panel: panel, panel2: panel2, sub: sub,
                    hideProjectNames: mode == .project)
-    cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
+    cell.onRowTap = { [weak self] key in self?.openTab(key) }
+    cell.onHeaderTap = { [weak self] in
+      guard let row = g.rows.first(where: { !$0.resting }) ?? g.rows.first else { return }
+      self?.openTab(row.tabKey)
+    }
     cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
     cell.onRowAgent = { [weak self] key, anchor in self?.pickAgent(tabKey: key, anchor: anchor) }
     return cell
   }
 
-  // 点击跳 tab 已去掉：页面纯看状态 + 拨休息开关，不再响应行选中。
-  // 要恢复：实现 didSelectRowAt → dismiss 后 onOpenTab?(key)。
+  private func openTab(_ key: UUID) {
+    let callback = onOpenTab
+    dismiss(animated: true) { callback?(key) }
+  }
 
   // MARK: - 内部小控件
 
@@ -814,6 +820,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   final class EmployeeCardCell: UITableViewCell {
     var onPillTap: (() -> Void)?
+    var onHeaderTap: (() -> Void)?
     var onRowTap: ((UUID) -> Void)?
     var onRowToggle: ((UUID, Bool) -> Void)?     // (tabKey, 切到休息?) 行尾月亮开关
     var onRowAgent: ((UUID, UIView) -> Void)?    // 行尾齿轮：这个员工进 claude / codex / deepseek
@@ -866,6 +873,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       let who = UIStackView(arrangedSubviews: [nameRow, machineLabel])
       who.axis = .vertical
       who.spacing = 1
+      who.isUserInteractionEnabled = true
+      who.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(headerTapped)))
+      avatarView.isUserInteractionEnabled = true
+      avatarView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(headerTapped)))
       // 单项目卡（按项目视图）：月亮/齿轮上移到这里，整卡一行（老板口径 2026-10-07）
       tailGear.tag = -1
       tailGear.setImage(UIImage(systemName: "gearshape",
@@ -917,8 +928,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
     @objc private func pillTapped() { onPillTap?() }
 
+    @objc private func headerTapped() { onHeaderTap?() }
+
     @objc private func rowTapped(_ gr: UITapGestureRecognizer) {
-      guard let v = gr.view, let info = rowInfoByTag[v.tag], !info.resting else { return }   // 休息行原地吞掉
+      guard let v = gr.view, let info = rowInfoByTag[v.tag] else { return }
       onRowTap?(info.key)
     }
 

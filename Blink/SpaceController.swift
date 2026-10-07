@@ -2768,6 +2768,21 @@ extension SpaceController: BlinkTabBarDelegate {
         resting: !SharedRestStore.shared.isActive(s)))
     }
     let vc = TeamStatusViewController(tabs: items)
+    vc.onOpenTab = { [weak self] key in
+      guard let self,
+            let tab = ServerConfigSync.shared.sharedTabs.first(where: { $0.id == key }) else { return }
+      let rest = SharedRestStore.shared
+      if !rest.isActive(tab.tmuxSession) {
+        rest.materializeDefault(from: ServerConfigSync.shared.sharedTabs.map(\.tmuxSession))
+        rest.setActive(true, session: tab.tmuxSession)
+        self._syncSharedTabs()
+      }
+      self._showSelectedDockTabAfterSync()
+      self._reloadTabBar()
+      if let index = self._viewportsKeys.firstIndex(of: key) {
+        self.tabBarDidSelect(index: index)
+      }
+    }
     // 休息开关 = 服务端真数据：写 SharedRestStore（随个人配置队列 PUT recentSelection 的
     // restSessions 键），在岗的标签才进坞 —— 关掉的人即刻从坞里消失，开的人即刻出现。
     // 首次切换前先把「默认只有 tom 在岗」物化成显式集合，默认规则到此让位。
