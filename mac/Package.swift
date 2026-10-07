@@ -18,7 +18,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftTerm", package: "SwiftTerm")
             ],
-            path: "Sources/BlinkMac"
+            path: "Sources/BlinkMac",
+            resources: [.copy("PixelAvatars")]
         )
     ],
     swiftLanguageModes: [.v5]

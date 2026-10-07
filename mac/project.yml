@@ -16,6 +16,11 @@ targets:
     platform: macOS
     sources:
       - path: Sources/BlinkMac
+        excludes:
+          - PixelAvatars/**
+      - path: Sources/BlinkMac/PixelAvatars
+        type: folder
+        buildPhase: resources
       - path: Resources/AppIcon.icns
         buildPhase: resources
     dependencies:

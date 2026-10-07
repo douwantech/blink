@@ -1,10 +1,10 @@
 import AppKit
 
-/// 读取 iOS Blink 已配置的真实头像。头像存在 blink app 容器的 UserDefaults
-/// (`BlinkWorkDirStore.workDirs` 里每个 workDir 的 iconImageData，按人名/项目名 key)。
-/// 会话名前缀(owner) 对应 workDir name，取那张图。
+/// 与 iPhone 共用的九张像素头像。其他员工沿用 Blink 容器里已配置的图标。
+/// 会话名前缀 owner 对应员工名，九人头像始终优先于旧 workDir 图标。
 enum BlinkAvatars {
     private static let bundleId = "com.aitools.talkcode.stg"
+    private static let pixelNames = ["tom", "jack", "adam", "candy", "leo", "max", "quan", "peter", "tony"]
 
     /// 后台线程加载（读别的 app 容器 plist 会被 TCC 阻塞，绝不能在主线程/渲染里做）。
     static func loadAsync() async -> [String: NSImage] {
@@ -12,6 +12,22 @@ enum BlinkAvatars {
     }
 
     static func load() -> [String: NSImage] { loadImpl() }
+
+    private static func pixelIcon(for name: String) -> NSImage? {
+        let filename = "\(name)-pixel"
+        var bundles = [Bundle.main]
+        #if SWIFT_PACKAGE
+        bundles.append(Bundle.module)
+        #endif
+        for bundle in bundles {
+            if let url = bundle.url(forResource: filename, withExtension: "png", subdirectory: "PixelAvatars")
+                ?? bundle.url(forResource: filename, withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                return image
+            }
+        }
+        return nil
+    }
 
     private static func containerPlist() -> URL? {
         let base = NSHomeDirectory() + "/Library/Containers"
@@ -26,21 +42,26 @@ enum BlinkAvatars {
     }
 
     private static func loadImpl() -> [String: NSImage] {
+        var map: [String: NSImage] = [:]
+        for name in pixelNames {
+            if let icon = pixelIcon(for: name) { map[name] = icon }
+        }
         guard let url = containerPlist(),
               let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let wdData = plist["BlinkWorkDirStore.workDirs"] as? Data,
               let arr = try? JSONSerialization.jsonObject(with: wdData) as? [[String: Any]]
-        else { return [:] }
+        else { return map }
 
-        var map: [String: NSImage] = [:]
         for w in arr {
             guard let name = w["name"] as? String else { continue }
+            let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if map[key] != nil { continue }
             // iconImageData：JSONEncoder 把 Data 编码成 base64 字符串
             guard let b64 = w["iconImageData"] as? String,
                   let imgData = Data(base64Encoded: b64),
                   let img = NSImage(data: imgData) else { continue }
-            map[name.lowercased()] = img
+            map[key] = img
         }
         return map
     }
