@@ -31,6 +31,9 @@ final class BlinkdClient {
     private var stopped = false
 
     var onStatus: ((String) -> Void)?
+    var onFailure: (() -> Void)?
+    private var receivedOutput = false
+    private var firstOutputTimeout: DispatchWorkItem?
     /// 连上后回报实际用的通道标签（"LAN 直连" / "Tailscale"），UI 拿去显示当前连接方式。
     var onTransport: ((String) -> Void)?
 
@@ -58,6 +61,7 @@ final class BlinkdClient {
         guard !stopped else { return }
         guard candidateIndex < candidates.count else {
             onStatus?("连接失败：无可用通道")
+            onFailure?()
             return
         }
         let cand = candidates[candidateIndex]
@@ -75,6 +79,12 @@ final class BlinkdClient {
                     self.onTransport?(cand.label)
                     self.startReceive()
                     self.handshake()
+                    let timeout = DispatchWorkItem { [weak self] in
+                        guard let self, !self.receivedOutput, !self.stopped else { return }
+                        self.onFailure?()
+                    }
+                    self.firstOutputTimeout = timeout
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: timeout)
                 case .failed:
                     self.connectTimeout?.cancel(); self.connectTimeout = nil
                     if !self.ready { self.advance(from: c) }
@@ -86,17 +96,13 @@ final class BlinkdClient {
                 }
             }
         }
-        // 非最后候选给个短超时：卡在连接中就回落 Tailscale，别让 LAN 不通拖住终端。
-        if !isLast {
-            let to = DispatchWorkItem { [weak self] in
-                Task { @MainActor in
-                    guard let self, self.conn === c, !self.ready, !self.stopped else { return }
-                    self.advance(from: c)
-                }
-            }
-            connectTimeout = to
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: to)
+        // LAN 1.5 秒、最后的远程地址 8 秒；最后一条也要有超时才能转 SSH。
+        let to = DispatchWorkItem { [weak self] in
+            guard let self, self.conn === c, !self.ready, !self.stopped else { return }
+            self.advance(from: c)
         }
+        connectTimeout = to
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isLast ? 8 : 1.5), execute: to)
         c.start(queue: .main)
     }
 
@@ -106,7 +112,7 @@ final class BlinkdClient {
         tryConnect()
     }
 
-    func stop() { stopped = true; connectTimeout?.cancel(); conn?.cancel() }
+    func stop() { stopped = true; connectTimeout?.cancel(); firstOutputTimeout?.cancel(); conn?.cancel() }
 
     // MARK: Frames
 
@@ -157,10 +163,13 @@ final class BlinkdClient {
             Task { @MainActor in
                 guard let self else { return }
                 if let d = data, !d.isEmpty {
+                    self.receivedOutput = true
+                    self.firstOutputTimeout?.cancel()
                     self.terminal?.feed(byteArray: [UInt8](d)[...])
                 }
                 if isComplete || error != nil {
                     self.onStatus?("会话结束")
+                    if !self.receivedOutput && !self.stopped { self.onFailure?() }
                     return
                 }
                 self.receiveLoop()

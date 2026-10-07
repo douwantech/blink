@@ -167,6 +167,7 @@ final class AppState: ObservableObject {
     /// 由 RootView 的 .task 触发（从 init 里 spawn Task 不可靠）。
     func startup() async {
         if chatShotIfNeeded() { return }
+        ServerSync.shared.startForegroundPolling()
         BlinkdDiscovery.shared.start()   // 常驻 Bonjour 发现同网 blinkd，供 LAN 优先直连用
         if ServerSync.shared.hasSession {
           // 服务器快照 → sync 文件；落地后 watchSyncFile() 自动触发标签/机器 reload，
@@ -226,12 +227,12 @@ final class AppState: ObservableObject {
     /// 枚举和探目录是只读的，几台并行；写同步文件只做一次（读-改-写，并发会互相盖掉）。
     func adoptOrphanSessions() async {
         guard SyncConfig.available else { return }
-        let targets = machines.map { (id: $0.id, isLocal: $0.isLocalMac, tr: $0.transport) }
+        let targets = machines.map { (id: $0.id, isLocal: $0.isLocalMac, tr: $0.transport, fallback: $0.sshFallback) }
         var scans: [OrphanTabAdopter.Scan] = []
         await withTaskGroup(of: OrphanTabAdopter.Scan?.self) { group in
             for t in targets {
                 group.addTask {
-                    let out = await AppState.exec(t.tr, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil)
+                    let out = await AppState.exec(t.tr, BlinkdScript.listSessionsCreated(), timeout: 8, marker: nil, fallback: t.fallback)
                     let live = OrphanTabAdopter.parseLive(out)
                     guard !live.isEmpty else { return nil }
                     // 没有待补的就别去探目录了：这条路每次回前台都会走，远程是一次 ssh 往返。
@@ -239,7 +240,7 @@ final class AppState: ObservableObject {
                     // 「首次扫描」，以后在手机上关掉的标签会被当成孤儿又补回来。
                     let pend = OrphanTabAdopter.pending(machineId: t.id, isLocal: t.isLocal, live: live)
                     let dirs = pend.isEmpty ? Set<String>()
-                        : await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend))
+                        : await AppState.existingDirs(t.tr, OrphanTabAdopter.dirsToProbe(for: pend), fallback: t.fallback)
                     return OrphanTabAdopter.Scan(machineId: t.id, isLocal: t.isLocal,
                                                  live: live, existingDirs: dirs)
                 }
@@ -262,12 +263,13 @@ final class AppState: ObservableObject {
 
     /// 在目标机器上筛出真实存在的目录（一条命令查完，省往返）。
     /// 带单引号或换行的路径没法安全塞进命令，直接跳过——这种路径本来也过不了三端同名那关。
-    nonisolated static func existingDirs(_ transport: Transport, _ paths: [String]) async -> Set<String> {
+    nonisolated static func existingDirs(_ transport: Transport, _ paths: [String],
+                                         fallback: (user: String, host: String)? = nil) async -> Set<String> {
         let safe = paths.filter { !$0.contains("'") && !$0.contains("\n") }
         guard !safe.isEmpty else { return [] }
         let list = safe.map { "'\($0)'" }.joined(separator: " ")
         let out = await exec(transport, "for p in \(list); do [ -d \"$p\" ] && echo \"$p\"; done",
-                             timeout: 8, marker: nil)
+                             timeout: 8, marker: nil, fallback: fallback)
         let found = out.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -355,7 +357,10 @@ final class AppState: ObservableObject {
                                // rail 绿点只给 blinkd 在线（isRemote）；SSH 机器无 daemon 探测、
                                // 显示「ssh」小标，unconfigured 显示 ⚠（#25 降级可见性）
                                online: transport.isRemote,
-                               transport: transport, isLocalMac: isLocalMac))
+                               transport: transport,
+                               sshFallback: (cm.transport == "blinkd" && !isLocalMac && !cm.host.isEmpty)
+                                 ? (user: cm.user, host: cm.host) : nil,
+                               isLocalMac: isLocalMac))
         }
         guard !out.isEmpty else { return }
         // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。
@@ -372,9 +377,9 @@ final class AppState: ObservableObject {
     func enumerateAll() async {
         await withTaskGroup(of: [Session].self) { group in
             for m in machines {
-                let mid = m.id, tr = m.transport
+                let mid = m.id, tr = m.transport, fallback = m.sshFallback
                 group.addTask {
-                    let out = await AppState.exec(tr, BlinkdScript.listSessions(), timeout: 8, marker: nil)
+                    let out = await AppState.exec(tr, BlinkdScript.listSessions(), timeout: 8, marker: nil, fallback: fallback)
                     return AppState.parseSessions(out, machineID: mid)
                 }
             }
@@ -389,11 +394,17 @@ final class AppState: ObservableObject {
 
     /// 统一执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 走本机 shell。
     nonisolated static func exec(_ transport: Transport, _ command: String,
-                                 timeout: TimeInterval, marker: String?) async -> String {
+                                 timeout: TimeInterval, marker: String?,
+                                 fallback: (user: String, host: String)? = nil) async -> String {
         switch transport {
         case .blinkd(let h, let p, let t):
-            return await BlinkdExec.run(host: h, port: p, token: t, command: command,
-                                        timeout: timeout, finishMarker: marker)
+            let out = await BlinkdExec.run(host: h, port: p, token: t, command: command,
+                                           timeout: timeout, finishMarker: marker)
+            if out.isEmpty, let fallback {
+                return await SSHExec.run(user: fallback.user, host: fallback.host,
+                                         command: command, timeout: timeout)
+            }
+            return out
         case .ssh(let u, let h):
             return await SSHExec.run(user: u, host: h, command: command, timeout: timeout)
         case .unconfigured:
@@ -406,7 +417,8 @@ final class AppState: ObservableObject {
     /// 枚举单台机器的会话并合并（只替换这台的，别动别的机器）。选机器/需要刷新单台时用。
     func loadSessions(for machine: Machine) async {
         guard machine.transport.connectable else { return }
-        let out = await AppState.exec(machine.transport, BlinkdScript.listSessions(), timeout: 8, marker: nil)
+        let out = await AppState.exec(machine.transport, BlinkdScript.listSessions(), timeout: 8,
+                                      marker: nil, fallback: machine.sshFallback)
         let real = AppState.parseSessions(out, machineID: machine.id)
         guard !real.isEmpty else {
             // 枚举不到（离线 / 无免密）→ 保留原有（可能是 KV 标签），别清空
@@ -746,6 +758,7 @@ final class AppState: ObservableObject {
         let m = machines.first { $0.id == s.machineID } ?? activeMachine
         showToast("正在保存 \(s.name) 的模型…")
         let tr = m.transport
+        let fallback = m.sshFallback
         let name = s.tmuxName ?? "cc-\(s.name)"
         Task { @MainActor in
             if ServerSync.shared.hasSession {
@@ -756,7 +769,8 @@ final class AppState: ObservableObject {
             }
             TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
             self.agentTick &+= 1
-            let result = await AppState.exec(tr, BlinkdScript.resetPane(name), timeout: 12, marker: nil)
+            let result = await AppState.exec(tr, BlinkdScript.resetPane(name), timeout: 12,
+                                             marker: nil, fallback: fallback)
             // 后端缓存了旧 CLI 启动脚本，必须重建才能让新配置生效。
             self.term.rebuild(s.id)
             self.agentTick &+= 1
@@ -851,11 +865,12 @@ final class AppState: ObservableObject {
 
         // 2) 后台增量：同文件只拉 lines+1 之后的新行，换文件/无缓存才整拉最后 100 条
         let transport = activeMachine.transport
+        let fallback = activeMachine.sshFallback
         Task { @MainActor in
             let out = await AppState.exec(
                 transport,
                 AppState.historyDeltaScript(title: title, cachedFile: cached?.file, cachedLines: cached?.lines ?? 0),
-                timeout: 25, marker: "@TSB64E@")
+                timeout: 25, marker: "@TSB64E@", fallback: fallback)
             guard let d = AppState.parseTranscriptDelta(out) else {
                 if cached == nil, let i = sessions.firstIndex(where: { $0.id == sid }) {
                     sessions[i].chat = [ChatBlock(role: "ASSISTANT", color: Theme.dim, text: "对话记录拉取失败。")]

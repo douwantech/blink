@@ -175,8 +175,8 @@ static void MCPDebugLog(NSString *s) {
         if (cmd.length == 0) {
           cmd = [BlinkMachineStore.shared sshCommandForMachineId:machineId workDirId:self.sessionParams.workDirId tmuxSession:self.sessionParams.tmuxSession useTmux:self.sessionParams.useTmux];
         }
-        MCPDebugLog([NSString stringWithFormat:@"cmd: sess=%@ resolvedMachine=%@ via=%@ cmd=%@",
-                     self.sessionParams.tmuxSession, machineId, viaBlinkd ? @"blinkd" : @"ssh", cmd ?: @"(nil)"]);
+        MCPDebugLog([NSString stringWithFormat:@"cmd: sess=%@ resolvedMachine=%@ via=%@",
+                     self.sessionParams.tmuxSession, machineId, viaBlinkd ? @"blinkd" : @"ssh"]);
         if (cmd) {
           NSString *hostInfo = [BlinkMachineStore.shared chosenHostInfoForMachineId:machineId];
           if (hostInfo) {
@@ -280,7 +280,22 @@ static void MCPDebugLog(NSString *s) {
   } else if ([cmd isEqualToString:@"ssh2"]) {
     [self _runSSHWithArgs:cmdline];
   } else if ([cmd isEqualToString:@"blinkd"]) {
-    [self _runBlinkdWithArgs:cmdline];
+    BOOL receivedOutput = [self _runBlinkdWithArgs:cmdline];
+    // 机器自动连接优先 blinkd；TCP/认证失败时 daemon 没有回任何数据，立即用
+    // 同一份 tmux 启动脚本经 SSH 重试。手动输入的 blinkd 命令不自动改道。
+    if (!receivedOutput && _device && isAutoConnect && _autoConnectMachineBased) {
+      NSString *ssh = [BlinkMachineStore.shared sshCommandForMachineId:self.sessionParams.machineId
+                                                               workDirId:self.sessionParams.workDirId
+                                                              tmuxSession:self.sessionParams.tmuxSession
+                                                                  useTmux:self.sessionParams.useTmux];
+      if (ssh.length > 0) {
+        [_device writeOutLn:@"\r\n⚠️ blinkd 不可用，改用 SSH 连接…"];
+        MCPDebugLog([NSString stringWithFormat:@"fallback: sess=%@ blinkd→ssh", self.sessionParams.tmuxSession]);
+        _autoConnectCommand = ssh;
+        _autoConnectMachineBased = YES;
+        return [self _runCommand:ssh skipHistoryRecord:YES];
+      }
+    }
   } else if ([cmd isEqualToString:@"ssh-copy-id"]) {
     [self _runSSHCopyIDWithArgs:cmdline];
   } else if (![cmd isEqualToString:@""]) {
@@ -592,7 +607,7 @@ static void MCPDebugLog(NSString *s) {
 }
 
 // blinkd <host> <port> <token> — 原始 TCP 连 Mac 端 blinkd daemon(不走 SSH)
-- (void)_runBlinkdWithArgs:(NSString *)args
+- (BOOL)_runBlinkdWithArgs:(NSString *)args
 {
   // 只有「真建连」的 blinkd 调用才登记自动重连;管理子命令(save/ls/rm/help)不登记,
   // 否则断线重连会把 `blinkd ls` 之类反复重跑。掉线重连复用 ssh 那套退避+看门狗,
@@ -604,15 +619,17 @@ static void MCPDebugLog(NSString *s) {
                  || [sub isEqualToString:@"save"] || [sub isEqualToString:@"ls"]
                  || [sub isEqualToString:@"rm"]   || [sub isEqualToString:@"help"]
                  || [sub isEqualToString:@"-h"]   || [sub isEqualToString:@"--help"]);
-  if (!isMgmt) {
+  if (!isMgmt && !(_autoConnectMachineBased && [_autoConnectCommand isEqualToString:args])) {
     _autoConnectCommand = args;
     _autoConnectMachineBased = NO;
   }
   self.sessionParams.childSessionParams = nil;
-  _childSession = [[BlinkdSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  BlinkdSession *session = [[BlinkdSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  _childSession = session;
   self.sessionParams.childSessionType = @"blinkd";
   [_childSession executeAttachedWithArgs:args];
   _childSession = nil;
+  return session.receivedOutput;
 }
 
 - (void)sigwinch

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 // 服务器同步（Blink 原生 Mac 版，2026-10-05 老板拍板弃 iCloud 后的 Mac 落地）。
 //
@@ -26,6 +27,8 @@ final class ServerSync: ObservableObject {
   private let userKey = "BlinkServer.username"
   private let versionKey = "BlinkServer.appliedVersion"
   private var updatingPersonal = false
+  private var activeRefreshes = 0
+  private var foregroundPoll: Timer?
 
   var hasSession: Bool { defaults.string(forKey: tokenKey) != nil }
 
@@ -73,6 +76,8 @@ final class ServerSync: ObservableObject {
   /// 没变，跳过落盘（也不必触发 reload）。token 失效（401）清 session，下次启动弹登录。
   @MainActor func refresh() async {
     guard defaults.string(forKey: tokenKey) != nil else { return }
+    activeRefreshes += 1
+    defer { activeRefreshes -= 1 }
     switch await fetchAndApply() {
     case .ok: isOnline = true
     case .notModified: isOnline = true
@@ -82,6 +87,18 @@ final class ServerSync: ObservableObject {
       isOnline = false
     case .offline: isOnline = false   // 网络不通：读链路还有 sync 文件 / KV 兜底，静默
     case .noSession: break
+    }
+  }
+
+  /// 前台定期对齐同一账号的标签及团队状态；无变化时 GET 只返回 304。
+  @MainActor func startForegroundPolling() {
+    guard foregroundPoll == nil else { return }
+    foregroundPoll = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        guard let self, NSApp.isActive, self.hasSession,
+              !self.updatingPersonal, self.activeRefreshes == 0 else { return }
+        await self.refresh()
+      }
     }
   }
 

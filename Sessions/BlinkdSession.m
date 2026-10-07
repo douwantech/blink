@@ -39,6 +39,8 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
   int _sock;
 }
 
+@synthesize receivedOutput = _receivedOutput;
+
 // ---- 别名配置存储 ----
 
 // 配置文件路径:blink 隐藏目录下,Files app 看不到,和 SSH host 同级
@@ -383,6 +385,7 @@ static NSString *const kBlinkdHostsFile = @"blinkd_hosts.json";
     if (pfds[0].revents & (POLLIN | POLLHUP)) {
       ssize_t n;
       while ((n = read(_sock, buf, sizeof buf)) > 0) {
+        _receivedOutput = YES;
         fwrite(buf, n, 1, _stream.out);
       }
       if (n == 0) {

@@ -11,4 +11,7 @@
 
 @interface BlinkdSession : Session
 
+/// 服务端是否回过终端数据；握手失败/网络不通时供机器自动连接回退 SSH。
+@property (nonatomic, readonly) BOOL receivedOutput;
+
 @end

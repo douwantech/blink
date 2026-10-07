@@ -101,6 +101,8 @@ struct Machine: Identifiable {
     var grad: [Color]
     var online: Bool = true
     var transport: Transport = .local
+    /// blinkd 连不上时可用的 SSH 路径；本机 daemon 不需要回退。
+    var sshFallback: (user: String, host: String)? = nil
     /// claude-code 是否跑在这台 Mac 上（本机 / isThisMac 的 blinkd）。true=本机贴图走原生
     /// （claude 直接读本机剪贴板）；false=远程，贴图要上传图床再插 URL。
     var isLocalMac: Bool = true

@@ -92,14 +92,16 @@ final class RemoteBackend: TerminalBackend {
     private let execCmd: String
     private var client: BlinkdClient?
     private let onTransport: ((String) -> Void)?
+    private let onFailure: (() -> Void)?
     var view: TerminalView { tv }
 
     init(host: String, port: UInt16, token: String, exec: String,
          uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil,
-         onTransport: ((String) -> Void)? = nil) {
+         onTransport: ((String) -> Void)? = nil, onFailure: (() -> Void)? = nil) {
         self.host = host; self.port = port; self.token = token
         execCmd = exec
         self.onTransport = onTransport
+        self.onFailure = onFailure
         tv = BlinkdTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                 font: makeFont(), options: TerminalOptions.default)
         applyTheme(tv)
@@ -112,6 +114,7 @@ final class RemoteBackend: TerminalBackend {
     private func connect() {
         let c = BlinkdClient(host: host, port: port, token: token, exec: execCmd, terminal: tv)
         c.onTransport = onTransport   // 把实际通道（LAN/Tailscale）回报给 UI
+        c.onFailure = onFailure
         tv.client = c
         client = c
         c.start()
@@ -217,7 +220,16 @@ final class TerminalManager {
             // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
             b = RemoteBackend(host: h, port: p, token: t, exec: exec,
                               uploadImageOnPaste: !machine.isLocalMac, onToast: onToast,
-                              onTransport: { [weak self, sid = session.id] kind in self?.onTransport?(sid, kind) })
+                              onTransport: { [weak self, sid = session.id] kind in self?.onTransport?(sid, kind) },
+                              onFailure: { [weak self, sid = session.id] in
+                                  guard let self, self.backends[sid] is RemoteBackend,
+                                        let fallback = machine.sshFallback else { return }
+                                  self.backends[sid]?.stop()
+                                  self.backends[sid] = SSHBackend(user: fallback.user, host: fallback.host,
+                                                                  remoteScript: exec, uploadImageOnPaste: true,
+                                                                  onToast: self.onToast)
+                                  self.onTransport?(sid, "SSH")
+                              })
         case .unconfigured:
             b = UnconfiguredBackend(machineName: machine.name)
         case .ssh(let user, let host):

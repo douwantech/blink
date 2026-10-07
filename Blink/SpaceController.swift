@@ -92,6 +92,8 @@ class SpaceController: UIViewController {
   /// `_viewportsKeys` 供查看/翻页，但**不落盘、不回传、不可关闭**；栖身坞里的也只有
   /// employee 前缀是 tom 的那几条（见 `_dockKeySet`）。
   private var _sharedKeys = Set<UUID>()
+  /// 当前公用标签被休息/撤下时，保留它所在的机器供补位选择。
+  private var _removedSharedMachineId: String?
 
   /// 自有标签的第一位（公用恒在最前，见 `_syncSharedTabs`）。给「把某个标签提到最前」
   /// 那几处用，别让自有的新标签插到公用标签前面去。
@@ -126,6 +128,9 @@ class SpaceController: UIViewController {
     }
 
     let dropped = previous.subtracting(newSet)
+    if let current = _currentKey, dropped.contains(current) {
+      _removedSharedMachineId = (SessionRegistry.shared[current] as TermController).mcpParams?.machineId
+    }
     // TODO(teamfix): 临时诊断日志（终端反复重建排查），定位完删
     if !dropped.isEmpty {
       var names: [String] = []
@@ -155,8 +160,37 @@ class SpaceController: UIViewController {
   ///（老板口径「不保留退路」：宁可不显示，也不要拿一条本地标签顶上）。
   private func _selectDockFirstIfNeeded() {
     let dock = _dockKeySet()
-    if let cur = _currentKey, dock.contains(cur) { return }
-    _currentKey = _viewportsKeys.first { dock.contains($0) }
+    if let cur = _currentKey, dock.contains(cur) {
+      _removedSharedMachineId = nil
+      return
+    }
+    let machineId = _removedSharedMachineId
+    _removedSharedMachineId = nil
+    let sameMachine = machineId.flatMap { mid in
+      _viewportsKeys.first { key in
+        guard dock.contains(key) else { return false }
+        return (SessionRegistry.shared[key] as TermController).mcpParams?.machineId == mid
+      }
+    }
+    _currentKey = sameMachine ?? _viewportsKeys.first { dock.contains($0) }
+  }
+
+  /// 同步可能在首屏建好后才送来标签，也可能撤掉当前标签。选中项和 page controller
+  /// 必须一起更新；只改 _currentKey 会留下没有终端内容的黑屏。
+  private func _showSelectedDockTabAfterSync() {
+    _selectDockFirstIfNeeded()
+    guard let key = _currentKey else {
+      _viewportsController.view.isHidden = true
+      return
+    }
+    let term: TermController = SessionRegistry.shared[key]
+    _viewportsController.view.isHidden = false
+    if _viewportsController.viewControllers?.first !== term {
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .black
+      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+    }
+    term.resumeIfNeeded()
   }
 
   private func _restoreFromStore() {
@@ -838,6 +872,7 @@ Please go to your subscriptions and cancel one of them!
     _cloudConfigDidRestore()
     // 服务端每次采纳完（登录/回前台刷新）都重放一遍公用标签：新增的进来、撤下的移走。
     _syncSharedTabs()
+    _showSelectedDockTabAfterSync()
     _macRail?.reload(currentId: _tabFilterMachineId)
     _reloadTabBar()
   }
@@ -1887,7 +1922,7 @@ extension SpaceController {
       store.materializeDefault(from: ServerConfigSync.shared.sharedTabs.map(\.tmuxSession))
       store.setActive(!store.isActive(sess), session: sess)
       _syncSharedTabs()
-      _selectDockFirstIfNeeded()
+      _showSelectedDockTabAfterSync()
       _reloadTabBar()
       return
     }
@@ -2746,7 +2781,7 @@ extension SpaceController: BlinkTabBarDelegate {
         // 必须重跑 sync（重画不够：_viewportsKeys/_sharedKeys 只有它更新），当前页若
         // 落在刚被休息掉的标签上，还要挪回第一个在岗的。
         self?._syncSharedTabs()
-        self?._selectDockFirstIfNeeded()
+        self?._showSelectedDockTabAfterSync()
         self?._reloadTabBar()
       }
     }

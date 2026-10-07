@@ -335,11 +335,14 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private static func exec(script: String, machine m: BlinkMachine) async throws -> String {
     let raw: String
     if let cfg = m.blinkdConfig {
-      raw = try await withCheckedThrowingContinuation { cont in
+      let blinkd: String? = try? await withCheckedThrowingContinuation { cont in
         BlinkdExecOnce.run(host: cfg.host, port: cfg.port, token: cfg.token, script: script) { r in
           cont.resume(with: r)
         }
       }
+      // TCP/认证失败或无完整回包时，用同一脚本走 SSH。
+      if let blinkd, blinkd.contains("@TSB64E@") { raw = blinkd }
+      else { raw = try await BlinkAssistantBackend.shared.execRemote(script: script, machine: m) }
     } else {
       raw = try await BlinkAssistantBackend.shared.execRemote(script: script, machine: m)
     }

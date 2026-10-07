@@ -172,6 +172,7 @@ struct TerminalColumn: View {
             badge("⚠ blinkd 未配置", Theme.wait)   // #25：不降级 SSH，去手机重新保存机器
         case .blinkd:
             switch state.transportBySession[state.activeSessionID] {
+            case "SSH": badge("SSH 回退", Theme.teal)
             case "LAN 直连": badge("LAN 直连", Theme.green2)   // 同网 IP 直连（不经 Tailscale）
             case "Tailscale": badge("Tailscale", Theme.blue)  // 经 Tailscale
             default:          badge("连接中…", Theme.dim)

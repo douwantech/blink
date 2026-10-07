@@ -141,6 +141,8 @@ final class ServerConfigSync: ObservableObject {
   private let appliedVersionKey = "BlinkServer.appliedVersion"
   private var applying = false
   private var isUploading = false
+  private var activeRefreshes = 0
+  private var foregroundPoll: Timer?
   private var uploadWork: DispatchWorkItem?
 
   private init() { username = defaults.string(forKey: "BlinkServer.username") }
@@ -252,8 +254,23 @@ final class ServerConfigSync: ObservableObject {
 
   @MainActor func refresh(replaceTabs: Bool = false, force: Bool = false, bearer: String? = nil) async throws {
     guard hasSession else { return }
+    activeRefreshes += 1
+    defer { activeRefreshes -= 1 }
     try await syncFromServer(replaceTabs: replaceTabs, force: force, bearer: bearer)
     schedulePendingUpload()
+  }
+
+  /// 两台设备都保持前台时也能看到对方改过的标签；版本未变时服务器只返回 304。
+  @MainActor func startForegroundPolling() {
+    guard foregroundPoll == nil else { return }
+    foregroundPoll = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        guard let self, UIApplication.shared.applicationState == .active,
+              self.hasSession, !self.isUploading, self.activeRefreshes == 0,
+              !self.defaults.bool(forKey: self.dirtyKey) else { return }
+        try? await self.refresh()
+      }
+    }
   }
 
   /// GET /v1/config 并采纳。304 = 服务器版本未变；200 = 版本前进，apply() 里版本
