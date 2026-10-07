@@ -36,6 +36,20 @@ func TestReadJSONRejectsTrailingInput(t *testing.T) {
 	}
 }
 
+func TestSharedAIConfigMigrationIsSafeForExistingDatabases(t *testing.T) {
+	schemaSQL, err := schema.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaText := string(schemaSQL)
+	if !strings.Contains(schemaText, "CREATE TABLE IF NOT EXISTS shared_ai_config") {
+		t.Fatal("shared AI config migration must create the table idempotently")
+	}
+	if !strings.Contains(schemaText, "INSERT IGNORE INTO shared_ai_config") {
+		t.Fatal("shared AI config migration must seed a missing singleton row without overwriting it")
+	}
+}
+
 func TestWriteAccessRequiresBothFlags(t *testing.T) {
 	for _, u := range []user{{Admin: false, CanWrite: false}, {Admin: false, CanWrite: true}, {Admin: true, CanWrite: false}} {
 		w := httptest.NewRecorder()
@@ -74,6 +88,79 @@ func TestPersonalWritesUseSignedInUser(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestVoiceCorrectionsAreReadForSignedInUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("SELECT data FROM voice_corrections").WithArgs(uint64(8)).WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"wrong":{"right":2}}`)))
+	r := httptest.NewRequest(http.MethodGet, "/v1/config/voice-corrections", nil)
+	w := httptest.NewRecorder()
+	(&app{db}).voiceCorrections(w, r, user{ID: 8})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"right":2`) {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVoiceCorrectionsWritesUseEachSignedInAccount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, account := range []uint64{7, 8} {
+		mock.ExpectBegin()
+		mock.ExpectExec("INSERT INTO voice_corrections").WithArgs(account, []byte(`{"term":"account"}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("UPDATE users SET config_version").WithArgs(account).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		r := httptest.NewRequest(http.MethodPut, "/v1/config/voice-corrections", strings.NewReader(`{"term":"account"}`))
+		w := httptest.NewRecorder()
+		(&app{db}).writeVoiceCorrections(w, r, user{ID: account})
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("account %d returned %d: %s", account, w.Code, w.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVoiceConfigEndpointsRejectUnauthenticatedRequestsWith403(t *testing.T) {
+	for _, path := range []string{"/v1/config/ai", "/v1/config/voice-corrections"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		(&app{}).routes().ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s returned %d, want 403", path, w.Code)
+		}
+	}
+}
+
+func TestSharedAIConfigWriteIncrementsGlobalVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO shared_ai_config").WithArgs([]byte(`{"userGlossary":"git","voice":{"model":"glm-4-flashx","baseURL":"https://open.bigmodel.cn/api/paas/v4/chat/completions","apiKey":"","debounce":1.5}}`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE config_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	r := httptest.NewRequest(http.MethodPut, "/v1/config/ai", strings.NewReader(`{"userGlossary":"git"}`))
+	w := httptest.NewRecorder()
+	(&app{db}).writeSharedAIConfig(w, r, user{ID: 1, Admin: true, CanWrite: true})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

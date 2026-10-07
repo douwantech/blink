@@ -1,4 +1,5 @@
 import UIKit
+import SwiftUI
 import Speech
 import AVFoundation
 import AudioToolbox
@@ -1308,58 +1309,10 @@ final class VoiceInputView: UIView {
   var localeIdentifierForSettings: String { localeIdentifier }
   func setLocaleIdentifierFromSettings(_ id: String) { localeIdentifier = id }
   func currentLocaleTitleForSettings() -> String { currentLocaleTitle() }
-  func openLanguagePickerFromSettings() { presentLanguageSheet() }
-  func openAIConfigFromSettings() { presentAISettings() }
   func setHintForSettingsChange(_ text: String) { showToast(text) }
 
   private func currentLocaleTitle() -> String {
     Self.supportedLocales.first { $0.id == localeIdentifier }?.title ?? localeIdentifier
-  }
-
-  private func presentLanguageSheet() {
-    let alert = UIAlertController(title: "识别语言", message: nil, preferredStyle: .actionSheet)
-    for entry in Self.supportedLocales {
-      let isCurrent = entry.id == localeIdentifier
-      let title = isCurrent ? "✓ \(entry.title)" : entry.title
-      alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
-        self?.localeIdentifier = entry.id
-      })
-    }
-    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    if let pop = alert.popoverPresentationController, let src = lastTappedPill {
-      pop.sourceView = src; pop.sourceRect = src.bounds
-    }
-    findViewController()?.present(alert, animated: true)
-  }
-
-  private func presentAISettings() {
-    let alert = UIAlertController(title: "AI 配置", message: "兼容 OpenAI 协议（智谱 GLM 等）", preferredStyle: .alert)
-    alert.addTextField { tf in
-      tf.placeholder = "API Key"; tf.text = AITextPolisher.shared.apiKey
-      tf.isSecureTextEntry = true; tf.autocapitalizationType = .none; tf.autocorrectionType = .no
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "模型 (如 glm-4.5)"; tf.text = AITextPolisher.shared.model
-      tf.autocapitalizationType = .none; tf.autocorrectionType = .no
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "Base URL"; tf.text = AITextPolisher.shared.baseURL
-      tf.autocapitalizationType = .none; tf.autocorrectionType = .no; tf.keyboardType = .URL
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "停顿延迟（秒，默认 3.5）"
-      tf.text = String(format: "%.1f", AITextPolisher.shared.debounceSeconds)
-      tf.keyboardType = .decimalPad
-    }
-    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "保存", style: .default) { _ in
-      let fields = alert.textFields ?? []
-      if let k = fields[safe: 0]?.text { AITextPolisher.shared.apiKey = k }
-      if let m = fields[safe: 1]?.text, !m.isEmpty { AITextPolisher.shared.model = m }
-      if let u = fields[safe: 2]?.text, !u.isEmpty { AITextPolisher.shared.baseURL = u }
-      if let s = fields[safe: 3]?.text, let d = Double(s), d > 0 { AITextPolisher.shared.debounceSeconds = d }
-    })
-    findViewController()?.present(alert, animated: true)
   }
 
   // MARK: - Toast
@@ -1767,7 +1720,7 @@ final class AITextPolisher {
   /// 用户专属固定术语表：从真实语音修正记录里提炼出的高频专有名词错听。
   /// 最高优先级——ASR 只要出现左侧任一近音写法（或明显同音变体），一律改成右侧规范写法。
   /// 只放「读音接近、含义唯一」的专名，不放风格改写（跑→运行 这类不进）。
-  private let userGlossary = """
+  private var userGlossary = """
     用户专属术语表（固定，最高优先级；ASR 一旦出现近音写法，直接改成规范写法，即使词表/修正记录里没有）：
     工具 / 命令：
     - claude（听成 cloud / Cloud / cloudcode / CloudAI / 卡了带 / 卡老的 / 卡密）
@@ -1793,6 +1746,22 @@ final class AITextPolisher {
     - 边距（的编辑）；错题（彻底）
     规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。
     """
+
+  /// The server owns this shared glossary after the current account snapshot
+  /// is applied. The bundled text remains an offline/bootstrap fallback.
+  func setSharedGlossary(_ value: String) {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    userGlossary = trimmed
+  }
+
+  /// Apply server-owned engine values; local UserDefaults remain the offline fallback.
+  func applySharedEngineConfig(model: String, baseURL: String, apiKey: String, debounce: Double) {
+    if !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.model = model }
+    if !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.baseURL = baseURL }
+    if !apiKey.isEmpty { self.apiKey = apiKey }
+    if debounce > 0 { self.debounceSeconds = debounce }
+  }
 
   func recordHistory(_ text: String) {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1915,6 +1884,7 @@ final class AITextPolisher {
     UserDefaults.standard.set(arr, forKey: kCorrections)
     // 顺手抽词级映射，喂给 polish prompt 用
     accumulateTermPairs(asrRaw: asrTrim, final: finTrim)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   // MARK: - 词级"错→对"映射
@@ -2003,7 +1973,17 @@ final class AITextPolisher {
     UserDefaults.standard.set(map, forKey: kTerms)
   }
 
-  /// 词表条目（按总频次降序）
+  var termsPayload: [String: [String: Int]] {
+    UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]] ?? [:]
+  }
+
+  func replaceTerms(_ terms: [String: [String: Int]]) {
+    UserDefaults.standard.set(terms, forKey: kTerms)
+  }
+
+  /// 词表条目（按总频次降序）。只读：给 polish 的 prompt 用。
+  /// 手工增删/清空词表的 UI 已按 2026-10-06 口径删掉，这里不再有写入口 ——
+  /// 服务端下发的整表替换走 `replaceTerms(_:)`，本地学习走 `accumulateTermPairs`。
   var termEntries: [(wrong: String, correct: String, count: Int)] {
     let map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
     var out: [(String, String, Int)] = []
@@ -2013,18 +1993,6 @@ final class AITextPolisher {
       }
     }
     return out.sorted { $0.2 > $1.2 }
-  }
-
-  func clearTerms() {
-    UserDefaults.standard.removeObject(forKey: kTerms)
-  }
-
-  func deleteTerm(wrong: String, correct: String) {
-    var map = (UserDefaults.standard.dictionary(forKey: kTerms) as? [String: [String: Int]]) ?? [:]
-    guard var sub = map[wrong] else { return }
-    sub.removeValue(forKey: correct)
-    if sub.isEmpty { map.removeValue(forKey: wrong) } else { map[wrong] = sub }
-    UserDefaults.standard.set(map, forKey: kTerms)
   }
 
   var correctionEntries: [(asrRaw: String, final: String)] {
@@ -2154,14 +2122,140 @@ final class AITextPolisher {
   }
 }
 
-final class VoiceSettingsViewController: UITableViewController {
+// MARK: - 设置页的行模型
+
+/// 设置页里的一个开关。tag 用 allCases 下标，回调里再换回来。
+/// 原来的 `.machineBar`（「切换机器条」）已删：浮动机器条按老板口径移除后它不再控制任何东西
+///（Mac 三栏看的是 rail，与它无关），留一个按了没反应的开关比没有更糟。
+enum SettingsToggle: String, CaseIterable {
+  case ai, autoReconnect
+
+  var label: String {
+    switch self {
+    case .ai: return "AI 整理"
+    case .autoReconnect: return "断线自动重连"
+    }
+  }
+}
+
+/// 设置页的一行。抽成纯数据是为了让「删掉的东西别再回来」有回归测试钉着
+/// （`BlinkTests/SettingsLayoutTests.swift`）：UI 只按 case 决定控件与去向。
+enum SettingsRow: Equatable {
+  case account(username: String)
+  case login
+  case logout
+  case toggle(SettingsToggle, isOn: Bool)
+  case personalCorrections(count: Int)
+  case shortcuts
+  case machine(user: String, host: String)
+  case workDirs(count: Int)
+  case language(title: String)
+  case about
+
+  var label: String {
+    switch self {
+    case .account: return "账号"
+    case .login: return "登录"
+    case .logout: return "退出登录"
+    case .toggle(let t, _): return t.label
+    case .personalCorrections: return "个人纠正词"
+    case .shortcuts: return "键盘快捷键"
+    case .machine: return "机器"
+    case .workDirs: return "工作目录"
+    case .language: return "识别语言"
+    case .about: return "关于与支持"
+    }
+  }
+
+  var detail: String? {
+    switch self {
+    case .account(let username): return username
+    case .personalCorrections(let count): return "\(count) 对"
+    case .machine(let user, let host): return host.isEmpty ? "未配置" : "\(user)@\(host)"
+    case .workDirs(let count): return "\(count) 个"
+    case .language(let title): return title
+    default: return nil
+    }
+  }
+
+  /// 点一下会跳到下一页的行（其余是开关或纯展示）。
+  var pushes: Bool {
+    switch self {
+    case .login, .personalCorrections, .shortcuts, .machine, .workDirs, .language, .about:
+      return true
+    case .account, .logout, .toggle:
+      return false
+    }
+  }
+}
+
+struct SettingsSection: Equatable {
+  let title: String
+  let rows: [SettingsRow]
+}
+
+/// 设置页的段/行清单。2026-10-06 老板拍板的收窄口径：只留
+/// 登录 / 语音开关 / 个人纠正词 / 必要快捷键，外加机器 / 工作目录 / 识别语言 / 关于与支持。
+/// **删过的东西（AI 配置编辑器、错读词表编辑、实验段）不要再加回来。**
+enum SettingsLayout {
+  static let titles = ["账号", "语音", "个人纠正词", "键盘快捷键", "机器", "工作目录", "识别语言", "关于与支持"]
+
+  static func sections(username: String?,
+                       aiEnabled: Bool,
+                       autoReconnect: Bool,
+                       corrections: Int,
+                       machine: (user: String, host: String)?,
+                       workDirCount: Int,
+                       language: String) -> [SettingsSection] {
+    let account: [SettingsRow]
+    if let username, !username.isEmpty {
+      account = [.account(username: username), .logout]
+    } else {
+      account = [.login]
+    }
+    return [
+      SettingsSection(title: titles[0], rows: account),
+      SettingsSection(title: titles[1], rows: [.toggle(.ai, isOn: aiEnabled)]),
+      SettingsSection(title: titles[2], rows: [.personalCorrections(count: corrections)]),
+      SettingsSection(title: titles[3], rows: [.shortcuts]),
+      SettingsSection(title: titles[4], rows: [
+        .machine(user: machine?.user ?? "", host: machine?.host ?? ""),
+        .toggle(.autoReconnect, isOn: autoReconnect),
+      ]),
+      SettingsSection(title: titles[5], rows: [.workDirs(count: workDirCount)]),
+      SettingsSection(title: titles[6], rows: [.language(title: language)]),
+      SettingsSection(title: titles[7], rows: [.about]),
+    ]
+  }
+}
+
+// MARK: - 设置页
+
+/// 全 App 唯一的设置页：⌘, / ⋯ 菜单「Show Config」/ shell 的 `config` 命令 / 语音坞齿轮
+/// 四个入口都进这里（Mac Catalyst 仍走经典设置页，见 `SpaceController.showConfigAction`）。
+final class BlinkSettingsViewController: UITableViewController, UIAdaptivePresentationControllerDelegate {
   private weak var voiceView: VoiceInputView?
+  /// Done / 下滑关闭时回调 —— SpaceController 用来把焦点还给 shell。
+  var onClose: (() -> Void)?
 
   init(voiceView: VoiceInputView?) {
     self.voiceView = voiceView
     super.init(style: .insetGrouped)
   }
   required init?(coder: NSCoder) { fatalError() }
+
+  private var sections: [SettingsSection] {
+    SettingsLayout.sections(
+      username: ServerConfigSync.shared.username,
+      aiEnabled: AITextPolisher.shared.enabled,
+      // 默认值 true：没写过这个键时开关是打开的（与改动前的 setter 语义一致）。
+      autoReconnect: UserDefaults.standard.object(forKey: "BlinkAutoReconnect") as? Bool ?? true,
+      corrections: AITextPolisher.shared.correctionEntries.count,
+      machine: BlinkMachineStore.shared.currentMachine.map { (user: $0.user, host: $0.host) },
+      workDirCount: BlinkWorkDirStore.shared.workDirs.count,
+      language: voiceView?.currentLocaleTitleForSettings() ?? "—"
+    )
+  }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -2200,6 +2294,8 @@ final class VoiceSettingsViewController: UITableViewController {
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
     tableView.reloadData()
+    // 下滑关闭也要把焦点还给 shell（Done 那条路在 closeTapped 里）。
+    (navigationController ?? self).presentationController?.delegate = self
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -2207,162 +2303,146 @@ final class VoiceSettingsViewController: UITableViewController {
     tableView.reloadData()
   }
 
-  @objc private func closeTapped() { dismiss(animated: true) }
+  @objc private func closeTapped() {
+    // Done 这条是程序化关闭，`presentationControllerDidDismiss` 不会响（它只管下滑/手势关闭），
+    // 所以焦点归还两条路都要自己接上。
+    dismiss(animated: true) { [weak self] in self?.onClose?() }
+  }
 
-  // 原来第 6 段「员工 CLI」里只有一个 DeepSeek Key：key 改成各机器自己配
-  // （~/.zshrc 里 export DEEPSEEK_API_KEY），App 不再保存、不再同步，这一段整段拿掉。
-  override func numberOfSections(in tableView: UITableView) -> Int { 5 }
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+    onClose?()
+  }
+
+  override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-    ["机器", "工作目录", "识别", "AI 整理", "实验"][section]
+    sections[section].title
   }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
-    [3, 1, 1, 3, 2][section]
+    sections[section].rows.count
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    let row = sections[indexPath.section].rows[indexPath.row]
     let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
-    cell.selectionStyle = .default
-    switch (indexPath.section, indexPath.row) {
-    case (0, 0):
-      cell.textLabel?.text = "机器"
-      let m = BlinkMachineStore.shared.currentMachine
-      cell.detailTextLabel?.text = m.map { "\($0.user)@\($0.host)" } ?? "未配置"
-      cell.accessoryType = .disclosureIndicator
-    case (0, 1):
-      cell.textLabel?.text = "断线自动重连"
+    cell.textLabel?.text = row.label
+    cell.detailTextLabel?.text = row.detail
+    if case .toggle(let toggle, let isOn) = row {
       let sw = UISwitch()
-      let v = UserDefaults.standard.object(forKey: "BlinkAutoReconnect")
-      sw.isOn = (v == nil) ? true : (v as? Bool ?? true)
-      sw.addTarget(self, action: #selector(toggleAutoReconnect(_:)), for: .valueChanged)
+      sw.isOn = isOn
+      sw.tag = SettingsToggle.allCases.firstIndex(of: toggle) ?? 0
+      sw.addTarget(self, action: #selector(toggleSwitched(_:)), for: .valueChanged)
       cell.accessoryView = sw
       cell.selectionStyle = .none
-    case (0, 2):
-      cell.textLabel?.text = "切换机器条"
-      let sw = UISwitch()
-      sw.isOn = BlinkMachineStore.showMachineBar
-      sw.addTarget(self, action: #selector(toggleMachineBar(_:)), for: .valueChanged)
-      cell.accessoryView = sw
-      cell.selectionStyle = .none
-    case (1, 0):
-      cell.textLabel?.text = "工作目录"
-      cell.detailTextLabel?.text = "\(BlinkWorkDirStore.shared.workDirs.count) 个"
+    } else if row.pushes {
       cell.accessoryType = .disclosureIndicator
-    case (2, 0):
-      cell.textLabel?.text = "识别语言"
-      cell.detailTextLabel?.text = voiceView?.currentLocaleTitleForSettings() ?? "—"
-      cell.accessoryType = .disclosureIndicator
-    case (3, 0):
-      cell.textLabel?.text = "AI 整理"
-      let sw = UISwitch()
-      sw.isOn = AITextPolisher.shared.enabled
-      sw.addTarget(self, action: #selector(toggleAI(_:)), for: .valueChanged)
-      cell.accessoryView = sw
-      cell.selectionStyle = .none
-    case (3, 1):
-      cell.textLabel?.text = "AI 配置"
-      cell.detailTextLabel?.text = AITextPolisher.shared.model
-      cell.accessoryType = .disclosureIndicator
-    case (3, 2):
-      cell.textLabel?.text = "AI 历史 / 修正 / 词表"
-      let h = AITextPolisher.shared.historyEntries.count
-      let c = AITextPolisher.shared.correctionEntries.count
-      let t = AITextPolisher.shared.termEntries.count
-      cell.detailTextLabel?.text = "\(h) 条 · \(c) 对 · \(t) 词"
-      cell.accessoryType = .disclosureIndicator
-    case (4, 0):
-      cell.textLabel?.text = "测试 GLM-ASR"
-      cell.detailTextLabel?.text = "bigmodel.cn"
-      cell.accessoryType = .disclosureIndicator
-    case (4, 1):
-      cell.textLabel?.text = "测试 Whisper"
-      cell.detailTextLabel?.text = "api.openai.com"
-      cell.accessoryType = .disclosureIndicator
-    default: break
+    }
+    if row == .logout {
+      cell.textLabel?.textColor = .systemRed
+      cell.textLabel?.textAlignment = .center
     }
     return cell
   }
 
   override func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
     tv.deselectRow(at: indexPath, animated: true)
-    switch (indexPath.section, indexPath.row) {
-    case (0, 0):
-      let list = MachineListViewController()
-      navigationController?.pushViewController(list, animated: true)
-    case (1, 0):
-      let list = WorkDirListViewController()
-      navigationController?.pushViewController(list, animated: true)
-    case (2, 0):
+    let row = sections[indexPath.section].rows[indexPath.row]
+    switch row {
+    case .login:
+      presentLogin()
+    case .logout:
+      confirmLogout()
+    case .personalCorrections:
+      navigationController?.pushViewController(AIHistoryViewController(), animated: true)
+    case .shortcuts:
+      pushHosted(rootView: AnyView(ShortcutsConfigView(
+        config: KBTracker.shared.loadConfig(), commandsMode: true)), title: row.label)
+    case .machine:
+      navigationController?.pushViewController(MachineListViewController(), animated: true)
+    case .workDirs:
+      navigationController?.pushViewController(WorkDirListViewController(), animated: true)
+    case .language:
       let picker = LanguagePickerViewController()
       picker.voiceView = voiceView
       navigationController?.pushViewController(picker, animated: true)
-    case (3, 1):
-      presentAISettings()
-    case (3, 2):
-      navigationController?.pushViewController(AIHistoryViewController(), animated: true)
-    case (4, 0):
-      navigationController?.pushViewController(ASRTestViewController(config: .glm), animated: true)
-    case (4, 1):
-      navigationController?.pushViewController(ASRTestViewController(config: .whisper), animated: true)
-    default: break
+    case .about:
+      pushHosted(rootView: AnyView(SettingsView(navigationTitle: row.label)), title: row.label)
+    case .account, .toggle:
+      break
     }
   }
 
-  @objc private func toggleAI(_ sw: UISwitch) {
-    AITextPolisher.shared.enabled = sw.isOn
-    voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
+  /// 把要 `Nav` 环境（`@EnvironmentObject var nav: Nav`）的 SwiftUI 页推到当前导航栈上。
+  /// `NavView` 只是给环境注入 navController（`KB/Native/Views/General/NavView.swift`），
+  /// 这些页内部自己的 push 也走同一个导航栈。
+  private func pushHosted(rootView: AnyView, title: String) {
+    guard let nav = navigationController else { return }
+    let host = UIHostingController(rootView: NavView(navController: nav) { rootView })
+    host.title = title
+    nav.pushViewController(host, animated: true)
   }
 
-  @objc private func toggleAutoReconnect(_ sw: UISwitch) {
-    UserDefaults.standard.set(sw.isOn, forKey: "BlinkAutoReconnect")
-    voiceView?.setHintForSettingsChange(sw.isOn ? "断线自动重连已开启" : "断线自动重连已关闭")
+  @objc private func toggleSwitched(_ sw: UISwitch) {
+    guard SettingsToggle.allCases.indices.contains(sw.tag) else { return }
+    switch SettingsToggle.allCases[sw.tag] {
+    case .ai:
+      AITextPolisher.shared.enabled = sw.isOn
+      voiceView?.setHintForSettingsChange(sw.isOn ? "AI 整理已开启" : "AI 整理已关闭")
+    case .autoReconnect:
+      UserDefaults.standard.set(sw.isOn, forKey: "BlinkAutoReconnect")
+      voiceView?.setHintForSettingsChange(sw.isOn ? "断线自动重连已开启" : "断线自动重连已关闭")
+    }
   }
 
-  @objc private func toggleMachineBar(_ sw: UISwitch) {
-    BlinkMachineStore.showMachineBar = sw.isOn   // setter 会发通知，SpaceController 实时显隐
-    voiceView?.setHintForSettingsChange(sw.isOn ? "切换机器条已显示" : "切换机器条已隐藏")
+  // MARK: - 账号
+
+  private func presentLogin() {
+    let controller = UIHostingController(rootView: ServerLoginView(
+      onSuccess: { [weak self] in
+        self?.dismiss(animated: true) { self?.tableView.reloadData() }
+      },
+      onOffline: { [weak self] in
+        self?.dismiss(animated: true) { self?.tableView.reloadData() }
+      }))
+    controller.modalPresentationStyle = .fullScreen
+    present(controller, animated: true)
   }
 
-  private func presentAISettings() {
-    let alert = UIAlertController(title: "AI 配置", message: "兼容 OpenAI 协议（智谱 GLM 等）", preferredStyle: .alert)
-    alert.addTextField { tf in
-      tf.placeholder = "API Key"
-      tf.text = AITextPolisher.shared.apiKey
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-      tf.clearButtonMode = .whileEditing
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "模型 (如 glm-4.5)"
-      tf.text = AITextPolisher.shared.model
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "Base URL"
-      tf.text = AITextPolisher.shared.baseURL
-      tf.autocapitalizationType = .none
-      tf.autocorrectionType = .no
-      tf.keyboardType = .URL
-    }
-    alert.addTextField { tf in
-      tf.placeholder = "停顿延迟（秒，默认 3.5）"
-      tf.text = String(format: "%.1f", AITextPolisher.shared.debounceSeconds)
-      tf.keyboardType = .decimalPad
-    }
+  private func confirmLogout() {
+    let alert = UIAlertController(
+      title: "退出登录",
+      message: "退出后本机不再同步机器与标签，需要重新输入团队账号密码。",
+      preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
-      let fields = alert.textFields ?? []
-      if fields.indices.contains(0), let k = fields[0].text { AITextPolisher.shared.apiKey = k }
-      if fields.indices.contains(1), let m = fields[1].text, !m.isEmpty { AITextPolisher.shared.model = m }
-      if fields.indices.contains(2), let u = fields[2].text, !u.isEmpty { AITextPolisher.shared.baseURL = u }
-      if fields.indices.contains(3), let s = fields[3].text, let d = Double(s), d > 0 {
-        AITextPolisher.shared.debounceSeconds = d
-      }
+    alert.addAction(UIAlertAction(title: "退出", style: .destructive) { [weak self] _ in
+      ServerConfigSync.shared.logout()
       self?.tableView.reloadData()
+      self?.presentLogin()
     })
     present(alert, animated: true)
+  }
+}
+
+/// 「个人纠正词」页的两节。高频错读词表（自动学出的词级映射）**只保留学习与上传链路**，
+/// 手工增删清空的入口按 2026-10-06 的口径删掉，所以这里没有词表节 —— 别再把它加回来。
+enum PersonalCorrectionsSection: CaseIterable {
+  case history, corrections
+
+  var title: String {
+    switch self {
+    case .history: return "提交记录"
+    case .corrections: return "整句修正对"
+    }
+  }
+
+  var footer: String {
+    switch self {
+    case .history:
+      return "每次在语音面板按提交时记一条；最多 30 条；作为上下文喂给 AI 整理。"
+    case .corrections:
+      return "若 ASR 出文本后你做了修改，提交时把这对存下来。AI 整理会优先按这里的修正习惯改。最多 30 对。"
+    }
   }
 }
 
@@ -2372,7 +2452,7 @@ final class AIHistoryViewController: UITableViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "AI 历史 / 修正 / 词表"
+    title = "个人纠正词"
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       title: "清空", style: .plain, target: self, action: #selector(clearTapped))
   }
@@ -2382,44 +2462,35 @@ final class AIHistoryViewController: UITableViewController {
     tableView.reloadData()
   }
 
-  override func numberOfSections(in tv: UITableView) -> Int { 3 }
+  private let sections = PersonalCorrectionsSection.allCases
+
+  override func numberOfSections(in tv: UITableView) -> Int { sections.count }
 
   override func tableView(_ tv: UITableView, numberOfRowsInSection s: Int) -> Int {
-    switch s {
-    case 0: return max(AITextPolisher.shared.historyEntries.count, 1)
-    case 1: return max(AITextPolisher.shared.correctionEntries.count, 1)
-    default: return max(AITextPolisher.shared.termEntries.count, 1)
+    switch sections[s] {
+    case .history: return max(AITextPolisher.shared.historyEntries.count, 1)
+    case .corrections: return max(AITextPolisher.shared.correctionEntries.count, 1)
     }
   }
 
   override func tableView(_ tv: UITableView, titleForHeaderInSection s: Int) -> String? {
-    switch s {
-    case 0:
+    switch sections[s] {
+    case .history:
       let n = AITextPolisher.shared.historyEntries.count
       return n > 0 ? "提交记录（共 \(n) 条，新→旧）" : "提交记录"
-    case 1:
+    case .corrections:
       let n = AITextPolisher.shared.correctionEntries.count
       return n > 0 ? "整句修正对（共 \(n) 对）" : "整句修正对"
-    default:
-      let n = AITextPolisher.shared.termEntries.count
-      return n > 0 ? "高频错读词表（共 \(n) 项，频次降序）" : "高频错读词表"
     }
   }
 
   override func tableView(_ tv: UITableView, titleForFooterInSection s: Int) -> String? {
-    switch s {
-    case 0:
-      return "每次在语音面板按提交时记一条；最多 30 条；作为上下文喂给 AI 整理。"
-    case 1:
-      return "若 ASR 出文本后你做了修改，提交时把这对存下来。AI 整理会优先按这里的修正习惯改。最多 30 对。"
-    default:
-      return "从每次修正自动抽出的词级映射（错→对），累加频次；polish 把它当作首要纠错表使用。左滑删除单条。"
-    }
+    sections[s].footer
   }
 
   override func tableView(_ tv: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
-    switch ip.section {
-    case 0:
+    switch sections[ip.section] {
+    case .history:
       let entries = AITextPolisher.shared.historyEntries
       let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
       if entries.isEmpty {
@@ -2434,7 +2505,7 @@ final class AIHistoryViewController: UITableViewController {
         cell.selectionStyle = .none
       }
       return cell
-    case 1:
+    case .corrections:
       let corrections = AITextPolisher.shared.correctionEntries
       let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
       if corrections.isEmpty {
@@ -2453,53 +2524,29 @@ final class AIHistoryViewController: UITableViewController {
       cell.detailTextLabel?.textColor = .secondaryLabel
       cell.selectionStyle = .none
       return cell
-    default:
-      let terms = AITextPolisher.shared.termEntries
-      let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
-      if terms.isEmpty {
-        cell.textLabel?.text = "暂无（修正几次后会自动累积）"
-        cell.textLabel?.textColor = .secondaryLabel
-        cell.textLabel?.font = .systemFont(ofSize: 14)
-        cell.selectionStyle = .none
-        return cell
-      }
-      let t = terms[ip.row]
-      cell.textLabel?.text = "「\(t.wrong)」  →  「\(t.correct)」"
-      cell.textLabel?.numberOfLines = 0
-      cell.detailTextLabel?.text = "\(t.count)"
-      cell.detailTextLabel?.textColor = .secondaryLabel
-      cell.selectionStyle = .none
-      return cell
     }
   }
 
   override func tableView(_ tv: UITableView, canEditRowAt ip: IndexPath) -> Bool {
-    switch ip.section {
-    case 0: return !AITextPolisher.shared.historyEntries.isEmpty
-    case 1: return !AITextPolisher.shared.correctionEntries.isEmpty
-    default: return !AITextPolisher.shared.termEntries.isEmpty
+    switch sections[ip.section] {
+    case .history: return !AITextPolisher.shared.historyEntries.isEmpty
+    case .corrections: return !AITextPolisher.shared.correctionEntries.isEmpty
     }
   }
 
   override func tableView(_ tv: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt ip: IndexPath) {
     guard editingStyle == .delete else { return }
-    switch ip.section {
-    case 0:
+    switch sections[ip.section] {
+    case .history:
       let reversed = Array(AITextPolisher.shared.historyEntries.reversed())
       if reversed.indices.contains(ip.row) {
         AITextPolisher.shared.deleteHistory(text: reversed[ip.row])
       }
-    case 1:
+    case .corrections:
       let reversed = Array(AITextPolisher.shared.correctionEntries.reversed())
       if reversed.indices.contains(ip.row) {
         let p = reversed[ip.row]
         AITextPolisher.shared.deleteCorrection(asrRaw: p.asrRaw, final: p.final)
-      }
-    default:
-      let terms = AITextPolisher.shared.termEntries
-      if terms.indices.contains(ip.row) {
-        let t = terms[ip.row]
-        AITextPolisher.shared.deleteTerm(wrong: t.wrong, correct: t.correct)
       }
     }
     tv.reloadData()
@@ -2508,7 +2555,6 @@ final class AIHistoryViewController: UITableViewController {
   @objc private func clearTapped() {
     let historyN = AITextPolisher.shared.historyEntries.count
     let correctionN = AITextPolisher.shared.correctionEntries.count
-    let termN = AITextPolisher.shared.termEntries.count
     let alert = UIAlertController(title: "清空哪一项？", message: nil, preferredStyle: .actionSheet)
     if historyN > 0 {
       alert.addAction(UIAlertAction(title: "清空提交记录 (\(historyN))", style: .destructive) { [weak self] _ in
@@ -2522,17 +2568,10 @@ final class AIHistoryViewController: UITableViewController {
         self?.tableView.reloadData()
       })
     }
-    if termN > 0 {
-      alert.addAction(UIAlertAction(title: "清空错读词表 (\(termN))", style: .destructive) { [weak self] _ in
-        AITextPolisher.shared.clearTerms()
-        self?.tableView.reloadData()
-      })
-    }
-    if historyN + correctionN + termN > 0 {
+    if historyN + correctionN > 0 {
       alert.addAction(UIAlertAction(title: "全部清空", style: .destructive) { [weak self] _ in
         AITextPolisher.shared.clearHistory()
         AITextPolisher.shared.clearCorrections()
-        AITextPolisher.shared.clearTerms()
         self?.tableView.reloadData()
       })
     }

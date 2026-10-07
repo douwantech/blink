@@ -51,6 +51,9 @@
 - (void)sshClientDidConnect;
 /// 切到这个 tab 时调：没有活 ssh 就立刻重连（有则不打断）
 - (void)reconnectIfDisconnected;
+/// 切换 CLI 后调：杀掉当前 ssh/blinkd 连接，命令退出走进既有的自动重连链，
+/// 重新生成的启动脚本读到的就是新 CLI 配置
+- (void)restartConnection;
 
 - (void)enqueueCommand:(NSString *)cmd;
 - (void)enqueueCommand:(NSString *)cmd skipHistoryRecord: (BOOL) skipHistoryRecord;

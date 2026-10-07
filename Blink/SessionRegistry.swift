@@ -101,7 +101,14 @@ protocol SuspendableSession: class {
     if let session = _sessionsIndex[key] as? T {
       return session
     }
-    
+
+    // TODO(teamfix): 临时诊断日志（终端反复重建排查）：走到新建分支时记 key + 调用栈
+    // 头几帧，定位完删。
+    let stack = Thread.callStackSymbols.dropFirst(2).prefix(6).map { s -> String in
+      s.split(separator: " ").suffix(2).joined(separator: " ")
+    }.joined(separator: " | ")
+    SpaceController.teamDebugLog("newTerm: key=\(key.uuidString.prefix(8)) stack=\(stack)")
+
     // 2. we have it only in meta index
     if let meta = _metaIndex[key] {
       meta.isSuspended = true
@@ -109,7 +116,7 @@ protocol SuspendableSession: class {
       track(session: session)
       return session
     }
-    
+
     // 3. creating new one
     let meta = SessionMeta()
     meta.key = key
@@ -158,15 +165,19 @@ protocol SuspendableSession: class {
   
   
   private func _resume(forKey key: UUID) {
-    guard
-      let session = _sessionsIndex[key],
-      let data = _fsRead(forKey: key),
-      let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data)
-    else {
+    guard let session = _sessionsIndex[key] else { return }
+    if let data = _fsRead(forKey: key),
+       let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) {
+      session.resume(with: unarchiver)
+      session.meta.isSuspended = false
       return
     }
-
-    session.resume(with: unarchiver)
+    // 磁盘没有这个 key 的挂起归档 —— 公用标签从没落盘过（不进 TabState），新建的
+    // controller 却默认 isSuspended=true。只清标记，**不踢 deviceIsReady**：view
+    // 未加载时踢会在没有输出通道（streams 还没 attach 到 WebView）的状态下把会话
+    // start 掉，之后真正的 ready 到来时又被 _session==nil 的 guard 挡住，输出永久
+    // 丢失 —— 恰好是黑屏（2026-10-07 实测）。view 加载后的正常链
+    // viewIsReady → deviceIsReady → _startSession 自己会启动。
     session.meta.isSuspended = false
   }
   

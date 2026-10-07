@@ -59,6 +59,7 @@ final class AITextPolisher {
     private let kModel = "VoiceKey.aiModel"
     private let kBaseURL = "VoiceKey.aiBaseURL"
     private let kEnabled = "VoiceKey.aiEnabled"
+    private let kDebounce = "VoiceKey.aiDebounce"
     private let maxTermsInPrompt = 40
 
     private init() {
@@ -67,6 +68,7 @@ final class AITextPolisher {
             kModel: "glm-4-flashx",
             kBaseURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
             kEnabled: true,
+            kDebounce: 1.5,
         ])
     }
 
@@ -85,6 +87,10 @@ final class AITextPolisher {
     var enabled: Bool {
         get { UserDefaults.standard.bool(forKey: kEnabled) }
         set { UserDefaults.standard.set(newValue, forKey: kEnabled) }
+    }
+    var debounceSeconds: Double {
+        get { max(UserDefaults.standard.double(forKey: kDebounce), 0.1) }
+        set { UserDefaults.standard.set(newValue, forKey: kDebounce) }
     }
 
     private let systemPrompt = """
@@ -136,7 +142,7 @@ final class AITextPolisher {
     // 「中文常错 / 项目专名」那批已搬去 LearningStore.presetTerms（设置页「我的词表」可改，
     // 经 historyBlock() 的 terms 段进 prompt）。这里只留通用工具/命令映射——它们是正常
     // 英文词（week→wiki、GTO→cto 这类），本地子串替换会误伤，只能靠 GLM 语义判断。
-    private let userGlossary = """
+    private var userGlossary = """
         用户专属术语表（固定，最高优先级；ASR 一旦出现近音写法，直接改成规范写法，即使词表里没有）：
         工具 / 命令：
         - claude（听成 cloud / Cloud / cloudcode / CloudAI / 卡了带 / 卡老的 / 卡密）
@@ -164,6 +170,18 @@ final class AITextPolisher {
     func recordHistory(_ text: String) {
         LearningStore.shared.addHistory(text)
     }
+
+    func applySharedEngineConfig(model: String, baseURL: String, apiKey: String, debounce: Double) {
+        let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanModel.isEmpty { self.model = cleanModel }
+        if !cleanURL.isEmpty { self.baseURL = cleanURL }
+        if !cleanKey.isEmpty { self.apiKey = cleanKey }
+        if debounce > 0 { self.debounceSeconds = debounce }
+    }
+
+    func setSharedGlossary(_ value: String) { if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { userGlossary = value } }
 
     /// 编辑后提交时的整句修正（供 prompt 学习）。
     func recordCorrection(asrRaw: String, final: String) {

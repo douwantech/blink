@@ -220,8 +220,10 @@ enum HostReachability {
       // inner 被外层 `$SHELL -ic '...'` 单引号包裹，里面只能用双引号；TITLE 由 Swift 端预先算好。
       // rename 注入不再盲等固定秒数：新建 tab 进新目录时 claude 会先弹「信任此文件夹」，
       // 加上 MCP 加载慢，盲发的 /rename 会被弹窗/加载屏吃掉。改成轮询 capture-pane：
-      // 见到 trust 弹窗先回车放行，见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，
-      // 20s 兜底。_snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
+      // 见到 trust 弹窗先放行（旧文案 trust the files 直接回车；新版「Yes, I trust this
+      // folder」默认停在 No, exit 上，要先按下箭头选中 Yes 再回车，盲回车会把 claude 退出），
+      // 见到输入框就绪标志(shift+tab / for shortcuts)再发 /rename，20s 兜底。
+      // _snd/_cap 用带引号的 if 分支避开 zsh 不做 word-split 的坑。
       // （claude 都带 --dangerously-skip-permissions：多数情况下 trust 弹窗被自动跳过，轮询是双保险。）
       //
       // codex / deepseek 没有 ~/.claude/projects 那套 customTitle 档案，resume / rename 都无从谈起，
@@ -229,7 +231,8 @@ enum HostReachability {
       if !agent.supportsResume { return agent.launchSnippet(cdTarget: cdTarget) }
       // DeepSeek 档也走这条（它就是 claude），只是前面多几个 ANTHROPIC_* 环境变量
       // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
-      return agent.envPrefix + #"cd \#(cdTarget) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
+      // cd 带引号：cdTarget 可能是 $(…) 兜底表达式，目录带空格时不加引号会被拆碎
+      return agent.envPrefix + #"cd "\#(cdTarget)" && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _snd() { tgt="$1"; shift; if [ -n "$tgt" ]; then tmux send-keys -t "$tgt" "$@"; else tmux send-keys "$@"; fi; }; _cap() { if [ -n "$1" ]; then tmux capture-pane -p -t "$1" 2>/dev/null; else tmux capture-pane -p 2>/dev/null; fi; }; _ccren() { T="$1"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(_cap "$T"); case "$C" in *"trust the files"*) _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) _snd "$T" Down; sleep 0.3; _snd "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) _snd "$T" "/rename $TITLE"; sleep 0.4; _snd "$T" Enter; return 0;; esac; i=$((i+1)); done; _snd "$T" "/rename $TITLE" Enter; }; if [ -n "$ID" ]; then claude --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then _ccren "" >/dev/null 2>&1 & claude --dangerously-skip-permissions; else TN="cc-$TITLE"; _ccren "$TN" >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --dangerously-skip-permissions\""; fi; fi; }"#
     }
 
     // 老的 tmux session 名是 `<session>`（比如 talkai），新方案叫 `cc-<title>`（比如 cc-jack-talkai）。
@@ -238,7 +241,18 @@ enum HostReachability {
 
     if useTmux {
       let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
-      let pathArg = (workPath?.isEmpty == false) ? workPath! : "$HOME"
+      // cd 目标：tab 带了 workDir 就直接用。公用标签（SharedTab）只有 machineId/tmuxSession，
+      // workDirId=nil —— 以前无脑退 $HOME，切 CLI 杀掉会话后重建就 cd 到家目录（claude 起在
+      // /Users/apple 还弹 trust 页）。改成三级兜底：① 会话活着 → pane 当前目录（切 CLI 只换
+      // 进程不换地方）；② pane 目录缺失**或就是 $HOME**（会话被杀过、new-session 把新 pane
+      // 建在了家目录）→ 拿 customTitle 去 ~/.claude/projects 的 jsonl 反查 cwd；
+      // ③ 都没有才 $HOME。
+      let pathArg: String
+      if let wp = workPath, !wp.isEmpty {
+        pathArg = wp
+      } else {
+        pathArg = "$(D=$(tmux display-message -p -t \(outerSession) #{pane_current_path} 2>/dev/null); if [ -z \"$D\" ] || [ \"x$D\" = \"x$HOME\" ]; then F=$(find $HOME/.claude/projects -maxdepth 2 -name \"*.jsonl\" -type f -exec grep -lF \"\\\"customTitle\\\":\\\"\(title)\\\"\" {} + 2>/dev/null | head -1); if [ -n \"$F\" ]; then W=$(grep -o \"\\\"cwd\\\":\\\"[^\\\"]*\\\"\" \"$F\" | head -1 | cut -d'\"' -f4); [ -n \"$W\" ] && D=$W; fi; fi; echo \"${D:-$HOME}\")"
+      }
       let inner = resumeOrNew(pathArg)
       // 启动脚本落到远端固定路径（boot 文件）。session 已存在时 `tmux new-session -A` 只会
       // attach，inner（cd + claude resume）不会重跑——坏 session（cd 失败/claude 退出后
@@ -308,7 +322,10 @@ enum HostReachability {
     set { UserDefaults.standard.set(newValue, forKey: "BlinkUseTmuxMode") }
   }
 
-  /// 「切换机器」浮动条是否显示。默认 true；在设置页可开关，改动发下面的通知让 SpaceController 实时响应。
+  /// 「切换机器」浮动条是否显示。默认 true。
+  /// **现在没有生产者**：浮动机器条随标签坞掉头一起移除，设置页那个开关也撤了；
+  /// 只剩同样无人实例化的 `FloatingMachineBar` 读它。留着是为了不打断已同步的默认值，
+  /// 以后要复活浮动机器条时这里就是现成的位置。
   @objc static var showMachineBar: Bool {
     get {
       if UserDefaults.standard.object(forKey: "BlinkShowMachineBar") == nil { return true }
@@ -701,21 +718,29 @@ enum HostReachability {
   }
 
   /// TITLE = customTitle（外层 tmux session 名为 cc-<TITLE>）。
-  /// 规则跟 sshCommand / transcriptCommand 一致：默认 <basename(workPath)>-<session>；
+  ///
+  /// 三端统一约定（2026-10-05 服务器同步后明确）：tab 带了 tmuxSession 就是**权威会话名**
+  /// （服务器 tab / Mac blinkd 端建的会话都按 cc-<tmuxSession> 命名），这里 sanitize 后
+  /// 原样返回，绝不再拼目录/用户名前缀。曾经对带 tmuxSession 的 tab 也套本地命名规则
+  /// （<basename>-<session>），而 workDirs 不随服务器快照下发、本地查不到时 basename
+  /// 退化到 SSH 用户名——brain 的 user=app，手机点 tom-blink 去找 cc-app-tom-blink，
+  /// new-session -A 又建了个空会话（blinkd 通道按枚举名直连不踩，只有 SSH 通道暴露）。
+  ///
+  /// tmuxSession 为空（本地新建 tab 还没指定会话）才走本地生成：默认 <basename(workPath)>-<session>，
   /// session 已是 basename 或 basename- 开头则不再 prepend；workPath 缺省退化到 machine.user。
   static func ccTitle(machine m: BlinkMachine, workDirId: String?, tmuxSession: String?) -> String {
+    let sanitize: (String) -> String = {
+      $0.lowercased()
+        .replacingOccurrences(of: "\"", with: "")
+        .replacingOccurrences(of: " ", with: "-")
+    }
+    if let ts = tmuxSession, !ts.isEmpty { return sanitize(ts) }
     var session = effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
     let wd = BlinkWorkDirStore.shared.workDir(forId: workDirId)
     let workPath = wd?.path
     let dirBasename: String
     // 优先用工作目录的「显示名」（跟 tab 标签一致，比如 juncandy），显示名缺省再退回路径 basename。
-    // tmux/session 名不能带空格/引号，统一小写并把空白→连字符、去掉引号。
-    let sanitize: (String) -> String = {
-      $0.lowercased()
-        .replacingOccurrences(of: "\"", with: "")
-        .replacingOccurrences(of: " ", with: "-")
-    }
     if let nm = wd?.name, !nm.isEmpty {
       dirBasename = sanitize(nm)
     } else if let wp = workPath, !wp.isEmpty {
@@ -745,9 +770,9 @@ enum HostReachability {
   }
 
   /// 手动调序（#26）：把 fromIndex 的机器挪到 toIndex。顺序直接用数组顺序表达，
-  /// 不加独立 order 字段——写回 UserDefaults 后 CloudConfigSync 自动镜像 iCloud KV
-  /// 并推 Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染；多端同时调序沿用 KV 的
-  /// last-write-wins。新增机器仍走 addOrUpdate 追加到末尾。
+  /// 不加独立 order 字段——写回 UserDefaults 后经 localChanged → ConfigSyncPush 推
+  /// Mac 同步文件，Mac / 鸿蒙都按同一数组顺序渲染。配置服务器侧 machines 全员
+  /// 共享，多端同时调序由服务器版本号仲裁。新增机器仍走 addOrUpdate 追加到末尾。
   func moveMachine(fromIndex: Int, toIndex: Int) {
     var arr = machines
     guard arr.indices.contains(fromIndex) else { return }
@@ -758,7 +783,7 @@ enum HostReachability {
 
   /// #25 存量迁移：物化只发生在写入路径，已存的老数据（内置机器三件套为空）不会自动变。
   /// 启动时 / 远端配置落地后调一次；有变化才写回（走 setter 再物化一遍，幂等），
-  /// 随后 CloudConfigSync 的 1s 镜像把它带进 iCloud KV 与 Mac 同步文件。
+  /// 随后 localChanged → ConfigSyncPush 把它带进 Mac 同步文件。
   @objc func materializeBlinkdDefaults() {
     let raw = machines
     let out = raw.map { $0.blinkdMaterialized }
@@ -836,6 +861,12 @@ final class MachineListViewController: UITableViewController {
       barButtonSystemItem: .add, target: self, action: #selector(addTapped)
     )
     navigationItem.rightBarButtonItems = [add, editButtonItem]
+    #if !targetEnvironment(macCatalyst)
+    // Shared machine changes go through /admin. Keep the iPhone list usable for
+    // viewing connections while making its unavailable edit actions explicit.
+    add.isEnabled = false
+    editButtonItem.isEnabled = false
+    #endif
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -851,7 +882,14 @@ final class MachineListViewController: UITableViewController {
 
   private func _footerText() -> String {
     let pub = BKPubKey.withID("AutoMac")?.publicKey ?? "（首次启动后自动生成）"
+    #if !targetEnvironment(macCatalyst)
+    let syncStatus = ServerConfigSync.shared.isOnline
+      ? "已连接配置服务器"
+      : "离线：个人标签保存在本机，联网后自动同步"
+    return "\(syncStatus)。共享机器只读；添加、修改和调序请在 blink-api.douwantech.com/admin 操作。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #else
     return "点选机器进入编辑/删除；右上「编辑」后可拖动调序，顺序在 iOS / Mac / 鸿蒙间同步。列表第一项即新建标签页的默认机器。\n本机 AutoMac 公钥（点这里复制，加到目标机器 ~/.ssh/authorized_keys 即免密）：\n\(pub)"
+    #endif
   }
 
   override func tableView(_ tv: UITableView, viewForFooterInSection section: Int) -> UIView? {
@@ -913,9 +951,13 @@ final class MachineListViewController: UITableViewController {
 
   // MARK: 手动调序（#26）——编辑态下系统 reorder 手柄拖动，onMove 写回 store。
   // 数组顺序即展示顺序（SpaceController 切机器条、MacThreeColumn、Mac、鸿蒙都按它渲染），
-  // 写回后 CloudConfigSync 自动镜像 iCloud KV + 推 Mac 同步文件，多端跟随。
+  // 写回后经 localChanged → ConfigSyncPush 推 Mac 同步文件，多端跟随。
   override func tableView(_ tv: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+    #if !targetEnvironment(macCatalyst)
+    return false
+    #else
     true
+    #endif
   }
 
   // 编辑态只做调序，不出系统删除圈（删除仍在机器表单里）；不实现的话
@@ -935,6 +977,12 @@ final class MachineListViewController: UITableViewController {
   }
 
   private func pushForm(editing machine: BlinkMachine?) {
+    #if !targetEnvironment(macCatalyst)
+    let alert = UIAlertController(title: "机器配置只读", message: "请在 blink-api.douwantech.com/admin 管理共享机器。", preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "知道了", style: .default))
+    present(alert, animated: true)
+    return
+    #endif
     let form = MachineFormViewController(editing: machine)
     navigationController?.pushViewController(form, animated: true)
   }
@@ -1194,10 +1242,10 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
 
 @objc protocol BlinkTabBarDelegate: AnyObject {
   func tabBarDidSelect(index: Int)
-  func tabBarDidRequestNew()
   func tabBarDidRequestClose(index: Int)
   func tabBarDidRequestSettings()
-  func tabBarDidRequestMachineFilter()
+  // tabBarDidRequestNew / tabBarDidRequestTabFilter / tabBarDidRequestOwnTabs 已按老板口径删除：
+  // 坞=服务端 tom 的公用标签，不做筛选器、没有「我的标签」尾入口、也不能从坞里造标签。
   func tabBarDidRequestAssistant()
   /// 顶栏 sparkles 入口 → 打开气泡 chat UI（与 kAssistantTabTag 的终端 tab 互补）
   func tabBarDidRequestAssistantChat()
@@ -1228,8 +1276,8 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     return resting.contains(key)
   }
 
-  /// 从 UserDefaults 重读休息集合。iCloud 同步把云端新值写进了持久域，但内存缓存还是旧的，
-  /// 收到 CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
+  /// 从 UserDefaults 重读休息集合。服务器同步把新值写进了持久域，但内存缓存还是旧的，
+  /// 收到 ServerConfigSync.didApply / CloudConfigSync.didRestore 时调这个刷新。返回 true 表示集合有变化（调用方据此决定是否刷新列表）。
   @objc @discardableResult func reload() -> Bool {
     let fresh = Set(UserDefaults.standard.stringArray(forKey: kKey) ?? [])
     guard fresh != resting else { return false }
@@ -1248,6 +1296,66 @@ final class MachineFormViewController: UITableViewController, UITextFieldDelegat
     let now = !isResting(key)
     setResting(now, key: key)
     return now
+  }
+}
+
+// MARK: - 公用标签的休息名单（服务端权威）
+
+/// 员工×项目（公用标签）的在岗名单。休息的标签**不进坞**（`_syncSharedTabs` 过滤），
+/// 团队页的行尾月亮切的就是这里。跟 TabRestStore（本地 viewport UUID）不同：键是
+/// tmuxSession 名（跨设备一致），且**服务端持久化**——随 recentSelection 的
+/// `restSessions` 键上传/回读（ServerConfigSync 的个人配置队列，自带版本对齐）。
+/// 默认（从未写过）只有 tom 的在岗；首次切换前先把默认物化成显式集合再改。
+@objc final class SharedRestStore: NSObject {
+  @objc static let shared = SharedRestStore()
+  private let kKey = "SharedRestStore.activeSessions"   // 逗号拼接的 tmuxSession
+  private(set) var loaded = false   // 本地存过或服务端回读过 → 显式集合；否则走默认规则
+  private var active: Set<String> = []
+
+  /// 默认在岗规则：tom（含 tom-xxx；员工段用 SharedTabLayout 的同一套拆法）。
+  /// 与「默认坞 = tom 的标签」口径一致，单一常量来源。
+  static func isDefaultActive(_ session: String) -> Bool {
+    SharedTabLayout.employee(ofTmuxSession: session) == SharedTabLayout.dockEmployee
+  }
+
+  private override init() {
+    if let s = UserDefaults.standard.string(forKey: kKey) {
+      active = Set(s.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+      loaded = true
+    }
+    super.init()
+  }
+
+  func isActive(_ session: String) -> Bool {
+    loaded ? active.contains(session) : Self.isDefaultActive(session)
+  }
+
+  /// 上传用的拼接串（稳定排序，diff 友好）
+  var joinedActive: String { active.sorted().joined(separator: ",") }
+
+  /// 服务端快照回读（recentSelection["restSessions"]，逗号拼接；空串 = 全员休息）。
+  /// 调用点在 ServerConfigSync.apply 的「以服务器为准」分支里 —— 本地刚改未上传时
+  /// 不会被服务端旧值冲掉（版本采纳语义已保证）。
+  func applyServer(_ joined: String) {
+    active = Set(joined.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    loaded = true
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+  }
+
+  /// 首次改动前物化默认集合（需要公用标签全量名单，由调用方给）。
+  func materializeDefault(from sessions: [String]) {
+    guard !loaded else { return }
+    active = Set(sessions.filter(Self.isDefaultActive))
+    loaded = true
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+  }
+
+  func setActive(_ on: Bool, session: String) {
+    guard loaded, !session.isEmpty else { return }
+    let changed = on ? active.insert(session).inserted : active.remove(session) != nil
+    guard changed else { return }
+    UserDefaults.standard.set(Array(active).joined(separator: ","), forKey: kKey)
+    ServerConfigSync.shared.schedulePersonalUpload()   // 真改数据：随个人配置队列 PUT 服务端
   }
 }
 
@@ -1358,8 +1466,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
   private let stack = UIStackView()
   private let menuButton = UIButton(type: .system)
   private let hairline = UIView()
-  private var filterTitle = "全部"
   private var restingCount = 0
+  /// tag → 标签按钮。节标题也占 arrangedSubviews，所以滚动定位不能按下标取。
+  private var tabButtons: [Int: UIButton] = [:]
 
   @objc init() {
     super.init(frame: .zero)
@@ -1419,15 +1528,9 @@ final class HorizontalOnlyScrollView: UIScrollView {
     ])
   }
 
-  /// ⋯ 菜单：筛选标题 / 休息人数变化时重建
+  /// ⋯ 菜单：休息人数变化时重建。老板口径下只剩「员工状态」与「设置」两条 ——
+  /// 「新建 tab」与「筛选」已移除（坞=服务端 tom 的公用标签，纯只读、无筛选器）。
   private func rebuildMenu() {
-    let newTab = UIAction(title: "新建 tab", image: UIImage(systemName: "plus")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestNew()
-    }
-    let filter = UIAction(title: "按机器筛选 · \(filterTitle)",
-                          image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in
-      self?.delegate?.tabBarDidRequestMachineFilter()
-    }
     // 旧「在岗/休息」列表已并入团队状态页；这条入口现在直接开员工状态页（行尾月亮即开关）
     let rest = UIAction(title: restingCount > 0 ? "员工状态 · \(restingCount) 人休息中" : "员工状态",
                         image: UIImage(systemName: "person.2")) { [weak self] _ in
@@ -1437,25 +1540,26 @@ final class HorizontalOnlyScrollView: UIScrollView {
     let settings = UIAction(title: "设置", image: UIImage(systemName: "gearshape")) { [weak self] _ in
       self?.delegate?.tabBarDidRequestSettings()
     }
-    menuButton.menu = UIMenu(children: [newTab, filter, rest, settings])
+    menuButton.menu = UIMenu(children: [rest, settings])
   }
 
   @objc func reload(titles: [String], unread: [Bool], currentIndex: Int) {
     reload(titles: titles, icons: nil, unread: unread,
-           tags: Array(0..<titles.count), filterTitle: nil, currentTag: currentIndex)
+           tags: Array(0..<titles.count), currentTag: currentIndex)
   }
 
-  @objc func reload(titles: [String], unread: [Bool], tags: [Int], filterTitle: String?, currentTag: Int) {
-    reload(titles: titles, icons: nil, unread: unread, tags: tags,
-           filterTitle: filterTitle, currentTag: currentTag)
+  @objc func reload(titles: [String], unread: [Bool], tags: [Int], currentTag: Int) {
+    reload(titles: titles, icons: nil, unread: unread, tags: tags, currentTag: currentTag)
   }
 
-  /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标
+  /// 主入口：可选传 icons 给每个 tab 加前置头像图；agents 给头像右下角挂 CLI 角标。
+  /// 坞是**一个平铺列表**（没有节标题、没有「公用」徽标），铺的就是服务端 tom 的那几条
+  /// 公用标签（SpaceController 侧筛好再传进来）。自有标签、筛选器、尾入口都按老板口径移除。
   func reload(titles: [String], icons: [UIImage?]?, unread: [Bool], tags: [Int],
-              filterTitle: String?, currentTag: Int, agents: [AgentKind?]? = nil) {
+              currentTag: Int, agents: [AgentKind?]? = nil) {
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    tabButtons.removeAll()
 
-    self.filterTitle = filterTitle ?? "全部"
     rebuildMenu()
 
     var visibleIndexOfCurrent = -1
@@ -1467,21 +1571,27 @@ final class HorizontalOnlyScrollView: UIScrollView {
       let btn = makeTabButton(title: title, icon: icon, agent: agent, index: tag,
                               isCurrent: tag == currentTag, hasUnread: isUnread)
       if tag == currentTag { visibleIndexOfCurrent = i }
+      tabButtons[tag] = btn
       stack.addArrangedSubview(btn)
     }
+    // 空坞就是空坞：老板口径「不保留退路」，不铺提示行、不拿本地标签顶上。
     layoutIfNeeded()
-    if visibleIndexOfCurrent >= 0 {
-      scrollToVisibleTab(at: visibleIndexOfCurrent, animated: true)
+    if visibleIndexOfCurrent >= 0, visibleIndexOfCurrent < tags.count {
+      scrollToVisibleTab(tag: tags[visibleIndexOfCurrent])
     }
   }
 
-  private func scrollToVisibleTab(at visibleIndex: Int, animated: Bool) {
-    guard stack.arrangedSubviews.indices.contains(visibleIndex) else { return }
-    let btn = stack.arrangedSubviews[visibleIndex]
+  /// 滚到某个 tag 对应的按钮。按 tag 查而不是按下标取，因为节标题也占着 arrangedSubviews。
+  /// 距离近（约一屏内）带动画滑过去；跨机大跳（字母序后 adam↔tom 隔了整排 chips）直接
+  /// 跳到位 —— scrollRectToVisible 的长距离动画会滚过所有中间 chips，视觉上「转一大圈」
+  /// （2026-10-06 老板反馈）。
+  private func scrollToVisibleTab(tag: Int) {
+    guard let btn = tabButtons[tag] else { return }
     let frameInScroll = btn.convert(btn.bounds, to: scrollView)
     let pad: CGFloat = 24
     let target = frameInScroll.insetBy(dx: -pad, dy: 0)
-    scrollView.scrollRectToVisible(target, animated: animated)
+    let near = abs(target.midX - scrollView.bounds.midX) <= scrollView.bounds.width * 2
+    scrollView.scrollRectToVisible(target, animated: near)
   }
 
   /// 外部（SpaceController）刷新休息人数（显示在 ⋯ 菜单的「在岗/休息」项里）。
@@ -1542,6 +1652,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     }
     cfg.imagePadding = 7
     cfg.imagePlacement = .leading
+    // 右侧留给未读红点（原先是在岗绿点/「公用」徽标的地盘，都已按老板口径删除）
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 24)
     cfg.baseForegroundColor = UIColor.white.withAlphaComponent(isCurrent ? 0.96 : 0.55)
     let btn = UIButton(configuration: cfg)
@@ -1557,24 +1668,7 @@ final class HorizontalOnlyScrollView: UIScrollView {
     longPress.minimumPressDuration = 0.4
     btn.addGestureRecognizer(longPress)
 
-    // 在岗绿点（带微光）
-    let status = UIView()
-    status.translatesAutoresizingMaskIntoConstraints = false
-    status.backgroundColor = UIColor(red: 0.23, green: 0.82, blue: 0.50, alpha: 1)   // #3ad07f
-    status.layer.cornerRadius = 3.5
-    status.layer.shadowColor = status.backgroundColor?.cgColor
-    status.layer.shadowOpacity = 0.7
-    status.layer.shadowRadius = 3
-    status.layer.shadowOffset = .zero
-    status.isUserInteractionEnabled = false
-    btn.addSubview(status)
-    NSLayoutConstraint.activate([
-      status.widthAnchor.constraint(equalToConstant: 7),
-      status.heightAnchor.constraint(equalToConstant: 7),
-      status.trailingAnchor.constraint(equalTo: btn.trailingAnchor, constant: -11),
-      status.centerYAnchor.constraint(equalTo: btn.centerYAnchor),
-    ])
-
+    // 右侧不再画在岗绿点（老板口径 2026-10-06 删）；未读红点还在，trailing 留白只为它。
     if hasUnread {
       let dot = UIView()
       dot.translatesAutoresizingMaskIntoConstraints = false
@@ -2419,7 +2513,8 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
   }
 }
 
-/// 员工头像 store：员工名 → PNG 数据。没自定义就 fallback 到 DiceBear 自动生成（seed = 员工名）
+/// 员工头像 store：员工名 → PNG 数据。优先级：用户自设 > 内置像素图（9 人，见 pixelNames）
+/// > DiceBear 自动生成（seed = 员工名）
 @objc final class BlinkPeopleStore: NSObject {
   @objc static let shared = BlinkPeopleStore()
   private let kKey = "BlinkPeopleStore.avatars"   // [name: Data] base64-string
@@ -2496,9 +2591,31 @@ final class AvatarPickerViewController: UIViewController, UICollectionViewDataSo
     styleMap[name.lowercased()] ?? Self.defaultStyle
   }
 
-  /// 取头像（同步 fast-path）：先看自定义；没有就看 DiceBear 缓存；都没有返 nil（让调用方异步 fetch）
+  /// 内置像素头像的 9 个名字（老板 2026-10-06 拍板团队头像走像素风，同原型页
+  /// blink/avatar-v2）。图打包在 App 里：Media.xcassets/<名字>-pixel，缩到 128px ——
+  /// 512px 原图单张 250KB+，绝不进配置快照/同步文件（那会肥死每次同步）。
+  static let pixelNames: [String] = ["tom", "jack", "adam", "candy", "leo", "max", "quan", "peter", "tony"]
+
+  /// 员工目录里这个人的默认头像（内置像素图）。不在那 9 人里、或资源没打进包 → nil
+  func bundledIcon(for name: String) -> UIImage? {
+    let n = Self.canonicalName(name)
+    guard Self.pixelNames.contains(n) else { return nil }
+    return UIImage(named: "\(n)-pixel")
+  }
+
+  /// 给 UI 用（团队页员工卡 / 助手巡检行）：用户自设的 > 内置像素图；都没有返 nil，交调用方兜字母。
+  /// 故意不在这里兜 DiceBear —— 那是一条网络路径，员工卡片不该为一张脸等网络。
+  func directoryIcon(for name: String) -> UIImage? {
+    customIcon(for: name) ?? bundledIcon(for: name)
+  }
+
+  private static func canonicalName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  /// 取头像（同步 fast-path）：先看自定义/内置像素图；没有就看 DiceBear 缓存；都没有返 nil（让调用方异步 fetch）
   func iconSync(for name: String, size: Int = 96) -> UIImage? {
-    if let img = customIcon(for: name) { return img }
+    if let img = directoryIcon(for: name) { return img }
     let url = AvatarPickerViewController.urlFor(style: style(for: name), seed: name.lowercased(), size: size)
     if let d = DiceBearLoader.shared.cached(url: url), let img = UIImage(data: d) { return img }
     return nil

@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         HUDPanelController.shared.begin()
         _ = LearningStore.shared   // 提前建好持久化学习库（~/Library/Application Support/VoiceKey）
+        VoiceServerConfigSync.shared.refresh()
         // 词表三端共用：盯 ~/.blink/sync 目录拉手机/鸿蒙的改动，并把本地词表推一份
         //（文件里已是这份且自己写的会短路跳过，无成本）。
         TermSync.shared.startWatching()

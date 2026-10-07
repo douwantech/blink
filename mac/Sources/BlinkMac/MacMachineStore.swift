@@ -30,15 +30,24 @@ struct MacMachine {
 enum MacMachineStore {
     static let kvKey = "BlinkMachineStore.machines"
 
-    /// 读 KV 里的机器清单。iOS 侧存的是 JSON 编码的 Data（`BlinkMachine` 数组），CloudConfigSync 原样搬过来。
+    /// 读机器清单。2026-10-05 服务器化：优先读三端同步文件（ServerSync 把配置服务器
+    /// 快照落在那），iCloud KV 兜底（服务器不可达 / 老数据）。两条路数据同构——
+    /// iOS CloudConfigSync 镜像进 KV 的就是同一份 machines。
     static func machines() -> [MacMachine] {
+        if let arr = SyncConfig.read()?["machines"] as? [[String: Any]], !arr.isEmpty {
+            return parse(arr)
+        }
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
         // 主要是 Data；容错也接 String（万一某端存成字符串）。
         let data: Data? = kv.data(forKey: kvKey) ?? kv.string(forKey: kvKey)?.data(using: .utf8)
         guard let data,
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
-        return arr.compactMap { m in
+        return parse(arr)
+    }
+
+    private static func parse(_ arr: [[String: Any]]) -> [MacMachine] {
+        arr.compactMap { m in
             guard let id = m["id"] as? String else { return nil }
             let name = (m["name"] as? String) ?? ""
             let host = (m["host"] as? String) ?? ""

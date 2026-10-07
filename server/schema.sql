@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS machines (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS pinned_bookmarks (
+  id VARCHAR(100) NOT NULL PRIMARY KEY,
+  position INT NOT NULL DEFAULT 0,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS user_configs (
   user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   tabs JSON NULL,
@@ -44,3 +51,71 @@ CREATE TABLE IF NOT EXISTS user_configs (
   agents JSON NULL,
   CONSTRAINT user_configs_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Org-wide directories, shared like machines. Only the admin page reads them.
+CREATE TABLE IF NOT EXISTS employees (
+  id VARCHAR(100) NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS projects (
+  id VARCHAR(100) NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Which employee and project an admin-created tab belongs to. This lives
+-- outside user_configs.tabs on purpose: clients upload their whole TabState
+-- back, and re-encoding it drops fields they do not model, so anything stored
+-- inside the tab JSON would be erased on the next sync.
+CREATE TABLE IF NOT EXISTS tab_links (
+  user_id BIGINT UNSIGNED NOT NULL,
+  tab_id CHAR(36) NOT NULL,
+  employee_id VARCHAR(100) NOT NULL,
+  project_id VARCHAR(100) NOT NULL,
+  PRIMARY KEY (user_id, tab_id),
+  CONSTRAINT tab_links_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Voice corrections are personal configuration. Keeping them in their own
+-- table lets existing user_configs rows migrate without an ALTER statement.
+CREATE TABLE IF NOT EXISTS voice_corrections (
+  user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  CONSTRAINT voice_corrections_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- AI configuration is shared by every account. These idempotent statements run
+-- on every startup, so an existing database gets the table and singleton seed
+-- row during upgrade without overwriting an already configured document.
+CREATE TABLE IF NOT EXISTS shared_ai_config (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+  data JSON NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO shared_ai_config (id, data) VALUES (1, JSON_OBJECT('userGlossary', '用户专属术语表（固定，最高优先级；ASR 一旦出现近音写法，直接改成规范写法，即使词表/修正记录里没有）：
+工具 / 命令：
+- claude（听成 cloud / Cloud / cloudcode / CloudAI / 卡了带 / 卡老的 / 卡密）
+- Claude Code（cloudcode / cloud code / CloudCodeAI）
+- Claude（句中作产品名时首字母大写）
+- git（get / q帕）；github（计划 / git hub）；commit（给客密）；merge（默记 / 给默记）
+- PR（皮阿 / 皮啊 / P2 / P啊 / 一休）；issue（医院 / 艺术出来 / 哎呦）
+- safecmd（SFCMD / selfcmd / Safemind / safe command）
+- tmux（tmus）；cmux（CMS / 新music）；socket（sokia / sock / Sokki / SOCKET）
+- SSH（sh / SS / ssh 规范为大写 SSH）；zsh（Jessie）；status（Stadia）
+- oss（OSI / OHS）；ipa（IPA）；wiki（viki / wick / week / wikie / Viki）
+- proxy（process / AIprocess）；VPN（V P N / VPA）
+- tailscale（tailsquare）；clashx（crossX / CrossX）；Clash（Crash）
+- peekaboo（Pico）；tab（table / tap）；tabbar（tablebar / tableau）；toolbar（拖把）
+项目 / 专名：
+- Mac（麦克 / max / make / Max / Make）；admin（A的门 / Adam）
+- cto（GTO）；dev skill（deepseek 剧情 / devskull / devskill）；cto skill（GTO skill）
+- binsoft（冰社 / BingSoft）；binku87（冰库八七）；binsoft-dev（大夫 / deep）
+- blink；blinkd（BlinkD）；talkai
+中文常错：
+- 主分支（主分词）；原型（圆形）；弹窗（糖床 / 棒糖窗 / 棒糖 / 堂装 / 半弹窗听成堂装）
+- 真机（蒸鸡）；横幅（红福 / banner）；均摊（金汤）
+- 边距（的编辑）；错题（彻底）
+规则：以上是发音提示，不要机械套用到语义完全无关的句子；拿不准就保留原文，别硬改。', 'voice', JSON_OBJECT('model', 'glm-4-flashx', 'baseURL', 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'apiKey', '', 'debounce', 1.5)));
+-- Older deployments seeded only userGlossary. Fill the new voice object without
+-- replacing any administrator document that already has one.
+UPDATE shared_ai_config SET data=JSON_SET(data, '$.voice', JSON_OBJECT('model', 'glm-4-flashx', 'baseURL', 'https://open.bigmodel.cn/api/paas/v4/chat/completions', 'apiKey', '', 'debounce', 1.5)) WHERE id=1 AND JSON_EXTRACT(data, '$.voice') IS NULL;

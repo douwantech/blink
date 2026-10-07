@@ -109,19 +109,18 @@ enum AgentMark {
   /// 不是视图，挂不了子 view，只能画进图里）。返回图比原图大一点，右下角探出去那截。
   /// 画布四周留同样的余量，头像还是落在正中——不然合成图的中心偏了，
   /// tab 里头像看着会比文字高一截。
+  /// **不缓存**：以前按 `base.hashValue` 当 key 缓存过 —— UIImage 没重写 hash（就是对象
+  /// 地址），每次 reload 重画的缩略图是新实例、旧实例释放后新对象会复用地址，key 撞上
+  /// 就把上一个员工的头像发给下一个人（2026-10-06 老板实测滑动后头像张冠李戴）。
+  /// 合成本身只是一次 draw（badge 有自己的内容稳定缓存），不值得冒这个险。
   static func avatar(_ base: UIImage, size: CGFloat, kind: AgentKind, ring: UIColor) -> UIImage {
-    let key = "av|\(base.hashValue)|\(size)|\(kind.id)|\(ring.hashValue)"
-    if let hit = imageCache[key] { return hit }
     let badge = self.badge(kind, size: max(13, size * 0.5), ring: ring)
     let over = size * 0.13 + 1.5        // 角标往外探 13%，外面再留 1.5pt 描边
     let out = size + over * 2
-    let img = UIGraphicsImageRenderer(size: CGSize(width: out, height: out)).image { _ in
+    return UIGraphicsImageRenderer(size: CGSize(width: out, height: out)).image { _ in
       base.draw(in: CGRect(x: over, y: over, width: size, height: size))
       let x = over + size + size * 0.13 - badge.size.width
       badge.draw(at: CGPoint(x: x, y: x))
-    }
-    let final = img.withRenderingMode(.alwaysOriginal)
-    imageCache[key] = final
-    return final
+    }.withRenderingMode(.alwaysOriginal)
   }
 }

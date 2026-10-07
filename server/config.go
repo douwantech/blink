@@ -1,12 +1,66 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+type sharedVoiceConfig struct {
+	Model    string  `json:"model"`
+	BaseURL  string  `json:"baseURL"`
+	APIKey   string  `json:"apiKey"`
+	Debounce float64 `json:"debounce"`
+}
+
+type sharedAIConfigDocument struct {
+	UserGlossary string            `json:"userGlossary"`
+	Voice        sharedVoiceConfig `json:"voice"`
+}
+
+func normalizeSharedAIConfig(raw json.RawMessage) ([]byte, error) {
+	var doc sharedAIConfigDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Voice.Model == "" {
+		doc.Voice.Model = "glm-4-flashx"
+	}
+	if doc.Voice.BaseURL == "" {
+		doc.Voice.BaseURL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+	}
+	if doc.Voice.Debounce <= 0 {
+		doc.Voice.Debounce = 1.5
+	}
+	return json.Marshal(doc)
+}
+
+// rowQueryer is the part of *sql.DB and *sql.Tx that queryJSON needs, so the
+// same helper reads inside a transaction and outside one.
+type rowQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// queryJSON collects one JSON column from every row of a query.
+func queryJSON(ctx context.Context, q rowQueryer, query string) ([]json.RawMessage, error) {
+	rows, err := q.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var data []byte
+		if err = rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		out = append(out, json.RawMessage(data))
+	}
+	return out, rows.Err()
+}
 
 // Machine JSON uses BlinkMachine's Codable field names. Unknown fields are
 // retained so clients can extend the shared model without a database migration.
@@ -70,7 +124,12 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	var tabs, selection, agents []byte
+	pinned, err := collectPinned(r.Context(), tx)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	var tabs, selection, agents, voiceCorrections, aiConfig []byte
 	err = tx.QueryRowContext(r.Context(), `SELECT tabs,recent_selection,agents FROM user_configs WHERE user_id=?`, u.ID).Scan(&tabs, &selection, &agents)
 	if err != nil && err != sql.ErrNoRows {
 		http.Error(w, "internal error", 500)
@@ -79,14 +138,122 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 	if len(tabs) == 0 {
 		tabs = []byte(`{"version":1,"tabs":[]}`)
 	}
+	// The public tabs are derived from the project directory and put in front of
+	// the account's own on the way out. They are never written to user_configs:
+	// the next upload from the client stores only what the client itself holds.
+	projects, err := queryJSON(r.Context(), tx, `SELECT data FROM projects ORDER BY id`)
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	tabs, err = mergePublicTabs(tabs, clientPublicTabs(buildPublicTabView(decodeProjects(projects))))
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	if len(selection) == 0 {
 		selection = []byte(`{}`)
 	}
 	if len(agents) == 0 {
 		agents = []byte(`{}`)
 	}
+	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM voice_corrections WHERE user_id=?`, u.ID).Scan(&voiceCorrections); err != nil && err != sql.ErrNoRows {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if len(voiceCorrections) == 0 {
+		voiceCorrections = []byte(`{}`)
+	}
+	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&aiConfig); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
 	w.Header().Set("X-Config-Version", version)
-	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "user": u})
+	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "pinned": pinned, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "voiceCorrections": json.RawMessage(voiceCorrections), "aiConfig": json.RawMessage(aiConfig), "user": u})
+}
+
+func (a *app) sharedAIConfig(w http.ResponseWriter, r *http.Request, _ user) {
+	var data []byte
+	if err := a.db.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&data); err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"data": json.RawMessage(data)})
+}
+
+func (a *app) writeSharedAIConfig(w http.ResponseWriter, r *http.Request, u user) {
+	if !requireWrite(w, u) {
+		return
+	}
+	var body json.RawMessage
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if len(body) == 0 || body[0] != '{' {
+		http.Error(w, "expected JSON object", 400)
+		return
+	}
+	normalized, err := normalizeSharedAIConfig(body)
+	if err != nil {
+		http.Error(w, "invalid JSON object", 400)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO shared_ai_config(id,data) VALUES(1,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, normalized)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE config_versions SET version=version+1 WHERE id=1`)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) voiceCorrections(w http.ResponseWriter, r *http.Request, u user) {
+	var data []byte
+	err := a.db.QueryRowContext(r.Context(), `SELECT data FROM voice_corrections WHERE user_id=?`, u.ID).Scan(&data)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if len(data) == 0 {
+		data = []byte(`{}`)
+	}
+	writeJSON(w, 200, map[string]any{"data": json.RawMessage(data)})
+}
+
+func (a *app) writeVoiceCorrections(w http.ResponseWriter, r *http.Request, u user) {
+	var body json.RawMessage
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if len(body) == 0 || body[0] != '{' {
+		http.Error(w, "expected JSON object", 400)
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO voice_corrections(user_id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)`, u.ID, []byte(body))
+	}
+	if err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE users SET config_version=config_version+1 WHERE id=?`, u.ID)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "internal error", 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *app) putMachine(w http.ResponseWriter, r *http.Request, u user) {

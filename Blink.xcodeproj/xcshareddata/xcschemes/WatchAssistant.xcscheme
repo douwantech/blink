@@ -55,7 +55,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "DB221348C386475BFA8A5BF1"
             BuildableName = "WatchAssistant.app"
-            BlueprintName = "WatchAssistant"
             ReferencedContainer = "container:Blink.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -72,7 +71,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "DB221348C386475BFA8A5BF1"
             BuildableName = "WatchAssistant.app"
-            BlueprintName = "WatchAssistant"
             ReferencedContainer = "container:Blink.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

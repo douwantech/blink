@@ -91,6 +91,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   private var _ctrl = DummyVC()
   private var _lockCtrl: UIViewController? = nil
   private var _spCtrl = SpaceController()
+  private var _serverLoginCtrl: UIViewController? = nil
   private var paywallWindow: UIWindow? = nil
 
   public func showingPaywall() -> Bool {
@@ -332,6 +333,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       window.rootViewController = spCtrl
     }
 
+    // Mac 与 iPhone 一样从配置服务器取配置（老板 2026-10-05 拍板弃用 iCloud）：
+    // 无会话就弹登录页，不再回落 iCloud。
+    if scene.session.role == .windowApplication {
+      if !ServerConfigSync.shared.hasSession {
+        _showServerLoginIfNeeded()
+      } else {
+        Task { try? await ServerConfigSync.shared.refresh() }
+      }
+    }
+
     guard let term = spCtrl.currentTerm() else {
       return
     }
@@ -419,6 +430,26 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     input?.reportStateReset()
+  }
+
+  private func _showServerLoginIfNeeded() {
+    guard _serverLoginCtrl == nil, _spCtrl.presentedViewController == nil else { return }
+    let controller = UIHostingController(rootView: ServerLoginView(
+      onSuccess: { [weak self] in
+        guard let self else { return }
+        self._serverLoginCtrl = nil
+        let replacement = SpaceController()
+        replacement.sceneRole = self._spCtrl.sceneRole
+        self._spCtrl = replacement
+        self.window?.rootViewController = replacement
+      },
+      onOffline: { [weak self] in
+        self?._serverLoginCtrl?.dismiss(animated: true)
+        self?._serverLoginCtrl = nil
+      }))
+    controller.modalPresentationStyle = .fullScreen
+    _serverLoginCtrl = controller
+    _spCtrl.present(controller, animated: true)
   }
 
   func stateRestorationActivity(for scene: UIScene) -> NSUserActivity? {

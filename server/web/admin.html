@@ -41,6 +41,12 @@
     .notice { color:#146c42; min-height:20px; font-size:13px; margin:10px 0 }
     dialog { border:0; border-radius:14px; padding:24px; width:min(650px,calc(100vw - 24px)); max-height:90vh; overflow:auto; box-shadow:0 15px 60px #17223b40 }
     dialog::backdrop { background:#0d1b37aa }
+    tr.group td { background:#f5f7fb; border-radius:8px; padding:8px 10px }
+    tr.group strong { font-size:13px }
+    label.check { display:flex; align-items:center; gap:8px; font-weight:600 }
+    label.check input { width:auto }
+    #project-employee-rows .row { margin-bottom:8px }
+    #project-employee-rows select { flex:1 1 180px; width:auto }
     details { border:1px solid #e0e5ee; border-radius:10px; margin:8px 0; padding:12px }
     summary { cursor:pointer; font-weight:600 }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f5f7fb; border-radius:8px; padding:14px; font-size:12px }
@@ -69,10 +75,37 @@
         <div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>连接方式</th><th>备注</th><th>操作</th></tr></thead><tbody id="machine-rows"></tbody></table></div>
       </section>
       <section class="card">
+        <div class="row between"><div><h2>项目</h2><p class="muted">全员共享。标签按员工+项目建会话，所以项目 ID 会成为会话名的一半。标为「公用」的项目，其名单里的每个员工×项目都会变成一条所有账号都看得见的全局标签——改这里就是改所有人的标签。</p></div><button id="add-project">添加项目</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>公用</th><th>有效员工</th><th>操作</th></tr></thead><tbody id="project-rows"></tbody></table></div>
+      </section>
+      <section class="card">
+        <div class="row between"><div><h2>员工</h2><p class="muted">全员共享。员工 ID 会成为会话名的另一半。</p></div><button id="add-employee">添加员工</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>机器</th><th>操作</th></tr></thead><tbody id="employee-rows"></tbody></table></div>
+      </section>
+      <section class="card">
+        <div class="row between"><div><h2>后台书签</h2><p class="muted">浏览器「后台」列表，全员共享。认证用户名/密码是可选的 HTTP Basic，留空表示这个网址不需要登录。</p></div><button id="add-pinned">添加书签</button></div>
+        <div class="table-wrap"><table><thead><tr><th>标题</th><th>网址</th><th>认证账号</th><th>操作</th></tr></thead><tbody id="pinned-rows"></tbody></table></div>
+      </section>
+      <section class="card">
         <div class="row between"><div><h2>账号</h2><p class="muted">管理员可开户、禁用、重置密码和授权机器写入。</p></div><button id="add-user">开户</button></div>
         <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>机器写入</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div>
       </section>
-      <section class="card"><h2>用户 tabs / 最近选择</h2><p class="muted">只读查看；用户在 App 中维护自己的布局。</p><div id="personal-list"></div></section>
+      <section class="card">
+        <h2>语音</h2><p class="muted">公共 AI 引擎配置和固定词表。API key 仅显示掩码；留空保存时保留原值。下方是各账号的个人纠正列表。</p>
+        <form id="voice-form"><div class="grid three">
+          <div><label for="voice-model">模型</label><input id="voice-model" required></div>
+          <div><label for="voice-base">Base URL</label><input id="voice-base" required></div>
+          <div><label for="voice-debounce">防抖秒数</label><input id="voice-debounce" type="number" min="0.1" step="0.1" required></div>
+        </div><label for="voice-key">新 API key（留空保留）</label><input id="voice-key" type="password" autocomplete="new-password" placeholder="当前值："><label for="voice-glossary">公共词表</label><textarea id="voice-glossary" rows="8" required></textarea><div class="row" style="justify-content:flex-end"><button type="submit">保存语音配置</button></div></form>
+        <div id="voice-accounts"></div>
+      </section>
+      <section class="card"><h2>账号标签</h2><p class="muted">每个账号自己的标签，独立保存；新增和关闭只影响该账号，会话名为 <code>员工-项目</code>（远端约定加 <code>cc-</code> 前缀）。上面那套全局公用标签不在这个列表里——它不落库到账号，是所有人登录时由服务端现算的。</p><div id="personal-list"></div></section>
+      <section class="card">
+        <h2>公用标签</h2>
+        <p class="muted">「公用」项目名单里的每个 员工×项目 就是一条全局标签。所有账号登录后默认都有这一套，不用逐个账号去建；改了项目名单，所有人下次同步就跟着变。未被标为「公用」的项目（如 main/blink）不在这里出现。</p>
+        <p id="public-summary" class="muted"></p>
+        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>机器</th><th>标签 ID</th></tr></thead><tbody id="public-rows"></tbody></table></div>
+      </section>
     </main>
   </div>
   <dialog id="machine-dialog"><form id="machine-form">
@@ -105,9 +138,54 @@
     <div id="user-error" class="error" role="alert"></div>
     <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="user-cancel">取消</button><button type="submit">创建账号</button></div>
   </form></dialog>
+  <dialog id="tab-dialog"><form id="tab-form">
+    <h2 id="tab-heading">新增标签</h2>
+    <label for="tab-employee">员工</label><select id="tab-employee" required></select>
+    <label for="tab-project">项目</label><select id="tab-project" required></select>
+    <label for="tab-machine">机器</label><select id="tab-machine" required></select>
+    <p class="muted" id="tab-session"></p>
+    <div id="tab-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="tab-cancel">取消</button><button type="submit">新增标签</button></div>
+  </form></dialog>
+  <dialog id="project-dialog"><form id="project-form">
+    <h2 id="project-heading">添加项目</h2>
+    <label for="project-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="project-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
+    <label for="project-name">名称</label><input id="project-name" required maxlength="100" autocomplete="off">
+    <label class="check"><input type="checkbox" id="project-public"> 公用项目（名单里每人一条全局标签，所有账号登录后都有）</label>
+    <div id="project-employees">
+      <p class="muted">有效员工名单：每个员工一台机器，用来生成 <code>员工-项目</code> 会话。</p>
+      <div id="project-employee-rows"></div>
+      <button type="button" class="secondary" id="project-employee-add">添加员工</button>
+    </div>
+    <div id="project-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="project-cancel">取消</button><button type="submit">保存</button></div>
+  </form></dialog>
+  <dialog id="directory-dialog"><form id="directory-form">
+    <h2 id="directory-heading">添加项目</h2>
+    <label for="dir-id">ID（小写字母、数字、<code>.</code><code>_</code><code>-</code>）</label><input id="dir-id" required maxlength="60" pattern="[a-z0-9][a-z0-9._-]{0,59}" autocomplete="off">
+    <label for="dir-name">名称</label><input id="dir-name" required maxlength="100" autocomplete="off">
+    <div id="directory-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="directory-cancel">取消</button><button type="submit">保存</button></div>
+  </form></dialog>
+  <dialog id="pinned-dialog"><form id="pinned-form">
+    <h2 id="pinned-heading">添加书签</h2>
+    <div class="grid">
+      <div><label for="p-id">ID</label><input id="p-id" required maxlength="100"></div>
+      <div><label for="p-position">排序</label><input id="p-position" type="number" min="0" value="0" required></div>
+      <div><label for="p-title">标题</label><input id="p-title" required></div>
+      <div><label for="p-url">网址</label><input id="p-url" required placeholder="https://example.com/admin"></div>
+      <div><label for="p-user">认证用户名</label><input id="p-user" autocomplete="off"></div>
+      <div><label for="p-password">认证密码</label><input id="p-password" type="password" autocomplete="off" placeholder="编辑时留空 = 清除认证"></div>
+    </div>
+    <div id="pinned-error" class="error" role="alert"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="secondary" id="pinned-cancel">取消</button><button type="submit">保存书签</button></div>
+  </form></dialog>
   <script>
     const $ = id => document.getElementById(id);
-    const state = { machines: [], users: [], personal: [], me: null, editing: null };
+    // 员工是全员共享目录，只有后台读写；管理员建标签时用它们拼会话名。
+    // 项目也是目录，但比员工多「公用」标记和有效员工名单，所以有自己的弹窗。
+    const DIRECTORY = { employees: { title: '员工', rows: 'employee-rows', add: 'add-employee' } };
+    const state = { machines: [], pinned: [], users: [], personal: [], employees: [], projects: [], publicTabs: [], employeeMachines: {}, me: null, editing: null, tabUser: null, directory: null, project: null, openAccounts: new Set(), pinnedEditing: null, voice: null };
     async function api(path, options = {}) {
       const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.method && options.method !== 'GET' ? { 'X-Blink-Admin': '1' } : {}), ...options.headers } });
       if (response.status === 401 && location.pathname !== '/admin/login') { location.assign('/admin/login'); throw new Error('登录已失效'); }
@@ -119,10 +197,132 @@
     const button = (label, action, className = 'secondary') => { const b = document.createElement('button'); b.type = 'button'; b.className = className; b.textContent = label; b.addEventListener('click', action); return b; };
     const notify = message => { $('notice').textContent = message; };
     async function load() {
-      const data = await api('/admin/api/state'); Object.assign(state, data);
+      const data = await api('/admin/api/state'); Object.assign(state, data); state.voice = await api('/admin/api/voice');
       $('identity').textContent = `${state.me.username} · 管理员`;
       $('add-machine').disabled = !state.me.canWrite;
-      renderMachines(); renderUsers(); renderPersonal();
+      $('add-pinned').disabled = !state.me.canWrite;
+      renderMachines(); renderPinned(); renderProjects(); renderDirectories(); renderUsers(); renderPersonal(); renderPublic(); renderVoice();
+    }
+    function renderVoice() { const c = state.voice.config; const v = c.voice; $('voice-model').value = v.model || ''; $('voice-base').value = v.baseURL || ''; $('voice-debounce').value = v.debounce || 1.5; $('voice-key').placeholder = v.apiKeyMasked ? `当前值：${v.apiKeyMasked}` : '尚未配置'; $('voice-glossary').value = c.userGlossary || ''; const wrap = $('voice-accounts'); wrap.replaceChildren(); for (const a of state.voice.accounts) { const d = document.createElement('details'); const s = document.createElement('summary'); s.textContent = `${a.username}（${a.userId}）`; d.append(s); const pre = document.createElement('pre'); pre.textContent = JSON.stringify(a.corrections || {}, null, 2); d.append(pre); wrap.append(d); } }
+    $('voice-form').addEventListener('submit', async event => { event.preventDefault(); try { await api('/admin/api/voice', { method:'PUT', body:json({ userGlossary:$('voice-glossary').value, voice:{ model:$('voice-model').value.trim(), baseURL:$('voice-base').value.trim(), debounce:Number($('voice-debounce').value), apiKey:$('voice-key').value } }) }); await load(); notify('语音配置已保存'); } catch (error) { notify(error.message); } });
+    // 查不到名字时退成可读的占位，别把 UUID 原样丢到页面上给人看。
+    const nameOf = (list, id, label = '未知') => list.find(item => item.id === id)?.name || (id ? `${label}（${String(id).slice(0, 8)}…）` : '');
+    // 员工的机器不在员工表里，而是从项目名单推导出来的（同一个员工挂在两个项目上
+    // 且机器不一致时，两个都显示——那是数据错了，不该被藏起来）。
+    function employeeMachine(id) {
+      const ids = state.employeeMachines?.[id] || [];
+      if (!ids.length) return '—';
+      const names = ids.map(machineId => nameOf(state.machines, machineId, '未知机器')).join(' / ');
+      return ids.length > 1 ? `${names}（项目名单不一致）` : names;
+    }
+    function renderDirectories() {
+      for (const [kind, meta] of Object.entries(DIRECTORY)) {
+        const rows = $(meta.rows); rows.replaceChildren();
+        for (const entry of state[kind]) {
+          const tr = document.createElement('tr'); td(tr, entry.id); td(tr, entry.name);
+          if (kind === 'employees') td(tr, employeeMachine(entry.id));
+          const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+          row.append(button('编辑', () => openDirectory(kind, entry)), button('删除', () => removeDirectory(kind, entry), 'danger'));
+          cell.append(row); rows.append(tr);
+        }
+        if (!state[kind].length) { const tr = document.createElement('tr'); td(tr, `还没有${meta.title}`); rows.append(tr); }
+      }
+    }
+    function renderProjects() {
+      const rows = $('project-rows'); rows.replaceChildren();
+      for (const entry of state.projects) {
+        const tr = document.createElement('tr');
+        td(tr, entry.id); td(tr, entry.name); td(tr, entry.public ? '公用' : '—');
+        const list = entry.public ? (entry.employees || []) : [];
+        td(tr, list.length ? list.map(e => `${e.id}@${nameOf(state.machines, e.machineId)}`).join('、') : '—');
+        const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        row.append(button('编辑', () => openProject(entry)), button('删除', () => removeProject(entry), 'danger'));
+        cell.append(row); rows.append(tr);
+      }
+      if (!state.projects.length) { const tr = document.createElement('tr'); td(tr, '还没有项目'); rows.append(tr); }
+    }
+    function openDirectory(kind, entry = null) {
+      state.directory = { kind, entry };
+      $('directory-form').reset(); $('directory-error').textContent = '';
+      $('directory-heading').textContent = `${entry ? '编辑' : '添加'}${DIRECTORY[kind].title}`;
+      $('dir-id').disabled = !!entry;
+      $('dir-id').value = entry?.id ?? ''; $('dir-name').value = entry?.name ?? '';
+      $('directory-dialog').showModal();
+    }
+    async function saveDirectory(event) {
+      event.preventDefault(); const { kind, entry } = state.directory;
+      const id = entry ? entry.id : $('dir-id').value.trim();
+      try { await api(`/admin/api/${kind}/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('dir-name').value.trim() }) }); $('directory-dialog').close(); await load(); notify('已保存'); }
+      catch (error) { $('directory-error').textContent = error.message; }
+    }
+    async function removeDirectory(kind, entry) {
+      if (!confirm(`确定删除${DIRECTORY[kind].title}「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
+      try { await api(`/admin/api/${kind}/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
+    }
+    // 一行 = 一个有效员工 + 它的机器。会话名由 员工-项目 推出来，不在这里填。
+    function employeeRow(employee = {}) {
+      const row = document.createElement('div'); row.className = 'row';
+      const who = document.createElement('select'); who.className = 'employee-pick';
+      for (const e of state.employees) who.add(new Option(`${e.name || e.id}（${e.id}）`, e.id));
+      if (employee.id) who.value = employee.id;
+      const machine = document.createElement('select'); machine.className = 'employee-machine';
+      for (const m of state.machines) machine.add(new Option(m.name || m.id, m.id));
+      if (employee.machineId) machine.value = employee.machineId;
+      row.append(who, machine, button('移除', () => row.remove(), 'danger'));
+      return row;
+    }
+    function openProject(entry = null) {
+      state.project = entry;
+      $('project-form').reset(); $('project-error').textContent = '';
+      $('project-heading').textContent = entry ? '编辑项目' : '添加项目';
+      $('project-id').disabled = !!entry;
+      $('project-id').value = entry?.id ?? ''; $('project-name').value = entry?.name ?? '';
+      $('project-public').checked = !!entry?.public;
+      const rows = $('project-employee-rows'); rows.replaceChildren();
+      for (const e of entry?.employees || []) rows.append(employeeRow(e));
+      renderProjectEmployeeFields();
+      $('project-dialog').showModal();
+    }
+    // 名单只有在勾了「公用」时才有意义，所以没勾就先收起来。
+    function renderProjectEmployeeFields() { $('project-employees').hidden = !$('project-public').checked; }
+    async function saveProject(event) {
+      event.preventDefault(); const entry = state.project;
+      const id = entry ? entry.id : $('project-id').value.trim();
+      const employees = [...$('project-employee-rows').children].map(row => ({ id: row.querySelector('.employee-pick').value, machineId: row.querySelector('.employee-machine').value }));
+      try {
+        await api(`/admin/api/projects/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('project-name').value.trim(), public:$('project-public').checked, employees }) });
+        $('project-dialog').close(); await load(); notify('已保存');
+      } catch (error) { $('project-error').textContent = error.message; }
+    }
+    async function removeProject(entry) {
+      if (!confirm(`确定删除项目「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
+      try { await api(`/admin/api/projects/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
+    }
+    // 全局一套：这里只读地列出所有账号登录后都会拿到的标签，没有按账号对账，也就
+    // 没有「缺失/补齐」这类操作——改项目名单就是改这套标签。
+    function renderPublic() {
+      const tabs = state.publicTabs || [];
+      const projects = new Set(tabs.map(tab => tab.projectId));
+      $('public-summary').textContent = tabs.length
+        ? `${projects.size} 个公用项目，共 ${tabs.length} 个全局标签，所有账号登录后都有这一套。`
+        : '还没有标为「公用」的项目。到上面的项目里勾选「公用项目」并填上有效员工名单。';
+      const rows = $('public-rows'); rows.replaceChildren();
+      let current = null;
+      for (const tab of tabs) {
+        // 每个项目前插一行表头，省得名字重复一整列。
+        if (tab.projectId !== current) {
+          current = tab.projectId;
+          const group = document.createElement('tr'); group.className = 'group';
+          const cell = td(group, ''); cell.colSpan = 5;
+          const title = document.createElement('strong'); title.textContent = tab.projectName === tab.projectId ? tab.projectId : `${tab.projectName}（${tab.projectId}）`;
+          cell.append(title); rows.append(group);
+        }
+        const tr = document.createElement('tr');
+        td(tr, tab.projectName); td(tr, nameOf(state.employees, tab.employeeId)); td(tr, tab.session);
+        td(tr, nameOf(state.machines, tab.machineId, '未知机器')); td(tr, tab.tabId);
+        rows.append(tr);
+      }
+      if (!tabs.length) { const tr = document.createElement('tr'); td(tr, '没有公用项目'); rows.append(tr); }
     }
     function renderMachines() {
       $('machine-rows').replaceChildren();
@@ -142,6 +342,7 @@
         row.append(button('重置密码', () => resetPassword(u)), button(u.isAdmin ? '取消管理员' : '设为管理员', () => changeUser(u, u.isAdmin ? { isAdmin:false, canWrite:false } : { isAdmin:true })));
         if (u.isAdmin) row.append(button(u.canWrite ? '收回可写' : '授予可写', () => changeUser(u, { canWrite: !u.canWrite })));
         row.append(button(u.disabled ? '启用' : '禁用', () => changeUser(u, { disabled: !u.disabled }), 'danger'));
+        row.append(button('删除账号', () => removeUser(u), 'danger'));
         cell.append(row); $('user-rows').append(tr);
       }
     }
@@ -149,9 +350,56 @@
       $('personal-list').replaceChildren();
       for (const u of state.users) {
         const p = state.personal.find(item => item.userId === u.id);
-        const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = `${u.username} · ${(p?.tabs?.tabs || []).length} 个 tab`; details.append(summary);
-        const pre = document.createElement('pre'); pre.textContent = JSON.stringify({ tabs: p?.tabs || { version: 1, tabs: [] }, recentSelection: p?.recentSelection || {} }, null, 2); details.append(pre); $('personal-list').append(details);
+        const tabs = Array.isArray(p?.tabs?.tabs) ? p.tabs.tabs : [];
+        const details = document.createElement('details'); details.open = state.openAccounts.has(u.id);
+        details.addEventListener('toggle', () => { if (details.open) state.openAccounts.add(u.id); else state.openAccounts.delete(u.id); });
+        const summary = document.createElement('summary'); summary.textContent = `${u.username} · ${tabs.length} 个标签`; details.append(summary);
+        const controls = document.createElement('div'); controls.className = 'row'; controls.style.margin = '12px 0';
+        controls.append(button('新增标签', () => openTab(u))); details.append(controls);
+        if (!tabs.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '这个账号还没有标签'; details.append(empty); }
+        else {
+          const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+          const table = document.createElement('table'); const head = document.createElement('thead'); head.innerHTML = '<tr><th>标签</th><th>员工</th><th>项目</th><th>机器</th><th>状态</th><th>操作</th></tr>'; table.append(head);
+          const body = document.createElement('tbody');
+          for (const [index, tab] of tabs.entries()) {
+            // 关联存在 tab_links 里，客户端整份回传 tabs 时不会把它冲掉；老标签没有关联。
+            const link = p?.links?.[tab.id];
+            const tr = document.createElement('tr'); td(tr, tab.tmuxSession || `标签 ${index + 1}`);
+            td(tr, link ? nameOf(state.employees, link.employeeId) : '—');
+            td(tr, link ? nameOf(state.projects, link.projectId) : '—');
+            // 机器目录里查不到就退成可读占位，别把 ID 原样丢出来；ID 也没有才写「空白」。
+            td(tr, nameOf(state.machines, tab.machineId, '未知机器') || '空白');
+            td(tr, tab.id === p?.tabs?.currentId ? '当前选择' : '');
+            const actions = td(tr, ''); actions.append(button('关闭', () => closeTab(u, tab), 'danger')); body.append(tr);
+          }
+          table.append(body); wrap.append(table); details.append(wrap);
+        }
+        $('personal-list').append(details);
       }
+    }
+    const fillSelect = (select, list) => { select.replaceChildren(...list.map(item => new Option(item.name || item.id, item.id))); };
+    function updateTabSession() {
+      const employee = $('tab-employee').value, project = $('tab-project').value;
+      $('tab-session').textContent = employee && project ? `会话名：${employee}-${project}（远端约定 cc-${employee}-${project}）` : '请选择员工和项目。';
+    }
+    function openTab(u) {
+      state.tabUser = u; $('tab-heading').textContent = `给「${u.username}」新增标签`; $('tab-error').textContent = '';
+      fillSelect($('tab-employee'), state.employees);
+      fillSelect($('tab-project'), state.projects);
+      fillSelect($('tab-machine'), state.machines);
+      updateTabSession();
+      $('tab-dialog').showModal();
+    }
+    async function createTab(event) {
+      event.preventDefault(); const u = state.tabUser;
+      const body = { machineId:$('tab-machine').value, employeeId:$('tab-employee').value, projectId:$('tab-project').value };
+      try { await api(`/admin/api/users/${u.id}/tabs`, { method:'POST', body:json(body) }); $('tab-dialog').close(); await load(); notify(`已给「${u.username}」新增标签`); }
+      catch (error) { $('tab-error').textContent = error.message; }
+    }
+    async function closeTab(u, tab) {
+      if (!confirm(`确定关闭「${u.username}」的这个标签？`)) return;
+      try { await api(`/admin/api/users/${u.id}/tabs/${encodeURIComponent(tab.id)}`, { method:'DELETE' }); await load(); notify(`已关闭「${u.username}」的标签`); }
+      catch (error) { notify(error.message); }
     }
     function openMachine(m = null) {
       state.editing = m; $('machine-form').reset(); $('machine-error').textContent = '';
@@ -174,6 +422,37 @@
       if (!confirm(`确定删除机器「${m.name || m.id}」？`)) return;
       try { await api('/admin/api/machines/' + encodeURIComponent(m.id), { method:'DELETE' }); await load(); notify('机器已删除'); } catch (error) { notify(error.message); }
     }
+    function renderPinned() {
+      $('pinned-rows').replaceChildren();
+      for (const p of state.pinned) {
+        const tr = document.createElement('tr'); td(tr, p.title); td(tr, p.url); td(tr, p.authUser || '不需要登录');
+        const cell = td(tr, ''); const row = document.createElement('div'); row.className = 'row';
+        if (state.me.canWrite) { row.append(button('编辑', () => openPinned(p)), button('删除', () => removePinned(p), 'danger')); }
+        cell.append(row); $('pinned-rows').append(tr);
+      }
+      if (!state.pinned.length) { const tr = document.createElement('tr'); td(tr, '还没有后台书签'); $('pinned-rows').append(tr); }
+    }
+    function openPinned(p = null) {
+      state.pinnedEditing = p; $('pinned-form').reset(); $('pinned-error').textContent = '';
+      $('pinned-heading').textContent = p ? '编辑书签' : '添加书签'; $('p-id').disabled = !!p;
+      for (const [id, key] of Object.entries({ 'p-id': 'id', 'p-position': 'position', 'p-title': 'title', 'p-url': 'url', 'p-user': 'authUser' })) $(id).value = p?.[key] ?? (key === 'position' ? '0' : '');
+      $('p-password').value = '';
+      $('pinned-dialog').showModal();
+    }
+    async function savePinned(event) {
+      event.preventDefault(); $('pinned-error').textContent = '';
+      const p = { ...(state.pinnedEditing || {}), id: $('p-id').value.trim(), title: $('p-title').value.trim(), url: $('p-url').value.trim(), position: Number($('p-position').value) };
+      const user = $('p-user').value.trim(), password = $('p-password').value;
+      if (user && password) { p.authUser = user; p.authPassword = password; }
+      else if (user || password) { $('pinned-error').textContent = '认证用户名和密码要么都填，要么都留空'; return; }
+      else { delete p.authUser; delete p.authPassword; }
+      try { await api('/admin/api/pinned/' + encodeURIComponent(p.id), { method:'PUT', body:json(p) }); $('pinned-dialog').close(); await load(); notify('书签已保存'); }
+      catch (error) { $('pinned-error').textContent = error.message; }
+    }
+    async function removePinned(p) {
+      if (!confirm(`确定删除书签「${p.title}」？`)) return;
+      try { await api('/admin/api/pinned/' + encodeURIComponent(p.id), { method:'DELETE' }); await load(); notify('书签已删除'); } catch (error) { notify(error.message); }
+    }
     async function createUser(event) {
       event.preventDefault(); const body = { username:$('u-name').value.trim(), password:$('u-password').value, isAdmin:$('u-admin').checked, canWrite:$('u-write').checked };
       try { await api('/admin/api/users', { method:'POST', body:json(body) }); $('user-dialog').close(); await load(); notify('账号已创建'); }
@@ -189,6 +468,11 @@
       if (password.length < 12) { notify('密码至少 12 位'); return; }
       await changeUser(u, { password });
     }
+    async function removeUser(u) {
+      if (!confirm(`确定删除「${u.username}」？这会连带清除该账号的会话、标签和纠正词，且无法恢复。`)) return;
+      try { await api('/admin/api/users/' + u.id, { method:'DELETE' }); await load(); notify(`账号「${u.username}」已删除`); }
+      catch (error) { notify(error.message); }
+    }
     $('login-form').addEventListener('submit', async event => {
       event.preventDefault(); $('login-error').textContent = '';
       try { await api('/admin/session', { method:'POST', body:json({ username:$('username').value.trim(), password:$('password').value }) }); location.assign('/admin'); }
@@ -196,7 +480,16 @@
     });
     $('logout').addEventListener('click', async () => { try { await api('/admin/session', { method:'DELETE' }); } finally { location.assign('/admin/login'); } });
     $('add-machine').addEventListener('click', () => openMachine()); $('machine-form').addEventListener('submit', saveMachine); $('machine-cancel').addEventListener('click', () => $('machine-dialog').close());
+    $('add-pinned').addEventListener('click', () => openPinned()); $('pinned-form').addEventListener('submit', savePinned); $('pinned-cancel').addEventListener('click', () => $('pinned-dialog').close());
     $('add-user').addEventListener('click', () => { $('user-form').reset(); $('user-error').textContent = ''; $('user-dialog').showModal(); }); $('user-form').addEventListener('submit', createUser); $('user-cancel').addEventListener('click', () => $('user-dialog').close());
+    $('tab-form').addEventListener('submit', createTab); $('tab-cancel').addEventListener('click', () => $('tab-dialog').close());
+    $('tab-employee').addEventListener('change', updateTabSession); $('tab-project').addEventListener('change', updateTabSession);
+    for (const [kind, meta] of Object.entries(DIRECTORY)) $(meta.add).addEventListener('click', () => openDirectory(kind));
+    $('directory-form').addEventListener('submit', saveDirectory); $('directory-cancel').addEventListener('click', () => $('directory-dialog').close());
+    $('add-project').addEventListener('click', () => openProject());
+    $('project-form').addEventListener('submit', saveProject); $('project-cancel').addEventListener('click', () => $('project-dialog').close());
+    $('project-public').addEventListener('change', renderProjectEmployeeFields);
+    $('project-employee-add').addEventListener('click', () => $('project-employee-rows').append(employeeRow()));
     $('u-write').addEventListener('change', () => { if ($('u-write').checked) $('u-admin').checked = true; });
     $('u-admin').addEventListener('change', () => { if (!$('u-admin').checked) $('u-write').checked = false; });
     if (location.pathname === '/admin/login') { $('login').hidden = false; } else { $('dashboard').hidden = false; load().catch(error => notify(error.message)); }

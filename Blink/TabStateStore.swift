@@ -24,10 +24,48 @@ struct TabState: Codable {
   }
 }
 
+/// 公用标签在 tab 集合里的排布规则：**公用恒在最前**（保持服务端顺序），自有在后。
+/// 纯函数，独立成类型是为了能直接对「服务端顺序 → 屏幕顺序」这一跳做单测。
+///
+/// 老板掉头后的口径（2026-10-06）：坞里铺的是**在岗**的公用标签，自有标签彻底退场。
+/// 「公用标签不进 TabState」这条红线现在由 `ServerSnapshotDecoder` 在解码边界保证
+///（摘出来单独返回，见 `SharedTabSnapshotTests` ①②）—— 以前还有一道
+/// `SharedTabLayout.ownOnly` 的落盘前过滤，随着 `_persistTabsToStore` 一起删了。
+enum SharedTabLayout {
+  /// 默认在岗的员工。老板口径：没在团队页切过开关时，坞=服务端 tom 的那几条；
+  /// 切过之后以 SharedRestStore 的在岗名单（服务端权威）为准，tom 也能被关掉。
+  static let dockEmployee = "tom"
+
+  static func ordered(shared: [UUID], own: [UUID]) -> [UUID] {
+    shared + own
+  }
+
+  /// 从 tmuxSession 里取员工：第一个 "-" 之前（`tom-ben` → `tom`）。
+  /// 员工**不结构化** —— 服务端下发的标签只有 `tmuxSession` 的「员工-项目」前缀
+  ///（server/admin_tabs.go 就是这么造的），`GET /v1/config` 里没有 employeeId 字段。
+  /// 服务端允许 employeeId 自带 "-"，那种情况这里会截短（`tom-x-ben` → `tom`）；
+  /// 要精确得服务端给每条注入的标签补一个结构化 employeeId。
+  static func employee(ofTmuxSession session: String?) -> String? {
+    guard let session, !session.isEmpty else { return nil }
+    let head = session.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
+    guard let head, !head.isEmpty else { return nil }
+    return head.lowercased()
+  }
+
+  /// 这条公用标签该不该上坞：在岗名单（`SharedRestStore`，服务端权威）说了算。
+  /// 默认规则（从未切过开关）= `dockEmployee`（tom）前缀；团队页把别人开进来、
+  /// 把 tom 关掉，坞跟着变。**这里不能再写死 tom** —— 那会让休息中的 tom 标签
+  /// 仍然挂在坞里（2026-10-06 老板实测踩过）。
+  static func isDockTab(tmuxSession: String?) -> Bool {
+    guard let session = tmuxSession, !session.isEmpty else { return false }
+    return SharedRestStore.shared.isActive(session)
+  }
+}
+
 final class TabStateStore {
   static let shared = TabStateStore()
 
-  /// 镜像到 UserDefaults 的 key（CloudConfigSync 会把它同步到 iCloud，实现 tab 跨设备）。
+  /// 镜像到 UserDefaults 的 key（ServerConfigSync 据此与配置服务器同步 tab，跨设备）。
   static let kSyncKey = "TabStateStore.syncState"
 
   private let fileURL: URL = {
@@ -73,6 +111,15 @@ final class TabStateStore {
       state.updatedAt = Date().timeIntervalSince1970
     }
     scheduleSave()
+    ServerConfigSync.shared.schedulePersonalUpload()
+  }
+
+  func replaceFromServer(_ incoming: TabState) {
+    pendingWork?.cancel()
+    pendingWork = nil
+    dirty = false
+    state = incoming
+    ioQueue.sync { self.write(incoming) }
   }
 
   /// 记录被关闭的 tab（本机关，或采纳别处的关闭）：加入墓碑集合并从 tabs 移除。
@@ -132,7 +179,7 @@ final class TabStateStore {
     tabs.contains { $0.machineId != nil || $0.workDirId != nil || $0.tmuxSession != nil }
   }
 
-  /// 把有真实 tab 的状态镜像到 UserDefaults（CloudConfigSync 会推到 iCloud）。
+  /// 把有真实 tab 的状态镜像到 UserDefaults（ServerConfigSync 上传时读它推到配置服务器）。
   /// 空列表、或只有空白默认 shell，都不镜像 —— 绝不覆盖云端别设备的真实列表。
   private func mirrorToSync(_ snap: TabState) {
     guard hasRealTab(snap.tabs) else { return }

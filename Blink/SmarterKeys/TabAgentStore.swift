@@ -6,9 +6,9 @@
 //  key 用 "<machineId>|<title>"，title 就是 BlinkMachineStore.ccTitle 算出来的 cc-<TITLE>
 //  里那截（也是 tmux 外层 session 名去掉 cc- 前缀），三端一致。
 //
-//  存 UserDefaults + 进 CloudConfigSync 白名单，同步文件里的 key 叫 "agents"，
+//  存 UserDefaults + 随配置服务器快照同步（同步文件里的 key 叫 "agents"），
 //  所以 iOS / macOS / 鸿蒙看到的是同一份配置。默认 claude，选回 claude 就把键删掉
-//  （字典只存"非默认"的那几个，省 iCloud KV 配额）。
+//  （字典只存"非默认"的那几个）。
 //
 
 import Foundation
@@ -152,8 +152,9 @@ enum AgentKind: Int, CaseIterable {
     }
     run += "se echo \"[blink] 没有 \(bins.joined(separator: "/"))：\(installHint)\"; "
     run += "fi; "   // elif 串起来的整条只收一个 fi
-    // envPrefix 放在 cd 前面：它以 `&& ` 收尾，没配 key 时整条短路，不会往下把 TUI 起起来
-    return envPrefix + "cd \(cdTarget) && { \(path)\(miss)\(fullAccessNudge)\(run)}"
+    // envPrefix 放在 cd 前面：它以 `&& ` 收尾，没配 key 时整条短路，不会往下把 TUI 起起来。
+    // cd 带引号：cdTarget 可能是 $(…) 兜底表达式，目录带空格时不加引号会被拆碎
+    return envPrefix + "cd \"\(cdTarget)\" && { \(path)\(miss)\(fullAccessNudge)\(run)}"
   }
 
   /// UI 图标（禁 emoji，统一 SF Symbols）
@@ -212,6 +213,7 @@ final class TabAgentStore: NSObject {
     if kind == .claude { m.removeValue(forKey: k) } else { m[k] = kind.id }
     d.set(m, forKey: Self.key)
     NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    ServerConfigSync.shared.schedulePersonalUpload()
   }
 
   /// 同步文件/KV 拉回来的整份字典（CloudConfigSync 用）
