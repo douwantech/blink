@@ -291,28 +291,13 @@ struct TerminalContainer: NSViewRepresentable {
             nsView.addSubview(tv)
             DispatchQueue.main.async { nsView.window?.makeFirstResponder(tv) }
         }
-        // 切 tab / 首次换入：布局 settle 后强制把终端尺寸对齐容器。终端 view 在别的 tab
-        // 显示时被移出层级、期间窗口变过尺寸，切回来 frame/行列会是旧的（表现为内容只占
-        // 上半截、残留旧状态栏）——这里对齐一次并逼后端(tmux)按当前尺寸重绘。
+        // 换入时 frame 已按容器实际尺寸设置；SwiftTerm 会在尺寸真正变化时通知后端。
+        // 旧的 refit 人为缩小一行再放回，导致每次点标签都触发两次 tmux resize 和重绘。
+        // 直接把保留的终端视口定位到最新内容，避免停在离线期间的历史行。
         if swapped || context.coordinator.lastSessionID != session.id {
             context.coordinator.lastSessionID = session.id
-            DispatchQueue.main.async { Self.refit(tv, in: nsView) }
-        }
-    }
-
-    /// 把终端 frame 对齐容器；若已相等，抖动一整行高度再复原，逼 SwiftTerm 重算行列并
-    /// 通过 sizeChanged 把新尺寸发给后端（本地 PTY / blinkd / ssh 上的 tmux），触发重绘。
-    private static func refit(_ tv: NSView, in nsView: NSView) {
-        let b = nsView.bounds
-        guard b.width > 1, b.height > 20 else { return }
-        if tv.frame.equalTo(b) {
-            // 同一 runloop 内先缩一行再复原：SwiftTerm 的 setFrameSize→processSizeChange 是同步的，
-            // 两次都会触发行列重算(→ sizeChanged 通知后端重绘)，但中间那帧不跨 runloop、不会被画出来，
-            // 避免切 tab 时的抖动（旧版用 DispatchQueue.main.async 复原，中间帧被绘制 → 抖）。
-            tv.setFrameSize(NSSize(width: b.width, height: b.height - 20))
-            tv.frame = b
-        } else {
-            tv.frame = b
+            tv.scroll(toPosition: 1)
+            tv.needsDisplay = true
         }
     }
 }
