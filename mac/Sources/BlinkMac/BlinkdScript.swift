@@ -18,6 +18,46 @@ enum BlinkdScript {
         "\(bootPath); tmux list-sessions -F '#{session_name}\t#{session_created}' 2>/dev/null"
     }
 
+    /// 切换到已有标签时查询 pane 的真实目录；UI 缓存终端视图，不会重新执行启动脚本。
+    static func directoryStatus(session: String, workDir: String, agent: AgentKind) -> String {
+        let name = "'" + session.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let dir = "'" + workDir.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let title = session.hasPrefix("cc-") ? String(session.dropFirst(3)) : session
+        let quotedTitle = "'" + title.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let codewhaleWorkspace = #"""
+import json, pathlib, sys
+name = sys.argv[1]
+found = []
+for root in (pathlib.Path.home() / '.codewhale/sessions', pathlib.Path.home() / '.deepseek/sessions'):
+    for file in root.glob('*.json'):
+        try:
+            with file.open() as stream: head = stream.read(131072)
+            start = head.index('"metadata"') + len('"metadata"')
+            start = head.index(':', start) + 1
+            meta, _ = json.JSONDecoder().raw_decode(head[start:].lstrip())
+            if meta.get('title') == name:
+                found.append((file.stat().st_mtime, meta.get('workspace') or ''))
+        except (OSError, ValueError, TypeError): pass
+if found: print(max(found)[1])
+"""#
+        let encoded = Data(codewhaleWorkspace.utf8).base64EncodedString()
+        let agentCheck = agent == .deepseek
+            ? "CW=$(printf %s '\(encoded)' | base64 -d | python3 - \(quotedTitle) 2>/dev/null); if [ -n \"$CW\" ] && [ \"$CW\" != \"$D\" ]; then echo BLINK_DIR_MISMATCH; else echo BLINK_DIR_OK; fi"
+            : "echo BLINK_DIR_OK"
+        return """
+        \(bootPath)
+        D=$(cd \(dir) 2>/dev/null && pwd -P)
+        if [ -z "$D" ]; then
+          echo BLINK_DIR_MISSING
+        elif ! tmux has-session -t \(name) 2>/dev/null; then
+          echo BLINK_DIR_NO_SESSION
+        else
+          P=$(tmux display-message -p -t \(name) '#{pane_current_path}' 2>/dev/null)
+          if [ "$P" != "$D" ]; then echo BLINK_DIR_MISMATCH; else \(agentCheck); fi
+        fi
+        """
+    }
+
     /// 与 iOS 的 resetPane 一致：重启当前 pane，保留 tmux 会话和工作目录。
     static func resetPane(_ session: String) -> String {
         let quoted = "'" + session.replacingOccurrences(of: "'", with: "'\\''") + "'"

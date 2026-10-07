@@ -168,7 +168,7 @@ for root in (home / '.deepseek/sessions', home / '.codewhale/sessions'):
             if str(uuid.UUID(meta['id'])) != sid: continue
             title, mtime = meta.get('title') or '', file.stat().st_mtime
             if os.path.realpath(meta['workspace']) != cwd:
-                if title == name: named_elsewhere.append((sid, mtime))
+                if title == name: named_elsewhere.append((sid, mtime, file))
                 continue
             sessions[sid] = (title, mtime)
         except (OSError, KeyError, ValueError, TypeError): pass
@@ -176,7 +176,19 @@ named = [(sid, mtime) for sid, (title, mtime) in sessions.items() if title == na
 if named:
     print('N:' + max(named, key=lambda item: item[1])[0])
 elif named_elsewhere:
-    print('N:' + max(named_elsewhere, key=lambda item: item[1])[0])
+    sid, _, file = max(named_elsewhere, key=lambda item: item[1])
+    # Codewhale 恢复时会采用会话记录里的 workspace，-C 本身不能覆盖它。
+    # 在旧进程退出后迁移这一个按标签名匹配的记录，再恢复原会话。
+    try:
+        data = json.loads(file.read_text())
+        data['metadata']['workspace'] = cwd
+        temp = file.with_name(file.name + '.blink-workdir-tmp')
+        temp.write_text(json.dumps(data, ensure_ascii=False))
+        os.chmod(temp, 0o600)
+        os.replace(temp, file)
+        print('N:' + sid)
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
 elif len(sessions) == 1:
     # 只接回尚未命名的唯一旧会话，避免多个 Blink 标签共用一个已命名会话。
     sid = next(iter(sessions))

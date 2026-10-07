@@ -62,6 +62,7 @@ final class AppState: ObservableObject {
     @Published var transportBySession: [String: String] = [:]
 
     private var toastTask: Task<Void, Never>?
+    private var directoryCheckSerial = 0
     private let localBlinkdConfig: (host: String, port: UInt16, token: String)?
     private let initialMachine: Machine
 
@@ -712,11 +713,40 @@ final class AppState: ObservableObject {
     }
 
     func selectSession(_ id: String) {
+        directoryCheckSerial &+= 1
+        let checkSerial = directoryCheckSerial
         activeSessionID = id
         // 选了哪台机器的会话，activeMachine 就跟到那台（终端连接用 activeMachine.transport）。
         if let s = sessions.first(where: { $0.id == id }) {
             activeMachineID = s.machineID
             lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab（并落盘）
+            // 已缓存的终端不会再次执行 tmux 启动脚本。每次点击都查询服务器上
+            // 这个 pane 的真实目录，只有配置目录与实际目录不同时才重新连接。
+            if s.dir.hasPrefix("/"), let m = machines.first(where: { $0.id == s.machineID }) {
+                Task { @MainActor in
+                    let status = await AppState.exec(
+                        m.transport, BlinkdScript.directoryStatus(
+                            session: s.tmuxName ?? "cc-\(s.name)", workDir: s.dir,
+                            agent: self.agent(for: s)),
+                        timeout: 8, marker: nil, fallback: m.sshFallback)
+                    guard self.activeSessionID == id,
+                          self.directoryCheckSerial == checkSerial else { return }
+                    if status.contains("BLINK_DIR_MISMATCH") {
+                        let reset = await AppState.exec(
+                            m.transport, BlinkdScript.resetPane(s.tmuxName ?? "cc-\(s.name)"),
+                            timeout: 12, marker: nil, fallback: m.sshFallback)
+                        guard self.activeSessionID == id,
+                              self.directoryCheckSerial == checkSerial else { return }
+                        if reset.contains("BLINK_RESET_FAILED") {
+                            self.showToast("\(s.name) 重进工作目录失败")
+                            return
+                        }
+                        self.term.restart(id)
+                    } else if status.contains("BLINK_DIR_MISSING") {
+                        self.showToast("\(s.name) 的工作目录不存在：\(s.dir)")
+                    }
+                }
+            }
         }
         mode = .terminal
     }
