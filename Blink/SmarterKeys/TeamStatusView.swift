@@ -366,9 +366,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private var pendingMachines: Set<String> = []
   private var probeMachinesTotal = 0
   private var probeReachedCount = 0
-  /// 每台机器本轮探测结果：nil = 还在探测中，true = 成功，false = 失败。
-  /// 失败 = 这台机器的会话数无从得知，界面上显示「探测失败」，绝不把它当 0。
-  private var probeOK: [String: Bool] = [:]
 
   private func probe() {
     let machineIds = Array(Set(tabs.map(\.machineId)))
@@ -380,52 +377,35 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     pendingMachines = Set(machines.map(\.id))
     probeMachinesTotal = machines.count
     probeReachedCount = 0
-    probeOK.removeAll()
     subtitleLabel.text = "正在读取 \(machines.count) 台机器…"
-    for m in machines { probeMachine(m, gen: gen) }
-  }
+    for m in machines {
+      Task { [weak self] in
 
-  /// 单台机器探测（整页刷新与「点失败机器重试」共用同一条路径）。
-  private func probeMachine(_ m: BlinkMachine, gen: Int) {
-    Task { [weak self] in
-      var roles: [String: String] = [:]
-      var failure: String?
-      do {
-        let out = try await Self.withTimeout(20) {
-          try await Self.exec(script: Self.probeScript, machine: m)
-        }
-        Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
-        for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-          let parts = String(raw).split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-          if parts.count >= 2 {
-            let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
-            if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
+        var roles: [String: String] = [:]
+        var failure: String?
+        do {
+          let out = try await Self.withTimeout(20) {
+            try await Self.exec(script: Self.probeScript, machine: m)
           }
+          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) OK, \(out.count) bytes")
+          for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            // | **tom** | CTO |
+            let parts = String(raw).split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count >= 2 {
+              let name = parts[0].replacingOccurrences(of: "*", with: "").lowercased()
+              if !name.isEmpty && name != "员工" { roles[name] = parts[1] }
+            }
+          }
+        } catch {
+          failure = error.localizedDescription
+          Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
         }
-      } catch {
-        failure = error.localizedDescription
-        Self.log("probe \(m.displayName)(\(m.blinkdConfig != nil ? "blinkd" : "ssh")) 失败: \(error)")
-      }
-      let r = roles, f = failure
-      await MainActor.run { [weak self] in
-        self?.applyMachine(machineId: m.id, roles: r, failure: f, gen: gen)
+        let r = roles, f = failure
+        await MainActor.run { [weak self] in
+          self?.applyMachine(machineId: m.id, roles: r, failure: f, gen: gen)
+        }
       }
     }
-  }
-
-  /// 只重探一台（点「探测失败」那台触发）：自己一轮 generation，20s 硬超时照旧。
-  private func reprobe(machineId: String) {
-    guard let m = BlinkMachineStore.shared.machines.first(where: { $0.id == machineId }) else { return }
-    probeGeneration += 1
-    let gen = probeGeneration
-    pendingMachines = [machineId]
-    // 不动 probeMachinesTotal / probeReachedCount：那是「上一次整轮」的口径，
-    // 单机重试只是把这一台重新挂起，副标题继续按整轮报 R/N。
-    probeOK[machineId] = nil            // 回到「读取中」
-    subtitleLabel.text = "正在重试 \(m.displayName)…"
-    tableView.refreshControl?.beginRefreshing()
-    tableView.reloadData()
-    probeMachine(m, gen: gen)
   }
 
   /// 单个 op 的硬超时；超时后原任务可能还在后台跑完（execRemote 不可取消），结果直接丢弃
@@ -448,7 +428,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
   private func applyMachine(machineId: String, roles: [String: String], failure: String?, gen: Int) {
     guard gen == probeGeneration else { return }   // 旧一轮的迟到结果直接丢
     pendingMachines.remove(machineId)
-    probeOK[machineId] = (failure == nil)
     if failure == nil { probeReachedCount += 1 }
     if !roles.isEmpty { roleMap.merge(roles) { _, new in new } }
     for gi in groups.indices where groups[gi].role == nil {
@@ -655,30 +634,10 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
                            title: s.project, hint: hint)
     case .machine:
       let s = machineSections[section]
-      let mid = s.items.first?.group.machineId ?? ""
-      let failed = probeOK[mid] == false
-      let retrying = !failed && pendingMachines.contains(mid)
       let restCount = s.items.filter { $0.row.resting }.count
-      // 探测失败 = 会话数无从得知：整段不渲染数字，只说「探测失败」（hint 本就是灰字），点一下重试。
-      // 正在重试这一台时也别退回显示数字 —— 上一次是失败，这次结果还没回来。
-      let hint: String
-      if failed {
-        hint = "探测失败 · 点这里重试"
-      } else if retrying {
-        hint = "正在重试…"
-      } else if restCount > 0 {
-        hint = "\(s.items.count) 个 tab · \(restCount) 休息"
-      } else {
-        hint = "\(s.items.count) 个 tab"
-      }
-      let header = SectionHeader(symbol: "desktopcomputer",
-                                 color: failed ? sub : UIColor.white.withAlphaComponent(0.75),
-                                 title: s.machine, hint: hint)
-      if failed {
-        header.isUserInteractionEnabled = true
-        header.onTap = { [weak self] in self?.reprobe(machineId: mid) }
-      }
-      return header
+      let hint = restCount > 0 ? "\(s.items.count) 个 tab · \(restCount) 休息" : "\(s.items.count) 个 tab"
+      return SectionHeader(symbol: "desktopcomputer", color: UIColor.white.withAlphaComponent(0.75),
+                           title: s.machine, hint: hint)
     }
   }
 
@@ -695,9 +654,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     case .employee:
       let g = employeeSections[indexPath.section].items[indexPath.row]
       let cell = tv.dequeueReusableCell(withIdentifier: "emp", for: indexPath) as! EmployeeCardCell
-      cell.configure(group: g, machineId: g.machineId, probeFailed: probeOK[g.machineId] == false,
-                     panel: panel, panel2: panel2, sub: sub)
-      cell.onRetryProbe = { [weak self] mid in self?.reprobe(machineId: mid) }
+      cell.configure(group: g, panel: panel, panel2: panel2, sub: sub)
       cell.onRowTap = nil   // 点击跳 tab 已去掉（cell 复用，必须显式清掉旧闭包）
       cell.onRowToggle = { [weak self] key, toRest in self?.toggleRest(tabKey: key, toRest: toRest) }
       cell.onRowAgent = { [weak self] key, anchor in self?.pickAgent(tabKey: key, anchor: anchor) }
@@ -767,11 +724,8 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
   /// 分段头：图标 + 标题 + 灰色提示
   final class SectionHeader: UIView {
-    /// 点整行（只挂在「探测失败」的机器行上，用来重试这台）
-    var onTap: (() -> Void)?
     init(symbol: String, color: UIColor, title: String, hint: String) {
       super.init(frame: .zero)
-      addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
       let icon = UIImageView(image: UIImage(systemName: symbol,
         withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)))
       icon.tintColor = color
@@ -796,7 +750,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       ])
     }
     required init?(coder: NSCoder) { fatalError() }
-    @objc private func tapped() { onTap?() }
   }
 
   /// 状态胶囊按钮：显示状态 + 点击切休息/在岗
@@ -854,9 +807,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
     var onRowTap: ((UUID) -> Void)?
     var onRowToggle: ((UUID, Bool) -> Void)?     // (tabKey, 切到休息?) 行尾月亮开关
     var onRowAgent: ((UUID, UIView) -> Void)?    // 行尾齿轮：这个员工进 claude / codex / deepseek
-    var onRetryProbe: ((String) -> Void)?        // 点探测失败的机器行 → 重试这台
-    private var machineIdForRetry = ""
-    private var probeFailed = false
     private var rowInfoByTag: [Int: (key: UUID, resting: Bool)] = [:]
     private let card = UIView()
     private let avatarView = UIImageView()
@@ -890,8 +840,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       roleChip.clipsToBounds = true
       machineLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
       machineLabel.textColor = UIColor(red: 0.545, green: 0.584, blue: 0.647, alpha: 1)
-      machineLabel.isUserInteractionEnabled = true
-      machineLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(machineLabelTapped)))
       // 胶囊改纯状态显示;切换粒度在每一行的月亮开关上,不再整人总切
       pill.isUserInteractionEnabled = false
       // 胶囊尺寸只由内容决定;不设的话 row1 分配余量时会把胶囊拉宽(有角色标签的卡尤其明显)
@@ -941,12 +889,6 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
 
     @objc private func pillTapped() { onPillTap?() }
 
-    /// 点机器那一行：只有探测失败时才有反应（重试这台机器）
-    @objc private func machineLabelTapped() {
-      guard probeFailed else { return }
-      onRetryProbe?(machineIdForRetry)
-    }
-
     @objc private func rowTapped(_ gr: UITapGestureRecognizer) {
       guard let v = gr.view, let info = rowInfoByTag[v.tag], !info.resting else { return }   // 休息行原地吞掉
       onRowTap?(info.key)
@@ -962,10 +904,7 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       onRowAgent?(info.key, b)
     }
 
-    fileprivate func configure(group g: Group, machineId: String, probeFailed: Bool,
-                               panel: UIColor, panel2: UIColor, sub: UIColor) {
-      machineIdForRetry = machineId
-      self.probeFailed = probeFailed
+    fileprivate func configure(group g: Group, panel: UIColor, panel2: UIColor, sub: UIColor) {
       card.backgroundColor = panel
       let st = g.status
       card.alpha = st == .rest ? 0.55 : 1
@@ -990,14 +929,9 @@ final class TeamStatusViewController: UIViewController, UITableViewDataSource, U
       roleChip.text = g.role
       roleChip.isHidden = (g.role ?? "").isEmpty
       let restCount = g.rows.filter(\.resting).count
-      // 机器探测失败：会话数无从得知，显示灰色「探测失败」而不是把它当 0（点一下重试这台）
-      if probeFailed {
-        machineLabel.text = "探测失败 · 点这里重试"
-      } else {
-        machineLabel.text = restCount > 0 && restCount < g.rows.count
-          ? "\(g.rows.count - restCount) 在岗 · \(restCount) 休息"
-          : "\(g.rows.count) 个会话"
-      }
+      machineLabel.text = restCount > 0 && restCount < g.rows.count
+        ? "\(g.rows.count - restCount) 在岗 · \(restCount) 休息"
+        : "\(g.rows.count) 个会话"
       pill.isHidden = true   // 等你/干活中/空闲 探测不准，不显示
 
       projStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
