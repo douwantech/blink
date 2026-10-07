@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -112,5 +114,111 @@ func TestAdminPageCSPAllowsSelfImages(t *testing.T) {
 	serveAdminPage(w)
 	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self'") {
 		t.Fatalf("CSP lacks img-src 'self': %q", csp)
+	}
+}
+
+func employeeAvatarPut(t *testing.T, id string, body []byte) (*httptest.ResponseRecorder, *http.Request) {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPut, "/v1/employees/"+id+"/avatar", bytes.NewReader(body))
+	r.SetPathValue("id", id)
+	r.Header.Set("Content-Type", "image/png")
+	return httptest.NewRecorder(), r
+}
+
+func TestV1PutEmployeeAvatarStoresPNGForCanWriteAccount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	png := []byte("\x89PNG\r\n\x1a\navatar")
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT data FROM employees WHERE id").WithArgs("jack").WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{"id":"jack","name":"Jack"}`)))
+	mock.ExpectExec("UPDATE employees SET data=").WithArgs(sqlmock.AnyArg(), "jack").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO employee_avatars").WithArgs("jack", png, "image/png").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	w, r := employeeAvatarPut(t, "jack", png)
+	(&app{db: db}).putEmployeeAvatarV1(w, r, user{ID: 1, Admin: true, CanWrite: true})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A signed-in admin without canWrite must be refused, and refused before the
+// body is read, so no database work happens for an unauthorized caller.
+func TestV1PutEmployeeAvatarForbidsReadOnlyAccount(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\navatar")
+	for _, u := range []user{{ID: 1, Admin: true, CanWrite: false}, {ID: 1, Admin: false, CanWrite: false}} {
+		w, r := employeeAvatarPut(t, "jack", png)
+		(&app{}).putEmployeeAvatarV1(w, r, u)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("user=%+v status=%d, want 403", u, w.Code)
+		}
+	}
+}
+
+func TestV1PutEmployeeAvatarRejectsNonPNG(t *testing.T) {
+	w, r := employeeAvatarPut(t, "jack", []byte("not an image"))
+	(&app{}).putEmployeeAvatarV1(w, r, user{ID: 1, Admin: true, CanWrite: true})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestV1PutEmployeeAvatarUnknownEmployeeIs404(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	png := []byte("\x89PNG\r\n\x1a\navatar")
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT data FROM employees WHERE id").WithArgs("ghost").WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+	w, r := employeeAvatarPut(t, "ghost", png)
+	(&app{db: db}).putEmployeeAvatarV1(w, r, user{ID: 1, Admin: true, CanWrite: true})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Route-level check: PUT /v1/employees/{id}/avatar must exist (a missing route
+// would answer 405, not 403) and a Bearer session without canWrite must get 403
+// — the same path the simtest account exercises against prod.
+func TestV1PutEmployeeAvatarRouteForbidsReadOnlyBearer(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	token := make([]byte, 32)
+	digest := sha256.Sum256(token)
+	mock.ExpectQuery("SELECT u.id,u.username,u.is_admin").WithArgs(digest[:]).WillReturnRows(sqlmock.NewRows([]string{"id", "username", "is_admin", "can_write", "disabled"}).AddRow(2, "quan", true, false, false))
+	r := httptest.NewRequest(http.MethodPut, "/v1/employees/jack/avatar", bytes.NewReader([]byte("\x89PNG\r\n\x1a\navatar")))
+	r.Header.Set("Authorization", "Bearer "+hex.EncodeToString(token))
+	r.Header.Set("Content-Type", "image/png")
+	w := httptest.NewRecorder()
+	(&app{db: db}).routes().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestV1PutEmployeeAvatarRouteRejectsAnonymous(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/v1/employees/jack/avatar", bytes.NewReader([]byte("\x89PNG\r\n\x1a\navatar")))
+	r.Header.Set("Content-Type", "image/png")
+	(&app{}).routes().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", w.Code)
 	}
 }
