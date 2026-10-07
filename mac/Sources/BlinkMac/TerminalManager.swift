@@ -54,10 +54,12 @@ private func expandDir(_ dir: String) -> String {
 final class LocalBackend: TerminalBackend {
     private let ptv: LocalProcessTerminalView
     private let dir: String
+    private let script: String
     var view: TerminalView { ptv }
 
-    init(dir: String) {
+    init(dir: String, script: String) {
         self.dir = dir
+        self.script = script
         ptv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500),
                                        font: makeFont(), options: TerminalOptions.default)
         applyTheme(ptv)
@@ -69,7 +71,7 @@ final class LocalBackend: TerminalBackend {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         let envArr = env.map { "\($0.key)=\($0.value)" }
-        ptv.startProcess(executable: shell, args: ["-l"], environment: envArr,
+        ptv.startProcess(executable: shell, args: ["-lic", script], environment: envArr,
                          execName: nil, currentDirectory: expandDir(dir))
     }
 
@@ -200,12 +202,17 @@ final class TerminalManager {
         let b: TerminalBackend
         switch machine.transport {
         case .local:
-            b = LocalBackend(dir: session.dir)   // 本机 shell，贴图走原生（claude 读本机剪贴板）
+            let script = BlinkdScript.tmuxClaude(
+                title: session.name, workDir: expandDir(session.dir),
+                agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
+            b = LocalBackend(dir: session.dir, script: script)
         case .blinkd(let h, let p, let t):
             // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
             // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
+            let workDir = machine.isLocalMac ? expandDir(session.dir)
+                : ((session.dir.isEmpty || session.dir == "~") ? "." : session.dir)
             let exec = BlinkdScript.tmuxClaude(
-                title: session.name, workDir: expandDir(session.dir),
+                title: session.name, workDir: workDir,
                 agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
             // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
             b = RemoteBackend(host: h, port: p, token: t, exec: exec,

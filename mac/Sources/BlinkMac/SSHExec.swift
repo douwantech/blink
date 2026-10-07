@@ -40,3 +40,31 @@ enum SSHExec {
         }
     }
 }
+
+/// 本机 fallback 会话也执行与 iOS 相同的 tmux pane 重启脚本。
+enum LocalExec {
+    static func run(command: String, timeout: TimeInterval = 8) async -> String {
+        await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = ["-c", command]
+            let outPipe = Pipe()
+            p.standardOutput = outPipe
+            p.standardError = Pipe()
+            let lock = NSLock()
+            var finished = false
+            func finish(_ s: String) {
+                lock.lock(); let already = finished; finished = true; lock.unlock()
+                if !already { cont.resume(returning: s) }
+            }
+            p.terminationHandler = { _ in
+                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                finish(String(decoding: data, as: UTF8.self))
+            }
+            do { try p.run() } catch { finish(""); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                if p.isRunning { p.terminate() }
+            }
+        }
+    }
+}

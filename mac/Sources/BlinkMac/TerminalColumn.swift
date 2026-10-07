@@ -100,7 +100,7 @@ struct TerminalColumn: View {
             Theme.bg.opacity(0.72)
             VStack(spacing: 14) {
                 ProgressView().controlSize(.large).tint(Theme.work)
-                Text("重连中 · tmux new-session -A · claude --resume")
+                Text("重连中 · tmux new-session -A · 恢复对应会话")
                     .font(Theme.mono(13)).foregroundColor(Theme.sub)
             }
         }
@@ -112,10 +112,24 @@ struct TerminalColumn: View {
         HStack(spacing: 7) {
             PillButton(label: "刷新重连", system: "arrow.clockwise", tint: Theme.work, bg: Theme.work.opacity(0.12)) { state.reconnect() }
             PillButton(label: "休息", system: "moon", tint: Theme.rest, bg: Theme.rest.opacity(0.12)) { state.toggleRestActive() }
-            PillButton(label: "关闭", system: "xmark", tint: Color(hex: 0xff5a5c), bg: Color(hex: 0xff5a5c).opacity(0.12)) {
-                guard !state.activeSession.placeholder, !state.activeSessionID.isEmpty else { state.showToast("没有可关闭的会话"); return }
-                state.closeTab(sessionID: state.activeSessionID)
+            Menu {
+                ForEach(AgentKind.allCases) { kind in
+                    Button { state.setAgent(kind, for: state.activeSession) } label: {
+                        Label(kind.label, systemImage: kind == state.agent(for: state.activeSession) ? "checkmark" : kind.symbol)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "cpu").font(.system(size: 12, weight: .semibold))
+                    Text(state.agent(for: state.activeSession).label).font(Theme.ui(12, .medium))
+                }
+                .foregroundColor(Theme.teal)
+                .padding(.horizontal, 12).frame(height: 32)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Theme.teal.opacity(0.12)))
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(state.activeSession.placeholder)
             VDivider().padding(.horizontal, 2)
             PillButton(label: "收藏", system: "star", tint: Color(hex: 0xf5c451), bg: Color.white.opacity(0.05)) {
                 state.loadFavorites(); state.showFavorites.toggle()

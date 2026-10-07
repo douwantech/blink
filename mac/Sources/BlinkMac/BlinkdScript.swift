@@ -18,6 +18,26 @@ enum BlinkdScript {
         "\(bootPath); tmux list-sessions -F '#{session_name}\t#{session_created}' 2>/dev/null"
     }
 
+    /// 与 iOS 的 resetPane 一致：重启当前 pane，保留 tmux 会话和工作目录。
+    static func resetPane(_ session: String) -> String {
+        let quoted = "'" + session.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return """
+        \(bootPath)
+        S=\(quoted)
+        if tmux has-session -t "$S" 2>/dev/null; then
+          D=$(tmux display-message -p -t "$S" '#{pane_current_path}' 2>/dev/null)
+          D=${D:-$HOME}
+          if tmux respawn-pane -k -t "$S" -c "$D" "$SHELL -il" 2>/dev/null; then
+            echo BLINK_RESET_OK
+          else
+            echo BLINK_RESET_FAILED
+          fi
+        else
+          echo BLINK_RESET_NO_SESSION
+        fi
+        """
+    }
+
     /// blinkd exec 帧的 payload（daemon 会 `/bin/bash -c "<payload>"`）。
     /// agent = 这个员工配的 CLI（团队列表行尾齿轮，见 TabAgentStore）；默认 claude。
     static func tmuxClaude(title: String, workDir: String, agent: AgentKind = .claude) -> String {
@@ -27,8 +47,7 @@ enum BlinkdScript {
         let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
 
         // inner 被外层 `$SHELL -lic '...'` 单引号包裹，里面只能用双引号；TITLE 预先算好。
-        // Codex 从自己的会话索引按标签名恢复；DeepSeek 直接在工作目录里启动。
-        // DeepSeek 档也走 claude 那条（它就是 claude），只是前面多几个 ANTHROPIC_* 环境变量
+        // Codex 和 Codewhale 从各自会话索引按标签名恢复；GLM 由 Claude Code 启动。
         let inner = !agent.supportsResume ? agent.launchSnippet(cdTarget: cd, title: title)
             // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
             : agent.envPrefix + #"cd \#(cd) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \"claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions\""; fi; fi; }"#

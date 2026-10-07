@@ -25,6 +25,7 @@ final class AppState: ObservableObject {
     @Published var cloudResting: Set<String> = []
     @Published var cloudAvailable = false
     var cloudMapping = CloudRestStore.Mapping()
+    @Published var sharedActive: Set<String>? = nil
 
     // 收藏短语（跟手机同一套 iCloud KV，正式版跨设备同步）
     @Published var favorites: [String] = []
@@ -185,8 +186,7 @@ final class AppState: ObservableObject {
         loadClosed()                 // 已关闭标签（本地 + KV 墓碑），显示时过滤
         sessions.removeAll { $0.placeholder }   // 清掉 init 的「连接中…」占位
         await enumerateAll()         // 逐台并行枚举 + 探测真实会话（只 blinkd 机器）
-        await adoptOrphanSessions()  // 各机器没标签的会话补成标签（三端一致）
-        loadCloudTabs()              // 连不上的机器（SSH/离线）用 KV 里手机配的标签补上
+        loadCloudTabs()              // 服务端公用标签是团队和坞的唯一数据源
         loadClosed()                 // 枚举/读 KV 后再算一次（openCC 可能变）
         if sessions.first(where: { $0.id == activeSessionID }) == nil { activeSessionID = "" }
     }
@@ -274,30 +274,39 @@ final class AppState: ObservableObject {
         return Set(found)
     }
 
-    /// 把 iCloud KV 里手机配置的标签并进来（所有机器），跟 iOS 显示同一份标签列表。
-    /// 已实时枚举到的会话保留真实状态；没在跑 tmux 的配置标签补成「空闲」（点开会 new-session -A 起）。
-    /// 按 cc-title 去重，不覆盖已有的活会话。
+    /// 服务端公用标签是团队面板和坞的唯一名单；tmux 枚举只补工作目录。
     func loadCloudTabs() {
-        let tabs = CloudTabStore.tabs()
-        guard !tabs.isEmpty else { return }
+        let hadNoSessions = sessions.isEmpty
+        let tabs = CloudTabStore.sharedTabs()
+        sharedActive = CloudTabStore.sharedActiveSessions()
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple]
-        for m in machines {
-            // 这台机器已有的会话名（实时枚举 + 之前并进来的），避免重复。
-            var seen = Set(sessions.filter { $0.machineID == m.id }.compactMap { $0.tmuxName?.lowercased() })
-            let mine = tabs.filter { $0.machineId == m.id }
-            var built: [Session] = []
-            for t in mine {
-                let full = "cc-" + t.ccName
-                guard seen.insert(full.lowercased()).inserted else { continue }
-                let initials = String(t.ccName.replacingOccurrences(of: "-", with: "").prefix(2))
-                built.append(Session(id: "\(m.id)/\(full)", machineID: m.id, name: t.ccName,
-                                     dir: t.dir.isEmpty ? "~" : t.dir, initials: initials,
-                                     grad: grads[built.count % grads.count],
-                                     status: .idle, lines: [], tmuxName: full))
-            }
-            sessions.append(contentsOf: built)
+        let live = Dictionary(sessions.compactMap { s -> (String, Session)? in
+            guard s.tmuxName != nil else { return nil }
+            return (s.id.lowercased(), s)
+        }, uniquingKeysWith: { first, _ in first })
+        var built: [Session] = []
+        for t in tabs where machines.contains(where: { $0.id == t.machineId }) {
+            let full = "cc-" + t.ccName
+            let id = "\(t.machineId)/\(full)"
+            let old = live[id.lowercased()]
+            let initials = String(t.ccName.replacingOccurrences(of: "-", with: "").prefix(2))
+            built.append(Session(id: id, machineID: t.machineId, name: t.ccName,
+                                 dir: old?.dir ?? "~", initials: initials,
+                                 grad: grads[built.count % grads.count],
+                                 status: .idle, lines: [], tmuxName: full))
         }
-        recomputeRestStatuses()   // 休息叠加（这些标签若在手机上被标了休息，也照样隐藏）
+        let kept = Set(built.map(\.id))
+        for s in sessions where s.tmuxName != nil && !kept.contains(s.id) { term.rebuild(s.id) }
+        sessions = built
+        recomputeRestStatuses()
+        if !kept.contains(activeSessionID) || resting(activeSession) {
+            activeSessionID = built.first(where: { $0.machineID == activeMachineID && !resting($0) })?.id ?? ""
+        }
+        if hadNoSessions && activeSessionID.isEmpty,
+           let first = built.first(where: { !resting($0) }) {
+            activeMachineID = first.machineID
+            activeSessionID = first.id
+        }
     }
 
     /// 用 iCloud KV 的机器清单扩展本地机器列表（正式版签名才读得到 KV）。
@@ -375,11 +384,10 @@ final class AppState: ObservableObject {
                 sessions.append(contentsOf: real)
             }
         }
-        recomputeRestStatuses()
-        computeOrphanHidden()
+        loadCloudTabs()
     }
 
-    /// 统一远端执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 无。
+    /// 统一执行：blinkd 走 socket，ssh 走系统 /usr/bin/ssh，local 走本机 shell。
     nonisolated static func exec(_ transport: Transport, _ command: String,
                                  timeout: TimeInterval, marker: String?) async -> String {
         switch transport {
@@ -391,7 +399,7 @@ final class AppState: ObservableObject {
         case .unconfigured:
             return "⚠ 未配置 blinkd：请在手机上补齐 Socket 配置并同步"
         case .local:
-            return ""
+            return await LocalExec.run(command: command, timeout: timeout)
         }
     }
 
@@ -407,9 +415,7 @@ final class AppState: ObservableObject {
         }
         sessions.removeAll { $0.machineID == machine.id }
         sessions.append(contentsOf: real)
-        loadCloudTabs()      // 并回没在跑 tmux 的配置标签，跟 iOS 一致
-        recomputeRestStatuses()
-        computeOrphanHidden()
+        loadCloudTabs()
     }
 
     private var observingCloud = false
@@ -449,7 +455,7 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 self?.reloadMachinesIfChanged()   // #25 顺带：机器清单也跟手（以前要重启 Mac 才生效）
                 self?.loadFavorites(); await self?.loadCloudRest(); self?.loadClosed()
-                await self?.adoptOrphanSessions()
+                self?.loadCloudTabs()
             }
             Task { @MainActor in await ServerSync.shared.refresh() }   // 回前台：服务器有新版就落盘（304 即止）
         }
@@ -481,6 +487,7 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 self.syncReloadPending = false
                 Task { @MainActor in
+                    self.reloadMachinesIfChanged()
                     self.loadFavorites()
                     await self.loadCloudRest()
                     self.loadCloudTabs()
@@ -520,10 +527,8 @@ final class AppState: ObservableObject {
 
     /// 会话是否休息：有云映射的以云为准，没云映射的（手机上没对应 tab）用本地。
     func isResting(_ s: Session) -> Bool {
-        let key = restKey(s)
-        if cloudResting.contains(key) { return true }
-        if cloudAvailable, cloudMapping.ccToUUIDs[key] != nil { return false }
-        return MacRestStore.isResting(s.tmuxName ?? s.id)
+        if let sharedActive { return !sharedActive.contains(s.name) }
+        return s.owner.lowercased() != "tom"
     }
 
     // MARK: 真实状态探测（干活中/等你/空闲）
@@ -532,9 +537,9 @@ final class AppState: ObservableObject {
     func probe() {
         showToast("正在刷新…")
         Task { @MainActor in
+            await ServerSync.shared.refresh()
+            self.reloadMachinesIfChanged()
             await self.enumerateAll()
-            self.loadCloudTabs()      // 并回没在跑 tmux 的配置标签
-            self.loadClosed()
             self.showToast("已更新")
         }
     }
@@ -547,7 +552,7 @@ final class AppState: ObservableObject {
         }
         showToast("刷新「\(s.name)」…")
         await loadSessions(for: activeMachine)
-        await loadCloudRest()   // 顺带重拉云端休息状态
+        loadCloudTabs()
         loadFavorites()
         showToast("已刷新「\(s.name)」")
     }
@@ -587,13 +592,13 @@ final class AppState: ObservableObject {
 
     /// 该会话是否被「关闭」（本地记录 + KV 墓碑，且手机没重新开同名 → 见 loadClosed）。
     func isClosed(_ s: Session) -> Bool {
-        closedCC.contains((s.tmuxName ?? s.id).lowercased()) || orphanHidden.contains(s.id)
+        false // 公用标签由服务端管理，不进个人关闭墓碑。
     }
 
     /// 侧栏只显示在岗会话，休息/已关闭的隐藏（同手机 tab 栏）——休息在右侧员工列表管理。
     var sidebarSessions: [Session] {
         sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !resting($0) && !isClosed($0) }
-            .sorted { ($0.project, $0.owner) < ($1.project, $1.owner) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var restingCount: Int {
@@ -606,7 +611,7 @@ final class AppState: ObservableObject {
     }
 
     func count(_ s: WorkStatus) -> Int {
-        sessions.filter { $0.machineID == activeMachineID && $0.tmuxName != nil && !isClosed($0) && $0.status == s }.count
+        sessions.filter { $0.tmuxName != nil && $0.status == s }.count
     }
 
     /// 机器显示名（查不到就退回 id）
@@ -614,59 +619,48 @@ final class AppState: ObservableObject {
         machines.first { $0.id == machineID }?.name ?? machineID
     }
 
-    /// 员工列表分组（真实会话）：按员工/项目/机器分组，含休息中的会话（在这里唤醒）。
-    var teamGroups: [TeamGroup] {
-        // 三档都跨机器列全（团队面板是「看所有人在干嘛」，不该被当前机器挡住）
-        let all = sessions.filter { $0.tmuxName != nil && !isClosed($0) }
-        func summary(_ ss: [Session]) -> String {
-            let w = ss.filter { $0.status == .wait }.count
-            let r = ss.filter { $0.status == .rest }.count
-            var parts = ["\(ss.count) 会话"]
-            if w > 0 { parts.append("\(w) 等你") }
-            if r > 0 { parts.append("\(r) 休息") }
-            return parts.joined(separator: " · ")
-        }
-        // 分组顺序跟左边机器列表一致：先按机器在 machines 里的位次，再按标题。
-        // 按项目那档一组里混着几台机器，用组里最靠前的那台定位次。
-        let machineRank: (String) -> Int = { [self] mid in
-            machines.firstIndex { $0.id == mid } ?? machines.count
-        }
-        func build(_ keyed: [(String, Session)]) -> [TeamGroup] {
-            var order: [String] = []; var map: [String: [Session]] = [:]
-            for (k, s) in keyed { if map[k] == nil { order.append(k) }; map[k, default: []].append(s) }
-            return order.map { k in
-                // 在岗的排前面，休息的沉底；同一档按名字
-                let ss = (map[k] ?? []).sorted {
-                    let ra = $0.status == .rest, rb = $1.status == .rest
-                    return ra != rb ? !ra : $0.name < $1.name
-                }
-                return TeamGroup(id: k, title: k, sub: summary(ss), sessions: ss)
+    /// 三种视图都使用相同的「机器 × 员工」卡片，只改变外层分段。
+    var teamSections: [TeamSection] {
+        let all = sessions.filter { $0.tmuxName != nil }
+        func cards(_ rows: [Session]) -> [TeamGroup] {
+            let keyed = Dictionary(grouping: rows) { "\($0.machineID)|\($0.owner)" }
+            return keyed.map { key, values in
+                let sorted = values.enumerated().sorted { a, b in
+                    if resting(a.element) != resting(b.element) { return !resting(a.element) }
+                    return a.offset < b.offset
+                }.map(\.element)
+                let first = sorted[0]
+                let restCount = sorted.filter { resting($0) }.count
+                let summary = restCount > 0 && restCount < sorted.count
+                    ? "\(sorted.count - restCount) 在岗 · \(restCount) 休息" : "\(sorted.count) 个会话"
+                return TeamGroup(id: key, title: "\(machineName(first.machineID)) · \(first.owner)",
+                                 sub: summary, sessions: sorted)
             }.sorted { a, b in
-                let ra = a.sessions.map { machineRank($0.machineID) }.min() ?? Int.max
-                let rb = b.sessions.map { machineRank($0.machineID) }.min() ?? Int.max
+                let ra = machines.firstIndex { $0.id == a.sessions[0].machineID } ?? Int.max
+                let rb = machines.firstIndex { $0.id == b.sessions[0].machineID } ?? Int.max
                 return ra != rb ? ra < rb : a.title < b.title
             }
         }
-        // 机器名（按员工/按机器都要拿）
-        let nameOf: (String) -> String = { [self] mid in machineName(mid) }
         switch inspector {
         case .employee:
-            // 同名员工在不同机器上是两个人，所以 key 带机器，标题前缀机器名
-            // （「tom · talkai」）。点行仍会切到对应机器的会话。
-            return build(all.map { ("\(nameOf($0.machineID)) · \($0.owner)", $0) })
+            return [TeamSection(id: "employees", title: nil, groups: cards(all))]
         case .project:
-            // 项目按名字合并：不同机器上的同一个项目放一组（行里带机器名区分）
-            return build(all.map { ($0.project, $0) })
+            let names = Array(Set(all.map(\.project))).sorted { a, b in
+                let ra = all.filter { $0.project == a }
+                    .compactMap { s in machines.firstIndex { $0.id == s.machineID } }.min() ?? Int.max
+                let rb = all.filter { $0.project == b }
+                    .compactMap { s in machines.firstIndex { $0.id == s.machineID } }.min() ?? Int.max
+                return ra != rb ? ra < rb : a < b
+            }
+            return names.map { name in
+                TeamSection(id: "project-\(name)", title: name,
+                            groups: cards(all.filter { $0.project == name }))
+            }
         case .machine:
-            var order: [String] = []; var map: [String: [Session]] = [:]
-            for s in all { if map[s.machineID] == nil { order.append(s.machineID) }; map[s.machineID, default: []].append(s) }
-            order.sort { machineRank($0) < machineRank($1) }   // 跟左边机器列表同序
-            return order.map { mid in
-                let ss = (map[mid] ?? []).sorted {
-                    let ra = $0.status == .rest, rb = $1.status == .rest
-                    return ra != rb ? !ra : $0.name < $1.name
-                }
-                return TeamGroup(id: mid, title: nameOf(mid), sub: summary(ss), sessions: ss)
+            return machines.compactMap { machine in
+                let rows = all.filter { $0.machineID == machine.id }
+                return rows.isEmpty ? nil : TeamSection(id: "machine-\(machine.id)",
+                    title: machine.name, groups: cards(rows))
             }
         }
     }
@@ -696,11 +690,11 @@ final class AppState: ObservableObject {
     /// 否则当前选中若已是这台机器的有效会话就保持；再否则落到该机器第一个可选会话；都没有→置空。
     /// 置空是为了避免终端拿旧机器的 transport 连错。
     private func restoreActiveSession(for machineID: String) {
-        let mine = sessions.filter { $0.machineID == machineID && $0.tmuxName != nil && !isClosed($0) }
+        let mine = sessions.filter { $0.machineID == machineID && $0.tmuxName != nil && !resting($0) }
         if let last = lastSessionByMachine[machineID], mine.contains(where: { $0.id == last }) {
             activeSessionID = last
         } else if !mine.contains(where: { $0.id == activeSessionID }) {
-            activeSessionID = mine.first(where: { !resting($0) })?.id ?? mine.first?.id ?? ""
+            activeSessionID = mine.first?.id ?? ""
         }
     }
 
@@ -744,51 +738,49 @@ final class AppState: ObservableObject {
         return TabAgentStore.agent(machineId: s.machineID, title: s.name)
     }
 
-    /// 只改配置，不动已经跑着的 tmux 会话——里面 claude 的上下文还在，
-    /// 要换得先把 cc-<TITLE> 关掉重开，所以这里只提示一句。
-    /// 换 CLI：存配置 → 把远端那个 tmux 会话杀掉 → 重连。
-    ///
-    /// 不杀会话的话 `tmux new-session -A` 只会 attach 回原来那个，里面跑的还是旧 CLI，
-    /// 环境变量也是旧的。杀掉后重连会重跑一遍启动脚本，新 CLI 立刻起来。
-    /// Claude 按 customTitle、Codex 按标签名恢复已有对话；DeepSeek 启动新会话。
+    /// 与 iOS 一样，保存配置后重启当前 tmux pane，保留会话和工作目录。
+    /// 重连时启动脚本会按标签名恢复对应 CLI 的对话。
     func setAgent(_ kind: AgentKind, for s: Session) {
+        guard !s.placeholder else { return }
         guard agent(for: s) != kind else { return }
-        TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
-        agentTick &+= 1
         let m = machines.first { $0.id == s.machineID } ?? activeMachine
-        // 这里不能拿 transport.connectable 当门槛：SSH 机器照样能跑命令（AppState.exec
-        // 走系统 /usr/bin/ssh），之前挡在外面的结果是只改了配置、会话没重开，
-        // 看着就像「切了没反应」。真正的前提只有一条：得知道 tmux 会话名。
-        showToast("\(s.name) 切到 \(kind.label)，正在重开…")
+        showToast("正在保存 \(s.name) 的模型…")
         let tr = m.transport
-        let name = s.tmuxName
+        let name = s.tmuxName ?? "cc-\(s.name)"
         Task { @MainActor in
-            if let name {
-                _ = await AppState.exec(tr, "\(BlinkdScript.bootPath); tmux kill-session -t \(name) 2>/dev/null; echo done",
-                                        timeout: 12, marker: nil)
+            if ServerSync.shared.hasSession {
+                guard await ServerSync.shared.setAgent(kind, machineId: s.machineID, title: s.name) else {
+                    self.showToast("模型未保存到服务器，请稍后重试")
+                    return
+                }
             }
-            // 必须 rebuild 不能 restart：后端里存的是建它时拼好的启动脚本，
-            // restart 会拿旧脚本（旧 CLI）重跑，看着就像"切了没反应"。
+            TabAgentStore.setAgent(kind, machineId: s.machineID, title: s.name)
+            self.agentTick &+= 1
+            let result = await AppState.exec(tr, BlinkdScript.resetPane(name), timeout: 12, marker: nil)
+            // 后端缓存了旧 CLI 启动脚本，必须重建才能让新配置生效。
             self.term.rebuild(s.id)
-            self.agentTick &+= 1   // 触发 TerminalContainer 重新取 view → 用新配置建后端
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            self.showToast("\(s.name) 已用 \(kind.label) 重开")
+            self.agentTick &+= 1
+            if result.contains("BLINK_RESET_FAILED") {
+                self.showToast("\(s.name) 切换已保存，pane 重启失败；请刷新重连")
+            } else if result.contains("BLINK_RESET_OK") || result.contains("BLINK_RESET_NO_SESSION") {
+                self.showToast("\(s.name) 已切到 \(kind.label)")
+            } else {
+                self.showToast("\(s.name) 切换已保存，正在重连")
+            }
         }
     }
 
     func toggleRest(sessionID: String) {
         guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
-        let name = s.tmuxName ?? s.id
-        let key = restKey(s)
         let now = !isResting(s)
-        // 有映射 → 写三端共用的同步文件（+KV），手机、平板跟着变；写不成（无对应 tab）回退本地。
-        if cloudAvailable, CloudRestStore.setResting(key: key, on: now, mapping: cloudMapping) {
-            if now { cloudResting.insert(key) } else { cloudResting.remove(key) }
-        } else {
-            _ = MacRestStore.toggle(name)
-        }
-        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
-            sessions[i].status = now ? .rest : .idle
+        showToast("正在更新 \(s.name)…")
+        Task { @MainActor in
+            if await ServerSync.shared.setResting(now, session: s.name) {
+                self.loadCloudTabs()
+                self.showToast(now ? "\(s.name) 已休息" : "\(s.name) 已在岗")
+            } else {
+                self.showToast("休息状态未保存到服务器，请稍后重试")
+            }
         }
     }
 
@@ -797,24 +789,13 @@ final class AppState: ObservableObject {
     /// （tmux 还活着，关标签不 kill 远端进程，跟 iOS 一致）；SSH/离线机器的标签来自 KV，
     /// 写了墓碑后 iOS 和 Mac 都不再显示。
     func closeTab(sessionID: String) {
-        guard let s = sessions.first(where: { $0.id == sessionID }) else { return }
-        let full = (s.tmuxName ?? ("cc-" + s.name)).lowercased()
-        let uuids = cloudMapping.ccToUUIDs[CloudRestStore.key(machineId: s.machineID, cc: full)] ?? []
-        var synced = false
-        for id in uuids where CloudTabStore.closeTab(id: id) { synced = true }
-        MacClosedStore.add(full)        // 本地记一份，重启后仍隐藏（枚举/无墓碑的也挡得住）
-        sessions.removeAll { $0.id == sessionID }
-        if activeSessionID == sessionID { activeSessionID = sidebarSessions.first?.id ?? "" }
-        loadClosed()                    // 立即纳入隐藏集
-        Task { @MainActor in await self.loadCloudRest() }   // 刷新映射
-        showToast(synced ? "已关闭「\(s.name)」并同步到手机" : "已关闭「\(s.name)」（本地）")
+        showToast("公用标签由团队页的休息开关管理")
     }
 
     func toggleRestActive() {
         let s = activeSession
         guard !s.placeholder else { return }
         toggleRest(sessionID: s.id)
-        showToast(resting(s) ? "已休息，从列表隐藏（🌙 里可唤醒）" : "已唤醒")
     }
 
     func reconnect() {

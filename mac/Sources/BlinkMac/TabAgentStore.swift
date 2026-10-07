@@ -352,7 +352,7 @@ enum TabAgentStore {
     }
 
     static func all() -> [String: String] {
-        if let obj = SyncConfig.read()?["agents"] as? [String: String], !obj.isEmpty { return obj }
+        if let obj = SyncConfig.read()?["agents"] as? [String: String] { return obj }
         let kv = NSUbiquitousKeyValueStore.default
         kv.synchronize()
         return (kv.dictionary(forKey: kAgents) as? [String: String]) ?? [:]

@@ -1,13 +1,6 @@
 import Foundation
 
-/// 从 iCloud KV 读手机的「标签」(tab) 列表 —— 连不上的机器（SSH / 离线）靠它显示标签，跟手机一致；
-/// 同时提供 cc-title ↔ tab UUID 映射，供「休息」跨设备同步（写 KV 的 TabRestStore.resting）。
-///
-/// iOS Blink 的 tab 列表存在 `TabStateStore.syncState`，工作目录存在 `BlinkWorkDirStore.workDirs`，
-/// 两者都被 CloudConfigSync 镜像进共享 KV（顶层 key，读 KV 不吃 TCC，不像读容器 plist 会卡）。
-/// 每个 tab 带 id / machineId / workDirId / tmuxSession；workDirId → 路径 → basename，配合 tmuxSession
-/// 按 iOS 同一套规则算出 cc-title，于是标签名和 blinkd 枚举出来的活会话对得上、能一起分组，
-/// 而 tab 的 id 正是 iOS「休息」用的那个 UUID。
+/// 标签快照；新版团队和坞读取服务端公用标签，旧个人标签解析仅供迁移诊断。
 struct CloudTab {
     let id: String       // tab UUID（= iOS TabRestStore.resting 里存的那个）
     let machineId: String
@@ -18,6 +11,25 @@ struct CloudTab {
 enum CloudTabStore {
     private static let kTabs = "TabStateStore.syncState"
     private static let kWorkDirs = "BlinkWorkDirStore.workDirs"
+
+    /// 新版 iOS 团队页和标签坞使用的服务端公用标签；顺序由服务器决定。
+    static func sharedTabs() -> [CloudTab] {
+        guard let rows = SyncConfig.read()?["sharedTabs"] as? [[String: Any]] else { return [] }
+        return rows.compactMap { row in
+            guard let id = row["id"] as? String,
+                  let machineId = row["machineId"] as? String,
+                  let session = row["tmuxSession"] as? String,
+                  !machineId.isEmpty, !session.isEmpty else { return nil }
+            return CloudTab(id: id, machineId: machineId, ccName: session, dir: "~")
+        }
+    }
+
+    /// nil 表示尚未设置，沿用 iOS 的「默认仅 tom 在岗」规则。
+    static func sharedActiveSessions() -> Set<String>? {
+        guard let selection = SyncConfig.read()?["recentSelection"] as? [String: String],
+              let joined = selection["restSessions"] else { return nil }
+        return Set(joined.split(separator: ",").map(String.init))
+    }
 
     /// 读 KV 里全部有效标签（排除墓碑 closedIds）。KV 空 / dev 版 → []。
     static func tabs() -> [CloudTab] { rawEntries().filter { !$0.closed }.map { $0.tab } }

@@ -43,15 +43,6 @@ struct MachineRail: View {
                 .buttonStyle(.plain)
             }
 
-            Button { state.showToast("添加机器…") } label: {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [4]))
-                    .foregroundColor(Color.white.opacity(0.16))
-                    .frame(width: 40, height: 40)
-                    .overlay(Image(systemName: "plus").font(.system(size: 16)).foregroundColor(Theme.dim))
-            }
-            .buttonStyle(.plain)
-
             Spacer()
 
             IconButton(system: "sparkles", color: Theme.purple, size: 36, iconSize: 19) { state.mode = .chat }
@@ -91,20 +82,6 @@ struct SessionSidebar: View {
                 .padding(.horizontal, 10)
             }
 
-            Divider().overlay(Theme.hair)
-
-            // footer（休息统一在右侧员工列表管理，这里不再放休息按钮）
-            Button { state.newSession() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
-                    Text("新会话").font(Theme.ui(13, .semibold))
-                }
-                .foregroundColor(Theme.teal)
-                .frame(maxWidth: .infinity).frame(height: 34)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.teal.opacity(0.4)))
-            }
-            .buttonStyle(.plain)
-            .padding(12)
         }
         .frame(width: 280)
         .background(Color.white.opacity(0.045))
@@ -149,25 +126,5 @@ struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        // 关闭统一走底部「关闭」按钮；列表里只保留右键「关闭标签」，不再显示悬停 ×。
-        .contextMenu {
-            Button { state.toggleRest(sessionID: session.id) } label: {
-                Label(state.resting(session) ? "唤醒（在岗）" : "让 TA 休息",
-                      systemImage: state.resting(session) ? "moon.zzz.fill" : "moon")
-            }
-            // 打开时进哪个 CLI（跟团队面板行尾齿轮同一份配置）
-            Menu("打开时进…") {
-                ForEach(AgentKind.allCases) { k in
-                    Button { state.setAgent(k, for: session) } label: {
-                        Label(k == state.agent(for: session) ? "\(k.label)（当前）" : k.label,
-                              systemImage: k.symbol)
-                    }
-                }
-            }
-            Divider()
-            Button(role: .destructive) { state.closeTab(sessionID: session.id) } label: {
-                Label("关闭标签", systemImage: "xmark")
-            }
-        }
     }
 }

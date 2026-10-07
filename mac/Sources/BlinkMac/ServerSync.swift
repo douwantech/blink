@@ -4,17 +4,11 @@ import SwiftUI
 // 服务器同步（Blink 原生 Mac 版，2026-10-05 老板拍板弃 iCloud 后的 Mac 落地）。
 //
 // iOS 端 ServerConfigSync（Blink/SmarterKeys/ServerConfigSync.swift）已把配置服务器
-// (blink-api.douwantech.com) 设为唯一权威：管理员维护机器清单，每端登录后拉自己的
-// machines / tabs / agents。Mac 端这一版是「下行同步器」：
+// (blink-api.douwantech.com) 设为唯一权威：管理员维护机器与公用标签清单，
+// Mac 按同一快照展示团队和标签，并把个人休息名单、模型选择写回服务器。
 //   login → GET /v1/config → 快照整份写进 ~/.blink/sync/blink_config.json
-//     （machines / tabs / closedIds / agents；workDirs 服务器快照里没有——那是
-//      iOS CloudConfigSync 时代的 KV 镜像字段——保留文件存量，机器上的工作目录基本不变）
-// 现有读链路零改动继续工作：watchSyncFile() 盯着该文件（写临时文件再 rename，inode
-// 变化即触发），CloudTabStore / TabAgentStore / MacMachineStore 从文件读，UI 自动 reload。
-// iCloud KV 降级为只读兜底（服务器不可达时不瞎眼），主链路已是服务器。
-//
-// 上行（PUT tabs/agents）暂未做：Mac 端是标签的观察者（会话由 blinkd 枚举，不在 Mac 上
-// 增删标签），暂无上行数据源；服务器侧 PUT 接口 iOS 端已在用，Mac 需要时再接。
+//     （machines / sharedTabs / recentSelection / agents）。公用标签与个人标签分开保存。
+// watchSyncFile() 盯目录变更后刷新 UI；离线时使用上次快照。
 //
 // token 存 UserDefaults 而非 Keychain：SPM dev 版（swift run）无 entitlement，
 // dataProtection keychain 会 errSecMissingEntitlement，出现「存了读不回」；正式版也没配
@@ -31,6 +25,7 @@ final class ServerSync: ObservableObject {
   private let tokenKey = "BlinkServer.token"
   private let userKey = "BlinkServer.username"
   private let versionKey = "BlinkServer.appliedVersion"
+  private var updatingPersonal = false
 
   var hasSession: Bool { defaults.string(forKey: tokenKey) != nil }
 
@@ -90,6 +85,67 @@ final class ServerSync: ObservableObject {
     }
   }
 
+  /// 与 iOS SharedRestStore 同一份 recentSelection.restSessions；只改个人 selection。
+  @MainActor func setResting(_ resting: Bool, session: String) async -> Bool {
+    guard !updatingPersonal, let token = defaults.string(forKey: tokenKey) else { return false }
+    updatingPersonal = true
+    defer { updatingPersonal = false }
+    do {
+      var get = URLRequest(url: baseURL.appendingPathComponent("v1/config"))
+      get.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (data, response) = try await URLSession.shared.data(for: get)
+      guard (response as? HTTPURLResponse)?.statusCode == 200,
+            let snap = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+      var selection = snap["recentSelection"] as? [String: String] ?? [:]
+      let rows = ((snap["tabs"] as? [String: Any])?["tabs"] as? [[String: Any]]) ?? []
+      let shared = rows.compactMap { row -> String? in
+        guard row["shared"] as? Bool == true else { return nil }
+        return row["tmuxSession"] as? String
+      }
+      var active = selection["restSessions"].map { Set($0.split(separator: ",").map(String.init)) }
+        ?? Set(shared.filter { $0.split(separator: "-").first?.lowercased() == "tom" })
+      if resting { active.remove(session) } else { active.insert(session) }
+      selection["restSessions"] = active.sorted().joined(separator: ",")
+      var put = URLRequest(url: baseURL.appendingPathComponent("v1/config/selection"))
+      put.httpMethod = "PUT"
+      put.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      put.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      put.httpBody = try JSONSerialization.data(withJSONObject: selection)
+      let (_, putResponse) = try await URLSession.shared.data(for: put)
+      guard (putResponse as? HTTPURLResponse)?.statusCode == 204 else { return false }
+      defaults.removeObject(forKey: versionKey)
+      await refresh()
+      return isOnline
+    } catch { return false }
+  }
+
+  @MainActor func setAgent(_ kind: AgentKind, machineId: String, title: String) async -> Bool {
+    guard !updatingPersonal, let token = defaults.string(forKey: tokenKey) else { return false }
+    updatingPersonal = true
+    defer { updatingPersonal = false }
+    do {
+      var get = URLRequest(url: baseURL.appendingPathComponent("v1/config"))
+      get.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (data, response) = try await URLSession.shared.data(for: get)
+      guard (response as? HTTPURLResponse)?.statusCode == 200,
+            let snap = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+      var agents = snap["agents"] as? [String: String] ?? [:]
+      let key = TabAgentStore.storeKey(machineId: machineId, title: title)
+      if kind == .claude { agents.removeValue(forKey: key) }
+      else { agents[key] = kind.rawValue }
+      var put = URLRequest(url: baseURL.appendingPathComponent("v1/config/agents"))
+      put.httpMethod = "PUT"
+      put.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      put.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      put.httpBody = try JSONSerialization.data(withJSONObject: agents)
+      let (_, putResponse) = try await URLSession.shared.data(for: put)
+      guard (putResponse as? HTTPURLResponse)?.statusCode == 204 else { return false }
+      defaults.removeObject(forKey: versionKey)
+      await refresh()
+      return isOnline
+    } catch { return false }
+  }
+
   enum PullResult { case ok, notModified, unauthorized, offline, noSession }
 
   /// 网络拉取 + 落盘，不碰 @Published —— 可在任意 executor 跑（DIAG 用主线程 semaphore
@@ -98,7 +154,8 @@ final class ServerSync: ObservableObject {
     let defaults = UserDefaults.standard
     guard let token = defaults.string(forKey: tokenKey) else { return .noSession }
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
-    if let applied = defaults.string(forKey: versionKey) {
+    if SyncConfig.read()?["sharedTabs"] != nil,
+       let applied = defaults.string(forKey: versionKey) {
       components.queryItems = [URLQueryItem(name: "version", value: applied)]
     }
     var request = URLRequest(url: components.url!)
@@ -129,6 +186,8 @@ final class ServerSync: ObservableObject {
     let machines = snap["machines"] as? [[String: Any]] ?? []
     let tabsState = snap["tabs"] as? [String: Any] ?? [:]
     let tabs = tabsState["tabs"] as? [[String: Any]] ?? []
+    let sharedTabs = tabs.filter { $0["shared"] as? Bool == true }
+    let personalTabs = tabs.filter { $0["shared"] as? Bool != true }
     let closedIds = tabsState["closedIds"] as? [String] ?? []
     let agents = snap["agents"] as? [String: String] ?? [:]
 
@@ -137,7 +196,10 @@ final class ServerSync: ObservableObject {
     // 共享书签（浏览器「后台」）：服务器快照带 pinned 就是权威，PinnedLinksStore
     // 直接从这个文件读；不带（老快照）就保留文件里的存量，别清掉离线兜底。
     if let pinned = snap["pinned"] as? [[String: Any]] { obj["pinned"] = pinned }
-    obj["tabs"] = tabs
+    // 公用标签和个人标签分开保存：公用标签不进个人墓碑/回传链路。
+    obj["tabs"] = personalTabs
+    obj["sharedTabs"] = sharedTabs
+    obj["recentSelection"] = snap["recentSelection"] as? [String: String] ?? [:]
     obj["closedIds"] = closedIds
     obj["agents"] = agents
     obj["origin"] = "harmony-mac"
