@@ -37,6 +37,7 @@ type directoryEntry struct {
 type projectEmployee struct {
 	ID        string `json:"id"`
 	MachineID string `json:"machineId"`
+	WorkDir   string `json:"workDir,omitempty"`
 }
 
 // A project as stored in projects.data. Every field is optional on the wire so
@@ -59,6 +60,9 @@ func validateEmployeeList(list []projectEmployee) error {
 		}
 		if e.MachineID == "" || len(e.MachineID) > 100 || strings.ContainsAny(e.MachineID, "/\\") {
 			return errors.New("invalid machine")
+		}
+		if e.WorkDir != "" && (!strings.HasPrefix(e.WorkDir, "/") || len(e.WorkDir) > 1024 || strings.ContainsAny(e.WorkDir, "\r\n\x00")) {
+			return errors.New("invalid work directory")
 		}
 		if seen[e.ID] {
 			return errors.New("employee listed twice")

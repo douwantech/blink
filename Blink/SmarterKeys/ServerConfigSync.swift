@@ -50,6 +50,7 @@ struct SharedTab: Equatable {
   let id: UUID
   let machineId: String
   let tmuxSession: String
+  let workDir: String?
 }
 
 /// 只带 `shared` 这个键的原始条目。`TabEntry` 是合成 Codable，未知键会被静默丢掉，
@@ -58,6 +59,7 @@ private struct RawServerTab: Decodable {
   let id: UUID
   let machineId: String?
   let tmuxSession: String?
+  let workDir: String?
   let shared: Bool?
 }
 
@@ -93,7 +95,7 @@ enum ServerSnapshotDecoder {
     snapshot.tabs.closedIds?.removeAll { sharedIds.contains($0) }
     let shared = sharedTabs.compactMap { tab -> SharedTab? in
       guard let machineId = tab.machineId, let tmuxSession = tab.tmuxSession else { return nil }
-      return SharedTab(id: tab.id, machineId: machineId, tmuxSession: tmuxSession)
+      return SharedTab(id: tab.id, machineId: machineId, tmuxSession: tmuxSession, workDir: tab.workDir)
     }
     return (snapshot, shared)
   }

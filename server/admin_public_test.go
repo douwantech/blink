@@ -14,7 +14,7 @@ import (
 // list.
 func publicProjectsFixture() []projectEntry {
 	return []projectEntry{
-		{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1"}, {ID: "tom", MachineID: "m2"}}},
+		{ID: "huum", Name: "Huum", Public: true, Employees: []projectEmployee{{ID: "jack", MachineID: "m1", WorkDir: "/Users/apple/Codes/jack"}, {ID: "tom", MachineID: "m2"}}},
 		{ID: "lotly", Name: "Lotly", Public: true, Employees: []projectEmployee{{ID: "tom", MachineID: "m2"}}},
 		{ID: "blink", Name: "Blink"},
 	}
@@ -50,8 +50,13 @@ func TestPublicTabViewExpandsEveryList(t *testing.T) {
 		bySession[v.Session] = v
 	}
 	jack := bySession["jack-huum"]
-	if jack.ProjectID != "huum" || jack.EmployeeID != "jack" || jack.MachineID != "m1" || jack.ProjectName != "Huum" {
+	if jack.ProjectID != "huum" || jack.EmployeeID != "jack" || jack.MachineID != "m1" || jack.ProjectName != "Huum" || jack.WorkDir != "/Users/apple/Codes/jack" {
 		t.Fatalf("jack-huum %+v", jack)
+	}
+	for _, tab := range clientPublicTabs(view) {
+		if tab.TmuxSession == "jack-huum" && tab.WorkDir != jack.WorkDir {
+			t.Fatalf("client tab lost work directory: %+v", tab)
+		}
 	}
 	if tom := bySession["tom-lotly"]; tom.MachineID != "m2" || tom.ProjectName != "Lotly" {
 		t.Fatalf("tom-lotly %+v", tom)

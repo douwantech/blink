@@ -68,7 +68,7 @@ cat > \#(bootFile).$$ <<'BLINKBOOT'
 BLINKBOOT
 mv -f \#(bootFile).$$ \#(bootFile)
 \#(heal)
-exec tmux new-session -A -s \#(outerSession) $SHELL -lic 'source \#(bootFile); echo "[blink] \#(agent.rawValue) 已退出，掉到 shell（上方有报错即原因，敲 \#(agent.rawValue) 重试）"; exec $SHELL -il'
+exec tmux new-session -A -s \#(outerSession) -c \#(cd) $SHELL -lic 'source \#(bootFile); echo "[blink] \#(agent.rawValue) 已退出，掉到 shell（上方有报错即原因，敲 \#(agent.rawValue) 重试）"; exec $SHELL -il'
 """#
     }
 }

@@ -63,6 +63,7 @@ type publicTabEntry struct {
 	ID          string `json:"id"`
 	MachineID   string `json:"machineId"`
 	TmuxSession string `json:"tmuxSession"`
+	WorkDir     string `json:"workDir,omitempty"`
 	Shared      bool   `json:"shared"`
 }
 
@@ -75,6 +76,7 @@ type publicTabView struct {
 	EmployeeID  string `json:"employeeId"`
 	MachineID   string `json:"machineId"`
 	Session     string `json:"session"`
+	WorkDir     string `json:"workDir,omitempty"`
 	TabID       string `json:"tabId"`
 }
 
@@ -100,6 +102,7 @@ func buildPublicTabView(projects []projectEntry) []publicTabView {
 				EmployeeID:  e.ID,
 				MachineID:   e.MachineID,
 				Session:     e.ID + "-" + p.ID,
+				WorkDir:     e.WorkDir,
 				TabID:       publicTabID(e.ID, p.ID),
 			})
 		}
@@ -115,6 +118,7 @@ func clientPublicTabs(view []publicTabView) []publicTabEntry {
 			ID:          v.TabID,
 			MachineID:   v.MachineID,
 			TmuxSession: v.Session,
+			WorkDir:     v.WorkDir,
 			Shared:      true,
 		})
 	}

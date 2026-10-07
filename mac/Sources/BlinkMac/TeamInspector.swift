@@ -1,30 +1,20 @@
 import SwiftUI
 
-/// 员工列表（B 方案·分组卡片）：紧凑统计条 + 每个分组一张卡（卡内细线分行），
-/// 服务端公用标签组成员工卡；三种视图只改变外层分段。
+/// 与 iOS 团队页一致：员工卡内列项目，行尾分别管理模型和休息。
+/// 点员工或项目直接切到对应标签，休息中的标签会先唤醒。
 struct TeamInspector: View {
     @EnvironmentObject var state: AppState
+    @State private var hoveredSessionID: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            // header
             HStack {
-                Text("团队").font(Theme.ui(14, .bold))
+                Text("团队").font(Theme.ui(15, .bold))
                 Spacer()
-                IconButton(system: "arrow.clockwise", size: 26, iconSize: 15) { state.probe() }
+                IconButton(system: "arrow.clockwise", size: 28, iconSize: 15) { state.probe() }
             }
-            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
-            Divider().overlay(Theme.hair)
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 11)
 
-            // 「等你/干活/空闲」的计数跟着探测一起去掉了，只留会话总数和休息数
-            HStack(spacing: 16) {
-                statChip(state.sessionCount, "会话", Theme.fg)
-                statChip(state.count(.rest), "休息", Theme.rest)
-                Spacer()
-            }
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
-
-            // segmented
             HStack(spacing: 0) {
                 segItem("按员工", .employee)
                 segItem("按项目", .project)
@@ -32,26 +22,23 @@ struct TeamInspector: View {
             }
             .padding(3)
             .background(RoundedRectangle(cornerRadius: 9).fill(Theme.panel))
-            .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
+            .padding(.horizontal, 14).padding(.bottom, 12)
 
-            // list：每个分组一张卡，卡内细线分行
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 13) {
                     ForEach(state.teamSections) { section in
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 9) {
                             if let title = section.title {
                                 HStack {
-                                    Text(title).font(Theme.ui(13, .bold)).foregroundColor(Theme.fg)
+                                    Text(title).font(Theme.mono(12, .bold)).foregroundColor(Theme.fg)
                                     Spacer()
                                     Text("\(section.groups.count) 人")
                                         .font(Theme.mono(10)).foregroundColor(Theme.dim)
                                 }
+                                .padding(.horizontal, 3)
                             }
-                            ForEach(section.groups) { g in
-                                VStack(alignment: .leading, spacing: 7) {
-                                    groupHeader(g)
-                                    card(g)
-                                }
+                            ForEach(section.groups) { group in
+                                employeeCard(group)
                             }
                         }
                     }
@@ -60,136 +47,152 @@ struct TeamInspector: View {
                             .frame(maxWidth: .infinity).padding(.top, 20)
                     }
                 }
-                .padding(.horizontal, 14).padding(.bottom, 14)
+                .padding(.horizontal, 12).padding(.bottom, 16)
             }
         }
-        .frame(width: 296)
+        .frame(width: 320)
         .background(Color.white.opacity(0.03))
     }
 
-    // 分组头：小头像 + 名 + 汇总（右对齐）
-    private func groupHeader(_ g: TeamGroup) -> some View {
-        HStack(spacing: 8) {
-            // 按员工时标题是「机器 · 员工」，头像/首字母要用员工名本身去查
-            Avatar(text: initials(g.sessions.first?.owner ?? g.title),
-                   grad: headerGrad(g), size: 20, corner: 10, fontSize: 9,
-                   image: state.avatar(g.sessions.first?.owner ?? g.title))
-            Text(g.title).font(Theme.ui(13, .bold)).foregroundColor(Theme.fg)
-            Spacer()
-            Text(g.sub).font(Theme.mono(10)).foregroundColor(Theme.dim)
-        }
-        .padding(.horizontal, 2)
-    }
-
-    // 分组卡：一张圆角卡，内部会话行用细线分隔，无逐行边框
-    private func card(_ g: TeamGroup) -> some View {
-        VStack(spacing: 0) {
-            ForEach(Array(g.sessions.enumerated()), id: \.element.id) { idx, s in
-                if idx > 0 {
-                    // 整条通到边的分隔线
-                    Rectangle().fill(Theme.hair).frame(height: 1)
-                }
-                teamRow(s)
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.hair))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    /// 团队页只管理状态；打开标签由左侧坞负责。
-    private func teamRow(_ s: Session) -> some View {
-            HStack(spacing: 9) {
-                Avatar(text: s.initials, grad: s.grad, size: 26, corner: 8, image: state.avatar(s.owner),
-                       agent: state.agent(for: s), ring: Theme.panel3)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(state.inspector == .project ? s.name : s.project)
-                            .font(Theme.ui(12.5, .semibold)).foregroundColor(Theme.fg)
+    private func employeeCard(_ group: TeamGroup) -> some View {
+        let allResting = group.sessions.allSatisfy { state.resting($0) }
+        let selected = group.sessions.contains { $0.id == state.activeSessionID }
+        return VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Button { open(group.sessions.first(where: { !state.resting($0) }) ?? group.sessions[0]) } label: {
+                    HStack(spacing: 10) {
+                        Avatar(text: initials(group.sessions[0].owner), grad: group.sessions[0].grad,
+                               size: 34, corner: 17, fontSize: 13,
+                               image: state.avatar(group.sessions[0].owner), agent: commonAgent(group), ring: Theme.panel)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.title).font(Theme.mono(13, .bold)).foregroundColor(Theme.fg)
+                                .lineLimit(1).truncationMode(.middle)
+                            Text(group.sub).font(Theme.mono(10)).foregroundColor(Theme.sub)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Text(s.dir).font(Theme.mono(10)).foregroundColor(Theme.sub)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                Spacer(minLength: 4)
-                agentGear(s)
-                Button { state.toggleRest(sessionID: s.id) } label: {
-                    Image(systemName: s.status == .rest ? "moon.zzz.fill" : "moon")
-                        .font(.system(size: 13))
-                        .foregroundColor(s.status == .rest ? Theme.rest : Theme.dim)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(s.status == .rest ? "唤醒（在岗）" : "让 TA 休息")
+                .help("打开 \(group.title) 的标签")
+
+                // 按项目时一张卡只有一条会话，iOS 把操作放到卡片头。
+                if state.inspector == .project, let session = group.sessions.first {
+                    agentGear(session)
+                    restButton(session)
+                }
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(Color.clear)
-            .opacity(s.status == .rest ? 0.6 : 1)
-            .contentShape(Rectangle())
+
+            if state.inspector != .project {
+                VStack(spacing: 5) {
+                    ForEach(group.sessions) { session in
+                        projectRow(session)
+                    }
+                }
+            }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(allResting ? Theme.rest.opacity(0.45) : selected ? Theme.teal.opacity(0.45) : Theme.hair,
+                    lineWidth: 1))
+        .opacity(allResting ? 0.72 : 1)
+    }
+
+    private func projectRow(_ session: Session) -> some View {
+        let resting = state.resting(session)
+        let selected = state.activeSessionID == session.id
+        return HStack(spacing: 6) {
+            Button { open(session) } label: {
+                HStack(spacing: 7) {
+                    Text(session.project)
+                        .font(Theme.mono(12, .bold))
+                        .foregroundColor(resting ? Theme.rest : Theme.fg)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if resting {
+                        Text("休息中").font(Theme.mono(10)).foregroundColor(Theme.rest)
+                    }
+                    AgentBadge(kind: state.agent(for: session), size: 14, ring: Theme.panel2)
+                }
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .padding(.leading, 9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(resting ? "唤醒并打开 \(session.name)" : "打开 \(session.name)")
+
+            agentGear(session)
+            restButton(session)
+        }
+        .padding(.trailing, 5)
+        .background(RoundedRectangle(cornerRadius: 9)
+            .fill(selected ? Theme.teal.opacity(0.13) : hoveredSessionID == session.id
+                  ? Color.white.opacity(0.09) : Color.white.opacity(resting ? 0.025 : 0.055)))
+        .overlay(RoundedRectangle(cornerRadius: 9)
+            .stroke(selected ? Theme.teal.opacity(0.35) : .clear, lineWidth: 1))
+        .onHover { hovering in hoveredSessionID = hovering ? session.id : nil }
         .contextMenu {
-            Button { state.toggleRest(sessionID: s.id) } label: {
-                Label(s.status == .rest ? "唤醒（在岗）" : "让 TA 休息",
-                      systemImage: s.status == .rest ? "moon.zzz.fill" : "moon")
-            }
-            Menu("打开时进…") {
-                ForEach(AgentKind.allCases) { k in
-                    Button { state.setAgent(k, for: s) } label: {
-                        Label(k == state.agent(for: s) ? "\(k.label)（当前）" : k.label, systemImage: k.symbol)
-                    }
-                }
-            }
+            Button("打开标签") { open(session) }
+            Button(resting ? "唤醒" : "休息") { state.toggleRest(sessionID: session.id) }
         }
     }
 
-    /// 行尾齿轮：配这个员工打开时进 claude / codex / deepseek。
-    /// 是哪个 CLI 看头像右下角那颗 mark，这里只管「能改」——齿轮染成当前品牌色呼应一下。
-    private func agentGear(_ s: Session) -> some View {
-        let cur = state.agent(for: s)
-        return HStack(spacing: 4) {
-            Menu {
-                ForEach(AgentKind.allCases) { k in
-                    Button { state.setAgent(k, for: s) } label: {
-                        Label(k == cur ? "\(k.label)（当前）" : k.label, systemImage: k.symbol)
-                    }
-                }
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12))
-                    .foregroundColor(cur == .claude ? Theme.dim : cur.brand)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: 22)
-            .help("打开时进哪个 CLI：\(cur.label)")
-        }
+    private func open(_ session: Session) {
+        state.openTeamSession(session.id)
     }
 
-    // 行里不再显示 等你/干活中/空闲/休息 —— 探测出来的档位不准，看了误导。
-    // 休息与否仍看行尾月亮（手动开关，那个是准的）。
-
-    private func statChip(_ n: Int, _ label: String, _ color: Color) -> some View {
-        HStack(spacing: 5) {
-            Text("\(n)").font(Theme.mono(15, .bold)).foregroundColor(color)
-            Text(label).font(Theme.ui(11)).foregroundColor(Theme.sub)
+    private func restButton(_ session: Session) -> some View {
+        let resting = state.resting(session)
+        return Button { state.toggleRest(sessionID: session.id) } label: {
+            Image(systemName: resting ? "moon.zzz.fill" : "moon")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(resting ? Theme.rest : Theme.sub)
+                .frame(width: 25, height: 28)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help(resting ? "唤醒（在岗）" : "让 TA 休息")
+    }
+
+    private func agentGear(_ session: Session) -> some View {
+        let current = state.agent(for: session)
+        return Menu {
+            ForEach(AgentKind.allCases) { kind in
+                Button { state.setAgent(kind, for: session) } label: {
+                    Label(kind == current ? "\(kind.label)（当前）" : kind.label, systemImage: kind.symbol)
+                }
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(current == .claude ? Theme.sub : current.brand)
+                .frame(width: 25, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("打开时进哪个 CLI：\(current.label)")
+    }
+
+    private func commonAgent(_ group: TeamGroup) -> AgentKind? {
+        guard let first = group.sessions.first.map({ state.agent(for: $0) }),
+              group.sessions.allSatisfy({ state.agent(for: $0) == first }) else { return nil }
+        return first
     }
 
     private func segItem(_ label: String, _ mode: InspectorMode) -> some View {
-        let on = state.inspector == mode
+        let selected = state.inspector == mode
         return Button { state.inspector = mode } label: {
-            Text(label).font(Theme.ui(12, on ? .semibold : .regular))
-                .foregroundColor(on ? Theme.fg : Theme.sub)
-                .frame(maxWidth: .infinity).padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 7).fill(on ? Theme.panel3 : .clear))
+            Text(label).font(Theme.ui(12, selected ? .semibold : .regular))
+                .foregroundColor(selected ? Theme.fg : Theme.sub)
+                .frame(maxWidth: .infinity).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 7).fill(selected ? Theme.panel3 : .clear))
         }
         .buttonStyle(.plain)
     }
 
-    private func initials(_ s: String) -> String {
-        String(s.replacingOccurrences(of: "-", with: "").prefix(2))
-    }
-    // 分组头像底色：员工用真头像（外层已传 image），项目/机器给个中性渐变
-    private func headerGrad(_ g: TeamGroup) -> [Color] {
-        g.sessions.first?.grad ?? Grad.slate
+    private func initials(_ value: String) -> String {
+        String(value.replacingOccurrences(of: "-", with: "").prefix(2))
     }
 }

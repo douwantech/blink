@@ -21,7 +21,7 @@ final class SharedTabSnapshotTests: XCTestCase {
     {"version":"17:1","machines":[],
      "tabs":{"version":1,
        "tabs":[
-         {"id":"\(sharedA)","machineId":"machine-1","tmuxSession":"alice-alpha","shared":true},
+         {"id":"\(sharedA)","machineId":"machine-1","tmuxSession":"alice-alpha","workDir":"/Users/apple/Codes/jack","shared":true},
          {"id":"\(sharedB)","machineId":"machine-2","tmuxSession":"bob-beta","shared":true},
          {"id":"\(sharedC)","machineId":"machine-1","tmuxSession":"carol-gamma","shared":true},
          {"id":"\(ownA)","machineId":"machine-9","tmuxSession":"mine-one","selectOnLoad":true},
@@ -67,6 +67,7 @@ final class SharedTabSnapshotTests: XCTestCase {
                    "公用标签要按服务端给的顺序单独拿出来")
     XCTAssertEqual(decoded.shared.map(\.machineId), ["machine-1", "machine-2", "machine-1"])
     XCTAssertEqual(decoded.shared.map(\.tmuxSession), ["alice-alpha", "bob-beta", "carol-gamma"])
+    XCTAssertEqual(decoded.shared.map(\.workDir), ["/Users/apple/Codes/jack", nil, nil])
   }
 
   func testOwnTabsSurviveTheStripUntouched() throws {

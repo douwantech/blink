@@ -20,7 +20,8 @@ enum CloudTabStore {
                   let machineId = row["machineId"] as? String,
                   let session = row["tmuxSession"] as? String,
                   !machineId.isEmpty, !session.isEmpty else { return nil }
-            return CloudTab(id: id, machineId: machineId, ccName: session, dir: "~")
+            let dir = (row["workDir"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "~"
+            return CloudTab(id: id, machineId: machineId, ccName: session, dir: dir)
         }
     }
 

@@ -292,8 +292,9 @@ final class AppState: ObservableObject {
             let id = "\(t.machineId)/\(full)"
             let old = live[id.lowercased()]
             let initials = String(t.ccName.replacingOccurrences(of: "-", with: "").prefix(2))
+            if t.dir != "~", old?.dir != t.dir { term.rebuild(id) }
             built.append(Session(id: id, machineID: t.machineId, name: t.ccName,
-                                 dir: old?.dir ?? "~", initials: initials,
+                                 dir: t.dir != "~" ? t.dir : (old?.dir ?? "~"), initials: initials,
                                  grad: grads[built.count % grads.count],
                                  status: .idle, lines: [], tmuxName: full))
         }
@@ -633,7 +634,7 @@ final class AppState: ObservableObject {
 
     /// 三种视图都使用相同的「机器 × 员工」卡片，只改变外层分段。
     var teamSections: [TeamSection] {
-        let all = sessions.filter { $0.tmuxName != nil }
+        let all = sessions.filter { $0.tmuxName != nil && !isClosed($0) }
         func cards(_ rows: [Session]) -> [TeamGroup] {
             let keyed = Dictionary(grouping: rows) { "\($0.machineID)|\($0.owner)" }
             return keyed.map { key, values in
@@ -718,6 +719,21 @@ final class AppState: ObservableObject {
             lastSessionByMachine[s.machineID] = id   // 记住这台机器最后点的 tab（并落盘）
         }
         mode = .terminal
+    }
+
+    /// 团队卡片直达标签；休息中的标签先在服务器唤醒，再切换终端。
+    func openTeamSession(_ id: String) {
+        guard let session = sessions.first(where: { $0.id == id && $0.tmuxName != nil && !isClosed($0) }) else { return }
+        guard isResting(session) else { selectSession(id); return }
+        showToast("正在唤醒 \(session.name)…")
+        Task { @MainActor in
+            guard await ServerSync.shared.setResting(false, session: session.name) else {
+                self.showToast("\(session.name) 未能唤醒，请稍后重试")
+                return
+            }
+            self.loadCloudTabs()
+            self.selectSession(id)
+        }
     }
 
     private func mutateActive(_ f: (inout Session) -> Void) {

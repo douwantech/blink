@@ -197,7 +197,11 @@ enum HostReachability {
     guard let m else { return nil }
 
     let host = Self.bestHost(for: m)
-    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+    let sharedPath = ServerConfigSync.shared.sharedTabs.first {
+      $0.machineId == m.id && $0.tmuxSession == tmuxSession
+    }?.workDir
+    let workPath = sharedPath.flatMap { $0.isEmpty ? nil : $0 }
+      ?? BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
 
     var session = Self.effectiveTmuxSessionName(workDirId: workDirId, tmuxSession: tmuxSession)
     session = session.replacingOccurrences(of: "\"", with: "\\\"").lowercased()
@@ -271,6 +275,9 @@ enum HostReachability {
       // claude 还活着则不打扰。点「刷新」/自动重连都走这条路。
       // 启动文件先写临时文件再 mv：几个客户端同时重连时 `cat >` 会互相截断交错，留下半截内容（parse error）
       let bootFile = "/tmp/.blink-boot-\(outerSession).sh"
+      let tmuxStartDir = workPath.map {
+        "-c '" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
+      } ?? ""
       let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-u; tmux send-keys -t \#(outerSession) " source \#(bootFile)" Enter;; esac; fi"#
       // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装那）也加载进来。
       // 末尾 `; exec $SHELL -il`：万一 claude 没起来/退出，掉到登录 shell 而不是整个会话塌掉，
@@ -285,7 +292,7 @@ enum HostReachability {
       BLINKBOOT
       mv -f \(bootFile).$$ \(bootFile)
       \(heal)
-      exec tmux new-session -A -s \(outerSession) $SHELL -lic 'source \(bootFile); echo "[blink] \(agent.id) 已退出，掉到 shell（上方有报错即原因，敲 \(agent.id) 重试）"; exec $SHELL -il'
+      exec tmux new-session -A -s \(outerSession) \(tmuxStartDir) $SHELL -lic 'source \(bootFile); echo "[blink] \(agent.id) 已退出，掉到 shell（上方有报错即原因，敲 \(agent.id) 重试）"; exec $SHELL -il'
       """
       let encoded = Data(remoteScript.utf8).base64EncodedString()
         // 必须用 -- 隔开，否则 Blink 的 SSHCommand 会把后面的 -d / -p / -L 等当本地选项解析

@@ -46,7 +46,8 @@
     label.check { display:flex; align-items:center; gap:8px; font-weight:600 }
     label.check input { width:auto }
     #project-employee-rows .row { margin-bottom:8px }
-    #project-employee-rows select { flex:1 1 180px; width:auto }
+    #project-employee-rows select { flex:1 1 150px; width:auto }
+    #project-employee-rows .employee-workdir { flex:2 1 260px; width:auto }
     details { border:1px solid #e0e5ee; border-radius:10px; margin:8px 0; padding:12px }
     summary { cursor:pointer; font-weight:600 }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f5f7fb; border-radius:8px; padding:14px; font-size:12px }
@@ -104,7 +105,7 @@
         <h2>公用标签</h2>
         <p class="muted">「公用」项目名单里的每个 员工×项目 就是一条全局标签。所有账号登录后默认都有这一套，不用逐个账号去建；改了项目名单，所有人下次同步就跟着变。未被标为「公用」的项目（如 main/blink）不在这里出现。</p>
         <p id="public-summary" class="muted"></p>
-        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>机器</th><th>标签 ID</th></tr></thead><tbody id="public-rows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>项目</th><th>员工</th><th>会话</th><th>机器</th><th>工作目录</th><th>标签 ID</th></tr></thead><tbody id="public-rows"></tbody></table></div>
       </section>
     </main>
   </div>
@@ -259,7 +260,7 @@
       if (!confirm(`确定删除${DIRECTORY[kind].title}「${entry.name || entry.id}」？已经建好的标签不会受影响。`)) return;
       try { await api(`/admin/api/${kind}/${encodeURIComponent(entry.id)}`, { method:'DELETE' }); await load(); notify('已删除'); } catch (error) { notify(error.message); }
     }
-    // 一行 = 一个有效员工 + 它的机器。会话名由 员工-项目 推出来，不在这里填。
+    // 一行 = 一个有效员工 + 它的机器 + 该机器上的工作目录。
     function employeeRow(employee = {}) {
       const row = document.createElement('div'); row.className = 'row';
       const who = document.createElement('select'); who.className = 'employee-pick';
@@ -268,7 +269,9 @@
       const machine = document.createElement('select'); machine.className = 'employee-machine';
       for (const m of state.machines) machine.add(new Option(m.name || m.id, m.id));
       if (employee.machineId) machine.value = employee.machineId;
-      row.append(who, machine, button('移除', () => row.remove(), 'danger'));
+      const workDir = document.createElement('input'); workDir.className = 'employee-workdir';
+      workDir.placeholder = '工作目录（绝对路径）'; workDir.value = employee.workDir || '';
+      row.append(who, machine, workDir, button('移除', () => row.remove(), 'danger'));
       return row;
     }
     function openProject(entry = null) {
@@ -288,7 +291,7 @@
     async function saveProject(event) {
       event.preventDefault(); const entry = state.project;
       const id = entry ? entry.id : $('project-id').value.trim();
-      const employees = [...$('project-employee-rows').children].map(row => ({ id: row.querySelector('.employee-pick').value, machineId: row.querySelector('.employee-machine').value }));
+      const employees = [...$('project-employee-rows').children].map(row => ({ id: row.querySelector('.employee-pick').value, machineId: row.querySelector('.employee-machine').value, workDir: row.querySelector('.employee-workdir').value.trim() }));
       try {
         await api(`/admin/api/projects/${encodeURIComponent(id)}`, { method:'PUT', body:json({ id, name:$('project-name').value.trim(), public:$('project-public').checked, employees }) });
         $('project-dialog').close(); await load(); notify('已保存');
@@ -313,13 +316,13 @@
         if (tab.projectId !== current) {
           current = tab.projectId;
           const group = document.createElement('tr'); group.className = 'group';
-          const cell = td(group, ''); cell.colSpan = 5;
+          const cell = td(group, ''); cell.colSpan = 6;
           const title = document.createElement('strong'); title.textContent = tab.projectName === tab.projectId ? tab.projectId : `${tab.projectName}（${tab.projectId}）`;
           cell.append(title); rows.append(group);
         }
         const tr = document.createElement('tr');
         td(tr, tab.projectName); td(tr, nameOf(state.employees, tab.employeeId)); td(tr, tab.session);
-        td(tr, nameOf(state.machines, tab.machineId, '未知机器')); td(tr, tab.tabId);
+        td(tr, nameOf(state.machines, tab.machineId, '未知机器')); td(tr, tab.workDir || '—'); td(tr, tab.tabId);
         rows.append(tr);
       }
       if (!tabs.length) { const tr = document.createElement('tr'); td(tr, '没有公用项目'); rows.append(tr); }
