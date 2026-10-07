@@ -357,6 +357,39 @@ enum HostReachability {
 
   static let showMachineBarChanged = Notification.Name("BlinkShowMachineBarChanged")
 
+  /// 从标签的真实 tmux pane 追踪子进程，再用 Claude 的 PID 映射精确找到 jsonl。
+  /// 只读取当前 pane 的进程树，避免同一项目下多个标签互相串记录。
+  private static func transcriptActiveSessionLookup(_ session: String) -> String {
+    let tmuxName = "cc-" + session.lowercased()
+      .replacingOccurrences(of: "'", with: "")
+      .replacingOccurrences(of: "\"", with: "")
+    return #"""
+    TMUX_NAME='\#(tmuxName)'
+    active_session_file() {
+      command -v tmux >/dev/null 2>&1 || return
+      local pane pid child id file
+      pane=$(tmux display-message -p -t "$TMUX_NAME" '#{pane_pid}' 2>/dev/null) || return
+      case "$pane" in ''|*[!0-9]*) return;; esac
+      local pending="$pane"
+      while [ -n "$pending" ]; do
+        pid=${pending%% *}
+        if [ "$pending" = "$pid" ]; then pending=""; else pending=${pending#* }; fi
+        if [ -f "$HOME/.claude/sessions/$pid.json" ]; then
+          id=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
+          if printf '%s' "$id" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+            file=$(find "$PROJ" -type f -name "$id.jsonl" -print -quit 2>/dev/null)
+            if [ -n "$file" ]; then printf '%s\n' "$file"; return; fi
+          fi
+        fi
+        for child in $(pgrep -P "$pid" 2>/dev/null); do
+          case "$child" in ''|*[!0-9]*) continue;; esac
+          pending="${pending:+$pending }$child"
+        done
+      done
+    }
+    """#
+  }
+
   @objc func transcriptCommand(forMachineId machineId: String?, workDirId: String?, baseName: String) -> String? {
     let arr = machines
     let m: BlinkMachine?
@@ -368,7 +401,12 @@ enum HostReachability {
     guard let m else { return nil }
 
     let host = Self.bestHost(for: m)
-    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path ?? "/Users/\(m.user)"
+    let sharedPath = ServerConfigSync.shared.sharedTabs.first {
+      $0.machineId == m.id && $0.tmuxSession == baseName
+    }?.workDir
+    let workPath = sharedPath.flatMap { $0.isEmpty ? nil : $0 }
+      ?? BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+      ?? "/Users/\(m.user)"
     let cwdEncoded = workPath
       .replacingOccurrences(of: "/", with: "-")
       .replacingOccurrences(of: ".", with: "-")
@@ -392,6 +430,7 @@ enum HostReachability {
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
     PROJ=~/.claude/projects
     DIR=$PROJ/\(cwdEncoded)
+    \(Self.transcriptActiveSessionLookup(session))
     # 正文全靠 jq 生成；缺 jq 时若不拦，页面只剩 WARN+文件头两行，像"读不到"
     if ! command -v jq >/dev/null 2>&1; then
       MSG="⚠️ 这台机器没装 jq，转录没法解析。ssh 上去装一下：brew install jq"
@@ -406,13 +445,15 @@ enum HostReachability {
         printf '%d\\t%s\\n' "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" "$f"
       done | sort -rn | head -1 | cut -f2-
     }
-    # 多 tab 共用同一 workDir 时（比如 Jack:talkai / Jack:printer 都在 /Users/apple/Codes/Jack），
-    # 所有 cc session 的 jsonl 都堆在同一个项目目录下，单纯 "mtime 最新" 会拉到别 tab 刚活跃过的 session。
-    # 所以以 customTitle 精确匹配为主：sshCommand 在新建 cc 时会自动 /rename <TITLE>，cc 把 TITLE 写入 jsonl。
+    # 优先从这个 tab 的 tmux pane → Claude PID → sessionId 精确定位。
+    # Claude 不在运行或尚无 PID 映射时，再按 customTitle 查旧会话。
     TITLE='\(name)'
     ALT='\(altName)'
+    F=$(active_session_file)
     # Step 1: 同目录 customTitle 匹配（-i 容忍大小写；取 mtime 最新，防同 TITLE 多份残留）
-    F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    if [ -z "$F" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
     # Step 1.5: 备选短名（手动 /title 时常不带目录前缀）
     if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
       F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
@@ -421,14 +462,20 @@ enum HostReachability {
     if [ -z "$F" ]; then
       F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
     fi
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
     # Step 3: 全局兜底（cc 启动时 cwd 跟 workDir 不一致）
     if [ -z "$F" ]; then
       F=$(grep -rilF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
     fi
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -rilF "\\"customTitle\\":\\"$ALT\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+    fi
     WARN=""
     # Step 4: customTitle 没写入 → 抓这个 tab 的 tmux 屏幕内容反查 jsonl（只读、精确到本 tab）
-    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "cc-$TITLE" 2>/dev/null; then
-      SNIPS=$(tmux capture-pane -p -t "cc-$TITLE" -S -600 2>/dev/null \\
+    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+      SNIPS=$(tmux capture-pane -p -t "$TMUX_NAME" -S -600 2>/dev/null \\
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \\
         | awk 'length($0)>=28 && $0 ~ /[[:alnum:]]/ && $0 !~ /["\\\\|]/ && $0 !~ /──|▰|▱|⏵|CTX |👾|📋|🌿|blink-boot|已退出|command not found|[Nn]o such file|esc to interrupt|auto mode|shift.tab/' | tail -16 | sed '1!G;h;$!d')
       while IFS= read -r sn; do
@@ -522,7 +569,12 @@ enum HostReachability {
     }
     guard let m = m0 else { return nil }
 
-    let workPath = BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path ?? "/Users/\(m.user)"
+    let sharedPath = ServerConfigSync.shared.sharedTabs.first {
+      $0.machineId == m.id && $0.tmuxSession == baseName
+    }?.workDir
+    let workPath = sharedPath.flatMap { $0.isEmpty ? nil : $0 }
+      ?? BlinkWorkDirStore.shared.workDir(forId: workDirId)?.path
+      ?? "/Users/\(m.user)"
     let cwdEncoded = workPath
       .replacingOccurrences(of: "/", with: "-")
       .replacingOccurrences(of: ".", with: "-")
@@ -544,6 +596,7 @@ enum HostReachability {
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
     PROJ=~/.claude/projects
     DIR=$PROJ/\(cwdEncoded)
+    \(Self.transcriptActiveSessionLookup(session))
     pick_latest_by_mtime() {
       while read f; do
         [ -z "$f" ] && continue
@@ -552,20 +605,29 @@ enum HostReachability {
     }
     TITLE='\(name)'
     ALT='\(altName)'
-    F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    F=$(active_session_file)
+    if [ -z "$F" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
     if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
       F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
     fi
     if [ -z "$F" ]; then
       F=$(grep -ilF "\\"customTitle\\":\\"$TITLE\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
     fi
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -ilF "\\"customTitle\\":\\"$ALT\\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+    fi
     if [ -z "$F" ]; then
       F=$(grep -rilF "\\"customTitle\\":\\"$TITLE\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
     fi
+    if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+      F=$(grep -rilF "\\"customTitle\\":\\"$ALT\\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+    fi
     WARN=""
     # customTitle 没写入 → 抓这个 tab 的 tmux 屏幕内容反查 jsonl（只读、精确到本 tab）
-    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "cc-$TITLE" 2>/dev/null; then
-      SNIPS=$(tmux capture-pane -p -t "cc-$TITLE" -S -600 2>/dev/null \\
+    if [ -z "$F" ] && command -v tmux >/dev/null 2>&1 && tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+      SNIPS=$(tmux capture-pane -p -t "$TMUX_NAME" -S -600 2>/dev/null \\
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \\
         | awk 'length($0)>=28 && $0 ~ /[[:alnum:]]/ && $0 !~ /["\\\\|]/ && $0 !~ /──|▰|▱|⏵|CTX |👾|📋|🌿|blink-boot|已退出|command not found|[Nn]o such file|esc to interrupt|auto mode|shift.tab/' | tail -16 | sed '1!G;h;$!d')
       while IFS= read -r sn; do

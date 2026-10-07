@@ -915,7 +915,8 @@ final class AppState: ObservableObject {
         Task { @MainActor in
             let out = await AppState.exec(
                 transport,
-                AppState.historyDeltaScript(title: title, cachedFile: cached?.file, cachedLines: cached?.lines ?? 0),
+                AppState.historyDeltaScript(title: title, workDir: s.dir,
+                                            cachedFile: cached?.file, cachedLines: cached?.lines ?? 0),
                 timeout: 25, marker: "@TSB64E@", fallback: fallback)
             guard let d = AppState.parseTranscriptDelta(out) else {
                 if cached == nil, let i = sessions.firstIndex(where: { $0.id == sid }) {
@@ -1051,17 +1052,28 @@ final class AppState: ObservableObject {
         var message: String
     }
 
-    /// 远端增量拉 transcript：按 customTitle 在 ~/.claude/projects 定位 jsonl，
+    /// 远端增量拉 transcript：优先用 tmux pane 的 Claude PID 精确定位 jsonl，
     /// 只 sed 出游标(cachedLines+1)之后的新行喂 jq，解析成「▶ You / ◆ Claude」块
     /// （同 iOS BlinkMachineStore.transcriptDeltaScript）。输出
     /// @TSB64@<b64(META\t<file>\t<total>\t<full>\n<正文>)>@TSB64E@。
-    nonisolated static func historyDeltaScript(title: String, cachedFile: String?, cachedLines: Int) -> String {
+    nonisolated static func historyDeltaScript(title: String, workDir: String,
+                                               cachedFile: String?, cachedLines: Int) -> String {
         let safeFile = (cachedFile ?? "").filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." }
         let cachedN = max(cachedLines, 0)
+        let safeTitle = title.replacingOccurrences(of: "'", with: "")
+        let dirEncoded = workDir.replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+            .replacingOccurrences(of: "'", with: "")
+        let basename = (workDir as NSString).lastPathComponent.lowercased()
+        let altTitle = safeTitle.hasPrefix("\(basename)-")
+            ? String(safeTitle.dropFirst(basename.count + 1)) : safeTitle
         return #"""
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-        TITLE='\#(title)'
+        TITLE='\#(safeTitle)'
+        ALT='\#(altTitle)'
+        TMUX_NAME='cc-\#(safeTitle)'
         PROJ="$HOME/.claude/projects"
+        DIR="$PROJ/\#(dirEncoded)"
         pick_latest_by_mtime() {
           while read f; do
             [ -z "$f" ] && continue
@@ -1073,7 +1085,47 @@ final class AppState: ObservableObject {
           emit "$(printf 'META\tNOTFOUND\t0\t1\n⚠️ 这台机器没装 jq，读不了对话记录。ssh 上去 brew install jq')"
           exit 0
         fi
-        F=$(grep -rilF "\"customTitle\":\"$TITLE\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+        active_session_file() {
+          command -v tmux >/dev/null 2>&1 || return
+          local pane pid child id file
+          pane=$(tmux display-message -p -t "$TMUX_NAME" '#{pane_pid}' 2>/dev/null) || return
+          case "$pane" in ''|*[!0-9]*) return;; esac
+          local pending="$pane"
+          while [ -n "$pending" ]; do
+            pid=${pending%% *}
+            if [ "$pending" = "$pid" ]; then pending=""; else pending=${pending#* }; fi
+            if [ -f "$HOME/.claude/sessions/$pid.json" ]; then
+              id=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
+              if printf '%s' "$id" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+                file=$(find "$PROJ" -type f -name "$id.jsonl" -print -quit 2>/dev/null)
+                if [ -n "$file" ]; then printf '%s\n' "$file"; return; fi
+              fi
+            fi
+            for child in $(pgrep -P "$pid" 2>/dev/null); do
+              case "$child" in ''|*[!0-9]*) continue;; esac
+              pending="${pending:+$pending }$child"
+            done
+          done
+        }
+        F=$(active_session_file)
+        if [ -z "$F" ]; then
+          F=$(grep -ilF "\"customTitle\":\"$TITLE\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+          F=$(grep -ilF "\"customTitle\":\"$ALT\"" "$DIR"/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if [ -z "$F" ]; then
+          F=$(grep -ilF "\"customTitle\":\"$TITLE\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+          F=$(grep -ilF "\"customTitle\":\"$ALT\"" "$DIR"*/*.jsonl 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if [ -z "$F" ]; then
+          F=$(grep -rilF "\"customTitle\":\"$TITLE\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+        fi
+        if [ -z "$F" ] && [ "$ALT" != "$TITLE" ]; then
+          F=$(grep -rilF "\"customTitle\":\"$ALT\"" "$PROJ" --include='*.jsonl' 2>/dev/null | pick_latest_by_mtime)
+        fi
         if [ -z "$F" ]; then
           emit "$(printf 'META\tNOTFOUND\t0\t1\n没找到这个会话的对话记录（customTitle『%s』未匹配）。到这个 cc 里跑一次 /title %s 固定命名后再看。' "$TITLE" "$TITLE")"
           exit 0
