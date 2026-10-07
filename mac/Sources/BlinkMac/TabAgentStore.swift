@@ -120,6 +120,10 @@ if same_dir:
     # 名字全局唯一时直接按名字恢复；重名时用 ID 锁定当前目录。
     print('N:' + name if len(named) == 1 else 'I:' + same_dir[0])
     sys.exit(0)
+if named:
+    # 工作目录改过后仍按标签名恢复原会话。
+    print('I:' + named[0])
+    sys.exit(0)
 # 只读旧版映射以迁移已绑定的会话；新版本不再写映射文件。
 try:
     with (pathlib.Path.home() / '.blink/codex-sessions.json').open() as stream: mapping = json.load(stream)
@@ -152,6 +156,7 @@ name, cwd = sys.argv[1:]
 cwd = os.path.realpath(cwd)
 home = pathlib.Path.home()
 sessions = {}
+named_elsewhere = []
 for root in (home / '.deepseek/sessions', home / '.codewhale/sessions'):
     for file in root.glob('*.json'):
         try:
@@ -161,12 +166,17 @@ for root in (home / '.deepseek/sessions', home / '.codewhale/sessions'):
             start = head.index(':', start) + 1
             meta, _ = json.JSONDecoder().raw_decode(head[start:].lstrip())
             if str(uuid.UUID(meta['id'])) != sid: continue
-            if os.path.realpath(meta['workspace']) != cwd: continue
-            sessions[sid] = (meta.get('title') or '', file.stat().st_mtime)
+            title, mtime = meta.get('title') or '', file.stat().st_mtime
+            if os.path.realpath(meta['workspace']) != cwd:
+                if title == name: named_elsewhere.append((sid, mtime))
+                continue
+            sessions[sid] = (title, mtime)
         except (OSError, KeyError, ValueError, TypeError): pass
 named = [(sid, mtime) for sid, (title, mtime) in sessions.items() if title == name]
 if named:
     print('N:' + max(named, key=lambda item: item[1])[0])
+elif named_elsewhere:
+    print('N:' + max(named_elsewhere, key=lambda item: item[1])[0])
 elif len(sessions) == 1:
     # 只接回尚未命名的唯一旧会话，避免多个 Blink 标签共用一个已命名会话。
     sid = next(iter(sessions))
@@ -316,7 +326,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
             } else if self == .deepseek {
         cmd = "TITLE=\"\(title)\"; MATCH=\"\"; if command -v python3 >/dev/null 2>&1; then MATCH=$(python3 \"$HOME/.blink/codewhale-resume.py\" \"$TITLE\" \"$PWD\" 2>/dev/null); fi; "
           + "_cwren() { T=\"$1\"; P=\"$2\"; i=0; while [ $i -lt 60 ]; do sleep 0.5; C=$(tmux capture-pane -p -t \"$P\" 2>/dev/null); case \"$C\" in *\"Full Access\"*) break;; esac; i=$((i+1)); done; tmux send-keys -t \"$P\" \"/rename $T\" Enter; }; "
-          + "case \"$MATCH\" in N:*) \(b)\(args) resume \"${MATCH#N:}\";; I:*) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args) resume \"${MATCH#I:}\";; *) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args);; esac"
+          + "case \"$MATCH\" in N:*) \(b)\(args) -C \"$PWD\" resume \"${MATCH#N:}\";; I:*) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args) -C \"$PWD\" resume \"${MATCH#I:}\";; *) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args);; esac"
             } else if self == .glm {
                 cmd = "if [ \"$BLINK_GLM_USE_USER_SETTINGS\" = 1 ]; then claude\(args); else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi"
             } else {

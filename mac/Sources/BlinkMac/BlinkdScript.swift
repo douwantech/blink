@@ -50,13 +50,17 @@ enum BlinkdScript {
         // Codex 和 Codewhale 从各自会话索引按标签名恢复；GLM 由 Claude Code 启动。
         let inner = !agent.supportsResume ? agent.launchSnippet(cdTarget: cd, title: title)
             // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
-            : agent.envPrefix + #"cd \#(cd) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; _ccren() { T="$TMUX_PANE"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(tmux capture-pane -p -t "$T" 2>/dev/null); case "$C" in *"trust the files"*) tmux send-keys -t "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) tmux send-keys -t "$T" Down; sleep 0.3; tmux send-keys -t "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) tmux send-keys -t "$T" "/rename $TITLE" Enter; return 0;; esac; i=$((i+1)); done; }; if [ -n "$ID" ]; then _ccren >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else _ccren >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi; }"#
+            : agent.envPrefix + #"cd \#(cd) && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="\#(title)"; ID=""; M=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); fi; if [ -z "$M" ]; then M=$(find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 -name "*.jsonl" -type f -exec grep -lF "\"customTitle\":\"$TITLE\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); fi; [ -n "$M" ] && ID=$(basename "$M" .jsonl); _ccren() { T="$TMUX_PANE"; i=0; while [ $i -lt 40 ]; do sleep 0.5; C=$(tmux capture-pane -p -t "$T" 2>/dev/null); case "$C" in *"trust the files"*) tmux send-keys -t "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"trust this folder"*) tmux send-keys -t "$T" Down; sleep 0.3; tmux send-keys -t "$T" Enter; sleep 1; i=$((i+1)); continue;; esac; case "$C" in *"shift+tab"*|*"for shortcuts"*) tmux send-keys -t "$T" "/rename $TITLE" Enter; return 0;; esac; i=$((i+1)); done; }; if [ -n "$ID" ]; then _ccren >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else _ccren >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi; }"#
 
         // SSH agent socket 探测（tmux 继承，便于远端 git 等）。
         let detectSock = #"S=$(sh -c 'for p in $(ls -t /tmp/ssh-*/agent.* 2>/dev/null) $TMPDIR/com.apple.launchd.*/Listeners /private/tmp/com.apple.launchd.*/Listeners $HOME/.ssh/agent.sock; do [ -S $p ] && { echo $p; break; }; done'); case x$S in x) ;; *) export SSH_AUTH_SOCK=$S; tmux set-environment -g SSH_AUTH_SOCK $S 2>/dev/null;; esac"#
 
-        // attach 到只剩 shell 的旧会话时，明确切到服务器下发的目录后再启动 CLI。
-        let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-c; tmux send-keys -t \#(outerSession) "cd \#(cd) && source \#(bootFile)" Enter;; esac; fi"#
+        // 已存在的 tmux pane 不受 new-session -c 影响。服务器修改 workDir 后，
+        // 旧 CLI 仍在原目录；只有重建 pane 才能让进程真正从新目录启动。
+        // 目录一致时保留正在运行的 CLI，只修复退回 shell 的会话。
+        let launch = #""$SHELL -lic 'source \#(bootFile); echo [blink] \#(agent.rawValue) 已退出，掉到 shell; exec $SHELL -il'""#
+        let enforceDirectory = workDir.hasPrefix("/") ? "true" : "false"
+        let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then D=$(cd \#(cd) 2>/dev/null && pwd -P); P=$(tmux display-message -p -t \#(outerSession) '#{pane_current_path}' 2>/dev/null); if \#(enforceDirectory) && [ -n "$D" ] && [ "$P" != "$D" ]; then tmux respawn-pane -k -t \#(outerSession) -c "$D" \#(launch); else PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-c; tmux send-keys -t \#(outerSession) "cd \#(cd) && source \#(bootFile)" Enter;; esac; fi; fi"#
 
         // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装在 ~/.local/bin）加载进来。
         // 末尾 `; exec $SHELL -il`：claude 退出就掉到登录 shell，不整个塌掉、报错留屏。
@@ -68,7 +72,7 @@ cat > \#(bootFile).$$ <<'BLINKBOOT'
 BLINKBOOT
 mv -f \#(bootFile).$$ \#(bootFile)
 \#(heal)
-exec tmux new-session -A -s \#(outerSession) -c \#(cd) $SHELL -lic 'source \#(bootFile); echo "[blink] \#(agent.rawValue) 已退出，掉到 shell（上方有报错即原因，敲 \#(agent.rawValue) 重试）"; exec $SHELL -il'
+exec tmux new-session -A -s \#(outerSession) -c \#(cd) \#(launch)
 """#
     }
 }
