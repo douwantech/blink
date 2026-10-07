@@ -120,11 +120,16 @@ final class BlinkdClient {
         guard !handshakeSent else { return }
         handshakeSent = true
         sendFrame(0x01, Array(token.utf8))                       // auth（必须第一帧）
+        // daemon 收到 exec 就立即用当前尺寸起 PTY。先给它真实尺寸，避免先按
+        // 默认 80×24 attach tmux，再 resize 导致整屏内容从上往下重新绘制。
+        ready = true
+        let size = pendingSize ?? (cols: terminal?.getTerminal().cols ?? 80,
+                                   rows: terminal?.getTerminal().rows ?? 24)
+        pendingSize = nil
+        sendResize(cols: size.cols, rows: size.rows)
         if let e = execCmd, !e.isEmpty {
             sendFrame(0x04, Array(e.utf8))                       // exec
         }
-        ready = true
-        if let s = pendingSize { sendResize(cols: s.cols, rows: s.rows); pendingSize = nil }
     }
 
     private func sendFrame(_ type: UInt8, _ payload: [UInt8]) {

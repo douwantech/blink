@@ -51,7 +51,8 @@ const (
 )
 
 // conn 是一条客户端连接 + 它专属的 PTY。PTY 懒启动:
-// 第一个 exec 帧决定跑什么命令;若在 exec 前先来 input/resize,则用默认 shell 起 PTY。
+// 第一个 exec 帧决定跑什么命令；exec 前的 resize 只记录初始尺寸，
+// 若先收到 input，才用默认 shell 起 PTY。
 type conn struct {
 	nc     net.Conn
 	defCmd string
