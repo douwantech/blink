@@ -234,6 +234,7 @@ final class ServerSync: ObservableObject {
 /// （sync 文件 / KV 里的缓存还在，只是不拉新）。
 struct ServerLoginView: View {
   var onSuccess: () -> Void
+  var onOffline: (() -> Void)? = nil
   @State private var username = ""
   @State private var password = ""
   @State private var error = ""
@@ -259,7 +260,9 @@ struct ServerLoginView: View {
         Text(error).font(Theme.ui(11)).foregroundStyle(.red)
       }
       HStack {
-        Button("离线使用") { onSuccess() }
+        Button("离线使用") {
+          if let onOffline { onOffline() } else { onSuccess() }
+        }
         Spacer()
         Button(busy ? "正在登录…" : "登录") { login() }
           .keyboardShortcut(.defaultAction)

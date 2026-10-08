@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MachineRail: View {
     @EnvironmentObject var state: AppState
+    let onOpenSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
@@ -46,7 +47,7 @@ struct MachineRail: View {
             Spacer()
 
             IconButton(system: "sparkles", color: Theme.purple, size: 36, iconSize: 19) { state.mode = .chat }
-            IconButton(system: "gearshape", size: 36, iconSize: 19) { state.showToast("打开设置") }
+            IconButton(system: "gearshape", size: 36, iconSize: 19, action: onOpenSettings)
         }
         .padding(.vertical, 14)
         .frame(width: 64)

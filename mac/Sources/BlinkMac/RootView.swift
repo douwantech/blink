@@ -3,21 +3,21 @@ import AppKit
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     /// 浏览器占满顶栏以下整块（和鸿蒙平板一样全屏），关掉回终端；⌘B / 顶栏地球按钮切换
     @AppStorage("BrowserPanel.open") private var showBrowser = false
-    /// 无登录 session 时启动弹一次登录 sheet（2026-10-05 服务器化）。「离线使用」
-    /// 可跳过——缓存照用，下次启动再弹。
-    @State private var showLogin = false
+    @State private var showSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBar(showBrowser: $showBrowser)
+            TopBar(showBrowser: $showBrowser, onOpenSettings: { showSettings = true })
             Divider().overlay(Theme.hair)
             if showBrowser {
                 BrowserPanel(onClose: { showBrowser = false })
             } else {
                 HStack(spacing: 0) {
-                    MachineRail()
+                    MachineRail(onOpenSettings: { showSettings = true })
                     Divider().overlay(Theme.hair)
                     SessionSidebar()
                     Divider().overlay(Theme.hair)
@@ -32,10 +32,54 @@ struct RootView: View {
         .background(Theme.bg)
         .foregroundColor(Theme.fg)
         .task { await state.startup() }
-        .sheet(isPresented: $showLogin) {
-            ServerLoginView(onSuccess: { showLogin = false })
+        .sheet(isPresented: $showSettings) {
+            MacSettingsView {
+                ServerSync.shared.logout()
+                state.allowOfflineSession = false
+                showSettings = false
+                openWindow(id: "login")
+                dismissWindow(id: "main")
+            }
         }
-        .onAppear { if !ServerSync.shared.hasSession { showLogin = true } }
+        .onAppear {
+            if !ServerSync.shared.hasSession && !state.allowOfflineSession {
+                openWindow(id: "login")
+                dismissWindow(id: "main")
+            }
+        }
+    }
+}
+
+private struct MacSettingsView: View {
+    @ObservedObject private var sync = ServerSync.shared
+    @State private var confirmLogout = false
+    let onLogout: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("设置").font(Theme.ui(18, .bold))
+            VStack(alignment: .leading, spacing: 12) {
+                Text("账号").font(Theme.ui(13, .semibold))
+                HStack {
+                    Text(sync.username ?? "未登录")
+                        .font(Theme.ui(13))
+                    Spacer()
+                    Button("退出登录") { confirmLogout = true }
+                        .disabled(!sync.hasSession)
+                }
+            }
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.panel3))
+        }
+        .padding(24)
+        .frame(width: 380)
+        .background(Theme.bg)
+        .alert("退出登录", isPresented: $confirmLogout) {
+            Button("取消", role: .cancel) {}
+            Button("退出", role: .destructive, action: onLogout)
+        } message: {
+            Text("退出后本机不再同步机器与标签，需要重新输入团队账号密码。")
+        }
     }
 }
 
@@ -44,6 +88,7 @@ struct RootView: View {
 struct TopBar: View {
     @EnvironmentObject var state: AppState
     @Binding var showBrowser: Bool
+    let onOpenSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -92,7 +137,7 @@ struct TopBar: View {
                 (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.zoom(nil)
             }
             IconButton(system: "arrow.clockwise", color: Theme.work, iconSize: 17) { state.reconnect() }
-            IconButton(system: "gearshape", iconSize: 17) { state.showToast("打开设置") }
+            IconButton(system: "gearshape", iconSize: 17, action: onOpenSettings)
         }
         .padding(.horizontal, 16)
         .frame(height: 48)

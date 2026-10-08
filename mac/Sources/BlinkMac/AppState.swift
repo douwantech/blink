@@ -17,6 +17,8 @@ final class AppState: ObservableObject {
     @Published var reconnecting = false
     @Published var toast: String?
     @Published var showTeam = true
+    /// 「离线使用」只在本次运行有效；下次启动仍提示登录。
+    @Published var allowOfflineSession = false
     /// 员工 CLI 配置改动计数：TabAgentStore 现读磁盘，靠它触发列表重画
     @Published var agentTick = 0
 

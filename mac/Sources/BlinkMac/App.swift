@@ -7,7 +7,7 @@ struct BlinkMacApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("BlinkMac", id: "main") {
             RootView()
                 .environmentObject(state)
                 .frame(minWidth: 1120, minHeight: 720)
@@ -27,6 +27,34 @@ struct BlinkMacApp: App {
                     .keyboardShortcut("d", modifiers: .command)
             }
         }
+
+        Window("登录 Blink 团队", id: "login") {
+            LoginWindowView()
+                .environmentObject(state)
+                .preferredColorScheme(.dark)
+        }
+        .windowResizability(.contentSize)
+    }
+}
+
+private struct LoginWindowView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        ServerLoginView(onSuccess: {
+            state.allowOfflineSession = false
+            openMainWindow()
+        }, onOffline: {
+            state.allowOfflineSession = true
+            openMainWindow()
+        })
+    }
+
+    private func openMainWindow() {
+        openWindow(id: "main")
+        dismissWindow(id: "login")
     }
 }
 
