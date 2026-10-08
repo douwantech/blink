@@ -132,6 +132,8 @@ struct BlinkTerminal {
   @State hostname: string = 'harmony';
   // ui reactivity: bump `tick` after any store/pool mutation to force re-render
   @State tick: number = 0;
+  @State dockH: number = 0;   // 底部 dock 实测高度：把「回到底部」药丸浮在它上面
+  @State pageH: number = 0;   // 页面高度，药丸纵向定位用
   @State storeReady: boolean = false;
   @State activeTabId: string = '';
   @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
@@ -198,9 +200,9 @@ struct BlinkTerminal {
   private panMode: string = '';   // active terminal drag axis: '' undecided | 'h' switch tab | 'v' scroll
   private lastPanY: number = 0;   // last vertical offset seen this drag (for incremental scroll)
   // 本地滚动（#71，同 iOS #70）：历史拉到本地图层后，上下滑不再等远程
-  private histPending: boolean = false;   // 正在拉历史
-  private histMode: boolean = false;      // 正在本地滚动历史图层
-  private histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
+  @State histPending: boolean = false;   // 正在拉历史
+  @State histMode: boolean = false;      // 正在本地滚动历史图层
+  @State histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
   private histClient: BlinkdClient | null = null;
   private histSeq: number = 0;            // 防串场：每次拉历史一个序号
   private lastTabPerMachine: Record<string, string> = {};   // each machine's last-active tab (iOS _lastKeyPerMachine)
@@ -2051,20 +2053,19 @@ struct BlinkTerminal {
     .onClick(action)
   }
 
-  @Builder
   // 本地滚动时浮在终端底部的小药丸：拉取中 / 有新内容 / 回到底部。
+  @Builder
   histPill() {
-    Column() {
-      Row() {
-        Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
-          .fontSize(13).fontColor('#FFFFFF')
-      }
-      .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
-      .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
-      .onClick(() => this.exitHistory(true))
+    Row() {
+      Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
+        .fontSize(13).fontColor('#FFFFFF')
+        .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
+        .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
+        .onClick(() => this.exitHistory(true))
     }
-    .width('100%').height('100%').justifyContent(FlexAlign.End).padding({ bottom: 12 })
-    .hitTestBehavior(HitTestMode.Transparent)
+    .width('100%').height(44).justifyContent(FlexAlign.Center)
+    .position({ x: 0, y: Math.max(0, this.pageH - this.dockH - 56) })
+    .hitTestBehavior(HitTestMode.Default)
   }
 
   @Builder
@@ -2138,6 +2139,12 @@ struct BlinkTerminal {
     }
     .width('100%').padding({ left: 13, right: 13, top: 10, bottom: 12 })
     .backgroundColor('#0A0A0A')
+    .onAreaChange((_o: Area, n: Area) => {
+      const h: number = n.height as number;
+      if (h > 0 && Math.abs(h - this.dockH) > 1) {
+        this.dockH = h;
+      }
+    })
   }
 
   // 键盘组第二行：占语音条的槽位，严格对齐 iOS keyToolsRow2：
@@ -2228,7 +2235,7 @@ struct BlinkTerminal {
           .backgroundColor(Color.Transparent).fontColor('#FFFFFF')
           .placeholderColor('#59FFFFFF').caretColor('#33E0A1')
           .enterKeyType(EnterKeyType.Send)
-          .onChange((v: string) => { this.manualText = v; })
+          .onChange((v: string) => { this.leaveHistoryForInput(); this.manualText = v; })
           .onSubmit(() => this.sendManual())
         Stack() {
           Text('↑').fontSize(17).fontWeight(FontWeight.Bold).fontColor('#0B1B14')
@@ -2298,9 +2305,6 @@ struct BlinkTerminal {
             // canTerminalBecomeFirstResponder gating + interactive keyboard dismiss.
             .focusOnTouch(false).enableKeyboardOnFocus(true)
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
-          if (this.histPending || this.histMode) {
-            this.histPill()
-          }
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
         // Terminal gestures — one direction-free PanGesture, disambiguated by hand,
@@ -2338,8 +2342,19 @@ struct BlinkTerminal {
       if (this.showManualInput) {
         this.manualInputOverlay()
       }
+      // 本地滚动的「↓ 回到底部 / ↓ 有新内容」药丸（页面级浮层：放在终端 Stack 里会被
+      // Web 组件的 native 表面盖住，实测点不到也看不见）
+      if (this.histPending || this.histMode) {
+        this.histPill()
+      }
     }
     .width('100%').height('100%').backgroundColor('#000000').padding({ bottom: this.kbHeight })
+    .onAreaChange((_o: Area, n: Area) => {
+      const h: number = n.height as number;
+      if (h > 0 && Math.abs(h - this.pageH) > 1) {
+        this.pageH = h;
+      }
+    })
   }
 
   // ---- helpers for dynamic labels ----

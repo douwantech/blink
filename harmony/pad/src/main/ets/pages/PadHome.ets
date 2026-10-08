@@ -181,6 +181,7 @@ struct PadHome {
   @State kbWanted: boolean = false;     // 软键盘只在点「键盘」时弹；外接键盘始终可打字
   // 选择 / 视图模型（store 是普通 class，ArkUI 观察不到，改完一律走 refreshAll）
   @State tick: number = 0;
+  @State dockH: number = 0;   // 底部 dock 实测高度：把「回到底部」药丸浮在它上面
   @State storeReady: boolean = false;
   @State activeTabId: string = '';
   @State activeMachineId: string = '';
@@ -259,9 +260,9 @@ struct PadHome {
   private panMode: string = '';
   private lastPanY: number = 0;
   // 本地滚动（#71，同 iOS #70）：历史拉到本地图层后，上下滑不再等远程
-  private histPending: boolean = false;   // 正在拉历史
-  private histMode: boolean = false;      // 正在本地滚动历史图层
-  private histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
+  @State histPending: boolean = false;   // 正在拉历史
+  @State histMode: boolean = false;      // 正在本地滚动历史图层
+  @State histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
   private histSeq: number = 0;            // 防串场：每次拉历史一个序号
   private lastTabPerMachine: Record<string, string> = {};
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -2549,9 +2550,6 @@ struct PadHome {
               }
             })
             .onKeyEvent((e: KeyEvent) => this.onHwKey(e))
-          if (this.histPending || this.histMode) {
-            this.histPill()
-          }
         }
         .width('100%').height('100%').padding(6).backgroundColor(TERM)
         .visibility(this.mode === 'chat' ? Visibility.Hidden : Visibility.Visible)
@@ -3197,17 +3195,16 @@ struct PadHome {
   // 本地滚动时浮在终端底部的小药丸：拉取中 / 有新内容 / 回到底部。
   @Builder
   histPill() {
-    Column() {
-      Row() {
-        Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
-          .fontSize(13).fontColor('#FFFFFF')
-      }
-      .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
-      .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
-      .onClick(() => this.exitHistory(true))
+    Row() {
+      Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
+        .fontSize(13).fontColor('#FFFFFF')
+        .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
+        .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
+        .onClick(() => this.exitHistory(true))
     }
-    .width('100%').height('100%').justifyContent(FlexAlign.End).padding({ bottom: 12 })
-    .hitTestBehavior(HitTestMode.Transparent)
+    .width('100%').height(44).justifyContent(FlexAlign.Center)
+    .position({ x: 0, y: Math.max(0, this.winH - this.dockH - 56) })
+    .hitTestBehavior(HitTestMode.Default)
   }
 
   @Builder
@@ -3267,6 +3264,12 @@ struct PadHome {
       }
       .width('100%').padding({ left: 10, right: 10, top: 6, bottom: 6 })
       .backgroundColor('#0A0A0A')
+      .onAreaChange((_o: Area, n: Area) => {
+        const h: number = n.height as number;
+        if (h > 0 && Math.abs(h - this.dockH) > 1) {
+          this.dockH = h;
+        }
+      })
     }
   }
 
@@ -3787,7 +3790,7 @@ struct PadHome {
           .backgroundColor(Color.Transparent).fontColor('#FFFFFF')
           .placeholderColor('#59FFFFFF').caretColor(GREEN)
           .enterKeyType(EnterKeyType.Send)
-          .onChange((v: string) => { this.manualText = v; })
+          .onChange((v: string) => { this.leaveHistoryForInput(); this.manualText = v; })
           .onSubmit(() => this.sendManual())
         Stack() {
           SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(15).fontColor(['#0B1B14'])
@@ -3863,6 +3866,11 @@ struct PadHome {
       }
       if (this.showManualInput) {
         this.manualInputOverlay()
+      }
+      // 本地滚动的「↓ 回到底部 / ↓ 有新内容」药丸（页面级浮层：放在终端 Stack 里会被
+      // Web 组件的 native 表面盖住，实测点不到也看不见）
+      if (this.histPending || this.histMode) {
+        this.histPill()
       }
     }
     .width('100%').height('100%').backgroundColor(BG).padding({ bottom: this.kbHeight })
