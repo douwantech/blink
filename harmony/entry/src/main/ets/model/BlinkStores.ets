@@ -811,6 +811,9 @@ export class BlinkStore {
       'BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" \'',
       '  [.[]',
       '    | select(.type=="user" or .type=="assistant")',
+      // #83：CronCreate 定时任务自动发的提示词带 turnOrigin:"scheduled" / scheduledTaskId，
+      // 会以「我」的消息出现在记录页里刷屏。只滤这一类，别的不动。
+      '    | select(.turnOrigin != "scheduled" and .scheduledTaskId == null)',
       '    | (if (.message.content | type) == "string" then',
       '         .message.content',
       '       else',
