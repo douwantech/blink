@@ -4,12 +4,10 @@
 // (BlinkMachineStore / BlinkWorkDirStore / BlinkSessionPresetStore /
 //  BlinkPeopleStore / TabStateStore / TabRestStore / AITextPolisher storage).
 //
-// On first run the stores are seeded from rawfile/seed_config.json, which is a
-// direct export of the user's real iOS config (pulled from the iPhone app
-// container), so the HarmonyOS app opens with the exact same machines, work
-// dirs, tabs, favorites and voice-AI data as iOS. After that, preferences are
-// the source of truth (same JSON schemas as iOS so a future iCloud-KV-style
-// sync can merge them).
+// 配置的权威是**服务器**（issue #77，见 ServerConfig.ets）：登录后 machines /
+// workDirs / tabs / agents / 休息名单由服务器快照写入，preferences 只是本机落盘的
+// 副本（离线展示用）+ 纯本机偏好（主题、语音学习数据等）。老的 seed_config.json
+// 播种与 ~/.blink/sync 双向文件同步都已删除。
 //
 // execForTab() reproduces the iOS sshCommand/blinkdCommand remote script
 // byte-for-byte (BlinkMachineStore.swift:180-260): the same cc-<TITLE> outer
@@ -21,7 +19,7 @@
 
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { util, buffer } from '@kit.ArkTS';
+import { buffer } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const DOMAIN: number = 0x0B11;
@@ -81,31 +79,6 @@ export interface VoiceConfig {
   debounce: number;
 }
 
-export interface SeedConfig {
-  machines: Machine[];
-  workDirs: WorkDir[];
-  people: string[];
-  presets: SessionPreset[];
-  tabs: TabModel[];
-  currentId: string;
-  pinned: PinnedTab[];
-  agents?: Record<string, string>;   // "<machineId>|<title>" -> claude|codex|deepseek|glm
-  favorites: string[];
-  history: string[];
-  terms: Record<string, Record<string, number>>;
-  corrections: string[][];
-  favoriteCounts: Record<string, number>;
-  voice: VoiceConfig;
-  filterMachineId: string;
-  locale: string;
-  resting: string[];
-  workMode: boolean;
-  autoReconnect?: boolean;
-  updatedAt?: number;   // 推送时的 epoch 秒，配置同步用 last-writer-wins
-  origin?: string;      // 'ios' | 'harmony'——谁写的文件；拉到自己写的直接跳过防回声
-  closedIds?: string[]; // 显式关闭的 tab 墓碑，跨设备传播删除（防复活）
-}
-
 // ---- store ----
 
 const P_KEY: string = 'blink_store';   // preferences file name
@@ -152,21 +125,19 @@ export class BlinkStore {
 
   private prefs: preferences.Preferences | null = null;
 
-  /// 本地配置真的变了（save* 落盘时触发；applySync/seed 的 persistAll 不触发）。
-  /// BlinkTerminal 挂上防抖推送，把配置回流到 Mac 文件 → iOS。
+  /// 本地个人状态（选中的机器 / agents / 休息开关…）真的变了（save* 落盘时触发）。
+  /// BlinkTerminal 挂上防抖上传，把个人状态 PUT 回服务器（ServerConfig.markDirty）。
+  /// 注意：ServerConfig 采纳服务器快照走 persistAll()，**不触发**这里。
   onLocalChange: (() => void) | null = null;
+
+  /// 休息开关被用户动过（休息面板 / 团队页）：ServerConfig 据此把 restSessions「物化」
+  /// 并允许随 selection 上传——没动过就绝不上传，别把服务器的默认在岗规则清掉。
+  onRestChange: (() => void) | null = null;
 
   async load(ctx: common.UIAbilityContext): Promise<void> {
     this.prefs = await preferences.getPreferences(ctx, P_KEY);
-    // v2: v1 曾在 seed_config.json 缺失的包上跑过（播种失败也记了已播种），
-    // 换 key 让那批安装重新播种一次真实 iOS 配置。
-    const seeded: boolean = await this.prefs.get('seeded_v2', false) as boolean;
-    if (!seeded) {
-      await this.seedFromRawfile(ctx);
-      await this.prefs.put('seeded_v2', true);
-      await this.persistAll();
-      return;
-    }
+    // 机器/工作目录/标签的权威在服务器：这里只读上次落盘的副本先展示（离线可用），
+    // 服务器快照一到就整份覆盖。seed_config.json 播种那条老路已删。
     this.machines = this.readJson<Machine[]>('machines', []);
     this.workDirs = this.readJson<WorkDir[]>('workDirs', []);
     this.people = this.readJson<string[]>('people', []);
@@ -194,37 +165,6 @@ export class BlinkStore {
     if (await this.prefs!.has('deepseekKey')) {
       await this.prefs!.delete('deepseekKey');
       await this.prefs!.flush();
-    }
-  }
-
-  private async seedFromRawfile(ctx: common.UIAbilityContext): Promise<void> {
-    try {
-      const raw: Uint8Array = await ctx.resourceManager.getRawFileContent('seed_config.json');
-      const dec = util.TextDecoder.create('utf-8');
-      const s: SeedConfig = JSON.parse(dec.decodeToString(raw)) as SeedConfig;
-      this.machines = s.machines;
-      this.workDirs = s.workDirs;
-      this.people = s.people;
-      this.presets = s.presets;
-      this.tabs = s.tabs;
-      this.currentTabId = s.currentId;
-      this.pinned = s.pinned;
-      const ag0: Record<string, string> | undefined = s.agents;
-      this.agents = ag0 !== undefined ? ag0 : {};
-      this.favorites = s.favorites;
-      this.favoriteCounts = s.favoriteCounts;
-      this.history = s.history;
-      this.corrections = s.corrections;
-      this.terms = s.terms;
-      this.voice = s.voice;
-      this.filterMachineId = s.filterMachineId;
-      this.locale = s.locale;
-      this.resting = s.resting;
-      this.workMode = s.workMode;
-      hilog.info(DOMAIN, TAG, 'seeded from iOS config: %{public}d machines %{public}d tabs',
-        this.machines.length, this.tabs.length);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'seed failed: %{public}s', `${e}`);
     }
   }
 
@@ -264,91 +204,6 @@ export class BlinkStore {
     if (key !== 'currentTabId' && this.onLocalChange !== null) {
       this.onLocalChange();
     }
-  }
-
-  // 配置同步：整体采纳对端推来的配置（形状同 seed），但当前 tab 若仍
-  // 存在则保住不跳。调用方负责清理已消失 tab 的连接和刷新 UI。
-  async applySync(s: SeedConfig): Promise<void> {
-    const keep: string = this.currentTabId;
-    // 墓碑合并：两端显式关过的 tab 都不留——防「对端还开着又用整份列表把它推回来复活」
-    const merged: string[] = this.closedIds.slice();
-    const incoming: string[] = s.closedIds !== undefined ? s.closedIds : [];
-    for (let i = 0; i < incoming.length; i++) {
-      if (merged.indexOf(incoming[i]) < 0) {
-        merged.push(incoming[i]);
-      }
-    }
-    while (merged.length > 500) {
-      merged.shift();
-    }
-    this.closedIds = merged;
-    this.machines = s.machines;
-    this.workDirs = s.workDirs;
-    this.people = s.people;
-    this.presets = s.presets;
-    this.tabs = s.tabs.filter((t: TabModel) => merged.indexOf(t.id) < 0);
-    this.pinned = s.pinned;
-    const ag: Record<string, string> | undefined = s.agents;
-    if (ag !== undefined) {
-      this.agents = ag;
-    }
-    // DeepSeek key 不再同步：各机器自己配，别端推来的一律不收
-    this.favorites = s.favorites;
-    this.favoriteCounts = s.favoriteCounts;
-    // 学习类大头可能被发端瘦身成空（帧上限），空的不覆盖本地积累
-    if (s.history.length > 0) {
-      this.history = s.history;
-    }
-    if (s.corrections.length > 0) {
-      this.corrections = s.corrections;
-    }
-    if (Object.keys(s.terms).length > 0) {
-      this.terms = s.terms;
-    }
-    const localKey: string = this.voice.apiKey;
-    this.voice = s.voice;
-    if (this.voice.apiKey.length === 0) {
-      this.voice.apiKey = localKey;   // 对端 key 为空不冲掉本地
-    }
-    this.filterMachineId = s.filterMachineId;
-    this.locale = s.locale;
-    this.resting = s.resting;
-    this.workMode = s.workMode;
-    if (s.autoReconnect !== undefined) {
-      this.autoReconnect = s.autoReconnect;
-    }
-    this.currentTabId = this.tabs.findIndex((t: TabModel) => t.id === keep) >= 0 ? keep : s.currentId;
-    await this.persistAll();
-  }
-
-  // 双向同步的推送端：把本地配置导成 blink_config.json 形状（同 iOS exportJSON）。
-  // slim=true 时砍掉学习类大头（history/corrections/terms），躲 blinkd 64KB 帧上限。
-  exportSync(updatedAt: number, slim: boolean): SeedConfig {
-    const cfg: SeedConfig = {
-      machines: this.machines,
-      workDirs: this.workDirs,
-      people: this.people,
-      presets: this.presets,
-      tabs: this.tabs,
-      currentId: this.currentTabId,
-      pinned: this.pinned,
-      agents: this.agents,
-      favorites: this.favorites,
-      history: slim ? [] : this.history,
-      terms: slim ? {} : this.terms,
-      corrections: slim ? [] : this.corrections,
-      favoriteCounts: this.favoriteCounts,
-      voice: this.voice,
-      filterMachineId: this.filterMachineId,
-      locale: this.locale,
-      resting: this.resting,
-      workMode: this.workMode,
-      autoReconnect: this.autoReconnect,
-      updatedAt: updatedAt,
-      origin: 'harmony',
-      closedIds: this.closedIds,
-    };
-    return cfg;
   }
 
   async persistAll(): Promise<void> {
@@ -484,6 +339,9 @@ export class BlinkStore {
       this.resting.push(tabId);
     }
     this.saveResting();
+    if (this.onRestChange !== null) {
+      this.onRestChange();
+    }
     return i < 0;
   }
 
@@ -496,6 +354,9 @@ export class BlinkStore {
       this.resting.splice(i, 1);
     }
     this.saveResting();
+    if (this.onRestChange !== null) {
+      this.onRestChange();
+    }
   }
 
   restingCount(): number {

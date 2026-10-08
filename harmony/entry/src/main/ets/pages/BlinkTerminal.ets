@@ -30,7 +30,8 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
-import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig, PinnedTab } from '../model/BlinkStores';
+import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from '../model/BlinkStores';
+import { ServerConfig } from '../model/ServerConfig';
 import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
@@ -109,6 +110,15 @@ const FONT_SIZES: number[] = [8, 9, 10, 11, 12, 13, 14];
 // what the bottom sheet is currently showing
 type Sheet = 'none' | 'more' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel' | 'pinEdit' | 'protoAuth';
 
+// 团队三视图（#77 评论②）的扁平条目：kind='h' 组头 / 'r' 行——List 里每项只能是一个 ListItem，
+// 所以把「组头 + 行」摊平成一个数组再 ForEach。
+interface TeamEntry {
+  kind: string;
+  title: string;
+  sub: string;
+  tab: TabModel;
+}
+
 class JsBridge {
   private cb: (op: string, data: string) => void;
   constructor(cb: (op: string, data: string) => void) {
@@ -136,6 +146,7 @@ struct BlinkTerminal {
   @State activeTabId: string = '';
   @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
   @State restCount: number = 0;      // resting-session count on the top-bar 🌙 (topBar() reads no other @State)
+  @State teamMode: string = 'employee';   // 团队三视图：#77 评论② employee | project | machine
   @State filterLabel: string = '全部'; // machine-filter pill text, same reason
   @State cols: number = 52;
   @State rows: number = 30;
@@ -211,20 +222,15 @@ struct BlinkTerminal {
   private uiPrefs: preferences.Preferences | null = null;
   private timer: number = -1;
   private lastVpnKick: number = 0;   // 看门狗上次重拉 VPN 的时刻（节流）
-  private lastCfgPull: number = 0;   // 配置同步上次拉取时刻（节流）
-  private cfgPullBusy: boolean = false;
-  private cfgWatcher: BlinkdClient | null = null;   // 常驻监听 Mac 配置文件变化
-  private cfgWatchBuf: string = '';
-  private lastWatchMtime: string = '';
-  private lastWatchTry: number = 0;
-  private cfgPushDirty: boolean = false;   // 本地配置改了、还没推到 Mac
-  private cfgPushTimer: number = -1;       // 3s 合并窗口
-  // 防止启动期把旧快照当新配置推出去干掉 iOS 的新改动（2026-08-10 事故）：
-  // ① 首次成功拉取（或确认文件不存在）之前一律不推；
-  // ② 推送 stamp 用「本地真实改动时刻」而不是推送时刻，老数据别抢新 stamp；
-  // ③ 远端文件 updatedAt 更新时推送脚本原地放弃（见 pushSyncConfig 的 python3 比对）。
-  private cfgPulledOnce: boolean = false;
-  private cfgDataStamp: number = 0;        // 最后一次本地配置改动的 epoch 秒
+  // 服务器配置同步（唯一权威，见 model/ServerConfig.ets）：登录 session、快照采纳、
+  // 个人状态上传、15s 轮询。老的 ~/.blink/sync/blink_config.json 双向文件同步已全部停掉。
+  private serverConfig: ServerConfig | null = null;
+  @State authGate: string = 'checking';   // checking | login | ready（没 session 时只显示登录页）
+  @State accountName: string = '';        // 设置页显示的账号名（非机密）
+  @State loginUser: string = '';
+  @State loginPwd: string = '';
+  @State loginError: string = '';
+  @State loginBusy: boolean = false;
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
@@ -252,13 +258,9 @@ struct BlinkTerminal {
   }
 
   aboutToDisappear(): void {
-    if (this.cfgWatcher !== null) {
-      this.cfgWatcher.close();
-      this.cfgWatcher = null;
-    }
-    if (this.cfgPushTimer >= 0) {
-      clearTimeout(this.cfgPushTimer);
-      this.cfgPushTimer = -1;
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      sc.stopPolling();
     }
     this.pool.closeAll();
     if (this.win !== null) {
@@ -286,10 +288,47 @@ struct BlinkTerminal {
       }
       this.uiPrefs.put('fs_shrunk_v2', true).then((): Promise<void> => this.uiPrefs!.flush()).catch(() => {});
     }
+    // 服务器配置（唯一权威）：本机有没有 session 决定进主界面还是只显示登录页
+    const server = new ServerConfig(ctx, this.store);
+    this.serverConfig = server;
+    const hasSession: boolean = await server.hasSession();
+    if (!hasSession) {
+      // issue #77：没有 session 时**只显示登录页** —— 不加载 store、不连 VPN、不起轮询。
+      // 缓存只用于「已登录 + 网络抖动」时不清空界面，不做离线入口。
+      this.authGate = 'login';
+      return;
+    }
+    this.accountName = server.username;
+    this.authGate = 'ready';
+    await this.startMain(ctx);
+    // 先拿缓存把界面填上（网络抖动时不清空），再拉服务器快照覆盖，最后开轮询
+    await server.restoreCache();
+    this.refreshTabs();
+    server.refresh().then((): void => {
+      this.refreshTabs();
+      this.syncActiveAfterServerApply();
+    }).catch((): void => {
+    });
+    server.startPolling();
+  }
+
+  /// 登录成功 / 已有 session 之后的主界面启动（抽出来给登录页复用，避免两份逻辑）
+  private async startMain(ctx: common.UIAbilityContext): Promise<void> {
     await this.store.load(ctx);
-    // 双向同步：本地配置一变（save* 落盘）→ 3s 合并窗口后推到各机器的 blink_config.json
+    // 本地个人状态一变（save* 落盘）→ 防抖 PUT 回服务器（不再往任何机器写文件）
     this.store.onLocalChange = (): void => {
-      this.notifyCfgChanged();
+      const sc = this.serverConfig;
+      if (sc !== null) {
+        sc.markDirty();
+      }
+    };
+    // 用户动过休息开关 → restSessions 从此可以随 selection 上传（键没物化过就不传）
+    this.store.onRestChange = (): void => {
+      const sc = this.serverConfig;
+      if (sc !== null) {
+        sc.markRestLoaded();
+        sc.markDirty();
+      }
     };
     // pick the active tab (persisted current, else first visible)
     const vis = this.store.visibleTabs();
@@ -311,6 +350,29 @@ struct BlinkTerminal {
       this.tsConnect();
     } else {
       this.appendLocal('⚙ 设置里填 tailscale auth key，之后自动连接');
+    }
+  }
+
+  /// 服务器快照可能删掉了当前 tab：清掉它的连接/终端图层，退回第一篇可见标签
+  private syncActiveAfterServerApply(): void {
+    this.pool.all().forEach((c: SessionConn) => {
+      if (this.store.tabById(c.tabId) === null) {
+        this.pool.remove(c.tabId);
+        this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
+      }
+    });
+    this.refreshTabs();
+    if (this.activeTabId.length === 0 && this.visTabs.length > 0) {
+      // 登录后第一次拿到服务器标签：自动落到第一条可见标签并连上（「登录后马上能用」）。
+      // 以前这里只在「当前 tab 已失效」时才切，首登 activeTabId 为空 → 永远不 attach → 白屏。
+      this.switchTab(this.visTabs[0].id);
+      return;
+    }
+    if (this.activeTabId.length > 0 && this.store.tabById(this.activeTabId) === null) {
+      this.activeTabId = '';
+      if (this.visTabs.length > 0) {
+        this.switchTab(this.visTabs[0].id);
+      }
     }
   }
 
@@ -430,6 +492,11 @@ struct BlinkTerminal {
       // create + show the active tab's layer, then connect it once tailscale is up
       if (this.activeTabId.length > 0) {
         this.webCtl.runJavaScript(`term_show('${this.activeTabId}')`);
+        // Web/hterm 就绪后补一次连接：登录后立即 attach 时 Web 还没 ready，
+        // runJavaScript 会丢（终端一片白就是这个时序）。附：换 tab 后也是一样的道理。
+        this.attach(this.activeTabId, false);
+      } else {
+        this.syncActiveAfterServerApply();
       }
     } else if (op === 'error') {
       hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
@@ -553,267 +620,22 @@ struct BlinkTerminal {
         if (state === 'Running' && this.activeTabId.length > 0) {
           this.attach(this.activeTabId, false);
         }
-        if (state === 'Running') {
-          this.pullSyncConfig();
-          this.ensureCfgWatcher();
-          this.pushSyncConfig();   // 改动时 VPN 没通留下的 dirty，通了补推
-        }
+        // 配置刷新不再依赖 VPN：ServerConfig 自己的 15s 轮询 + 回前台刷新走 HTTPS
       } catch (e) {
       }
     }, 1500);
   }
 
-  // ---- 配置同步（双向：iOS ⇄ Mac 文件 ⇄ 鸿蒙）----
-  // 两端都把 seed 形状的配置推到各机器 ~/.blink/sync/blink_config.json（带 origin），
-  // 这里经 blinkd 一次性 exec 拉回，origin 不是自己且 updatedAt 更新才应用。
-  // 拉取节流 5 分钟；watcher 盯 mtime 秒级跟随；回前台（onPageShow）立即拉一次。
-
-  // 本地配置变了（store save* 落盘触发）：3s 合并窗口后推送
-  private notifyCfgChanged(): void {
-    this.cfgPushDirty = true;
-    this.cfgDataStamp = Date.now() / 1000;
-    if (this.cfgPushTimer >= 0) {
-      return;
-    }
-    this.cfgPushTimer = setTimeout(() => {
-      this.cfgPushTimer = -1;
-      this.pushSyncConfig();
-    }, 3000);
-  }
-
-  // 把本地配置推到所有 blinkd 机器（origin=harmony）。VPN 没通时留着 dirty，
-  // poll 的 Running 分支补推。写完记 cfgSyncStamp——自己写的文件 watcher 会响，
-  // 拉回来靠 origin + stamp 双门槛跳过，不成环。
-  private pushSyncConfig(): void {
-    if (!this.cfgPushDirty || !this.storeReady || this.tsState !== 'Running') {
-      return;
-    }
-    if (!this.cfgPulledOnce) {
-      // 还没见过远端文件（启动早期）就不许推——启动期 store 落盘会误标 dirty，
-      // 把本机旧快照推出去会盖掉 iOS 上更新的机器/工作目录配置。dirty 保留，
-      // poll 的 Running 分支在首次拉取完成后会补推。
-      return;
-    }
-    this.cfgPushDirty = false;
-    // stamp 用真实改动时刻：本机数据比远端旧时，脚本端比对后放弃写入
-    const stamp: number = this.cfgDataStamp > 0 ? this.cfgDataStamp : Date.now() / 1000;
-    const enc = new util.TextEncoder();
-    let b64: string = this.b64.encodeToStringSync(enc.encodeInto(JSON.stringify(this.store.exportSync(stamp, false))));
-    if (b64.length > 60000) {
-      // blinkd 帧长上限 u16=64KB：超了砍掉学习类大头（history/corrections/terms）
-      b64 = this.b64.encodeToStringSync(enc.encodeInto(JSON.stringify(this.store.exportSync(stamp, true))));
-    }
-    if (b64.length === 0 || b64.length > 60000) {
-      return;
-    }
-    // 远端文件 updatedAt 比要写的新 → rm 放弃；python3 出任何岔子（无文件/坏 json/没装）→ 照写
-    const guard: string = 'python3 -c "import json,os;s=os.path.expanduser(\'~/.blink/sync/\');' +
-      'cur=json.load(open(s+\'blink_config.json\')).get(\'updatedAt\',0);' +
-      'new=json.load(open(s+\'.cfg.tmp\')).get(\'updatedAt\',0);exit(0 if cur>new else 1)"';
-    const script: string = "mkdir -p ~/.blink/sync && printf '%s' '" + b64 +
-      "' | openssl base64 -d -A > ~/.blink/sync/.cfg.tmp && if " + guard +
-      "; then rm -f ~/.blink/sync/.cfg.tmp; else mv ~/.blink/sync/.cfg.tmp ~/.blink/sync/blink_config.json; fi";
-    let sent: number = 0;
-    for (let i = 0; i < this.store.machines.length; i++) {
-      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
-      if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
-        continue;
-      }
-      const client = new BlinkdClient();
-      client.connect(ep.blinkdHost, ep.blinkdPort !== undefined ? ep.blinkdPort : 7777,
-        ep.blinkdToken, 24, 80, script);
-      setTimeout(() => {
-        client.close();
-      }, 8000);
-      sent++;
-    }
-    if (sent > 0) {
-      const p = this.uiPrefs;
-      if (p !== null) {
-        p.put('cfgSyncStamp', stamp).then((): Promise<void> => p.flush()).catch(() => {});
-      }
-      hilog.info(DOMAIN, TAG, 'cfg push to %{public}d machines (%{public}d b64)', sent, b64.length);
-    }
-  }
-  private pullSyncConfig(): void {
-    if (this.cfgPullBusy || !this.storeReady || this.tsState !== 'Running') {
-      return;
-    }
-    if (Date.now() - this.lastCfgPull < 300000) {
-      return;
-    }
-    this.lastCfgPull = Date.now();
-    let host: string = '';
-    let port: number = 7777;
-    let token: string = '';
-    for (let i = 0; i < this.store.machines.length; i++) {
-      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
-      if (ep !== null && ep.blinkdHost !== undefined && ep.blinkdToken !== undefined) {
-        host = ep.blinkdHost;
-        token = ep.blinkdToken;
-        port = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
-        break;
-      }
-    }
-    if (host.length === 0) {
-      return;
-    }
-    hilog.info(DOMAIN, TAG, 'cfg pull start %{public}s:%{public}d', host, port);
-    this.cfgPullBusy = true;
-    let buf: string = '';
-    const dec = util.TextDecoder.create('utf-8');
-    const client = new BlinkdClient();
-    client.onData = (bytes: Uint8Array) => {
-      buf += dec.decodeToString(bytes, { stream: true });
-    };
-    client.onState = (st: BlinkdState) => {
-      if (st === 'closed' || st === 'error') {
-        this.finishCfgPull(buf);
-      }
-    };
-    // base64 输出躲开 PTY 对换行/控制字节的加工，收端反解。
-    // 结束以连接关闭（cat 跑完进程退出）为准；15s 只是兜底——冷启动时
-    // tailscale 握手可能要好几秒，5s 固定窗曾把迟到的数据整个丢掉。
-    // 文件不存在时给非 base64 字符的标记（@ 会被 b64 过滤剔掉，但 raw buf 里查得到），
-    // 让 finishCfgPull 能区分「文件没有（可以放心推）」和「连接失败（不能推）」
-    client.connect(host, port, token, 24, 80,
-      '[ -f ~/.blink/sync/blink_config.json ] && cat ~/.blink/sync/blink_config.json | base64 || printf @NOFILE@');
-    setTimeout(() => {
-      this.finishCfgPull(buf);
-      client.close();
-    }, 15000);
-  }
-
-  // 常驻监听：在 Mac 上跑一个小循环，配置文件 mtime 一变就吐一行
-  // CFGCHANGED:<mtime>，收到即立刻拉取——iOS 上把员工标记休息/加机器，
-  // 鸿蒙几秒内自动跟上，不用等回前台。断线由 poll 兜底重建（10s 间隔）。
-  private ensureCfgWatcher(): void {
-    if (this.cfgWatcher !== null || !this.storeReady || this.tsState !== 'Running') {
-      return;
-    }
-    if (Date.now() - this.lastWatchTry < 10000) {
-      return;
-    }
-    this.lastWatchTry = Date.now();
-    let host: string = '';
-    let port: number = 7777;
-    let token: string = '';
-    for (let i = 0; i < this.store.machines.length; i++) {
-      const ep = this.store.blinkdEndpoint(this.store.machines[i]);
-      if (ep !== null && ep.blinkdHost !== undefined && ep.blinkdToken !== undefined) {
-        host = ep.blinkdHost;
-        token = ep.blinkdToken;
-        port = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
-        break;
-      }
-    }
-    if (host.length === 0) {
-      return;
-    }
-    const client = new BlinkdClient();
-    this.cfgWatcher = client;
-    this.cfgWatchBuf = '';
-    const dec = util.TextDecoder.create('utf-8');
-    client.onData = (bytes: Uint8Array) => {
-      this.cfgWatchBuf += dec.decodeToString(bytes, { stream: true });
-      const lines: string[] = this.cfgWatchBuf.split('\n');
-      this.cfgWatchBuf = lines[lines.length - 1];   // 尾巴可能是半行，留着
-      for (let i = 0; i < lines.length - 1; i++) {
-        const at: number = lines[i].indexOf('CFGCHANGED:');
-        if (at < 0) {
-          continue;
-        }
-        const mtime: string = lines[i].substring(at + 11).trim();
-        if (mtime.length > 0 && mtime !== this.lastWatchMtime) {
-          // 首行也触发：监听可能在文件已更新之后才连上（比如刚重连），
-          // 跳过首行会漏掉那次变更。多余的拉取由 updatedAt 门槛挡住，无害。
-          this.lastWatchMtime = mtime;
-          this.lastCfgPull = 0;
-          this.pullSyncConfig();
-        }
-      }
-    };
-    client.onState = (st: BlinkdState) => {
-      if (st === 'closed' || st === 'error') {
-        if (this.cfgWatcher === client) {
-          this.cfgWatcher = null;   // poll 兜底重建
-        }
-      }
-    };
-    client.connect(host, port, token, 24, 80,
-      'last=""; while true; do cur=$(stat -f %m ~/.blink/sync/blink_config.json 2>/dev/null); ' +
-      'if [ "$cur" != "$last" ]; then last="$cur"; echo "CFGCHANGED:$cur"; fi; sleep 2; done');
-  }
-
-  private finishCfgPull(buf: string): void {
-    if (!this.cfgPullBusy) {
-      return;
-    }
-    this.cfgPullBusy = false;
-    if (buf.indexOf('@NOFILE@') >= 0) {
-      // 远端确认没有配置文件：首推安全，放开推送闸门
-      this.cfgPulledOnce = true;
-      return;
-    }
-    const b64: string = buf.replace(new RegExp('[^A-Za-z0-9+/=]', 'g'), '');
-    hilog.info(DOMAIN, TAG, 'cfg pull got %{public}d raw / %{public}d b64', buf.length, b64.length);
-    if (b64.length < 16) {
-      // 空结果多半是冷启动抢跑：status 文件还是旧 Running、tun 其实没起来，
-      // TCP 连不上。15s 后再试，别让 5 分钟节流把首次同步堵死。推送闸门保持关闭。
-      this.lastCfgPull = Date.now() - 285000;
-      return;
-    }
-    try {
-      const bytes: Uint8Array = this.b64.decodeSync(b64);
-      const dec = util.TextDecoder.create('utf-8');
-      const cfg: SeedConfig = JSON.parse(dec.decodeToString(bytes)) as SeedConfig;
-      this.cfgPulledOnce = true;   // 拿到过远端真实内容（不管采不采纳），推送闸门放开
-      if (cfg.origin === 'harmony') {
-        return;   // 自己写的文件，别回声采纳
-      }
-      const stamp: number = cfg.updatedAt !== undefined ? cfg.updatedAt : 0;
-      const last: number = this.uiPrefs !== null ? this.uiPrefs.getSync('cfgSyncStamp', 0) as number : 0;
-      if (stamp <= last || cfg.machines === undefined || cfg.machines.length === 0) {
-        return;
-      }
-      this.applySyncedConfig(cfg, stamp);
-    } catch (e) {
-      hilog.warn(DOMAIN, TAG, 'cfg sync parse: %{public}s', `${e}`);
-    }
-  }
-
-  private async applySyncedConfig(cfg: SeedConfig, stamp: number): Promise<void> {
-    const prevActive: string = this.activeTabId;
-    await this.store.applySync(cfg);
-    const p = this.uiPrefs;
-    if (p !== null) {
-      p.put('cfgSyncStamp', stamp).then((): Promise<void> => p.flush()).catch(() => {});
-    }
-    // 清掉已不存在 tab 的连接与终端图层
-    this.pool.all().forEach((c: SessionConn) => {
-      if (this.store.tabById(c.tabId) === null) {
-        this.pool.remove(c.tabId);
-        this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
-      }
-    });
-    this.refreshTabs();
-    if (this.store.tabById(prevActive) !== null) {
-      this.activeTabId = prevActive;
-    } else {
-      this.activeTabId = '';
-      if (this.visTabs.length > 0) {
-        this.switchTab(this.visTabs[0].id);
-      }
-    }
-    hilog.info(DOMAIN, TAG, 'cfg synced from iOS: %{public}d machines %{public}d tabs',
-      cfg.machines.length, cfg.tabs.length);
-    this.toast('配置已从 iOS 同步');
-  }
-
-  // 回前台：清零节流，立即拉一次最新配置
+  // 回前台：立即向服务器要一次最新配置（版本没变就是 304，什么都不做）
   onPageShow(): void {
-    this.lastCfgPull = 0;
-    this.pullSyncConfig();
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      sc.refresh().then((): void => {
+        this.refreshTabs();
+        this.syncActiveAfterServerApply();
+      }).catch((): void => {
+      });
+    }
   }
 
   // VPN 看门狗：息屏/省电时系统会杀掉 :vpn 扩展进程，status 文件停更但内容
@@ -969,9 +791,9 @@ struct BlinkTerminal {
         conn.cooldownUntil = 0;
       }
     }
-    if (this.tsState === 'Running') {
-      this.attach(tabId, false);
-    }
+    // 不再等 VPN：服务器下发的机器（公网/内网地址）直接试连，连不上会自己报错重试。
+    // 老逻辑等 tsState==='Running'（tailscale）——没开 VPN 时切标签永远白屏（#74 同一课）。
+    this.attach(tabId, false);
     this.refreshTabs();
     this.scrollToActiveTab();
   }
@@ -1763,7 +1585,7 @@ struct BlinkTerminal {
       this.navRow('⚙ 设置', '', () => { this.sheet = 'settings'; })
       this.navRow('🖥 选择机器', this.filterLabel, () => { this.sheet = 'machinePicker'; })
       this.navRow('＋ 新建会话', '', () => this.openNewTab())
-      this.navRow('🌙 员工在岗 / 休息', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
+      this.navRow('👥 团队（在岗 / 休息）', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
     }.width('100%').padding({ left: 16, right: 16 })
   }
 
@@ -2160,6 +1982,11 @@ struct BlinkTerminal {
       }
       if (this.showManualInput) {
         this.manualInputOverlay()
+      }
+      // 登录门控（页面级 overlay，像 sheetChrome 那样放在最外层 —— 放进 WebView 的
+      // Stack 会被 Web 表面盖住）。没有 session 时整屏只显示登录页。
+      if (this.authGate !== 'ready') {
+        this.authOverlay()
       }
     }
     .width('100%').height('100%').backgroundColor('#000000').padding({ bottom: this.kbHeight })
@@ -2650,7 +2477,7 @@ struct BlinkTerminal {
     } else if (this.sheet === 'aiConfig') {
       return 'AI 配置';
     } else if (this.sheet === 'restPanel') {
-      return '员工在岗 / 休息';
+      return '团队';
     } else if (this.sheet === 'pinEdit') {
       return this.peIdx >= 0 ? '编辑后台' : '添加后台';
     } else if (this.sheet === 'protoAuth') {
@@ -2831,6 +2658,22 @@ struct BlinkTerminal {
   settingsBody() {
     Scroll() {
       Column({ space: 8 }) {
+        this.sectionHeader('账号')
+        Column({ space: 2 }) {
+          Row() {
+            Text(this.accountName.length > 0 ? this.accountName : '未登录')
+              .fontSize(15).fontColor('#FFFFFF').layoutWeight(1)
+            Text(this.serverConfig !== null && this.serverConfig.isOnline ? '● 在线' : '○ 离线')
+              .fontSize(12)
+              .fontColor(this.serverConfig !== null && this.serverConfig.isOnline ? '#34C759' : '#8E8E93')
+          }.width('100%').padding({ top: 12, bottom: 4 })
+          Text('机器与标签由服务器下发，本机只保留选中状态与员工 CLI。')
+            .fontSize(11).fontColor('#8E8E93').width('100%').padding({ bottom: 8 })
+          Row() {
+            Text('退出登录').fontSize(15).fontColor('#FF3B30').layoutWeight(1)
+          }.width('100%').padding({ top: 8, bottom: 12 }).onClick(() => this.confirmLogout())
+        }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor('#1C1C1E').borderRadius(12)
+
         this.sectionHeader('机器')
         Column({ space: 2 }) {
           this.navRow('机器管理', this.store.machines.length + ' 台', () => { this.mfEdit = null; this.sheet = 'machineForm'; })
@@ -2921,7 +2764,104 @@ struct BlinkTerminal {
     }.width('100%').padding({ top: 8, bottom: 8 })
   }
 
-  // -- machine list (delete; add/edit via seeded config) --
+  // -- 登录门控（issue #77：没有 session 时只显示登录页）--
+  @Builder
+  authOverlay() {
+    Column() {
+      if (this.authGate === 'checking') {
+        // 启动时先查安全存储里有没有 session，查完才决定去登录页还是主界面
+        Text('正在检查登录状态…').fontSize(14).fontColor('#8E8E93')
+      } else {
+        this.loginBody()
+      }
+    }
+    .width('100%').height('100%').backgroundColor('#0A0A0A')
+    .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  loginBody() {
+    Column({ space: 10 }) {
+      Text('Blink 登录').fontSize(22).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+        .width('100%').textAlign(TextAlign.Center).margin({ bottom: 6 })
+      Text('用团队账号登录，机器与标签从服务器取。').fontSize(12).fontColor('#8E8E93')
+        .width('100%').textAlign(TextAlign.Center).margin({ bottom: 10 })
+      TextInput({ text: this.loginUser, placeholder: '用户名' })
+        .fontSize(15).backgroundColor('#1C1C1E').fontColor('#FFFFFF').borderRadius(8)
+        .width('100%').onChange((v: string) => { this.loginUser = v; })
+      TextInput({ text: this.loginPwd, placeholder: '密码' })
+        .fontSize(15).type(InputType.Password).backgroundColor('#1C1C1E').fontColor('#FFFFFF')
+        .borderRadius(8).width('100%').onChange((v: string) => { this.loginPwd = v; })
+      if (this.loginError.length > 0) {
+        Text(this.loginError).fontSize(13).fontColor('#FF453A')
+          .width('100%').textAlign(TextAlign.Center)
+      }
+      Button(this.loginBusy ? '正在登录…' : '登录 Blink 团队')
+        .fontSize(15).width('100%').height(44).backgroundColor('#0A84FF')
+        // disabled 条件同 iOS：正在登录，或用户名/密码为空
+        .enabled(!this.loginBusy && this.loginUser.length > 0 && this.loginPwd.length > 0)
+        .margin({ top: 6 })
+        .onClick(() => { this.doLogin(); })
+    }.width('80%').padding(16).backgroundColor('#141518').borderRadius(16)
+  }
+
+  /// 登录 → 成功进主界面（token 已进系统安全存储，密码立刻从内存清掉）
+  private async doLogin(): Promise<void> {
+    const sc = this.serverConfig;
+    if (sc === null || this.loginBusy) {
+      return;
+    }
+    this.loginBusy = true;
+    this.loginError = '';
+    try {
+      await sc.login(this.loginUser, this.loginPwd);
+      this.accountName = sc.username;
+      this.loginPwd = '';
+      this.authGate = 'ready';
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await this.startMain(ctx);
+      await sc.restoreCache();
+      this.refreshTabs();
+      sc.refresh().then((): void => {
+        this.refreshTabs();
+        this.syncActiveAfterServerApply();
+      }).catch((): void => {
+      });
+      sc.startPolling();
+    } catch (e) {
+      const err = e as Error;
+      this.loginError = err.message !== undefined ? err.message : `${e}`;
+    }
+    this.loginBusy = false;
+  }
+
+  /// 退出登录：**先弹确认**，确认后清 session 回登录页（缓存与已采纳数据不动）
+  private confirmLogout(): void {
+    this.getUIContext().showAlertDialog({
+      title: '退出登录',
+      message: '退出后需要重新输入账号密码才能使用。',
+      primaryButton: { value: '取消', action: () => {} },
+      secondaryButton: {
+        value: '退出登录', fontColor: '#FF3B30', action: () => { this.doLogout(); },
+      },
+    });
+  }
+
+  private async doLogout(): Promise<void> {
+    this.sheet = 'none';
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      await sc.logout();
+    }
+    this.pool.closeAll();
+    this.accountName = '';
+    this.loginUser = '';
+    this.loginPwd = '';
+    this.loginError = '';
+    this.authGate = 'login';   // 没有 session → 只显示登录页
+  }
+
+  // -- machine list（只读：机器由服务器下发，本机不接受编辑）--
   @Builder
   machineFormBody() {
     Scroll() {
@@ -2933,11 +2873,11 @@ struct BlinkTerminal {
               Text(m.user + '@' + m.host + '  ·  ' + (m.transport === 'blinkd' ? 'Socket ' + (m.blinkdHost !== undefined ? m.blinkdHost : '') : 'SSH'))
                 .fontSize(11).fontColor('#8E8E93')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Text('删除').fontSize(13).fontColor('#FF3B30').onClick(() => this.deleteMachine(m))
+            Text('服务器下发').fontSize(11).fontColor('#6A6A6E')
           }.width('100%').padding({ top: 10, bottom: 10, left: 14, right: 14 })
           .backgroundColor('#1C1C1E').borderRadius(10)
         }, (m: Machine) => m.id + this.tick)
-        Text('这些机器已从你 iOS 的配置同步过来。连接方式 Socket=blinkd，SSH 走 mac 中转。')
+        Text('这些机器由服务器下发（只读）。连接方式 Socket=blinkd，SSH 走 mac 中转。')
           .fontSize(11).fontColor('#6A6A6E').width('100%').margin({ top: 6, bottom: 20 })
       }.width('100%').padding({ left: 16, right: 16 })
     }.layoutWeight(1).scrollBar(BarState.Off)
@@ -2983,31 +2923,117 @@ struct BlinkTerminal {
   // -- rest panel (iOS RestPanelViewController): every session with an on-duty/rest
   // switch. Resting sessions are hidden from the strip, so this is the only place to
   // put them back on duty. Switch ON = on-duty (shown), OFF = resting (hidden).
+  // ---- 团队列表三视图（#77 评论②）：口径对齐平板 buildGroups()/rowFor() ----
+  // owner＝工作目录名（空则「其他」）；project＝tmuxSession 最后一个 '-' 之后（等于 owner 或空时用 owner）。
+  // 三档都跨机器列全（团队栏是「看所有人在干嘛」，不该被当前机器挡住）。
+  private teamOwner(t: TabModel): string {
+    const w = this.store.workDirById(t.workDirId);
+    return (w !== null && w.name.length > 0) ? w.name : '其他';
+  }
+
+  private teamProject(t: TabModel): string {
+    let p: string = t.tmuxSession;
+    const i: number = p.lastIndexOf('-');
+    if (i >= 0) { p = p.substring(i + 1); }
+    const owner: string = this.teamOwner(t);
+    if (p.length === 0 || p === owner) { p = owner; }
+    return p;
+  }
+
+  private teamGroupTitle(t: TabModel): string {
+    if (this.teamMode === 'project') { return this.teamProject(t); }
+    if (this.teamMode === 'machine') { return this.machineNameForTab(t); }
+    // 同名员工在不同机器上是两个人：标题前缀机器名（与平板一致）
+    return this.machineNameForTab(t) + ' · ' + this.teamOwner(t);
+  }
+
+  private teamKey(t: TabModel): string {
+    if (this.teamMode === 'project') { return 'p|' + this.teamProject(t); }
+    if (this.teamMode === 'machine') { return 'm|' + t.machineId; }
+    return 'e|' + t.machineId + '|' + this.teamOwner(t);
+  }
+
+  /// 扁平化成 [组头, 行…, 组头, 行…]（List 里每项一个 ListItem，不能一个 ForEach 产生多个）
+  private teamEntries(): TeamEntry[] {
+    const out: TeamEntry[] = [];
+    const seen: string[] = [];
+    // 先按机器/标题排序，让分组稳定：机器按 store.machines 位次，其余按标题
+    const tabs: TabModel[] = this.store.tabs.slice();
+    const rank = (t: TabModel): number => {
+      const i: number = this.store.machines.findIndex((m: Machine) => m.id === t.machineId);
+      return i < 0 ? 999 : i;
+    };
+    tabs.sort((a: TabModel, b: TabModel) => {
+      const ra: number = rank(a); const rb: number = rank(b);
+      if (ra !== rb) { return ra - rb; }
+      const ta: string = this.teamGroupTitle(a); const tb: string = this.teamGroupTitle(b);
+      if (ta !== tb) { return ta < tb ? -1 : 1; }
+      return a.tmuxSession < b.tmuxSession ? -1 : 1;
+    });
+    for (let i = 0; i < tabs.length; i++) {
+      const t: TabModel = tabs[i];
+      const k: string = this.teamKey(t);
+      if (seen.indexOf(k) < 0) {
+        seen.push(k);
+        const rows: TabModel[] = tabs.filter((x: TabModel) => this.teamKey(x) === k);
+        let rest: number = 0;
+        for (let j = 0; j < rows.length; j++) { if (this.store.isResting(rows[j].id)) { rest++; } }
+        let sum: string = rows.length + ' 会话';
+        if (rest > 0) { sum += ' · ' + rest + ' 休息'; }
+        out.push({ kind: 'h', title: this.teamGroupTitle(t), sub: sum, tab: t } as TeamEntry);
+      }
+      out.push({ kind: 'r', title: '', sub: '', tab: t } as TeamEntry);
+    }
+    return out;
+  }
+
+  @Builder
+  teamSeg(label: string, mode: string) {
+    Text(label).fontSize(13)
+      .fontColor(this.teamMode === mode ? '#0B1B14' : '#E8E8E8')
+      .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(13)
+      .backgroundColor(this.teamMode === mode ? '#33E0A1' : '#1C1C1E')
+      .onClick(() => { this.teamMode = mode; this.tick++; })
+  }
+
   @Builder
   restPanelBody() {
-    List() {
-      ForEach(this.store.tabs, (t: TabModel) => {
+      // 三视图切换（#77 评论②）：按员工 / 按项目 / 按机器
+      Row({ space: 8 }) {
+        this.teamSeg('按员工', 'employee')
+        this.teamSeg('按项目', 'project')
+        this.teamSeg('按机器', 'machine')
+      }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 4 })
+      List() {
+      ForEach(this.teamEntries(), (e: TeamEntry) => {
         ListItem() {
+          if (e.kind === 'h') {
+            Row({ space: 8 }) {
+              Text(e.title).fontSize(13).fontColor('#8E8E93').fontWeight(FontWeight.Medium)
+              Text(e.sub).fontSize(11).fontColor('#5A5A5E').layoutWeight(1)
+            }.width('100%').padding({ top: 14, bottom: 4 }).backgroundColor('#0A0A0A')
+          } else {
           Row({ space: 10 }) {
-            this.avatarMark(this.store.workDirById(t.workDirId), false, 30, this.agentOf(t), '#1C1C1E')
+            this.avatarMark(this.store.workDirById(e.tab.workDirId), false, 30, this.agentOf(e.tab), '#1C1C1E')
             Column({ space: 2 }) {
-              Text(this.store.tabTitle(t)).fontSize(15).fontColor('#FFFFFF')
-              Text(this.machineNameForTab(t) + ' · ' + (this.store.isResting(t.id) ? '😴 休息中' : '在岗'))
-                .fontSize(11).fontColor(this.store.isResting(t.id) ? '#B0A8FF' : '#8E8E93')
+              Text(this.store.tabTitle(e.tab)).fontSize(15).fontColor('#FFFFFF')
+              Text(this.machineNameForTab(e.tab) + ' · ' + (this.store.isResting(e.tab.id) ? '😴 休息中' : '在岗'))
+                .fontSize(11).fontColor(this.store.isResting(e.tab.id) ? '#B0A8FF' : '#8E8E93')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             Stack() {
               SymbolGlyph($r('sys.symbol.gearshape')).fontSize(15)
-                .fontColor([this.agentOf(t) === 'claude' ? '#8E8E93' : BlinkStore.agentBrand(this.agentOf(t))])
+                .fontColor([this.agentOf(e.tab) === 'claude' ? '#8E8E93' : BlinkStore.agentBrand(this.agentOf(e.tab))])
             }
             .width(30).height(30).borderRadius(8)
-            .bindMenu(this.agentMenu(t))
-            Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(t.id) })
+            .bindMenu(this.agentMenu(e.tab))
+            Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(e.tab.id) })
               .selectedColor('#34C759')
-              .onChange((on: boolean) => { this.store.setResting(t.id, !on); this.refreshTabs(); })
+              .onChange((on: boolean) => { this.store.setResting(e.tab.id, !on); this.refreshTabs(); this.tick++; })
           }.width('100%').padding({ top: 10, bottom: 10 })
+          }
         }
-      }, (t: TabModel) => t.id + (this.store.isResting(t.id) ? '_r' : '_w') + '_' + this.tick)
-    }
+      }, (e: TeamEntry) => e.kind + '_' + e.tab.id + '_' + this.teamMode + '_' + (this.store.isResting(e.tab.id) ? 'r' : 'w') + '_' + this.tick)
+      }
     .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
     Text('开关打开＝在岗（显示在标签栏），关闭＝休息（从标签栏隐藏）。休息中的员工也能在这里随时改回在岗。')
       .fontSize(11).fontColor('#6A6A6E').width('100%').padding({ left: 16, right: 16, top: 8, bottom: 16 })
@@ -3438,24 +3464,6 @@ struct BlinkTerminal {
     }
     .width('100%').height('100%').backgroundColor('#F4F5F7')
     .padding({ top: this.topInset, bottom: this.botInset })
-  }
-
-  private deleteMachine(m: Machine): void {
-    this.getUIContext().showAlertDialog({
-      title: '删除机器',
-      message: '删除「' + this.store.machineDisplayName(m) + '」？',
-      primaryButton: {
-        value: '删除', fontColor: '#FF3B30', action: () => {
-          const i = this.store.machines.findIndex((x: Machine) => x.id === m.id);
-          if (i >= 0) {
-            this.store.machines.splice(i, 1);
-            this.store.saveMachines();
-            this.tick++;
-          }
-        },
-      },
-      secondaryButton: { value: '取消', action: () => {} },
-    });
   }
 
   private saveTs(key: string, value: string): void {
