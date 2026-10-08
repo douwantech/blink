@@ -497,7 +497,7 @@ export class BlinkStore {
       return ' --provider deepseek --model deepseek-flash --sandbox-mode danger-full-access';
     }
     if (agent === 'claude') {
-      return ' --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions';
+      return ' --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions';
     }
     if (agent === 'glm') {
       return ' --settings ~/.blink/statusline-settings.json --dangerously-skip-permissions';
@@ -593,7 +593,7 @@ export class BlinkStore {
           '_cwren() { T="$1"; P="$2"; i=0; while [ $i -lt 60 ]; do sleep 0.5; C=$(tmux capture-pane -p -t "$P" 2>/dev/null); case "$C" in *"Full Access"*) break;; esac; i=$((i+1)); done; tmux send-keys -t "$P" "/rename $T" Enter; }; ' +
           'case "$MATCH" in N:*) ' + bins[i] + BlinkStore.agentArgs(agent) + ' resume "${MATCH#N:}";; I:*) if [ -n "$TMUX_PANE" ]; then ( _cwren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; ' + bins[i] + BlinkStore.agentArgs(agent) + ' resume "${MATCH#I:}";; *) if [ -n "$TMUX_PANE" ]; then ( _cwren "$TITLE" "$TMUX_PANE" >/dev/null 2>&1 & ); fi; ' + bins[i] + BlinkStore.agentArgs(agent) + ';; esac';
       } else if (agent === 'glm') {
-        cmd = 'if [ "$BLINK_GLM_USE_USER_SETTINGS" = 1 ]; then claude' + BlinkStore.agentArgs(agent) + '; else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi';
+        cmd = 'if [ "$BLINK_GLM_USE_USER_SETTINGS" = 1 ]; then claude' + BlinkStore.agentArgs(agent) + '; else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions; fi';
       } else {
         cmd = bins[i] + BlinkStore.agentArgs(agent);
       }
@@ -664,7 +664,7 @@ export class BlinkStore {
     // 同名会话可能有好几个（/clear 过就会），resume 要挑最近修改的那个；以前 find | head -1 按目录顺序挑，会接回老对话（2026-09-22 adam-rc 接回了被 DeepSeek 审核拒掉的那段历史）
     return BlinkStore.agentEnv(agent) + 'cd ' + cdTarget + ' && { CUR=$(pwd | sed "s:[/.]:-:g"); PROJ="$HOME/.claude/projects/$CUR"; TITLE="' +
     title +
-    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions\\""; fi; fi; }';
+    '"; ID=""; if [ -d "$PROJ" ]; then M=$(find "$PROJ" -maxdepth 1 -name "*.jsonl" -type f -exec grep -lF "\\"customTitle\\":\\"$TITLE\\"" {} + 2>/dev/null | while IFS= read -r f; do echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) $f"; done | sort -rn | head -1 | cut -d" " -f2-); [ -n "$M" ] && ID=$(basename "$M" .jsonl); fi; if [ -n "$ID" ]; then claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions --resume "$ID"; else if [ -n "$TMUX" ]; then (sleep 1.5; tmux send-keys "/rename $TITLE" Enter) >/dev/null 2>&1 & claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions; else TN="cc-$TITLE"; (sleep 1.5; tmux send-keys -t "$TN" "/rename $TITLE" Enter) >/dev/null 2>&1 & tmux new-session -A -s "$TN" "$SHELL -ic \\"claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions\\""; fi; fi; }';
   }
 
   // Full remote script for a (machine, workDir, session) triple — identical to
