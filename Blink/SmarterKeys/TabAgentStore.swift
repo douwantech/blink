@@ -240,7 +240,7 @@ enum AgentKind: Int, CaseIterable {
   /// `fullAccessNudge` 补一下。
   var args: String {
     switch self {
-    case .claude: return " --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions"
+    case .claude: return " --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions"
     case .codex: return " -c \"tui.status_line=[\\\"model\\\",\\\"context-used\\\",\\\"five-hour-limit\\\",\\\"weekly-limit\\\"]\" --dangerously-bypass-approvals-and-sandbox"
     case .deepseek: return " --provider deepseek --model deepseek-flash --sandbox-mode danger-full-access"
     case .glm: return " --settings ~/.blink/statusline-settings.json --dangerously-skip-permissions"
@@ -370,7 +370,7 @@ enum AgentKind: Int, CaseIterable {
           + "_cwren() { T=\"$1\"; P=\"$2\"; i=0; while [ $i -lt 60 ]; do sleep 0.5; C=$(tmux capture-pane -p -t \"$P\" 2>/dev/null); case \"$C\" in *\"Full Access\"*) break;; esac; i=$((i+1)); done; tmux send-keys -t \"$P\" \"/rename $T\" Enter; }; "
           + "case \"$MATCH\" in N:*) \(b)\(args) resume \"${MATCH#N:}\";; I:*) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args) resume \"${MATCH#I:}\";; *) if [ -n \"$TMUX_PANE\" ]; then ( _cwren \"$TITLE\" \"$TMUX_PANE\" >/dev/null 2>&1 & ); fi; \(b)\(args);; esac"
       } else if self == .glm {
-        cmd = "if [ \"$BLINK_GLM_USE_USER_SETTINGS\" = 1 ]; then claude\(args); else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --model sonnet --dangerously-skip-permissions; fi"
+        cmd = "if [ \"$BLINK_GLM_USE_USER_SETTINGS\" = 1 ]; then claude\(args); else claude --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions; fi"
       } else {
         cmd = b + args
       }
