@@ -1832,6 +1832,19 @@ extension SpaceController {
           let p = oldTerm.mcpParams,
           let machineId = p.machineId, !machineId.isEmpty else { completion?(); return }
 
+    // 公用标签：原地重连、保留同一个 key（#92）。坞是按服务端下发的 tab.id（`_sharedKeys`）
+    // 认公用标签的：新建 TermController 会换一个随机 key，而新 key 不在 `_sharedKeys` 里 →
+    // 被当成「自有标签」，坞里根本没这条；同时 `_sharedKeys` 上还挂着已被删掉的旧 key，
+    // 下一次 `_syncSharedTabs()`（服务端轮询）又按 tab.id 把它重建出来排到最前，
+    // 当前选中项就落不回原位 → 跳回第一个 tab。换引擎那条路就是这么原地重连的
+    //（presentModelPickerForCurrentTab）。
+    // 非公用标签不受坞的这套约束，保持原逻辑（新建 + 换 key）。
+    if _sharedKeys.contains(oldKey) {
+      oldTerm.restartConnection()
+      completion?()
+      return
+    }
+
     let params = MCPParams()
     params.machineId = machineId
     params.workDirId = p.workDirId
