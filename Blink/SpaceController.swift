@@ -1578,7 +1578,7 @@ extension SpaceController {
     // 强制 FULL 整拉一次自愈；不然增量路径永远"没新行"，坏缓存一直霸屏。
     let cached: TranscriptCache? = {
       guard let c = TranscriptStore.load(key: key) else { return nil }
-      let hasDialogue = c.body.contains("▶ You") || c.body.contains("◆ Claude")
+      let hasDialogue = c.body.contains("▶ You") || c.body.contains("◆ ")
       return hasDialogue ? c : nil
     }()
     let label = _transcriptTabLabel(forCurrentTerm: term)
@@ -4029,7 +4029,9 @@ final class TranscriptViewController: UIViewController, WKNavigationDelegate, WK
         bufferIsBody = true
       } else if line.hasPrefix("◆") {
         flush()
-        out.append(NSAttributedString(string: "Claude\n", attributes: [
+        // 标记行本身就是引擎名（◆ Claude / ◆ Codex / ◆ CodeWhale），照它显示，别写死 Claude。
+        let agent = line.dropFirst().trimmingCharacters(in: .whitespaces)
+        out.append(NSAttributedString(string: (agent.isEmpty ? "Claude" : agent) + "\n", attributes: [
           .font: headerFont,
           .foregroundColor: UIColor.systemGreen,
           .paragraphStyle: headerSpacing,

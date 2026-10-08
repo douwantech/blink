@@ -1045,7 +1045,7 @@ final class AppState: ObservableObject {
         pairs.compactMap { p in
             let t = cleanTranscriptText(p.t)
             guard !t.isEmpty else { return nil }
-            return ChatBlock(role: p.r == "you" ? "YOU" : "ASSISTANT",
+            return ChatBlock(role: p.r == "you" ? "YOU" : (p.r == "codex" ? "CODEX" : (p.r == "codewhale" ? "CODEWHALE" : "ASSISTANT")),
                              color: p.r == "you" ? Theme.green2 : Theme.blue, text: t)
         }
     }
@@ -1103,6 +1103,83 @@ final class AppState: ObservableObject {
         emit() { EB64=$(printf '%s' "$1" | base64 | tr -d '\n'); printf '@TSB64@%s@TSB64E@\n' "$EB64"; }
         if ! command -v jq >/dev/null 2>&1; then
           emit "$(printf 'META\tNOTFOUND\t0\t1\n⚠️ 这台机器没装 jq，读不了对话记录。ssh 上去 brew install jq')"
+          exit 0
+        fi
+        # 先看这个 tab 的 pane 里跑的是哪个引擎：claude（默认）/ codewhale / codex。
+        # 按进程树里可执行文件名判定（pane_pid 本身可能只是 shell，要继续往下找）。
+        # 配置里的 deepseek/glm 档跑的也是 codewhale 这份 CLI，所以只认进程名。
+        ACTIVE_ENGINE=claude
+        ACTIVE_EPID=""
+        active_engine_probe() {
+          command -v tmux >/dev/null 2>&1 || return
+          local pane pid child comm
+          pane=$(tmux display-message -p -t "$TMUX_NAME" '#{pane_pid}' 2>/dev/null) || return
+          case "$pane" in ''|*[!0-9]*) return;; esac
+          local pending="$pane"
+          while [ -n "$pending" ]; do
+            pid=${pending%% *}
+            if [ "$pending" = "$pid" ]; then pending=""; else pending=${pending#* }; fi
+            comm=$(ps -o comm= -p "$pid" 2>/dev/null | sed 's:.*/::')
+            case "$comm" in
+              codewhale) ACTIVE_ENGINE=codewhale; ACTIVE_EPID=$pid; return;;
+              codex)     ACTIVE_ENGINE=codex;     ACTIVE_EPID=$pid; return;;
+            esac
+            for child in $(pgrep -P "$pid" 2>/dev/null); do
+              case "$child" in ''|*[!0-9]*) continue;; esac
+              pending="${pending:+$pending }$child"
+            done
+          done
+        }
+        # CodeWhale：进程持有自己会话的 offline_queue.lock，用 lsof 反查会话 id（argv 多数不带 resume）。
+        # 正文优先读 checkpoints/<id>.json（跑着的 turn 只有它在更新），退回 sessions/<id>.json。
+        active_codewhale_file() {
+          [ -n "$ACTIVE_EPID" ] || return
+          local sid="" f
+          if command -v lsof >/dev/null 2>&1; then
+            sid=$(lsof -p "$ACTIVE_EPID" 2>/dev/null | sed -n 's:.*/\([0-9a-f-]\{36\}\)\.offline_queue\.lock$:\1:p' | head -1)
+          fi
+          [ -n "$sid" ] || sid=$(ps -o command= -p "$ACTIVE_EPID" 2>/dev/null | sed -n 's:.* resume \([0-9a-f-]\{36\}\).*:\1:p' | head -1)
+          [ -n "$sid" ] || return
+          for f in "$HOME/.codewhale/sessions/checkpoints/$sid.json" "$HOME/.codewhale/sessions/$sid.json"; do
+            [ -f "$f" ] && { printf '%s\n' "$f"; return; }
+          done
+        }
+        # Codex：进程打开着的 rollout jsonl（FD 精确关联；进程退出后就没有了，不猜）。
+        active_codex_file() {
+          [ -n "$ACTIVE_EPID" ] || return
+          command -v lsof >/dev/null 2>&1 || return
+          lsof -nP -p "$ACTIVE_EPID" 2>/dev/null | awk '$NF ~ /\.codex\/sessions\/.*rollout-.*\.jsonl$/ {print $NF}' | head -1
+        }
+        active_engine_probe
+        if [ "$ACTIVE_ENGINE" = "codewhale" ]; then
+          CW=$(active_codewhale_file)
+          if [ -z "$CW" ]; then
+            emit "$(printf 'META\tNOTFOUND\t0\t1\n没定位到这个 CodeWhale 会话：pane 里没有 codewhale 进程，或它没持有会话锁。在这个 tab 里确认 codewhale 还在跑。')"
+            exit 0
+          fi
+          CN=$(jq -r '.messages | length' "$CW" 2>/dev/null || echo 0)
+          CB=$(jq -r '
+            [.messages[]?
+             | {r:.role, t:([.content[]? | select(.type=="text") | .text] | join("\n"))}
+             | select((.t|length)>0)] | .[-100:]
+            | .[] | (if .r=="user" then "▶ You" else "◆ CodeWhale" end), .t, ""' "$CW" 2>&1)
+          emit "$(printf 'META\t%s\t%s\t1\n' "$(basename "$CW")" "$CN"; printf '%s' "$CB")"
+          exit 0
+        fi
+        if [ "$ACTIVE_ENGINE" = "codex" ]; then
+          XF=$(active_codex_file)
+          if [ -z "$XF" ]; then
+            emit "$(printf 'META\tNOTFOUND\t0\t1\n没定位到这个 Codex 会话：pane 里没有 codex 进程，或它没打开 rollout 文件。在这个 tab 里确认 codex 还在跑。')"
+            exit 0
+          fi
+          XN=$(wc -l < "$XF" | tr -d ' ')
+          XB=$(tail -n 400 "$XF" | jq -R -r '
+            fromjson?
+            | select(.type=="response_item") | .payload
+            | select(.type=="message" and (.role=="user" or .role=="assistant"))
+            | (if .role=="user" then "▶ You" else "◆ Codex" end),
+              ([.content[]? | (.text // empty)] | join("\n")), ""' 2>&1)
+          emit "$(printf 'META\t%s\t%s\t1\n' "$(basename "$XF")" "$XN"; printf '%s' "$XB")"
           exit 0
         fi
         active_session_file() {
@@ -1229,7 +1306,7 @@ final class AppState: ObservableObject {
         }
         for line in lines {
             if line == "▶ You" { flush(); role = "you"; continue }
-            if line == "◆ Claude" { flush(); role = "claude"; continue }
+            if line.hasPrefix("◆ ") { flush(); role = String(line.dropFirst(2)).lowercased(); continue }
             if role == nil { continue }   // 跳过正文前的杂行（HEAD 等）
             buf.append(line)
         }
