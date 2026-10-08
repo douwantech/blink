@@ -100,7 +100,11 @@ if found: print(max(found)[1])
         // 目录一致时保留正在运行的 CLI，只修复退回 shell 的会话。
         let launch = #""$SHELL -lic 'source \#(bootFile); echo [blink] \#(agent.rawValue) 已退出，掉到 shell; exec $SHELL -il'""#
         let enforceDirectory = workDir.hasPrefix("/") ? "true" : "false"
-        let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then D=$(cd \#(cd) 2>/dev/null && pwd -P); P=$(tmux display-message -p -t \#(outerSession) '#{pane_current_path}' 2>/dev/null); if \#(enforceDirectory) && [ -n "$D" ] && [ "$P" != "$D" ]; then tmux respawn-pane -k -t \#(outerSession) -c "$D" \#(launch); else PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-c; tmux send-keys -t \#(outerSession) "cd \#(cd) && source \#(bootFile)" Enter;; esac; fi; fi"#
+        // 「裸 shell」= 前台命令是 shell **且** pane 进程没有子进程（#81）。
+        // bash -lc "claude …; exec bash" 这种起法没有作业控制，Claude 跟 bash 同进程组，
+        // tmux 报的前台命令是 bash、claude 其实活着（是 pane 进程的子进程）——只看
+        // #{pane_current_command} 会把正在跑的 Claude 误判成裸 shell，然后往它输入框里敲 source。
+        let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then D=$(cd \#(cd) 2>/dev/null && pwd -P); P=$(tmux display-message -p -t \#(outerSession) '#{pane_current_path}' 2>/dev/null); if \#(enforceDirectory) && [ -n "$D" ] && [ "$P" != "$D" ]; then tmux respawn-pane -k -t \#(outerSession) -c "$D" \#(launch); else PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); PP=$(tmux display-message -p -t \#(outerSession) '#{pane_pid}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) [ -n "$PP" ] && pgrep -P "$PP" >/dev/null 2>&1 || { tmux send-keys -t \#(outerSession) C-c; tmux send-keys -t \#(outerSession) "cd \#(cd) && source \#(bootFile)" Enter; };; esac; fi; fi"#
 
         // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装在 ~/.local/bin）加载进来。
         // 末尾 `; exec $SHELL -il`：claude 退出就掉到登录 shell，不整个塌掉、报错留屏。
