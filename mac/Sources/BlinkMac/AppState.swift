@@ -66,11 +66,14 @@ final class AppState: ObservableObject {
     private var toastTask: Task<Void, Never>?
     private var directoryCheckSerial = 0
     private let localBlinkdConfig: (host: String, port: UInt16, token: String)?
-    private let initialMachine: Machine
+    /// 本机那台机器（只有配了 ~/.config/blinkmac/config.json 才有）；没配就是 nil。
+    private let initialMachine: Machine?
 
     init() {
         // blinkd 配置：环境变量优先，其次 ~/.config/blinkmac/config.json（双击 .app 用这个）。
-        // 有配置 → 本机走 blinkd 枚举真实会话；没有 → 本地示例数据。
+        // 有配置 → 本机先当成单机跑，随后并入服务器清单；没有 → 空态起步，机器与
+        // 公用标签全部等登录后的服务器快照填（#74：以前这里塞写死的示例机器/示例
+        // 会话，新装的 Mac 登录了也只看得到假数据，真实清单反被丢掉）。
         let localConfig = AppState.blinkdConfig()
         localBlinkdConfig = localConfig
         if let cfg = localConfig {
@@ -83,15 +86,11 @@ final class AppState: ObservableObject {
             activeMachineID = "mbp"
             activeSessionID = "loading"
         } else {
-            let local = Machine(id: "mbp", name: "MacBook Pro", host: "本地 shell", initials: "M", grad: Grad.blue, transport: .local)
-            initialMachine = local
-            machines = [
-                local,
-                Machine(id: "studio", name: "Mac Studio", host: "jack@100.96.88.42", initials: "S", grad: Grad.amber, transport: .local),
-            ]
-            sessions = AppState.sampleSessions()
-            activeMachineID = "mbp"
-            activeSessionID = "blink"
+            initialMachine = nil
+            machines = []
+            sessions = []
+            activeMachineID = ""
+            activeSessionID = ""
         }
         // 远程会话贴图上传图床时，把进度/结果 toast 冒出来（需 self 全初始化后再接）。
         term.onToast = { [weak self] m in Task { @MainActor in self?.showToast(m) } }
@@ -182,8 +181,10 @@ final class AppState: ObservableObject {
             let a = BlinkAvatars.load()
             await MainActor.run { self?.avatars = a }
         }
-        guard case .blinkd = activeMachine.transport else { return }
-        loadCloudMachines()          // 用 iCloud KV 的机器清单扩展成多机（正式版才有）
+        // #74：以前这里是 `guard case .blinkd = activeMachine.transport else { return }`
+        // —— 没配本机 blinkd 时 activeMachine 是本地占位，直接 return，服务器清单永远
+        // 建不出来（登录了也空列表）。现在统一跑：先建机器清单，再枚举、并标签。
+        loadCloudMachines()          // 用服务器清单（sync 文件 / iCloud KV）扩展成多机
         await loadCloudRest()
         loadFavorites()
         startObservingCloud()
@@ -320,9 +321,12 @@ final class AppState: ObservableObject {
     /// 套用手机上给它起的显示名，不重复列。KV 空（dev / 未同步）→ 保持本地单机不动。
     func loadCloudMachines() {
         let cloud = MacMachineStore.machines()
-        guard !cloud.isEmpty, let localConfig = localBlinkdConfig else { return }
-        let lp = localConfig.port
-        let lt = localConfig.token
+        // #74：以前这里 `guard let localConfig = localBlinkdConfig`，只要本机没配
+        // ~/.config/blinkmac/config.json，服务器下发的机器全被丢掉（公用标签也跟着
+        // 因为「machines 里没有对应机器」被过滤光）。本机配置现在只用于「认出自己」。
+        guard !cloud.isEmpty else { return }
+        let lp = localBlinkdConfig?.port
+        let lt = localBlinkdConfig?.token
         let grads = [Grad.blue, Grad.amber, Grad.green, Grad.purple, Grad.slate]
         var out: [Machine] = []
         var thisMacId: String? = nil
@@ -332,13 +336,21 @@ final class AppState: ObservableObject {
             let hostLabel: String
             let isLocalMac: Bool
             if cm.transport != "ssh", let b = cm.blinkd {
-                let isThisMac = (b.token == lt)
-                // 这台 Mac 连自己的 daemon 走 127.0.0.1 回环（daemon 双模式在 0.0.0.0 也监听），
-                // 不绕 Tailscale/tsnet；其余 blinkd 机器才走 KV 里的地址（tsnet）。
-                let loopback = "127.0.0.1"
-                transport = isThisMac ? .blinkd(host: loopback, port: lp, token: lt)
-                                      : .blinkd(host: b.host, port: b.port, token: b.token)
-                hostLabel = isThisMac ? "本机 · \(loopback):\(lp)" : "blinkd \(b.host):\(b.port)"
+                // 本机识别只看 token：配了本机 blinkd 的 Mac 才认得出清单里哪条是自己。
+                // 没配的机器（新装 DMG 都算）没有本机概念，一律按普通远程机器连。
+                let isThisMac = (lt != nil && b.token == lt)
+                if isThisMac, let lp, let lt {
+                    // 本机：回环优先（daemon 在同一台机器上时最快），但 daemon 常常只
+                    // 监听 Tailscale 地址、回环没开 —— 所以要能回落到清单里的对外地址，
+                    // 否则「识别成本机」反而连不上（#74）。
+                    let loopback = "127.0.0.1"
+                    transport = .blinkd(host: loopback, port: lp, token: lt,
+                                        alt: (host: b.host, port: b.port))
+                    hostLabel = "本机 · \(loopback):\(lp)"
+                } else {
+                    transport = .blinkd(host: b.host, port: b.port, token: b.token)
+                    hostLabel = "blinkd \(b.host):\(b.port)"
+                }
                 isLocalMac = isThisMac
                 if isThisMac { thisMacId = cm.id }
             } else if cm.transport == "blinkd" {
@@ -367,10 +379,11 @@ final class AppState: ObservableObject {
                                isLocalMac: isLocalMac))
         }
         guard !out.isEmpty else { return }
-        // 手机清单里没有这台 Mac（没配本地 daemon）→ 把本地那台保留在最前。
-        if thisMacId == nil {
-            out.insert(initialMachine, at: 0)
-            thisMacId = initialMachine.id
+        // 清单里没有本机（这台 Mac 没配 daemon）→ 只有确实配了本机配置才把本机条目
+        // 补在最前；否则服务器给什么就显示什么（#74）。
+        if thisMacId == nil, let im = initialMachine {
+            out.insert(im, at: 0)
+            thisMacId = im.id
         }
         machines = out
         activeMachineID = thisMacId ?? out[0].id
@@ -401,9 +414,14 @@ final class AppState: ObservableObject {
                                  timeout: TimeInterval, marker: String?,
                                  fallback: (user: String, host: String)? = nil) async -> String {
         switch transport {
-        case .blinkd(let h, let p, let t):
-            let out = await BlinkdExec.run(host: h, port: p, token: t, command: command,
+        case .blinkd(let h, let p, let t, let alt):
+            var out = await BlinkdExec.run(host: h, port: p, token: t, command: command,
                                            timeout: timeout, finishMarker: marker)
+            // 本机 blinkd 回环没开时用备用地址再试一次（#74）。
+            if out.isEmpty, let alt {
+                out = await BlinkdExec.run(host: alt.host, port: alt.port, token: t, command: command,
+                                           timeout: timeout, finishMarker: marker)
+            }
             if out.isEmpty, let fallback {
                 return await SSHExec.run(user: fallback.user, host: fallback.host,
                                          command: command, timeout: timeout)
@@ -598,7 +616,7 @@ final class AppState: ObservableObject {
 
     // MARK: Derived
 
-    var activeMachine: Machine { machines.first { $0.id == activeMachineID } ?? machines[0] }
+    var activeMachine: Machine { machines.first { $0.id == activeMachineID } ?? machines.first ?? .placeholder }
     var activeSession: Session {
         sessions.first { $0.id == activeSessionID }
             ?? Session(id: "none", machineID: activeMachineID, name: "选择会话", dir: "",
@@ -1226,55 +1244,5 @@ final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             if !Task.isCancelled { toast = nil }
         }
-    }
-
-    // MARK: Sample data
-
-    static func sampleSessions() -> [Session] {
-        let blinkLines: [TermLine] = [
-            TermLine(text: "~/Codes/Jack/blink  bin ✳", color: Theme.dim),
-            TermLine(prefix: "$", prefixColor: Theme.sub, text: "claude --resume \"cc-blink\"", color: Theme.sub),
-            TermLine(prefix: "●", prefixColor: Theme.work, text: "Read(Blink/SmarterKeys/BlinkMachineStore.swift)"),
-            TermLine(text: "  ⎿ Read 240 lines", color: Theme.dim),
-            TermLine(prefix: "●", prefixColor: Theme.blue, text: "刷新脚本三处 claude 启动都加上了 --dangerously-skip-permissions。"),
-            TermLine(prefix: "●", prefixColor: Theme.work, text: "Bash(xcodebuild -scheme Blink build)"),
-            TermLine(text: "  ⎿ ** BUILD SUCCEEDED **", color: Theme.work),
-            TermLine(prefix: "✻", prefixColor: Theme.purple, text: "Compacting conversation… (94% context)", color: Theme.purple, italic: true),
-            TermLine(prefix: ">", prefixColor: Theme.green2, text: "烧到我手机上", color: Theme.green2),
-        ]
-        let blinkChat: [ChatBlock] = [
-            ChatBlock(role: "YOU", color: Theme.green2, text: "让刷新时调用的脚本调用 Claude，并加上 skip dangerous 这个 flag。"),
-            ChatBlock(role: "ASSISTANT", color: Theme.blue, text: "好的，刷新按钮重连跑的是 innerScript() 那段 resume-or-new 脚本。三处 claude 启动分支都加了 --dangerously-skip-permissions，iOS 和鸿蒙逐字一致。已 build 成功。"),
-            ChatBlock(role: "YOU", color: Theme.green2, text: "烧到我手机上"),
-        ]
-        return [
-            Session(id: "blink", machineID: "mbp", name: "blink", dir: "~/Codes/Jack/blink",
-                    initials: "bl", grad: Grad.blue, status: .work, lines: blinkLines, chat: blinkChat),
-            Session(id: "printer", machineID: "mbp", name: "printer", dir: "~/Codes/Jack/AI-Printer",
-                    initials: "pr", grad: Grad.green, status: .work, lines: [
-                        TermLine(prefix: "●", prefixColor: Theme.work, text: "Edit(worker/task.go)"),
-                        TermLine(text: "  ⎿ Updated 3 hunks", color: Theme.dim),
-                        TermLine(prefix: "●", prefixColor: Theme.blue, text: "部署 updater 中…"),
-                    ], chat: [ChatBlock(role: "ASSISTANT", color: Theme.blue, text: "正在部署 product_updater…")]),
-            Session(id: "agent", machineID: "mbp", name: "agent-tasks", dir: "~/Codes/Jack/agent",
-                    initials: "ag", grad: Grad.slate, status: .idle, lines: [
-                        TermLine(text: "掉回裸 shell · 无 claude 进程", color: Theme.dim),
-                    ]),
-            Session(id: "talkai", machineID: "studio", name: "talkai", dir: "~/Codes/Jack/AI-Talkai",
-                    initials: "ta", grad: Grad.amber, status: .wait, lines: [
-                        TermLine(prefix: "●", prefixColor: Theme.blue, text: "要不要建/更新 PR？"),
-                        TermLine(text: "  1. 建 PR   2. 先不建", color: Theme.dim),
-                        TermLine(text: "  ▍等待你的选择…", color: Theme.wait),
-                    ], chat: [ChatBlock(role: "ASSISTANT", color: Theme.blue, text: "要不要建/更新 PR？")]),
-            Session(id: "huum", machineID: "studio", name: "huum", dir: "~/Codes/Jack/huum-studio",
-                    initials: "hu", grad: Grad.blue, status: .wait, lines: [
-                        TermLine(prefix: "●", prefixColor: Theme.blue, text: "权限确认：写入 matomo 表？"),
-                        TermLine(text: "  Yes / Yes,别再问 / No", color: Theme.dim),
-                    ]),
-            Session(id: "sim", machineID: "studio", name: "blink-sim", dir: "~/Codes/Jack/blink",
-                    initials: "bs", grad: Grad.purple, status: .rest, lines: [
-                        TermLine(text: "休息中 · 你手动标记，不再提醒", color: Theme.dim),
-                    ]),
-        ]
     }
 }

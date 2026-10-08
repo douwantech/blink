@@ -90,15 +90,17 @@ final class RemoteBackend: TerminalBackend {
     private let port: UInt16
     private let token: String
     private let execCmd: String
+    /// 主地址连不通时的备用地址（本机 blinkd 回环不开 → 回落 Tailscale，#74）。
+    private let alt: (host: String, port: UInt16)?
     private var client: BlinkdClient?
     private let onTransport: ((String) -> Void)?
     private let onFailure: (() -> Void)?
     var view: TerminalView { tv }
 
-    init(host: String, port: UInt16, token: String, exec: String,
+    init(host: String, port: UInt16, token: String, alt: (host: String, port: UInt16)? = nil, exec: String,
          uploadImageOnPaste: Bool = false, onToast: ((String) -> Void)? = nil,
          onTransport: ((String) -> Void)? = nil, onFailure: (() -> Void)? = nil) {
-        self.host = host; self.port = port; self.token = token
+        self.host = host; self.port = port; self.token = token; self.alt = alt
         execCmd = exec
         self.onTransport = onTransport
         self.onFailure = onFailure
@@ -112,7 +114,7 @@ final class RemoteBackend: TerminalBackend {
     }
 
     private func connect() {
-        let c = BlinkdClient(host: host, port: port, token: token, exec: execCmd, terminal: tv)
+        let c = BlinkdClient(host: host, port: port, token: token, alt: alt, exec: execCmd, terminal: tv)
         c.onTransport = onTransport   // 把实际通道（LAN/Tailscale）回报给 UI
         c.onFailure = onFailure
         tv.client = c
@@ -209,7 +211,7 @@ final class TerminalManager {
                 title: session.name, workDir: expandDir(session.dir),
                 agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
             b = LocalBackend(dir: session.dir, script: script)
-        case .blinkd(let h, let p, let t):
+        case .blinkd(let h, let p, let t, let alt):
             // 统一走 new-session -A：会话在就 attach、不在就建+claude resume（heal 自愈坏 session）。
             // 旧逻辑对带 tmuxName 的会话一律纯 attach，重启后 tmux server 空了 → 「can't find session」。
             let workDir = machine.isLocalMac ? expandDir(session.dir)
@@ -218,7 +220,7 @@ final class TerminalManager {
                 title: session.name, workDir: workDir,
                 agent: TabAgentStore.agent(machineId: machine.id, title: session.name))
             // 本机 blinkd（claude 就在这台 Mac）贴图走原生；远程 blinkd 上传图床。
-            b = RemoteBackend(host: h, port: p, token: t, exec: exec,
+            b = RemoteBackend(host: h, port: p, token: t, alt: alt, exec: exec,
                               uploadImageOnPaste: !machine.isLocalMac, onToast: onToast,
                               onTransport: { [weak self, sid = session.id] kind in self?.onTransport?(sid, kind) },
                               onFailure: { [weak self, sid = session.id] in

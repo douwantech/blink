@@ -54,7 +54,10 @@ struct ChatBlock: Identifiable {
 
 enum Transport {
     case local
-    case blinkd(host: String, port: UInt16, token: String)
+    /// alt：主地址连不通时的备用地址。只给「本机 blinkd」用 —— 它主地址是回环
+    /// （daemon 在同一台机器上时最快），但 daemon 常常只监听 Tailscale 地址、
+    /// 回环没开，所以要能自动回落到它对外通告的地址（#74）。
+    case blinkd(host: String, port: UInt16, token: String, alt: (host: String, port: UInt16)? = nil)
     /// 手机上配成 SSH 的机器：Mac 端用系统 /usr/bin/ssh 连（开会话走 SSHBackend，
     /// 跑单条命令走 SSHExec），要免密才行。
     case ssh(user: String, host: String)
@@ -77,7 +80,7 @@ enum Transport {
     /// 顶栏徽标文案：blinkd 连接直接带上实际 IP（本机 127.0.0.1 / 远程对应 IP），
     /// 一眼看清走的是哪台/哪条链路，不再只写「本地」这种模糊词。
     var badge: String {
-        if case .blinkd(let host, _, _) = self { return "blinkd · \(host)" }
+        if case .blinkd(let host, _, _, _) = self { return "blinkd · \(host)" }
         if case .unconfigured = self { return "blinkd 未配置" }
         return "blinkd"
     }
@@ -86,7 +89,8 @@ enum Transport {
     var fingerprint: String {
         switch self {
         case .local: return "local"
-        case .blinkd(let h, let p, let t): return "blinkd(\(h):\(p):\(t.hashValue))"
+        case .blinkd(let h, let p, let t, let alt):
+            return "blinkd(\(h):\(p):\(t.hashValue):\(alt.map { "\($0.host):\($0.port)" } ?? "-"))"
         case .ssh(let u, let h): return "ssh(\(u)@\(h))"
         case .unconfigured: return "unconfigured"
         }
@@ -106,6 +110,14 @@ struct Machine: Identifiable {
     /// claude-code 是否跑在这台 Mac 上（本机 / isThisMac 的 blinkd）。true=本机贴图走原生
     /// （claude 直接读本机剪贴板）；false=远程，贴图要上传图床再插 URL。
     var isLocalMac: Bool = true
+}
+
+extension Machine {
+    /// 未登录 / 还没拿到机器清单时的占位机器（#74：以前这里塞的是写死的示例数据）。
+    /// 只为了让读 `activeMachine` 的视图不崩，不参与连接，也不出现在 rail 里
+    /// （rail 渲染的是 `machines`）。
+    static let placeholder = Machine(id: "", name: "未登录", host: "", initials: "",
+                                     grad: Grad.slate, transport: .local)
 }
 
 struct Session: Identifiable {

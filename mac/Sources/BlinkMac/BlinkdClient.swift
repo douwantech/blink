@@ -18,6 +18,8 @@ final class BlinkdClient {
     private let port: UInt16
     private let token: String
     private let execCmd: String?
+    /// 主地址连不通时的备用地址（本机 blinkd：回环连不上就回落到 Tailscale 地址，#74）。
+    private let alt: (host: String, port: UInt16)?
     private weak var terminal: TerminalView?
     private var handshakeSent = false
     private var ready = false                 // auth 已发出，之后才允许发其它帧
@@ -37,22 +39,31 @@ final class BlinkdClient {
     /// 连上后回报实际用的通道标签（"LAN 直连" / "Tailscale"），UI 拿去显示当前连接方式。
     var onTransport: ((String) -> Void)?
 
-    init(host: String, port: UInt16, token: String, exec: String?, terminal: TerminalView) {
+    init(host: String, port: UInt16, token: String, alt: (host: String, port: UInt16)? = nil,
+         exec: String?, terminal: TerminalView) {
         self.host = host
         self.port = port
         self.token = token
+        self.alt = alt
         self.execCmd = exec
         self.terminal = terminal
     }
 
     func start() {
-        // 组候选：同网 Bonjour 发现到这台机器（按 Tailscale IP 对上）→ 先试 LAN 直连；再兜底 Tailscale。
+        // 组候选：同网 Bonjour 发现到这台机器（按 Tailscale IP 对上）→ 先试 LAN 直连；
+        // 再试主地址（远程机器就是 Tailscale 地址；本机 blinkd 是回环）；最后 alt 兜底
+        // —— 本机 daemon 常常只监听 Tailscale 地址、回环没开（#74）。
         candidates = []
         if let lan = BlinkdDiscovery.shared.lanEndpoint(forTailscaleHost: host) {
             candidates.append(("LAN 直连", { NWConnection(to: lan, using: .tcp) }))
         }
         let nwPort = NWEndpoint.Port(rawValue: port) ?? 7777
-        candidates.append(("Tailscale", { NWConnection(host: NWEndpoint.Host(self.host), port: nwPort, using: .tcp) }))
+        let isLoopback = (host == "127.0.0.1" || host == "localhost" || host == "::1")
+        candidates.append((isLoopback ? "本机回环" : "Tailscale",
+                           { NWConnection(host: NWEndpoint.Host(self.host), port: nwPort, using: .tcp) }))
+        if let alt, let altPort = NWEndpoint.Port(rawValue: alt.port) {
+            candidates.append(("Tailscale", { NWConnection(host: NWEndpoint.Host(alt.host), port: altPort, using: .tcp) }))
+        }
         candidateIndex = 0
         tryConnect()
     }

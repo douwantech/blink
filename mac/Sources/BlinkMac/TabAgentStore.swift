@@ -437,7 +437,11 @@ enum SyncConfig {
         guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return false }
         let tmp = path + ".tmp"
         guard (try? out.write(to: URL(fileURLWithPath: tmp), options: .atomic)) != nil else { return false }
-        return (try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path),
-                                                       withItemAt: URL(fileURLWithPath: tmp))) != nil
+        let ok = (try? FileManager.default.replaceItemAt(URL(fileURLWithPath: path),
+                                                         withItemAt: URL(fileURLWithPath: tmp))) != nil
+        // 同步文件里有每台机器的 blinkd token 和书签密码，建成 600（#74：以前是 644）。
+        // 注意必须改**目标**文件：replaceItemAt 会保留被替换文件的权限，改临时文件没用。
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        return ok
     }
 }
