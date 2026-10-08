@@ -60,6 +60,12 @@ enum AppHarness {
 
         let delay = Double(env["BLINKMAC_SHOT_DELAY"] ?? "") ?? 14
         try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+        // 验收要看的是「对话记录」视图而不是终端：等会话连上（首屏出来）再切过去
+        // （同 Cmd-D / 历史按钮）。切早了会话还没连上，只会弹「没有对话记录可看」。
+        if env["BLINKMAC_E2E_MODE"] == "chat" {
+            state.openHistory()
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+        }
         capture(to: shot)
         exit(0)
     }
