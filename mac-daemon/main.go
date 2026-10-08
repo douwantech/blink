@@ -12,10 +12,12 @@
 //     防火墙对 LAN 入站的封锁
 //
 // 协议(client→server,BigEndian):
-//   0x01 | u16 len | token       握手,必须第一帧
-//   0x04 | u16 len | cmdline      指定这条连接跑的命令(auth 后,PTY 起之前;可选)
-//   0x02 | u16 len | bytes        终端输入(键盘)
-//   0x03 | u16 rows | u16 cols    窗口 resize
+//
+//	0x01 | u16 len | token       握手,必须第一帧
+//	0x04 | u16 len | cmdline      指定这条连接跑的命令(auth 后,PTY 起之前;可选)
+//	0x02 | u16 len | bytes        终端输入(键盘)
+//	0x03 | u16 rows | u16 cols    窗口 resize
+//
 // server→client:裸 PTY 字节流,无帧。
 package main
 
@@ -54,12 +56,14 @@ const (
 // 第一个 exec 帧决定跑什么命令；exec 前的 resize 只记录初始尺寸，
 // 若先收到 input，才用默认 shell 起 PTY。
 type conn struct {
-	nc     net.Conn
-	defCmd string
-	mu     sync.Mutex
-	ptmx   *os.File
-	rows   uint16
-	cols   uint16
+	nc      net.Conn
+	defCmd  string
+	mu      sync.Mutex
+	ptmx    *os.File
+	cmd     *exec.Cmd
+	cmdDone chan struct{}
+	rows    uint16
+	cols    uint16
 }
 
 func handleConn(nc net.Conn, token, defCmd string) {
@@ -143,6 +147,9 @@ func (co *conn) startPTY(name string, args []string) {
 		return
 	}
 	co.ptmx = ptmx
+	co.cmd = cmd
+	co.cmdDone = make(chan struct{})
+	done := co.cmdDone
 	co.mu.Unlock()
 	log.Printf("pty started for %s: %s (pid %d)", co.nc.RemoteAddr(), name, cmd.Process.Pid)
 
@@ -150,6 +157,7 @@ func (co *conn) startPTY(name string, args []string) {
 	// 连接由下面的 PTY 读线程在读完全部输出后关闭；这里提前 Close 会截断
 	// capture-pane 等一次性命令的尾部，客户端收不到结束标记。
 	go func() {
+		defer close(done)
 		err := cmd.Wait()
 		log.Printf("pty exited for %s: pid %d (%v)", co.nc.RemoteAddr(), cmd.Process.Pid, err)
 	}()
@@ -196,10 +204,28 @@ func (co *conn) resize(rows, cols uint16) {
 func (co *conn) closePTY() {
 	co.mu.Lock()
 	ptmx := co.ptmx
+	cmd := co.cmd
+	done := co.cmdDone
 	co.ptmx = nil
+	co.cmd = nil
+	co.cmdDone = nil
 	co.mu.Unlock()
 	if ptmx != nil {
-		_ = ptmx.Close() // SIGHUP → 远端 tmux detach,会话保留
+		// macOS 上另一个 goroutine 可能正阻塞在 PTY Read，单靠 Close
+		// 不一定能及时给 shell 发 SIGHUP。PTY 子进程由 pty.StartWithSize
+		// 建立独立 session/进程组；只结束这一条连接的组，不碰 tmux server。
+		select {
+		case <-done: // 子进程已由 Wait 收尸
+		default:
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGHUP)
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				<-done // Wait 收尸
+			}
+		}
+		_ = ptmx.Close()
 	}
 }
 
