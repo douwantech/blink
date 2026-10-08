@@ -251,7 +251,7 @@ function term_wheel(dyPx) {
 // ArkTS 判定后调 term_hist_end()。
 function _histNew(id) {
   return { id: id, t: null, div: null, ready: false, armed: false, acc: 0,
-           pendingPx: 0, atBottom: true, hasData: false };
+           pendingPx: 0, atBottom: true, hasData: false, showPending: false };
 }
 
 // 建历史图层（ArkTS 拿到第一段历史时调）。
@@ -277,7 +277,9 @@ function term_hist_begin(id) {
       var q = _histQueue;
       _histQueue = [];
       for (var i = 0; i < q.length; i++) { t.interpret(q[i]); }
+      if (q.length > 0) { _hist.hasData = true; }
       t.scrollEnd();
+      if (_hist.showPending) { _histFinishShow(); }
     };
     t.decorate(div);
   } catch (e) { _post('error', { message: 'hist_begin: ' + String(e) }); }
@@ -304,12 +306,27 @@ function term_hist_write_b64(b64) {
   } catch (e) { _post('error', { message: String(e) }); }
 }
 
-// 历史拉完：亮出图层，并把「开始拉之前」那几帧的拖动补上。
+// 历史拉完：图层就绪且内容到手后才真正亮出来。
 function term_hist_show() {
+  if (!_hist) { return; }
+  _hist.armed = false;
+  _hist.showPending = true;
+  if (_hist.ready) { _histFinishShow(); }
+}
+
+function _histFinishShow() {
   try {
-    if (!_hist) { return; }
-    _hist.armed = false;
-    if (_hist.t) { _hist.t.scrollEnd(); }
+    if (!_hist || !_hist.t) { return; }
+    _hist.showPending = false;
+    var sbRows = (_hist.t.scrollbackRows_ && _hist.t.scrollbackRows_.length) || 0;
+    if (!_hist.hasData || sbRows === 0) {
+      // 拉回来的内容一点历史都没有（pane 本身在 alt-screen，如 vim/less，tmux 只给现屏）：
+      // 本地滚动没意义，交回原来的远程滚轮（老路径下 tmux/应用自己处理滚轮），
+      // 别把用户卡在一个不会动的图层上。
+      term_hist_abort();
+      return;
+    }
+    _hist.t.scrollEnd();
     if (_hist.div) { _hist.div.style.visibility = 'visible'; _hist.div.style.zIndex = '2'; }
     _hist.atBottom = true;
     var px = _hist.pendingPx;
