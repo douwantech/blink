@@ -556,6 +556,7 @@ enum HostReachability {
     BODY=$( { [ -n "$WARN" ] && echo "$WARN"; echo "=== $F ==="; } ; jq -s -r '
       [.[]
         | select(.type=="user" or .type=="assistant")
+        | select(.turnOrigin != "scheduled" and .scheduledTaskId == null)
         | . as $d
         | (if (.message.content | type) == "string" then
              .message.content
@@ -754,6 +755,7 @@ enum HostReachability {
     BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" '
       [.[]
         | select(.type=="user" or .type=="assistant")
+        | select(.turnOrigin != "scheduled" and .scheduledTaskId == null)
         | . as $d
         | (if (.message.content | type) == "string" then
              .message.content

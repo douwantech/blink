@@ -1239,6 +1239,7 @@ final class AppState: ObservableObject {
         if [ "$START" -le "$TOTAL" ]; then
           BODY=$(sed -n "${START},${TOTAL}p" "$F" | jq -s -r --arg full "$FULL" '
             [.[] | select(.type=="user" or .type=="assistant")
+              | select(.turnOrigin != "scheduled" and .scheduledTaskId == null)
               | (if (.message.content|type)=="string" then .message.content
                  else [.message.content[]? | select(.type=="text") | .text] | join("\n") end) as $raw
               | ($raw
