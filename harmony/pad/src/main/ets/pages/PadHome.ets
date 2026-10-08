@@ -181,6 +181,9 @@ struct PadHome {
   @State kbWanted: boolean = false;     // 软键盘只在点「键盘」时弹；外接键盘始终可打字
   // 选择 / 视图模型（store 是普通 class，ArkUI 观察不到，改完一律走 refreshAll）
   @State tick: number = 0;
+  /// 当前会话的连接状态快照（#78 review）：顶栏胶囊读它才不会被池里变化“绕过”——
+  /// topBar() 原本只依赖 tsState，onConnState 只 tick++ 不会重绘顶栏。
+  @State activeConn: ConnUiState = 'idle';
   @State storeReady: boolean = false;
   @State activeTabId: string = '';
   @State activeMachineId: string = '';
@@ -678,6 +681,7 @@ struct PadHome {
     this.statIdle = d;
     this.statRest = r;
     this.teamGroups = this.buildGroups();
+    this.activeConn = this.connState(this.activeTabId);
     this.tick++;
   }
 
@@ -1026,12 +1030,30 @@ struct PadHome {
         this.note(tabId, conn, '\u001b[33m⚠ ' + verb + why + '（自动重连已关，点刷新重连）\u001b[0m', false);
       }
     }
+    if (tabId === this.activeTabId) {
+      this.activeConn = conn.state;
+    }
     this.tick++;
   }
 
   private connState(tabId: string): ConnUiState {
     const c = this.pool.get(tabId);
     return c !== null ? c.state : 'idle';
+  }
+
+  /// 顶栏状态胶囊（#78 review）：反映**当前会话的真实连接状态**。
+  /// 本 PR 拆掉了「等 tailscale Running 才 attach」的门控，会话不依赖 VPN 也能连上，
+  /// 所以这里不能再拿 tsState 冒充会话状态（否则终端有实时内容、顶栏却写「未连接」）。
+  private connChipOn(): boolean {
+    return this.activeConn === 'connected';
+  }
+
+  private connChipLabel(): string {
+    if (this.activeConn === 'connected') { return '已连接'; }
+    if (this.activeConn === 'connecting') { return '连接中'; }
+    // 只有「确实没连上」时才补一条 VPN 线索：tailscale 是可选通道，不是会话状态的来源。
+    if (this.tsState === 'Running') { return '未连接'; }
+    return this.tsState.length > 0 ? ('未连接 · ' + this.tsState) : '未连接 · 未连 tailscale';
   }
 
   private activeClient(): BlinkdClient | null {
@@ -2268,12 +2290,12 @@ struct PadHome {
       Text(this.activeTitle()).fontSize(13).fontFamily(MONO).fontWeight(FontWeight.Medium).fontColor(FG)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 360 })
       Row({ space: 5 }) {
-        Circle().width(6).height(6).fill(this.tsState === 'Running' ? TEAL : C_WAIT)
-        Text(this.tsState === 'Running' ? 'tailscale' : (this.tsState.length > 0 ? this.tsState : '未连接'))
-          .fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.tsState === 'Running' ? TEAL : C_WAIT)
+        Circle().width(6).height(6).fill(this.connChipOn() ? TEAL : C_WAIT)
+        Text(this.connChipLabel())
+          .fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.connChipOn() ? TEAL : C_WAIT)
       }
       .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(6)
-      .backgroundColor(this.tint(this.tsState === 'Running' ? TEAL : C_WAIT, '1F'))
+      .backgroundColor(this.tint(this.connChipOn() ? TEAL : C_WAIT, '1F'))
       Blank()
       this.iconBtn($r('sys.symbol.person_2'), this.showTeam ? TEAL : SUB, 17, () => this.toggleTeam())
       this.iconBtn($r('sys.symbol.arrow_clockwise'), C_WORK, 16, () => this.reconnectActive())
