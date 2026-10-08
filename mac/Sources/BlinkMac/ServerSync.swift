@@ -264,6 +264,7 @@ struct ServerLoginView: View {
       }
       HStack {
         Button("离线使用") {
+          resetLoginState()
           if let onOffline { onOffline() } else { onSuccess() }
         }
         Spacer()
@@ -275,19 +276,28 @@ struct ServerLoginView: View {
     .padding(24)
     .frame(width: 320)
     .background(Theme.bg)
+    .onAppear { resetLoginState() }
   }
 
   private func login() {
+    guard !busy else { return }
     busy = true
     error = ""
     Task {
       do {
         try await ServerSync.shared.login(username: username, password: password)
+        resetLoginState()
         onSuccess()
       } catch {
         self.error = error.localizedDescription
         busy = false
       }
     }
+  }
+
+  private func resetLoginState() {
+    busy = false
+    error = ""
+    password = ""
   }
 }

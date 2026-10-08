@@ -8,6 +8,7 @@ struct RootView: View {
     /// 浏览器占满顶栏以下整块（和鸿蒙平板一样全屏），关掉回终端；⌘B / 顶栏地球按钮切换
     @AppStorage("BrowserPanel.open") private var showBrowser = false
     @State private var showSettings = false
+    @State private var mainWindow = WeakMainWindow()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +31,7 @@ struct RootView: View {
             }
         }
         .background(Theme.bg)
+        .background(MainWindowReader { mainWindow.window = $0 })
         .foregroundColor(Theme.fg)
         .task {
             await state.startup()
@@ -44,13 +46,53 @@ struct RootView: View {
                 state.allowOfflineSession = false
                 showSettings = false
                 openWindow(id: "login")
-                dismissWindow(id: "main")
+                closeMainWindow()
             }
         }
         .onAppear {
             if !ServerSync.shared.hasSession && !state.allowOfflineSession {
                 openWindow(id: "login")
-                dismissWindow(id: "main")
+                closeMainWindow()
+            }
+        }
+    }
+
+    private func closeMainWindow() {
+        let window = mainWindow.window
+        // The settings alert is itself a sheet. End that presentation before closing
+        // the WindowGroup instance; dismissWindow alone can leave its NSWindow visible.
+        DispatchQueue.main.async {
+            dismissWindow(id: "main")
+            window?.close()
+        }
+    }
+}
+
+private final class WeakMainWindow {
+    weak var window: NSWindow?
+}
+
+private struct MainWindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowTrackingView {
+        let view = WindowTrackingView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: WindowTrackingView, context: Context) {
+        view.onWindow = onWindow
+    }
+
+    final class WindowTrackingView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window {
+                DispatchQueue.main.async { [weak self, weak window] in
+                    if let window { self?.onWindow?(window) }
+                }
             }
         }
     }
@@ -58,12 +100,19 @@ struct RootView: View {
 
 private struct MacSettingsView: View {
     @ObservedObject private var sync = ServerSync.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var confirmLogout = false
+    @State private var escapeMonitor: Any?
     let onLogout: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("设置").font(Theme.ui(18, .bold))
+            HStack {
+                Text("设置").font(Theme.ui(18, .bold))
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text("账号").font(Theme.ui(13, .semibold))
                 HStack {
@@ -80,6 +129,19 @@ private struct MacSettingsView: View {
         .padding(24)
         .frame(width: 380)
         .background(Theme.bg)
+        .onExitCommand { dismiss() }
+        .onAppear {
+            guard escapeMonitor == nil else { return }
+            escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53 else { return event }
+                dismiss()
+                return nil
+            }
+        }
+        .onDisappear {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
+        }
         .alert("退出登录", isPresented: $confirmLogout) {
             Button("取消", role: .cancel) {}
             Button("退出", role: .destructive, action: onLogout)

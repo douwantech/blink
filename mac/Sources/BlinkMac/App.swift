@@ -71,6 +71,17 @@ enum AppBuild {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !ServerSync.shared.hasSession else { return true }
+        if let login = sender.windows.first(where: { $0.title == "登录 Blink 团队" }) {
+            login.makeKeyAndOrderFront(nil)
+            sender.activate(ignoringOtherApps: true)
+            return false
+        }
+        // If the login window was also closed, the initial main window redirects to it.
+        return true
+    }
+
     // 裸 SPM 二进制默认不是常规 app，必须尽早置 .regular 才出窗口。
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
