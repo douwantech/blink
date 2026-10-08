@@ -686,10 +686,16 @@ struct BlinkTerminal {
     }
     const conn = this.pool.getOrCreate(tabId);
     const m = this.store.machineById(tab.machineId);
-    const ep = this.store.blinkdEndpoint(m);
+    const primary = this.store.blinkdEndpoint(m);
+    const relays: Machine[] = this.sshRelays(primary);
+    const ep = conn.relayIndex < 0 ? primary : relays[conn.relayIndex];
     if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
-      // 没配 blinkd 端点：以前直接静默 return，终端一片空只剩光标闪。
-      this.note(tabId, conn, '\u001b[33m⚠ 这台机器没配 blinkd 端点，去设置里填 host / token\u001b[0m', true);
+      if (conn.relayIndex < 0 && relays.length > 0) {
+        conn.relayIndex = 0;
+        this.attach(tabId, true);
+        return;
+      }
+      this.note(tabId, conn, '\u001b[33m⚠ 没有可用的 blinkd 或 SSH 中转端点\u001b[0m', true);
       return;
     }
     if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
@@ -699,22 +705,45 @@ struct BlinkTerminal {
       return;
     }
     const port0: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
-    this.note(tabId, conn, '\u001b[90m[blink] 连接 ' + ep.blinkdHost + ':' + port0 + ' …\u001b[0m', false);
-    conn.client.onData = (bytes: Uint8Array) => {
+    const viaSSH: boolean = conn.relayIndex >= 0 || (m !== null && m.transport === 'ssh');
+    this.note(tabId, conn, '\u001b[90m[' + (viaSSH ? 'SSH 中转' : 'blinkd') + '] 连接 ' + ep.blinkdHost + ':' + port0 + ' …\u001b[0m', false);
+    conn.client.close();
+    const client = new BlinkdClient();
+    conn.client = client;
+    client.onData = (bytes: Uint8Array) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.writeBytes(tabId, bytes);
       if (tabId !== this.activeTabId && !conn.unread) {
         conn.unread = true;
         this.refreshTabs();
       }
     };
-    conn.client.onState = (st: BlinkdState, detail: string) => {
+    client.onState = (st: BlinkdState, detail: string) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.onConnState(tabId, st, detail);
     };
     this.webCtl.runJavaScript(`term_create('${tabId}')`);
     conn.state = 'connecting';
     this.tick++;
     const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
-    conn.client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
+    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab, viaSSH));
+  }
+
+  private sshRelays(primary: Machine | null): Machine[] {
+    const relays: Machine[] = [];
+    for (let i = 0; i < this.store.machines.length; i++) {
+      const candidate = this.store.machines[i];
+      if (candidate.transport === 'blinkd' && candidate.id !== (primary !== null ? primary.id : '') &&
+          candidate.blinkdHost !== undefined && candidate.blinkdHost.length > 0 &&
+          candidate.blinkdToken !== undefined && candidate.blinkdToken.length > 0) {
+        relays.push(candidate);
+      }
+    }
+    return relays;
   }
 
   private onConnState(tabId: string, st: BlinkdState, detail: string): void {
@@ -733,6 +762,20 @@ struct BlinkTerminal {
       conn.everConnected = true;
       this.note(tabId, conn, '\u001b[32m✓ 已连接\u001b[0m' + (detail.length > 0 ? ' \u001b[2m· ' + detail + '\u001b[0m' : ''), false);
     } else if (st === 'closed' || st === 'error') {
+      // The socket may emit error and close for one failure; handle it once.
+      conn.client.onState = (_next: BlinkdState, _detail: string): void => {};
+      const tab = this.store.tabById(tabId);
+      const machine = tab !== null ? this.store.machineById(tab.machineId) : null;
+      const relays = this.sshRelays(this.store.blinkdEndpoint(machine));
+      if (machine !== null && machine.host.length > 0 && machine.user.length > 0 &&
+          conn.relayIndex + 1 < relays.length) {
+        conn.relayIndex++;
+        conn.state = 'idle';
+        this.note(tabId, conn, '\u001b[33m⚠ 当前连接失败，改走 SSH 中转…\u001b[0m', false);
+        setTimeout(() => { this.attach(tabId, true); }, 0);
+        return;
+      }
+      conn.relayIndex = -1;
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;
       conn.state = st;
@@ -913,6 +956,7 @@ struct BlinkTerminal {
     if (conn !== null) {
       conn.failCount = 0;
       conn.cooldownUntil = 0;
+      conn.relayIndex = -1;
       conn.client.close();
     }
     this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);

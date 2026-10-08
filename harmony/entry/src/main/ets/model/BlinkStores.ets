@@ -716,7 +716,7 @@ export class BlinkStore {
   // The exec frame payload for a tab (what blinkd's `bash -c` runs).
   // blinkd machine: unpack-and-run the script locally.
   // ssh machine:    run ssh FROM the relay with the same unpack-and-run remotely.
-  execForTab(t: TabModel): string {
+  execForTab(t: TabModel, viaSSH: boolean = false): string {
     const m = this.machineById(t.machineId);
     const w = this.workDirById(t.workDirId);
     const path: string = w !== null ? w.path : '';
@@ -727,7 +727,7 @@ export class BlinkStore {
     const b64: string = buffer.from(script, 'utf-8').toString('base64');
     const tmpName: string = t.useTmux ? '/tmp/.blink-tmux-$$.sh' : '/tmp/.blink-cc-$$.sh';
     const unpack: string = 'echo ' + b64 + ' | base64 -d > ' + tmpName + ' && exec bash ' + tmpName;
-    if (m === null || m.transport === 'blinkd') {
+    if (m === null || (!viaSSH && m.transport === 'blinkd')) {
       return unpack;
     }
     return 'ssh -t ' + m.user + '@' + m.host + ' -- "' + unpack + '"';

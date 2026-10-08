@@ -22,6 +22,7 @@ export class SessionConn {
   unread: boolean = false;       // output arrived while another tab was active
   everConnected: boolean = false;
   lastNote: string = '';         // 去重：同一条连接状态行不重复刷（轮询每 1.5s 会重进 attach）
+  relayIndex: number = -1;       // -1 = configured route; >=0 = alternate blinkd relay
 
   constructor(tabId: string) {
     this.tabId = tabId;
