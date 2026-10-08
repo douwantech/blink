@@ -314,8 +314,14 @@ enum AgentKind: String, CaseIterable, Identifiable {
         guard self == .deepseek else { return "" }
         let pane = "\"$TMUX_PANE\""
         return "_fa() { [ -n \(pane) ] || return 0; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); "
-            + "case \"$(tmux display-message -p -t \(pane) \"#{pane_current_command}\" 2>/dev/null)\" in "
-            + "\(bins.joined(separator: "|"))) ;; *) continue;; esac; "
+            + "PC=$(tmux display-message -p -t \(pane) \"#{pane_current_command}\" 2>/dev/null); "
+            // #81：CLI 也可能跑在 shell 底下（bash -lc "codewhale …; exec bash" 没有作业控制，
+            // tmux 报的前台命令是 shell）——那时 pane 进程有子进程，不能只看前台命令就 continue，
+            // 否则 Full Access 这一下永远不会发。
+            + "case \"$PC\" in \(bins.joined(separator: "|"))) ;; zsh|bash|sh|dash|ksh|fish) "
+            + "PP=$(tmux display-message -p -t \(pane) \"#{pane_pid}\" 2>/dev/null); "
+            + "[ -n \"$PP\" ] && pgrep -P \"$PP\" >/dev/null 2>&1 || continue;; "
+            + "*) continue;; esac; "
             + "case \"$(tmux capture-pane -p -t \(pane) 2>/dev/null)\" in *\"Full Access\"*) return 0;; esac; "
             + "tmux send-keys -t \(pane) M-y 2>/dev/null; done; }; ( _fa >/dev/null 2>&1 & ); "
     }
