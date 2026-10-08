@@ -35,6 +35,10 @@ enum AppHarness {
             }
         }
 
+        // 正式流程里“切到主窗”是登录窗按钮做的（openWindow("main") + dismissWindow("login")）；
+        // 钩子没有按钮可按，用 AppKit 达到同样可见状态（否则从零启动会一直停在登录窗）。
+        showMainWindow()
+
         // 2) 选机器 / 选会话。refresh 落地会把清单重建回第一台，所以重试到选中为止。
         if env["BLINKMAC_E2E_TEAM"] == "1" { state.showTeam = true }   // 团队面板：跨机器列全部标签
         let wantMachine = env["BLINKMAC_E2E_MACHINE"] ?? ""
@@ -60,10 +64,27 @@ enum AppHarness {
         exit(0)
     }
 
+    /// 关掉登录窗、把主窗前置并给一个截图尺寸（正式流程由登录窗的按钮切窗）。
+    private static func showMainWindow() {
+        for w in NSApp.windows where w.isVisible && (w.contentView?.bounds.width ?? 0) < 400 {
+            w.close()
+        }
+        for w in NSApp.windows where w.contentView != nil && (w.contentView?.bounds.width ?? 0) >= 400 {
+            w.setFrame(NSRect(x: 0, y: 0, width: 1280, height: 752), display: true)
+            w.makeKeyAndOrderFront(nil)
+        }
+    }
+
     /// 把每个窗口的 contentView 自绘成 PNG（第一张用给定路径，其余加 -N 后缀）。
+    /// 按面积从大到小排：启动时如果还挂着登录 sheet（独立 NSWindow），主窗口才该是第一张。
     private static func capture(to path: String) {
+        let wins = NSApp.windows.filter { $0.contentView != nil }.sorted {
+            area($0) > area($1)
+        }
         var idx = 0
-        for w in NSApp.windows where w.contentView != nil {
+        for w in wins {
+            FileHandle.standardError.write(Data(
+                "shot[\(idx)] title=\(w.title) frame=\(NSStringFromRect(w.frame)) vis=\(w.isVisible) sheet=\(w.isSheet)\n".utf8))
             guard let v = w.contentView,
                   let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
             v.cacheDisplay(in: v.bounds, to: rep)
@@ -73,5 +94,10 @@ enum AppHarness {
             }
             idx += 1
         }
+    }
+
+    private static func area(_ w: NSWindow) -> CGFloat {
+        guard let b = w.contentView?.bounds else { return 0 }
+        return b.width * b.height
     }
 }
