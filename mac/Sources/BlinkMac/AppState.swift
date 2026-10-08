@@ -1088,7 +1088,7 @@ final class AppState: ObservableObject {
         let altTitle = safeTitle.hasPrefix("\(basename)-")
             ? String(safeTitle.dropFirst(basename.count + 1)) : safeTitle
         return #"""
-        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+        export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
         TITLE='\#(safeTitle)'
         ALT='\#(altTitle)'
         TMUX_NAME='cc-\#(safeTitle)'

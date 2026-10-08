@@ -64,7 +64,7 @@ enum AppHarness {
         // （同 Cmd-D / 历史按钮）。切早了会话还没连上，只会弹「没有对话记录可看」。
         if env["BLINKMAC_E2E_MODE"] == "chat" {
             state.openHistory()
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
         }
         capture(to: shot)
         exit(0)
