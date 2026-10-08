@@ -10,7 +10,7 @@
 // 底层全部沿用手机版（entry/pages/BlinkTerminal.ets）验证过的链路：
 //   • Tailscale VPN 扩展 + 看门狗 + 长时任务保活
 //   • 每 tab 一条 blinkd 连接（ConnPool），hterm 多图层终端（rawfile/term）
-//   • 配置经 Mac 文件双向同步（CfgSync）
+//   • 账号登录 + 配置（机器/标签）来自服务器（ServerConfig，整份照搬手机版）
 //   • 对话记录增量拉取 + 本地缓存（ChatHtml，暗色皮肤）
 // 平板新增：团队分组、外接键盘按键映射。（会话状态探测已整套拿掉）
 //
@@ -30,10 +30,10 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
 import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
-import { BlinkStore, Machine, WorkDir, TabModel, SeedConfig, PinnedTab } from '../model/BlinkStores';
+import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from '../model/BlinkStores';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS } from '../model/GlmVoice';
-import { CfgSync } from '../model/CfgSync';
+import { ServerConfig } from '../model/ServerConfig';
 import { PadExec, Endpoint } from '../model/PadExec';
 import { PadProbe, WorkStatus } from '../model/PadProbe';
 import { buildChatHtml, ChatBridge, TranscriptCacheH } from '../model/ChatHtml';
@@ -193,6 +193,14 @@ struct PadHome {
   @State inspector: Inspector = 'employee';
   @State mode: Mode = 'terminal';
   @State sheet: Sheet = 'none';
+
+  // 登录门控（issue #77）：没有 session 时整屏只显示登录页，不连 VPN、不起轮询
+  @State authGate: string = 'checking';   // checking | login | ready
+  @State accountName: string = '';        // 设置页显示的账号名（非机密）
+  @State loginUser: string = '';
+  @State loginPwd: string = '';
+  @State loginError: string = '';
+  @State loginBusy: boolean = false;
   // 终端
   @State cols: number = 80;
   @State rows: number = 24;
@@ -240,8 +248,9 @@ struct PadHome {
 
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
-  private sync: CfgSync = new CfgSync(this.store, (): boolean => this.tsState === 'Running',
-    (cfg: SeedConfig, stamp: number): Promise<void> => this.applySyncedConfig(cfg, stamp));
+  // 服务器配置同步（唯一权威，见 model/ServerConfig.ets）：登录 session、快照采纳、
+  // 个人状态上传、15s 轮询。老的 ~/.blink/sync/blink_config.json 文件同步（CfgSync）已停掉。
+  private serverConfig: ServerConfig | null = null;
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
   private webCtl: webview.WebviewController = new webview.WebviewController();
@@ -294,7 +303,10 @@ struct PadHome {
   }
 
   aboutToDisappear(): void {
-    this.sync.close();
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      sc.stopPolling();
+    }
     this.pool.closeAll();
     if (this.timer >= 0) {
       clearInterval(this.timer);
@@ -309,22 +321,67 @@ struct PadHome {
   }
 
   onPageShow(): void {
-    this.sync.forcePull();
+    // 回前台：立即向服务器要一次最新配置（版本没变就是 304，什么都不做）
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      sc.refresh().then((): void => {
+        this.refreshAll();
+        this.syncActiveAfterServerApply();
+      }).catch((): void => {
+      });
+    }
   }
 
   private async boot(): Promise<void> {
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.tsPrefs = await preferences.getPreferences(ctx, 'ts_prefs');
     this.uiPrefs = await preferences.getPreferences(ctx, 'ui_prefs');
-    this.sync.uiPrefs = this.uiPrefs;
-    this.authKey = await this.tsPrefs.get('authKey', '') as string;
-    this.hostname = await this.tsPrefs.get('hostname', 'harmony-pad') as string;
-    this.fontSize = await this.uiPrefs.get('fontSize', 12) as number;
-    this.showTeam = await this.uiPrefs.get('showTeam', false) as boolean;
-    this.fabY = await this.uiPrefs.get('fabY', -1) as number;
+    // 服务器配置（唯一权威）：本机有没有 session 决定进主界面还是只显示登录页
+    const server = new ServerConfig(ctx, this.store);
+    this.serverConfig = server;
+    const hasSession: boolean = await server.hasSession();
+    if (!hasSession) {
+      // issue #77：没有 session 时**只显示登录页** —— 不加载 store、不连 VPN、不起轮询。
+      this.authGate = 'login';
+      return;
+    }
+    this.accountName = server.username;
+    this.authGate = 'ready';
+    await this.startMain(ctx);
+    // 先拿缓存把界面填上（网络抖动时不清空），再拉服务器快照覆盖，最后开轮询
+    await server.restoreCache();
+    this.refreshAll();
+    server.refresh().then((): void => {
+      this.refreshAll();
+      this.syncActiveAfterServerApply();
+    }).catch((): void => {
+    });
+    server.startPolling();
+  }
+
+  /// 登录成功 / 已有 session 之后的主界面启动（抽出来给登录页复用，避免两份逻辑）
+  private async startMain(ctx: common.UIAbilityContext): Promise<void> {
+    // 抽成方法后编译器不再知道 prefs 已初始化，显式断言（同 BlinkStores 的写法）
+    this.authKey = await this.tsPrefs!.get('authKey', '') as string;
+    this.hostname = await this.tsPrefs!.get('hostname', 'harmony-pad') as string;
+    this.fontSize = await this.uiPrefs!.get('fontSize', 12) as number;
+    this.showTeam = await this.uiPrefs!.get('showTeam', false) as boolean;
+    this.fabY = await this.uiPrefs!.get('fabY', -1) as number;
     await this.store.load(ctx);
+    // 本地个人状态一变（save* 落盘）→ 防抖 PUT 回服务器（不再往任何机器写文件）
     this.store.onLocalChange = (): void => {
-      this.sync.notifyChanged();
+      const sc = this.serverConfig;
+      if (sc !== null) {
+        sc.markDirty();
+      }
+    };
+    // 用户动过休息开关 → restSessions 从此可以随 selection 上传（键没物化过就不传）
+    this.store.onRestChange = (): void => {
+      const sc = this.serverConfig;
+      if (sc !== null) {
+        sc.markRestLoaded();
+        sc.markDirty();
+      }
     };
     // 当前机器：store 里记的筛选机器，没有就第一台
     let mid: string = this.store.filterMachineId;
@@ -718,6 +775,11 @@ struct PadHome {
       this.webCtl.runJavaScript(`term_setFontSize(${this.fontSize})`);
       if (this.activeTabId.length > 0) {
         this.webCtl.runJavaScript(`term_show('${this.activeTabId}')`);
+        // Web/hterm 就绪后补一次连接：登录后立即 attach 时 Web 还没 ready，
+        // runJavaScript 会丢（终端一片白就是这个时序）。换 tab 后也是一样的道理。
+        this.attach(this.activeTabId, false);
+      } else {
+        this.syncActiveAfterServerApply();
       }
       this.termReady = true;
       const q: string[] = this.pendingNotes;
@@ -838,12 +900,10 @@ struct PadHome {
         const errS = j['error'] as string;
         this.tsError = errS ? errS : '';
         this.noteTsState(this.tsState);
-        if (state === 'Running') {
-          if (this.activeTabId.length > 0) {
-            this.attach(this.activeTabId, false);
-          }
-          this.sync.tick();
+        if (state === 'Running' && this.activeTabId.length > 0) {
+          this.attach(this.activeTabId, false);
         }
+        // 配置刷新不再依赖 VPN：ServerConfig 自己的 15s 轮询 + 回前台刷新走 HTTPS
       } catch (e) {
       }
     }, 1500);
@@ -878,7 +938,6 @@ struct PadHome {
           c.cooldownUntil = 0;
           c.client.close();
         });
-        this.sync.dropWatcher();
       }
     } catch (e) {
     }
@@ -1045,9 +1104,9 @@ struct PadHome {
           conn.cooldownUntil = 0;
         }
       }
-      if (this.tsState === 'Running') {
-        this.attach(tabId, false);
-      }
+      // 不再等 VPN：服务器下发的机器直接试连，连不上会自己报错重试。
+      // 老逻辑等 tsState==='Running'（tailscale）——没开 VPN 时切标签永远白屏（#74 同一课）。
+      this.attach(tabId, false);
     }
     this.refreshAll();
     this.focusTerm();
@@ -1152,15 +1211,13 @@ struct PadHome {
       conn.client.close();
     }
     this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);
-    if (this.tsState === 'Running') {
-      this.attach(this.activeTabId, true);
-    } else {
-      this.toast('tailscale 还没连上');
-    }
+    // 同 entry：不等 tailscale，直接重连（连不上会走自己的退避重试）
+    this.attach(this.activeTabId, true);
   }
 
-  private async applySyncedConfig(cfg: SeedConfig, stamp: number): Promise<void> {
-    await this.store.applySync(cfg);
+  /// 服务器快照可能删掉了当前机器/标签：清掉它们的连接与终端图层，退回该机器的第一篇会话。
+  /// （老 applySyncedConfig 的文件同步版整段删除；采纳本身由 ServerConfig.apply() 做）
+  private syncActiveAfterServerApply(): void {
     this.pool.all().forEach((c: SessionConn) => {
       if (this.store.tabById(c.tabId) === null) {
         this.pool.remove(c.tabId);
@@ -1169,6 +1226,16 @@ struct PadHome {
     });
     if (this.store.machineById(this.activeMachineId) === null) {
       this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
+    }
+    if (this.activeTabId.length === 0) {
+      // 登录后第一次拿到服务器标签：自动落到第一条会话并连上（「登录后马上能用」）。
+      // 以前只在「当前 tab 已失效」时才切，首登 activeTabId 为空 → 永远不 attach → 白屏。
+      const rows = this.rowsForMachine(this.activeMachineId);
+      if (rows.length > 0) {
+        this.switchTab(rows[0].id);
+      }
+      this.refreshAll();
+      return;
     }
     if (this.store.tabById(this.activeTabId) === null) {
       this.activeTabId = '';
@@ -1179,11 +1246,8 @@ struct PadHome {
     }
     this.refreshAll();
     this.preloadAvatars(this.getUIContext().getHostContext() as common.UIAbilityContext);
-    hilog.info(DOMAIN, TAG, 'cfg synced (stamp %{public}d): %{public}d machines %{public}d tabs',
-      stamp, cfg.machines.length, cfg.tabs.length);
-    this.toast('配置已同步');
     if (this.browserOpened) {
-      this.browserPinned = this.store.pinned.slice();   // 别端改了后台列表
+      this.browserPinned = this.store.pinned.slice();   // 服务器改了后台列表
     }
   }
 
@@ -3456,6 +3520,22 @@ struct PadHome {
   settingsBody() {
     Scroll() {
       Column() {
+        this.sectionHeader('账号')
+        Column({ space: 2 }) {
+          Row() {
+            Text(this.accountName.length > 0 ? this.accountName : '未登录')
+              .fontSize(14).fontColor(FG).layoutWeight(1)
+            Text(this.serverConfig !== null && this.serverConfig.isOnline ? '● 在线' : '○ 离线')
+              .fontSize(12)
+              .fontColor(this.serverConfig !== null && this.serverConfig.isOnline ? GREEN : DIM)
+          }.width('100%').padding({ top: 12, bottom: 4 })
+          Text('机器与标签由服务器下发，本机只保留选中状态与员工 CLI。')
+            .fontSize(11).fontColor(DIM).width('100%').padding({ bottom: 8 })
+          Row() {
+            Text('退出登录').fontSize(14).fontColor(RED).layoutWeight(1)
+          }.width('100%').padding({ top: 8, bottom: 12 }).onClick(() => this.confirmLogout())
+        }.padding({ left: 14, right: 14, top: 4, bottom: 4 }).backgroundColor(PANEL2).borderRadius(12)
+
         this.sectionHeader('Tailscale')
         Column({ space: 10 }) {
           TextInput({ text: this.authKey, placeholder: 'auth key（tskey-…）' })
@@ -3505,7 +3585,7 @@ struct PadHome {
           }, (px: number) => px.toString() + '_' + (px === this.fontSize ? 1 : 0))
         }.width('100%').padding(14).backgroundColor(PANEL2).borderRadius(12)
 
-        Text('Blink Pad · HarmonyOS 平板版\n配置经 Mac ~/.blink/sync 与 iOS / 鸿蒙手机双向同步')
+        Text('Blink Pad · HarmonyOS 平板版\n账号登录后，机器与标签由配置服务器下发')
           .fontSize(11).fontColor('#4A515C').width('100%').textAlign(TextAlign.Center).margin({ top: 18, bottom: 20 })
       }.width('100%').padding({ left: 20, right: 20 })
     }.layoutWeight(1).scrollBar(BarState.Off)
@@ -3556,6 +3636,50 @@ struct PadHome {
     }.layoutWeight(1).scrollBar(BarState.Off)
   }
 
+  // ===========================================================================
+  // 登录门控（issue #77：没有 session 时只显示登录页）
+  // ===========================================================================
+
+  @Builder
+  authOverlay() {
+    Column() {
+      if (this.authGate === 'checking') {
+        // 启动时先查安全存储里有没有 session，查完才决定去登录页还是主界面
+        Text('正在检查登录状态…').fontSize(14).fontColor(DIM)
+      } else {
+        this.loginBody()
+      }
+    }
+    .width('100%').height('100%').backgroundColor(BG)
+    .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  loginBody() {
+    Column({ space: 10 }) {
+      Text('Blink 登录').fontSize(22).fontWeight(FontWeight.Bold).fontColor(FG)
+        .width('100%').textAlign(TextAlign.Center).margin({ bottom: 6 })
+      Text('用团队账号登录，机器与标签从服务器取。').fontSize(12).fontColor(DIM)
+        .width('100%').textAlign(TextAlign.Center).margin({ bottom: 10 })
+      TextInput({ text: this.loginUser, placeholder: '用户名' })
+        .fontSize(15).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+        .width('100%').onChange((v: string) => { this.loginUser = v; })
+      TextInput({ text: this.loginPwd, placeholder: '密码' })
+        .fontSize(15).type(InputType.Password).backgroundColor(PANEL3).fontColor(FG)
+        .borderRadius(8).width('100%').onChange((v: string) => { this.loginPwd = v; })
+      if (this.loginError.length > 0) {
+        Text(this.loginError).fontSize(13).fontColor(RED)
+          .width('100%').textAlign(TextAlign.Center)
+      }
+      Button(this.loginBusy ? '正在登录…' : '登录 Blink 团队')
+        .fontSize(15).width('100%').height(44).backgroundColor(C_WORK).fontColor('#0B1B14')
+        // disabled 条件同 iOS：正在登录，或用户名/密码为空
+        .enabled(!this.loginBusy && this.loginUser.length > 0 && this.loginPwd.length > 0)
+        .margin({ top: 6 })
+        .onClick(() => { this.doLogin(); })
+    }.width(360).padding(16).backgroundColor(PANEL2).borderRadius(16)
+  }
+
   @Builder
   machinesBody() {
     Scroll() {
@@ -3568,11 +3692,11 @@ struct PadHome {
                 ? ('blinkd ' + (m.blinkdHost !== undefined ? m.blinkdHost : '')) : 'SSH 经 Mac 中转'))
                 .fontSize(11).fontFamily(MONO).fontColor(DIM)
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            this.iconBtn($r('sys.symbol.trash'), RED, 15, () => this.deleteMachine(m))
+            Text('服务器下发').fontSize(11).fontColor(DIM)
           }
           .width('100%').padding({ left: 14, right: 8, top: 10, bottom: 10 }).backgroundColor(PANEL2).borderRadius(10)
         }, (m: Machine) => m.id + '_' + this.tick)
-        Text('机器清单从 iOS 配置同步过来（Mac ~/.blink/sync）。blinkd 机器直连；SSH 机器经 Mac 中转。')
+        Text('这些机器由服务器下发（只读）。blinkd 机器直连；SSH 机器经 Mac 中转。')
           .fontSize(11).fontColor('#4A515C').width('100%').margin({ top: 6, bottom: 20 })
       }.width('100%').padding({ left: 20, right: 20, top: 14 })
     }.layoutWeight(1).scrollBar(BarState.Off)
@@ -3615,25 +3739,60 @@ struct PadHome {
     }.width('100%').padding({ left: 20, right: 20 }).alignItems(HorizontalAlign.Start)
   }
 
-  private deleteMachine(m: Machine): void {
+  /// 登录 → 成功进主界面（token 已进系统安全存储，密码立刻从内存清掉）
+  private async doLogin(): Promise<void> {
+    const sc = this.serverConfig;
+    if (sc === null || this.loginBusy) {
+      return;
+    }
+    this.loginBusy = true;
+    this.loginError = '';
+    try {
+      await sc.login(this.loginUser, this.loginPwd);
+      this.accountName = sc.username;
+      this.loginPwd = '';
+      this.authGate = 'ready';
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await this.startMain(ctx);
+      await sc.restoreCache();
+      this.refreshAll();
+      sc.refresh().then((): void => {
+        this.refreshAll();
+        this.syncActiveAfterServerApply();
+      }).catch((): void => {
+      });
+      sc.startPolling();
+    } catch (e) {
+      const err = e as Error;
+      this.loginError = err.message !== undefined ? err.message : `${e}`;
+    }
+    this.loginBusy = false;
+  }
+
+  /// 退出登录：**先弹确认**，确认后清 session 回登录页（缓存与已采纳数据不动）
+  private confirmLogout(): void {
     this.getUIContext().showAlertDialog({
-      title: '删除机器',
-      message: '删除「' + this.store.machineDisplayName(m) + '」？',
-      primaryButton: {
-        value: '删除', fontColor: RED, action: () => {
-          const i = this.store.machines.findIndex((x: Machine) => x.id === m.id);
-          if (i >= 0) {
-            this.store.machines.splice(i, 1);
-            this.store.saveMachines();
-            if (this.activeMachineId === m.id) {
-              this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
-            }
-            this.refreshAll();
-          }
-        },
+      title: '退出登录',
+      message: '退出后需要重新输入账号密码才能使用。',
+      primaryButton: { value: '取消', action: () => {} },
+      secondaryButton: {
+        value: '退出登录', fontColor: RED, action: () => { this.doLogout(); },
       },
-      secondaryButton: { value: '取消', action: () => {} },
     });
+  }
+
+  private async doLogout(): Promise<void> {
+    this.sheet = 'none';
+    const sc = this.serverConfig;
+    if (sc !== null) {
+      await sc.logout();
+    }
+    this.pool.closeAll();
+    this.accountName = '';
+    this.loginUser = '';
+    this.loginPwd = '';
+    this.loginError = '';
+    this.authGate = 'login';   // 没有 session → 只显示登录页
   }
 
   private saveTs(key: string, value: string): void {
@@ -3731,6 +3890,11 @@ struct PadHome {
       }
       if (this.showManualInput) {
         this.manualInputOverlay()
+      }
+      // 登录门控（页面级 overlay，像 sheetDialog 一样放在最外层——放进 WebView 的 Stack
+      // 会被 Web 表面盖住）。没有 session 时整屏只显示登录页。
+      if (this.authGate !== 'ready') {
+        this.authOverlay()
       }
     }
     .width('100%').height('100%').backgroundColor(BG).padding({ bottom: this.kbHeight })
