@@ -74,13 +74,29 @@ struct SessionSidebar: View {
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
 
             // list
-            ScrollView {
-                VStack(spacing: 4) {
-                    ForEach(state.sidebarSessions) { s in
-                        SessionRow(session: s)
-                    }
+            if state.machines.isEmpty {
+                // #74：没配本机 blinkd、还没登录（或刚登录还没拉到快照）时的空态。
+                // 以前这里显示的是写死的示例机器和示例会话。
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("还没有机器").font(Theme.ui(12, .semibold))
+                    Text(ServerSync.shared.hasSession
+                         ? "正在读取服务器清单…"
+                         : "登录 Blink 团队后自动拉取机器和公用标签")
+                        .font(Theme.ui(11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(state.sidebarSessions) { s in
+                            SessionRow(session: s)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                }
             }
 
         }

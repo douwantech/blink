@@ -31,7 +31,13 @@ struct RootView: View {
         }
         .background(Theme.bg)
         .foregroundColor(Theme.fg)
-        .task { await state.startup() }
+        .task {
+            await state.startup()
+            // 验收钩子：BLINKMAC_E2E_SHOT 未设时直接返回，不影响正常启动。
+            // 用非结构化 Task：.task 会在视图重建/弹 sheet 时被取消，把登录和抓图
+            // 一起掐掉（表现为 NSURLErrorCancelled）。
+            Task { await AppHarness.runAfterStartup(state) }
+        }
         .sheet(isPresented: $showSettings) {
             MacSettingsView {
                 ServerSync.shared.logout()

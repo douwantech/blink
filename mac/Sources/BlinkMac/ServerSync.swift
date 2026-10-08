@@ -226,6 +226,9 @@ final class ServerSync: ObservableObject {
     guard (try? out.write(to: URL(fileURLWithPath: tmp), options: .atomic)) != nil else { return }
     _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: SyncConfig.path),
                                                withItemAt: URL(fileURLWithPath: tmp))
+    // 同步文件里有每台机器的 blinkd token 和书签密码 —— 落盘一律 600（#74：以前 644）。
+    // 注意必须改**目标**文件：replaceItemAt 会保留被替换文件的权限，改临时文件没用。
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: SyncConfig.path)
     defaults.set(version, forKey: versionKey)
   }
 }

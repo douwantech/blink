@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             for m in s.machines {
                 switch m.transport {
-                case .blinkd(let h, let p, _): lines.append("  MERGED \(m.name) → blinkd \(h):\(p)  [\(m.host)]")
+                case .blinkd(let h, let p, _, _): lines.append("  MERGED \(m.name) → blinkd \(h):\(p)  [\(m.host)]")
                 case .ssh(_, let h):           lines.append("  MERGED \(m.name) → ssh \(h)  [系统ssh]")
                 case .unconfigured:            lines.append("  MERGED \(m.name) → ⚠ blinkd 未配置（不降级 SSH）")
                 case .local:                   lines.append("  MERGED \(m.name) → local")
