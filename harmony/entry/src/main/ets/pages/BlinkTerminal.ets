@@ -110,6 +110,15 @@ const FONT_SIZES: number[] = [8, 9, 10, 11, 12, 13, 14];
 // what the bottom sheet is currently showing
 type Sheet = 'none' | 'more' | 'settings' | 'machinePicker' | 'newTab' | 'claude' | 'favorites' | 'history' | 'machineForm' | 'workDirs' | 'aiConfig' | 'restPanel' | 'pinEdit' | 'protoAuth';
 
+// 团队三视图（#77 评论②）的扁平条目：kind='h' 组头 / 'r' 行——List 里每项只能是一个 ListItem，
+// 所以把「组头 + 行」摊平成一个数组再 ForEach。
+interface TeamEntry {
+  kind: string;
+  title: string;
+  sub: string;
+  tab: TabModel;
+}
+
 class JsBridge {
   private cb: (op: string, data: string) => void;
   constructor(cb: (op: string, data: string) => void) {
@@ -137,6 +146,7 @@ struct BlinkTerminal {
   @State activeTabId: string = '';
   @State visTabs: TabModel[] = [];   // observable copy of store.visibleTabs() for the tab strip
   @State restCount: number = 0;      // resting-session count on the top-bar 🌙 (topBar() reads no other @State)
+  @State teamMode: string = 'employee';   // 团队三视图：#77 评论② employee | project | machine
   @State filterLabel: string = '全部'; // machine-filter pill text, same reason
   @State cols: number = 52;
   @State rows: number = 30;
@@ -1575,7 +1585,7 @@ struct BlinkTerminal {
       this.navRow('⚙ 设置', '', () => { this.sheet = 'settings'; })
       this.navRow('🖥 选择机器', this.filterLabel, () => { this.sheet = 'machinePicker'; })
       this.navRow('＋ 新建会话', '', () => this.openNewTab())
-      this.navRow('🌙 员工在岗 / 休息', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
+      this.navRow('👥 团队（在岗 / 休息）', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
     }.width('100%').padding({ left: 16, right: 16 })
   }
 
@@ -2467,7 +2477,7 @@ struct BlinkTerminal {
     } else if (this.sheet === 'aiConfig') {
       return 'AI 配置';
     } else if (this.sheet === 'restPanel') {
-      return '员工在岗 / 休息';
+      return '团队';
     } else if (this.sheet === 'pinEdit') {
       return this.peIdx >= 0 ? '编辑后台' : '添加后台';
     } else if (this.sheet === 'protoAuth') {
@@ -2913,31 +2923,117 @@ struct BlinkTerminal {
   // -- rest panel (iOS RestPanelViewController): every session with an on-duty/rest
   // switch. Resting sessions are hidden from the strip, so this is the only place to
   // put them back on duty. Switch ON = on-duty (shown), OFF = resting (hidden).
+  // ---- 团队列表三视图（#77 评论②）：口径对齐平板 buildGroups()/rowFor() ----
+  // owner＝工作目录名（空则「其他」）；project＝tmuxSession 最后一个 '-' 之后（等于 owner 或空时用 owner）。
+  // 三档都跨机器列全（团队栏是「看所有人在干嘛」，不该被当前机器挡住）。
+  private teamOwner(t: TabModel): string {
+    const w = this.store.workDirById(t.workDirId);
+    return (w !== null && w.name.length > 0) ? w.name : '其他';
+  }
+
+  private teamProject(t: TabModel): string {
+    let p: string = t.tmuxSession;
+    const i: number = p.lastIndexOf('-');
+    if (i >= 0) { p = p.substring(i + 1); }
+    const owner: string = this.teamOwner(t);
+    if (p.length === 0 || p === owner) { p = owner; }
+    return p;
+  }
+
+  private teamGroupTitle(t: TabModel): string {
+    if (this.teamMode === 'project') { return this.teamProject(t); }
+    if (this.teamMode === 'machine') { return this.machineNameForTab(t); }
+    // 同名员工在不同机器上是两个人：标题前缀机器名（与平板一致）
+    return this.machineNameForTab(t) + ' · ' + this.teamOwner(t);
+  }
+
+  private teamKey(t: TabModel): string {
+    if (this.teamMode === 'project') { return 'p|' + this.teamProject(t); }
+    if (this.teamMode === 'machine') { return 'm|' + t.machineId; }
+    return 'e|' + t.machineId + '|' + this.teamOwner(t);
+  }
+
+  /// 扁平化成 [组头, 行…, 组头, 行…]（List 里每项一个 ListItem，不能一个 ForEach 产生多个）
+  private teamEntries(): TeamEntry[] {
+    const out: TeamEntry[] = [];
+    const seen: string[] = [];
+    // 先按机器/标题排序，让分组稳定：机器按 store.machines 位次，其余按标题
+    const tabs: TabModel[] = this.store.tabs.slice();
+    const rank = (t: TabModel): number => {
+      const i: number = this.store.machines.findIndex((m: Machine) => m.id === t.machineId);
+      return i < 0 ? 999 : i;
+    };
+    tabs.sort((a: TabModel, b: TabModel) => {
+      const ra: number = rank(a); const rb: number = rank(b);
+      if (ra !== rb) { return ra - rb; }
+      const ta: string = this.teamGroupTitle(a); const tb: string = this.teamGroupTitle(b);
+      if (ta !== tb) { return ta < tb ? -1 : 1; }
+      return a.tmuxSession < b.tmuxSession ? -1 : 1;
+    });
+    for (let i = 0; i < tabs.length; i++) {
+      const t: TabModel = tabs[i];
+      const k: string = this.teamKey(t);
+      if (seen.indexOf(k) < 0) {
+        seen.push(k);
+        const rows: TabModel[] = tabs.filter((x: TabModel) => this.teamKey(x) === k);
+        let rest: number = 0;
+        for (let j = 0; j < rows.length; j++) { if (this.store.isResting(rows[j].id)) { rest++; } }
+        let sum: string = rows.length + ' 会话';
+        if (rest > 0) { sum += ' · ' + rest + ' 休息'; }
+        out.push({ kind: 'h', title: this.teamGroupTitle(t), sub: sum, tab: t } as TeamEntry);
+      }
+      out.push({ kind: 'r', title: '', sub: '', tab: t } as TeamEntry);
+    }
+    return out;
+  }
+
+  @Builder
+  teamSeg(label: string, mode: string) {
+    Text(label).fontSize(13)
+      .fontColor(this.teamMode === mode ? '#0B1B14' : '#E8E8E8')
+      .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(13)
+      .backgroundColor(this.teamMode === mode ? '#33E0A1' : '#1C1C1E')
+      .onClick(() => { this.teamMode = mode; this.tick++; })
+  }
+
   @Builder
   restPanelBody() {
-    List() {
-      ForEach(this.store.tabs, (t: TabModel) => {
+      // 三视图切换（#77 评论②）：按员工 / 按项目 / 按机器
+      Row({ space: 8 }) {
+        this.teamSeg('按员工', 'employee')
+        this.teamSeg('按项目', 'project')
+        this.teamSeg('按机器', 'machine')
+      }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 4 })
+      List() {
+      ForEach(this.teamEntries(), (e: TeamEntry) => {
         ListItem() {
+          if (e.kind === 'h') {
+            Row({ space: 8 }) {
+              Text(e.title).fontSize(13).fontColor('#8E8E93').fontWeight(FontWeight.Medium)
+              Text(e.sub).fontSize(11).fontColor('#5A5A5E').layoutWeight(1)
+            }.width('100%').padding({ top: 14, bottom: 4 }).backgroundColor('#0A0A0A')
+          } else {
           Row({ space: 10 }) {
-            this.avatarMark(this.store.workDirById(t.workDirId), false, 30, this.agentOf(t), '#1C1C1E')
+            this.avatarMark(this.store.workDirById(e.tab.workDirId), false, 30, this.agentOf(e.tab), '#1C1C1E')
             Column({ space: 2 }) {
-              Text(this.store.tabTitle(t)).fontSize(15).fontColor('#FFFFFF')
-              Text(this.machineNameForTab(t) + ' · ' + (this.store.isResting(t.id) ? '😴 休息中' : '在岗'))
-                .fontSize(11).fontColor(this.store.isResting(t.id) ? '#B0A8FF' : '#8E8E93')
+              Text(this.store.tabTitle(e.tab)).fontSize(15).fontColor('#FFFFFF')
+              Text(this.machineNameForTab(e.tab) + ' · ' + (this.store.isResting(e.tab.id) ? '😴 休息中' : '在岗'))
+                .fontSize(11).fontColor(this.store.isResting(e.tab.id) ? '#B0A8FF' : '#8E8E93')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             Stack() {
               SymbolGlyph($r('sys.symbol.gearshape')).fontSize(15)
-                .fontColor([this.agentOf(t) === 'claude' ? '#8E8E93' : BlinkStore.agentBrand(this.agentOf(t))])
+                .fontColor([this.agentOf(e.tab) === 'claude' ? '#8E8E93' : BlinkStore.agentBrand(this.agentOf(e.tab))])
             }
             .width(30).height(30).borderRadius(8)
-            .bindMenu(this.agentMenu(t))
-            Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(t.id) })
+            .bindMenu(this.agentMenu(e.tab))
+            Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(e.tab.id) })
               .selectedColor('#34C759')
-              .onChange((on: boolean) => { this.store.setResting(t.id, !on); this.refreshTabs(); })
+              .onChange((on: boolean) => { this.store.setResting(e.tab.id, !on); this.refreshTabs(); this.tick++; })
           }.width('100%').padding({ top: 10, bottom: 10 })
+          }
         }
-      }, (t: TabModel) => t.id + (this.store.isResting(t.id) ? '_r' : '_w') + '_' + this.tick)
-    }
+      }, (e: TeamEntry) => e.kind + '_' + e.tab.id + '_' + this.teamMode + '_' + (this.store.isResting(e.tab.id) ? 'r' : 'w') + '_' + this.tick)
+      }
     .layoutWeight(1).width('100%').padding({ left: 16, right: 16 }).divider({ strokeWidth: 0.5, color: '#2A2A2C' })
     Text('开关打开＝在岗（显示在标签栏），关闭＝休息（从标签栏隐藏）。休息中的员工也能在这里随时改回在岗。')
       .fontSize(11).fontColor('#6A6A6E').width('100%').padding({ left: 16, right: 16, top: 8, bottom: 16 })
