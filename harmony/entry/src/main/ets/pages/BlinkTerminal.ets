@@ -197,6 +197,12 @@ struct BlinkTerminal {
   private tabScroller: Scroller = new Scroller();   // scroll the tab strip to the active tab on switch/swipe
   private panMode: string = '';   // active terminal drag axis: '' undecided | 'h' switch tab | 'v' scroll
   private lastPanY: number = 0;   // last vertical offset seen this drag (for incremental scroll)
+  // 本地滚动（#71，同 iOS #70）：历史拉到本地图层后，上下滑不再等远程
+  private histPending: boolean = false;   // 正在拉历史
+  private histMode: boolean = false;      // 正在本地滚动历史图层
+  private histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
+  private histClient: BlinkdClient | null = null;
+  private histSeq: number = 0;            // 防串场：每次拉历史一个序号
   private lastTabPerMachine: Record<string, string> = {};   // each machine's last-active tab (iOS _lastKeyPerMachine)
   private b64: util.Base64Helper = new util.Base64Helper();
   private win: window.Window | null = null;
@@ -403,6 +409,11 @@ struct BlinkTerminal {
   }
 
   private writeBytes(tabId: string, bytes: Uint8Array): void {
+    if (this.histMode && tabId === this.activeTabId && !this.histHasNew) {
+      // 本地滚动期间远程有新输出：不打断用户（实时图层在底下照常收），只提示
+      this.histHasNew = true;
+      this.tick++;
+    }
     const b64: string = this.b64.encodeToStringSync(bytes);
     this.webCtl.runJavaScript(`term_write_b64('${tabId}','${b64}')`);
   }
@@ -435,6 +446,18 @@ struct BlinkTerminal {
       hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
     } else if (op === 'wheel') {
       this.sendWheel(dataStr);
+    } else if (op === 'hist_need') {
+      // JS 发现「离开底部」了：把 tmux 历史拉到本地
+      this.beginHistory();
+    } else if (op === 'hist_pos') {
+      // 本地滚到最底了 → 退回实时终端
+      try {
+        const d = JSON.parse(dataStr) as Record<string, boolean>;
+        if (d.atBottom === true && this.histMode) {
+          this.exitHistory(false);
+        }
+      } catch (e) {
+      }
     }
   }
 
@@ -457,6 +480,132 @@ struct BlinkTerminal {
       }
       client.sendInput(s);
     } catch (e) {
+    }
+  }
+
+  // ---- 本地滚动（#71，同 iOS #70）----
+  // 离开底部去看历史时，用一条**新连接**跑 `tmux capture-pane -p -e -S -3000`，
+  // 把历史（带颜色）拉回本地喂给 JS 的历史图层；之后上下滑全在本地完成，
+  // 不再往远程发 SGR 滚轮字节（brain RTT ~208ms，每滑一下等一趟就掉帧）。
+  // blinkd 一条连接只起一个 PTY（mac-daemon“重复 exec 忽略”），所以不能复用
+  // 交互会话那条，必须另开。
+  private beginHistory(): void {
+    if (this.histPending || this.histMode) {
+      return;
+    }
+    const tab = this.store.tabById(this.activeTabId);
+    const conn = this.pool.get(this.activeTabId);
+    if (tab === null || conn === null || conn.state !== 'connected') {
+      this.webCtl.runJavaScript('term_hist_abort()');
+      return;
+    }
+    const m = this.store.machineById(tab.machineId);
+    const ep = this.store.blinkdEndpoint(m);
+    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+      this.webCtl.runJavaScript('term_hist_abort()');
+      return;
+    }
+    const cmd: string = this.store.historyCommandForTab(tab);
+    const client = new BlinkdClient();
+    this.histClient = client;
+    this.histPending = true;
+    this.histSeq++;
+    const seq: number = this.histSeq;
+    this.tick++;
+    let raw: string = '';
+    let done: boolean = false;
+    const dec = util.TextDecoder.create('utf-8');
+    const finish = (): void => {
+      if (done) {
+        return;
+      }
+      done = true;
+      try {
+        client.close();
+      } catch (e) {
+      }
+      if (this.histClient === client) {
+        this.histClient = null;
+      }
+      if (seq !== this.histSeq) {
+        return;   // 期间换了 tab / 又开了一次，结果作废
+      }
+      this.histPending = false;
+      const b64: string = BlinkStore.markerB64(raw);
+      let bytes: Uint8Array = new Uint8Array(0);
+      if (b64.length > 0) {
+        try {
+          bytes = this.b64.decodeSync(b64);
+        } catch (e) {
+          bytes = new Uint8Array(0);
+        }
+      }
+      if (bytes.length === 0) {
+        // 拉不到（不是 tmux 会话 / 机器没连上）：交回原来的远程滚轮
+        this.webCtl.runJavaScript('term_hist_abort()');
+        this.tick++;
+        return;
+      }
+      this.histMode = true;
+      this.histHasNew = false;
+      this.tick++;
+      this.webCtl.runJavaScript(`term_hist_begin('${this.activeTabId}')`);
+      // 分块喂：一次 runJavaScript 塞太大容易卡（3000 行约 0.4MB）
+      const STEP: number = 24 * 1024;
+      for (let i = 0; i < bytes.length; i += STEP) {
+        const chunk: string = this.b64.encodeToStringSync(bytes.subarray(i, i + STEP));
+        this.webCtl.runJavaScript(`term_hist_write_b64('${chunk}')`);
+      }
+      this.webCtl.runJavaScript('term_hist_show()');
+    };
+    client.onData = (bytes: Uint8Array) => {
+      if (done) {
+        return;
+      }
+      raw += dec.decodeToString(bytes, { stream: true });
+      if (raw.indexOf('@TSB64E@') >= 0) {
+        finish();
+      }
+    };
+    client.onState = (st: BlinkdState) => {
+      if (st === 'closed' || st === 'error') {
+        finish();
+      }
+    };
+    const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
+    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, cmd);
+    setTimeout(finish, 10000);
+  }
+
+  // 退出本地滚动，回到实时终端（snap=true 时把实时终端拍到最新一行）。
+  private exitHistory(snap: boolean): void {
+    if (!this.histMode && !this.histPending) {
+      return;
+    }
+    this.histPending = false;
+    this.histSeq++;
+    const c = this.histClient;
+    this.histClient = null;
+    if (c !== null) {
+      try {
+        c.close();
+      } catch (e) {
+      }
+    }
+    const was: boolean = this.histMode;
+    this.histMode = false;
+    this.histHasNew = false;
+    this.webCtl.runJavaScript('term_hist_end()');
+    if (was && snap) {
+      this.webCtl.runJavaScript('term_scrollBottom()');
+    }
+    this.tick++;
+  }
+
+  // 打字/按键就回到实时终端（issue：开始打字/按键都回到实时）。
+  private leaveHistoryForInput(): void {
+    if (this.histMode || this.histPending) {
+      this.exitHistory(false);
     }
   }
 
@@ -950,6 +1099,7 @@ struct BlinkTerminal {
   // ---- tab operations ----
 
   private switchTab(tabId: string): void {
+    this.exitHistory(false);   // 本地滚动是跟 tab 走的，换 tab 先退回实时终端
     if (tabId === this.activeTabId) {
       return;
     }
@@ -1062,6 +1212,9 @@ struct BlinkTerminal {
   }
 
   private closeTab(tabId: string): void {
+    if (tabId === this.activeTabId) {
+      this.exitHistory(false);
+    }
     this.pool.remove(tabId);
     this.webCtl.runJavaScript(`term_dispose('${tabId}')`);
     const idx: number = this.store.tabs.findIndex((x: TabModel) => x.id === tabId);
@@ -1110,6 +1263,7 @@ struct BlinkTerminal {
       this.lastLen = v.length;
       return;
     }
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client === null) {
       this.lastLen = v.length;
@@ -1126,6 +1280,7 @@ struct BlinkTerminal {
   }
 
   private submitLine(): void {
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client !== null) {
       client.sendInput('\n');
@@ -1136,6 +1291,7 @@ struct BlinkTerminal {
   }
 
   private sendKey(bytes: number[]): void {
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client !== null) {
       client.sendBytes(new Uint8Array(bytes));
@@ -1147,6 +1303,7 @@ struct BlinkTerminal {
   // 内容里（表现为要手动再按一次回车才发送），隔开发就稳了。不能补发第二个
   // 回车——/rewind 这类弹菜单的命令会被第二下直接确认关掉。
   private sendLine(text: string): void {
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client !== null) {
       client.sendInput(text);
@@ -1895,6 +2052,22 @@ struct BlinkTerminal {
   }
 
   @Builder
+  // 本地滚动时浮在终端底部的小药丸：拉取中 / 有新内容 / 回到底部。
+  histPill() {
+    Column() {
+      Row() {
+        Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
+          .fontSize(13).fontColor('#FFFFFF')
+      }
+      .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
+      .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
+      .onClick(() => this.exitHistory(true))
+    }
+    .width('100%').height('100%').justifyContent(FlexAlign.End).padding({ bottom: 12 })
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  @Builder
   bottomDock() {
     Column({ space: 9 }) {
       Row({ space: 8 }) {
@@ -2125,14 +2298,18 @@ struct BlinkTerminal {
             // canTerminalBecomeFirstResponder gating + interactive keyboard dismiss.
             .focusOnTouch(false).enableKeyboardOnFocus(true)
             .onChange((v: string) => this.onInput(v)).onSubmit(() => this.submitLine())
+          if (this.histPending || this.histMode) {
+            this.histPill()
+          }
         }
         .width('100%').layoutWeight(1).backgroundColor('#000000')
         // Terminal gestures — one direction-free PanGesture, disambiguated by hand,
         // so ArkUI (not the Web) owns every drag. Letting touches reach hterm made it
         // preventDefault them (ScrollPort.onTouch_) and killed even the swipe, so we
         // keep all touch in ArkUI: the first update past a threshold locks the axis —
-        // horizontal → cycle sessions on release; vertical → live-scroll the scrollback
-        // by driving x-screen.scrollTop from JS (term_scroll_move). 终端上点击/双击
+        // horizontal → cycle sessions on release; vertical → term_wheel(dyPx)：普通 shell
+        // 由 hterm 自己滚 scrollback，全屏应用（alt-screen）走本地滚动（tmux 历史拉到
+        // 本地图层后本地滚，见 term_hist_*，同 iOS #70）。终端上点击/双击
         // 都不弹键盘（快速连点会被误判双击）——系统键盘只从 dock 的 ⌨ 药丸或
         // 各输入框自己弹出。
         .priorityGesture(

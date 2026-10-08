@@ -875,6 +875,33 @@ export class BlinkStore {
     return 'ssh ' + m.user + '@' + m.host + ' -- ' + BlinkStore.shq(cap);
   }
 
+  // 本地滚动（#71，同 iOS #70）：把外层 tmux 会话当前 pane 的「历史 + 现屏」一次拉回本地。
+  // -p 打到 stdout、-e 保留颜色（原样喂给 hterm 渲染）、-S -3000 往前取 3000 行。
+  // 外面套 @TSB64@…@TSB64E@：blinkd 的 PTY 会加工换行/控制字节，base64 躲开它。
+  historyCommandForTab(t: TabModel): string {
+    const m = this.machineById(t.machineId);
+    const w = this.workDirById(t.workDirId);
+    const path: string = w !== null ? w.path : '';
+    const user: string = m !== null ? m.user : '';
+    const title: string = BlinkStore.titleFor(path, t.tmuxSession, user);
+    const cap: string = 'tmux capture-pane -p -e -S -3000 -t cc-' + title + ' 2>/dev/null';
+    const inner: string = 'printf @TSB64@; ' + cap + ' | base64 | tr -d "\\n"; printf @TSB64E@';
+    if (m === null || m.transport === 'blinkd') {
+      return inner;
+    }
+    return 'ssh ' + m.user + '@' + m.host + ' -- ' + BlinkStore.shq(inner);
+  }
+
+  // 取出 @TSB64@…@TSB64E@ 之间的 base64（本地滚动拉历史用）；没有 / 为空返回 ''。
+  static markerB64(raw: string): string {
+    const i1: number = raw.indexOf('@TSB64@');
+    const i2: number = raw.indexOf('@TSB64E@');
+    if (i1 < 0 || i2 <= i1) {
+      return '';
+    }
+    return raw.substring(i1 + 7, i2).replace(new RegExp('[^A-Za-z0-9+/=]', 'g'), '');
+  }
+
   static shq(s: string): string {
     return "'" + s.replace(new RegExp("'", 'g'), "'\\''") + "'";
   }

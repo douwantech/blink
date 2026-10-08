@@ -24,6 +24,9 @@ var _ready = {};      // id -> bool (onTerminalReady fired)
 var activeId = null;
 var libInited = false;
 var _createQueue = [];  // ids requested before lib.init finished
+var _hist = null;       // 本地滚动图层（历史）状态；null = 没在本地滚动
+var _histQueue = [];    // 图层就绪前先攒着的历史数据
+var _histFailedAt = 0;  // 最近一次拉历史失败的时间（冷却期内退回远程滚轮）
 
 // current appearance (applied to every terminal, new ones included)
 var _colors = { bg: '#000000', fg: '#D4D4D4', cur: 'rgba(61, 217, 196, 0.65)' };
@@ -120,6 +123,7 @@ function term_show(id) {
       layers[k].style.zIndex = (k === id) ? '1' : '0';
     }
     var t = terms[id];
+    _histFailedAt = 0;   // 换 tab 后重新给本地滚动一次机会
     if (t && _ready[id]) {
       t.scrollEnd();
       _post('shown', { id: id, cols: t.screenSize.width, rows: t.screenSize.height });
@@ -187,13 +191,33 @@ function term_scrollBottom() { if (activeId && terms[activeId]) { terms[activeId
 //  • Plain shell (primary screen): dispatch a real wheel event so hterm scrolls its
 //    scrollback buffer.
 var _wheelAccum = 0;
-function term_wheel_reset() { _wheelAccum = 0; }
+function term_wheel_reset() {
+  _wheelAccum = 0;
+  if (_hist) { _hist.acc = 0; }
+}
 function term_wheel(dyPx) {
   var t = activeId ? terms[activeId] : null;
   if (!t || !t.scrollPort_ || !t.scrollPort_.screen_) { return; }
   var onAlt = (typeof t.isPrimaryScreen === 'function') && !t.isPrimaryScreen();
   var ch = (t.scrollPort_.characterSize && t.scrollPort_.characterSize.height) || 16;
   if (onAlt) {
+    // 全屏应用（alt-screen：tmux/vim/claude）——本地滚动（同 iOS #70）：
+    // 手指下滑（dyPx>0，看更旧）＝离开底部时，请 ArkTS 用 blinkd 把 tmux 历史
+    // 一次拉到本地图层，之后所有上下滑都在本地完成，不再每一下都等远程翻页
+    // （brain RTT ~208ms → 原来掉帧）。
+    if (_hist) {
+      // 本地滚动中：还没拉到就攒着像素，拉到了就本地滚
+      if (_hist.armed) { _hist.pendingPx += dyPx; } else { term_hist_scroll(dyPx); }
+      return;
+    }
+    if (dyPx > 0 && (Date.now() - _histFailedAt) > 5000) {
+      _hist = _histNew(activeId);
+      _hist.armed = true;
+      _hist.pendingPx = dyPx;
+      _post('hist_need', {});
+      return;
+    }
+    // 往新方向拖，或刚拉失败在冷却期内：维持原行为。
     // hterm's io is NOT wired to blinkd (harmony captures keys in ArkTS, not hterm),
     // so t.io.sendString would go nowhere. Hand the wheel to ArkTS to send the SGR
     // mouse bytes over the blinkd connection instead. btn 64 = up (older), 65 = down.
@@ -216,6 +240,134 @@ function term_wheel(dyPx) {
       });
       el.dispatchEvent(ev);
     } catch (e3) {}
+  }
+}
+
+// --- local scroll (本地滚动) -------------------------------------------------
+// 离开底部去看历史时，ArkTS 用一条独立连接跑 `tmux capture-pane -p -e -S -3000`
+// 把当前 pane 的历史（带颜色）拉回来，这里把它喂进一个独立的 hterm 图层。
+// 那个图层是 primary screen，所以有自己的 scrollback：之后的上下滑、惯性全在
+// 本地滚，一帧都不用等远程。退出（滑回底部 / 点「回到底部」/ 开始打字）由
+// ArkTS 判定后调 term_hist_end()。
+function _histNew(id) {
+  return { id: id, t: null, div: null, ready: false, armed: false, acc: 0,
+           pendingPx: 0, atBottom: true, hasData: false };
+}
+
+// 建历史图层（ArkTS 拿到第一段历史时调）。
+function term_hist_begin(id) {
+  try {
+    var px = (_hist && _hist.armed) ? _hist.pendingPx : 0;
+    term_hist_end();
+    _hist = _histNew(id);
+    _hist.armed = true;      // 数据还在路上：这段拖动先攒着
+    _hist.pendingPx = px;
+    if (!libInited) { return; }
+    var div = document.createElement('div');
+    div.id = 'layer_hist';
+    div.style.cssText = 'position:absolute;inset:0;visibility:hidden;';
+    document.getElementById('terminal').appendChild(div);
+    _hist.div = div;
+    var t = new hterm.Terminal();
+    _hist.t = t;
+    t.onTerminalReady = function () {
+      _applyPrefs(t);
+      t.setCursorVisible(false);
+      _hist.ready = true;
+      var q = _histQueue;
+      _histQueue = [];
+      for (var i = 0; i < q.length; i++) { t.interpret(q[i]); }
+      t.scrollEnd();
+    };
+    t.decorate(div);
+  } catch (e) { _post('error', { message: 'hist_begin: ' + String(e) }); }
+}
+
+// 喂一段历史（base64 的原始字节，跟 term_write_b64 同一条路，所以颜色/中文都对）。
+function term_hist_write_b64(b64) {
+  try {
+    if (!_hist) { return; }
+    var bytes = base64js.toByteArray(b64);
+    var data = '';
+    var CHUNK = 0x8000;
+    for (var i = 0; i < bytes.length; i += CHUNK) {
+      data += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    if (_hist.ready && _hist.t) {
+      _hist.t.interpret(data);
+      _hist.t.scrollEnd();
+      _hist.atBottom = true;
+      _hist.hasData = true;
+    } else {
+      _histQueue.push(data);
+    }
+  } catch (e) { _post('error', { message: String(e) }); }
+}
+
+// 历史拉完：亮出图层，并把「开始拉之前」那几帧的拖动补上。
+function term_hist_show() {
+  try {
+    if (!_hist) { return; }
+    _hist.armed = false;
+    if (_hist.t) { _hist.t.scrollEnd(); }
+    if (_hist.div) { _hist.div.style.visibility = 'visible'; _hist.div.style.zIndex = '2'; }
+    _hist.atBottom = true;
+    var px = _hist.pendingPx;
+    _hist.pendingPx = 0;
+    if (px > 0) { term_hist_scroll(px); }
+  } catch (e) { _post('error', { message: String(e) }); }
+}
+
+// 拆掉历史图层，回到实时终端。
+function term_hist_end() {
+  try {
+    if (_hist && _hist.div && _hist.div.parentNode) { _hist.div.parentNode.removeChild(_hist.div); }
+  } catch (e) {}
+  _hist = null;
+  _histQueue = [];
+}
+
+// 拉历史失败（不是 tmux 会话 / 机器没连上）：把这段拖动按老路数补成远程滚轮，
+// 冷却 5s 内不再尝试，免得每次都白等一个来回。
+function term_hist_abort() {
+  try {
+    var t = activeId ? terms[activeId] : null;
+    var px = _hist ? _hist.pendingPx : 0;
+    if (t && t.scrollPort_ && px > 0) {
+      var ch = (t.scrollPort_.characterSize && t.scrollPort_.characterSize.height) || 16;
+      var lines = Math.min((px / ch) | 0, 8);
+      if (lines > 0) { _post('wheel', { btn: 64, lines: lines }); }
+    }
+  } catch (e) {}
+  term_hist_end();
+  _histFailedAt = Date.now();
+}
+
+// 历史图层的视口是否已经到底（顶部行号进了 live screen 区就是到底）。
+function _histAtBottom() {
+  var t = _hist && _hist.t;
+  if (!t || !t.scrollPort_) { return true; }
+  var sb = (t.scrollbackRows_ && t.scrollbackRows_.length) || 0;
+  return t.scrollPort_.getTopRowIndex() >= sb;
+}
+
+// 本地滚动：跟手（手指走一行高＝滚一行，不过冲），到底了回报给 ArkTS 退出本地滚动。
+function term_hist_scroll(dyPx) {
+  var t = _hist && _hist.t;
+  if (!t || !t.scrollPort_) { return; }
+  var ch = (t.scrollPort_.characterSize && t.scrollPort_.characterSize.height) || 16;
+  _hist.acc += dyPx;
+  var lines = (_hist.acc / ch) | 0;   // 向零取整（负数也对）
+  if (lines === 0) { return; }
+  _hist.acc -= lines * ch;
+  var n = Math.abs(lines);
+  for (var i = 0; i < n; i++) {
+    if (lines > 0) { t.scrollLineUp(); } else { t.scrollLineDown(); }
+  }
+  var ab = _histAtBottom();
+  if (ab !== _hist.atBottom) {
+    _hist.atBottom = ab;
+    _post('hist_pos', { atBottom: ab });
   }
 }
 

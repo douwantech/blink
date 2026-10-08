@@ -258,6 +258,11 @@ struct PadHome {
   private skipNext: boolean = false;
   private panMode: string = '';
   private lastPanY: number = 0;
+  // 本地滚动（#71，同 iOS #70）：历史拉到本地图层后，上下滑不再等远程
+  private histPending: boolean = false;   // 正在拉历史
+  private histMode: boolean = false;      // 正在本地滚动历史图层
+  private histHasNew: boolean = false;    // 本地滚动期间远程有新输出（只在按钮上提示）
+  private histSeq: number = 0;            // 防串场：每次拉历史一个序号
   private lastTabPerMachine: Record<string, string> = {};
   private recorder: VoiceRecorder = new VoiceRecorder();
   private avatarCache: Map<string, image.PixelMap> = new Map();
@@ -645,6 +650,11 @@ struct PadHome {
   }
 
   private writeBytes(tabId: string, bytes: Uint8Array): void {
+    if (this.histMode && tabId === this.activeTabId && !this.histHasNew) {
+      // 本地滚动期间远程有新输出：不打断用户（实时图层在底下照常收），只提示
+      this.histHasNew = true;
+      this.tick++;
+    }
     this.webCtl.runJavaScript(`term_write_b64('${tabId}','${this.b64.encodeToStringSync(bytes)}')`);
   }
 
@@ -730,6 +740,18 @@ struct PadHome {
       hilog.error(DOMAIN, TAG, 'hterm: %{public}s', dataStr);
     } else if (op === 'wheel') {
       this.sendWheel(dataStr);
+    } else if (op === 'hist_need') {
+      // JS 发现「离开底部」了：把 tmux 历史拉到本地
+      this.beginHistory();
+    } else if (op === 'hist_pos') {
+      // 本地滚到最底了 → 退回实时终端
+      try {
+        const d = JSON.parse(dataStr) as Record<string, boolean>;
+        if (d.atBottom === true && this.histMode) {
+          this.exitHistory(false);
+        }
+      } catch (e) {
+      }
     }
   }
 
@@ -748,6 +770,89 @@ struct PadHome {
       }
       client.sendInput(s);
     } catch (e) {
+    }
+  }
+
+  // ---- 本地滚动（#71，同 iOS #70）----
+  // 离开底部去看历史时，用 PadExec 另开一条连接跑 `tmux capture-pane -p -e -S -3000`，
+  // 把历史（带颜色）拉回本地喂给 JS 的历史图层；之后上下滑全在本地完成，
+  // 不再往远程发 SGR 滚轮字节（brain RTT ~208ms，每滑一下等一趟就掉帧）。
+  private beginHistory(): void {
+    if (this.histPending || this.histMode) {
+      return;
+    }
+    const tab = this.store.tabById(this.activeTabId);
+    const conn = this.pool.get(this.activeTabId);
+    if (tab === null || conn === null || conn.state !== 'connected') {
+      this.webCtl.runJavaScript('term_hist_abort()');
+      return;
+    }
+    const m = this.store.machineById(tab.machineId);
+    const ep: Endpoint | null = PadExec.endpointFor(this.store, m);
+    if (ep === null) {
+      this.webCtl.runJavaScript('term_hist_abort()');
+      return;
+    }
+    const cmd: string = this.store.historyCommandForTab(tab);
+    this.histPending = true;
+    this.histSeq++;
+    const seq: number = this.histSeq;
+    this.tick++;
+    PadExec.run(ep, cmd, 10000, '@TSB64E@').then((raw: string) => {
+      if (seq !== this.histSeq) {
+        return;   // 期间换了 tab / 又开了一次，结果作废
+      }
+      this.histPending = false;
+      const b64: string = BlinkStore.markerB64(raw);
+      let bytes: Uint8Array = new Uint8Array(0);
+      if (b64.length > 0) {
+        try {
+          bytes = this.b64.decodeSync(b64);
+        } catch (e) {
+          bytes = new Uint8Array(0);
+        }
+      }
+      if (bytes.length === 0) {
+        // 拉不到（不是 tmux 会话 / 机器没连上）：交回原来的远程滚轮
+        this.webCtl.runJavaScript('term_hist_abort()');
+        this.tick++;
+        return;
+      }
+      this.histMode = true;
+      this.histHasNew = false;
+      this.tick++;
+      this.webCtl.runJavaScript(`term_hist_begin('${this.activeTabId}')`);
+      // 分块喂：一次 runJavaScript 塞太大容易卡（3000 行约 0.4MB）
+      const STEP: number = 24 * 1024;
+      for (let i = 0; i < bytes.length; i += STEP) {
+        const chunk: string = this.b64.encodeToStringSync(bytes.subarray(i, i + STEP));
+        this.webCtl.runJavaScript(`term_hist_write_b64('${chunk}')`);
+      }
+      this.webCtl.runJavaScript('term_hist_show()');
+    });
+  }
+
+  // 退出本地滚动，回到实时终端（snap=true 时把实时终端拍到最新一行）。
+  private exitHistory(snap: boolean): void {
+    if (!this.histMode && !this.histPending) {
+      return;
+    }
+    this.histPending = false;
+    this.histSeq++;
+    const was: boolean = this.histMode;
+    this.histMode = false;
+    this.histHasNew = false;
+    this.webCtl.runJavaScript('term_hist_end()');
+    if (was && snap) {
+      this.webCtl.runJavaScript('term_scrollBottom()');
+    }
+    this.tick++;
+  }
+
+  // 打字/按键就回到实时终端（issue：开始打字/按键都回到实时）。
+  private leaveHistoryForInput(): void {
+    if (this.histMode || this.histPending) {
+      this.exitHistory(false);
     }
   }
 
@@ -1015,6 +1120,7 @@ struct PadHome {
   }
 
   private switchTab(tabId: string): void {
+    this.exitHistory(false);   // 本地滚动是跟 tab 走的，换 tab 先退回实时终端
     const tab = this.store.tabById(tabId);
     if (tab === null) {
       return;
@@ -1093,6 +1199,9 @@ struct PadHome {
   }
 
   private closeTab(tabId: string): void {
+    if (tabId === this.activeTabId) {
+      this.exitHistory(false);
+    }
     const t = this.store.tabById(tabId);
     const mid: string = t !== null ? t.machineId : this.activeMachineId;
     this.pool.remove(tabId);
@@ -1215,6 +1324,7 @@ struct PadHome {
       this.lastLen = v.length;
       return;
     }
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client === null) {
       this.lastLen = v.length;
@@ -1231,6 +1341,7 @@ struct PadHome {
   }
 
   private submitLine(): void {
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client !== null) {
       client.sendInput('\r');
@@ -1246,6 +1357,7 @@ struct PadHome {
     if (e.type !== KeyType.Down) {
       return;
     }
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client === null) {
       return;
@@ -1285,6 +1397,7 @@ struct PadHome {
   }
 
   private sendKey(bytes: number[]): void {
+    this.leaveHistoryForInput();
     const client = this.activeClient();
     if (client !== null) {
       client.sendBytes(new Uint8Array(bytes));
@@ -2436,6 +2549,9 @@ struct PadHome {
               }
             })
             .onKeyEvent((e: KeyEvent) => this.onHwKey(e))
+          if (this.histPending || this.histMode) {
+            this.histPill()
+          }
         }
         .width('100%').height('100%').padding(6).backgroundColor(TERM)
         .visibility(this.mode === 'chat' ? Visibility.Hidden : Visibility.Visible)
@@ -3076,6 +3192,22 @@ struct PadHome {
     .backgroundColor(this.mode === 'chat' ? this.tint(TEAL, '1F') : '#0BFFFFFF')
     .border({ width: 1, color: '#24FFFFFF' })
     .onClick(() => this.toggleChat())
+  }
+
+  // 本地滚动时浮在终端底部的小药丸：拉取中 / 有新内容 / 回到底部。
+  @Builder
+  histPill() {
+    Column() {
+      Row() {
+        Text(this.histPending ? '⏳ 拉取历史…' : (this.histHasNew ? '↓ 有新内容' : '↓ 回到底部'))
+          .fontSize(13).fontColor('#FFFFFF')
+      }
+      .height(30).padding({ left: 14, right: 14 }).borderRadius(15)
+      .backgroundColor('#26FFFFFF').border({ width: 1, color: '#24FFFFFF' })
+      .onClick(() => this.exitHistory(true))
+    }
+    .width('100%').height('100%').justifyContent(FlexAlign.End).padding({ bottom: 12 })
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 
   @Builder
