@@ -270,9 +270,12 @@ function term_hist_begin(id) {
     _hist.div = div;
     var t = new hterm.Terminal();
     _hist.t = t;
+    var rec = _hist;
     t.onTerminalReady = function () {
       _applyPrefs(t);
       t.setCursorVisible(false);
+      // 拉历史期间用户就退了（或又开了一轮）：这个图层作废，别碰新的 _hist
+      if (_hist !== rec) { return; }
       _hist.ready = true;
       var q = _histQueue;
       _histQueue = [];
