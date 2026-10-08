@@ -146,12 +146,12 @@ func (co *conn) startPTY(name string, args []string) {
 	co.mu.Unlock()
 	log.Printf("pty started for %s: %s (pid %d)", co.nc.RemoteAddr(), name, cmd.Process.Pid)
 
-	// 必须 Wait 收尸:否则子进程退出后留 <defunct>,跑几天攒到 kern.maxprocperuid 上限,
-	// 整台 Mac 起不了新进程(2026-09-15 事故:7174 个僵尸)。命令退出也顺手关连接。
+	// 必须 Wait 收尸:否则子进程退出后留 <defunct>,跑几天攒到 kern.maxprocperuid 上限。
+	// 连接由下面的 PTY 读线程在读完全部输出后关闭；这里提前 Close 会截断
+	// capture-pane 等一次性命令的尾部，客户端收不到结束标记。
 	go func() {
 		err := cmd.Wait()
 		log.Printf("pty exited for %s: pid %d (%v)", co.nc.RemoteAddr(), cmd.Process.Pid, err)
-		co.nc.Close()
 	}()
 
 	go func() {
@@ -169,6 +169,7 @@ func (co *conn) startPTY(name string, args []string) {
 		}
 		// 命令退出(用户 exit / tmux detach 后 shell 结束):关连接,客户端回 blink 命令行。
 		// 远端 tmux 会话不受影响(仍在 mac 上跑,重连再 attach)。
+		_ = ptmx.Close()
 		co.nc.Close()
 	}()
 }
