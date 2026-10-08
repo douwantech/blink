@@ -328,12 +328,20 @@ enum AgentKind: Int, CaseIterable {
   /// 所以每次启动都得补这一下。等 pane 的前台进程真是 codewhale 了再发，发完回读
   /// 状态栏确认切到了没有，最多试 60 秒——盲等固定秒数会被启动画面吃掉。
   /// 用 `( … & )` 起在子 shell 里，免得 zsh 的作业完成提示打到 TUI 画面上。
+  ///
+  /// `pane_current_command` 不足为凭：`bash -lc "codewhale …; exec bash"` 拉起时前台报
+  /// shell、codewhale 是 pane 进程的子进程（#81）。所以前台是 shell 时再看一眼子进程，
+  /// 任一子进程是目标 CLI 就算它真的起来了。
   var fullAccessNudge: String {
     guard self == .deepseek else { return "" }
     let pane = "\"$TMUX_PANE\""
-    return "_fa() { [ -n \(pane) ] || return 0; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); "
-      + "case \"$(tmux display-message -p -t \(pane) \"#{pane_current_command}\" 2>/dev/null)\" in "
-      + "\(bins.joined(separator: "|"))) ;; *) continue;; esac; "
+    let match = bins.joined(separator: "|")
+    return "_is_agent() { case \"$(ps -o comm= -p \"$1\" 2>/dev/null | sed 's:.*/::')\" in "
+      + "\(match)) return 0;; esac; return 1; }; "
+      + "_fa() { [ -n \(pane) ] || return 0; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); "
+      + "PC=$(tmux display-message -p -t \(pane) \"#{pane_current_command}\" 2>/dev/null); "
+      + "PP=$(tmux display-message -p -t \(pane) \"#{pane_pid}\" 2>/dev/null); "
+      + "case \"$PC\" in \(match)) ;; *) _k=0; for _c in $(pgrep -P \"$PP\" 2>/dev/null); do _is_agent \"$_c\" && _k=1; done; [ \"$_k\" = 1 ] || continue;; esac; "
       + "case \"$(tmux capture-pane -p -t \(pane) 2>/dev/null)\" in *\"Full Access\"*) return 0;; esac; "
       + "tmux send-keys -t \(pane) M-y 2>/dev/null; done; }; ( _fa >/dev/null 2>&1 & ); "
   }

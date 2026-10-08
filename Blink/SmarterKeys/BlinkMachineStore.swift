@@ -278,7 +278,11 @@ enum HostReachability {
       let tmuxStartDir = workPath.map {
         "-c '" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
       } ?? ""
-      let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t \#(outerSession) C-u; tmux send-keys -t \#(outerSession) " source \#(bootFile)" Enter;; esac; fi"#
+      // 前台是 shell 还不够：`bash -lc "claude …; exec bash"` 这种拉起方式里 CLI 是 pane
+      // 进程的子进程，tmux 报的前台命令仍是 bash ⇒ 光看前台会把正在跑的 CLI 当成「已退出」，
+      // 每次刷新都把 source 敲进它的输入框（#81）。只有「前台是 shell **且** pane 进程没有
+      // 子进程」才是真·裸 shell。
+      let heal = #"if tmux has-session -t \#(outerSession) 2>/dev/null; then PC=$(tmux display-message -p -t \#(outerSession) '#{pane_current_command}' 2>/dev/null); PP=$(tmux display-message -p -t \#(outerSession) '#{pane_pid}' 2>/dev/null); case "$PC" in zsh|bash|sh|dash|ksh|fish) if [ -n "$PP" ] && ! pgrep -P "$PP" >/dev/null 2>&1; then tmux send-keys -t \#(outerSession) C-u; tmux send-keys -t \#(outerSession) " source \#(bootFile)" Enter; fi;; esac; fi"#
       // -lic：登录+交互，确保 .zprofile/.zshenv 里的 PATH（claude 常装那）也加载进来。
       // 末尾 `; exec $SHELL -il`：万一 claude 没起来/退出，掉到登录 shell 而不是整个会话塌掉，
       // 既停掉疯狂重连，也让报错（如 command not found: claude）留在屏上看得到。
