@@ -515,9 +515,15 @@ export class BlinkStore {
       return '';
     }
     const pane: string = '"$TMUX_PANE"';
+    // issue #81：同一根因的另一面。`bash -lc "codewhale …; exec bash"` 起的会话里 tmux 报
+    // bash、代理是子进程，只按命令名匹配永远打不中 → Alt+Y 一直发不出去。补一条「子进程里有
+    // 代理」也算已就位（同一前台进程组，M-y 照样进 TUI）。
+    const bins: string = BlinkStore.agentBins(agent).join('|');
     return '_fa() { [ -n ' + pane + ' ] || return 0; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); ' +
-      'case "$(tmux display-message -p -t ' + pane + ' "#{pane_current_command}" 2>/dev/null)" in ' +
-      BlinkStore.agentBins(agent).join('|') + ') ;; *) continue;; esac; ' +
+      'PC=$(tmux display-message -p -t ' + pane + ' "#{pane_current_command}" 2>/dev/null); ' +
+      'PP=$(tmux display-message -p -t ' + pane + ' "#{pane_pid}" 2>/dev/null); ' +
+      'case "$PC" in ' + bins + ') ;; zsh|bash|sh|dash|ksh|fish) ' +
+      'pgrep -P "$PP" -x "' + bins + '" >/dev/null 2>&1 || continue ;; *) continue;; esac; ' +
       'case "$(tmux capture-pane -p -t ' + pane + ' 2>/dev/null)" in *"Full Access"*) return 0;; esac; ' +
       'tmux send-keys -t ' + pane + ' M-y 2>/dev/null; done; }; ( _fa >/dev/null 2>&1 & ); ';
   }
@@ -686,10 +692,16 @@ export class BlinkStore {
     // if it is still running. Refresh / auto-reconnect both go through this path.
     // 启动文件先写临时文件再 mv：几个客户端同时重连时 `cat >` 会互相截断交错，留下半截内容（parse error）
     const bootFile: string = '/tmp/.blink-boot-' + outerSession + '.sh';
+    // issue #81：只看 pane_current_command 会把 `bash -lc "claude …; exec bash"` 这种会话
+    // （tmux 报 bash、claude 是它的子进程且活着）当成裸 shell，往活着的 Claude 输入框里
+    // send-keys `source …`，Claude 把它当用户消息收到。判「裸 shell」必须再加一条：
+    // pane 进程没有子进程（pgrep -P pane_pid）。pgrep 不可用时退回旧行为，宁可清屏也别漏自愈。
     const heal: string = 'if tmux has-session -t ' + outerSession +
       ' 2>/dev/null; then PC=$(tmux display-message -p -t ' + outerSession +
-      " '#{pane_current_command}' 2>/dev/null); case \"$PC\" in zsh|bash|sh|dash|ksh|fish) tmux send-keys -t " +
-      outerSession + ' C-u; tmux send-keys -t ' + outerSession + ' " source ' + bootFile + '" Enter;; esac; fi';
+      " '#{pane_current_command}' 2>/dev/null); PP=$(tmux display-message -p -t " + outerSession +
+      " '#{pane_pid}' 2>/dev/null); case \"$PC\" in zsh|bash|sh|dash|ksh|fish) " +
+      'pgrep -P "$PP" >/dev/null 2>&1 || { tmux send-keys -t ' + outerSession +
+      ' C-u; tmux send-keys -t ' + outerSession + ' " source ' + bootFile + '" Enter; };; esac; fi';
     return detectSock + '\n' +
       'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin\n' +
       migrate + '\n' +
