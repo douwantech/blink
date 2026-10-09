@@ -1016,20 +1016,31 @@ struct PadHome {
     }
     const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
     this.note(tabId, conn, '\u001b[90m[blink] 连接 ' + ep.blinkdHost + ':' + port + ' …\u001b[0m', false);
-    conn.client.onData = (bytes: Uint8Array) => {
+    // 直连失败过的话 conn.client 里还是那个 SshDirectClient —— 先关掉、换一个干净的 BlinkdClient，
+    // 否则会拿 SSH 通道去跑 blinkd 协议（同手机端 attach 的 blinkd 分支）。
+    conn.client.close();
+    const client = new BlinkdClient();
+    conn.client = client;
+    client.onData = (bytes: Uint8Array) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.writeBytes(tabId, bytes);
       if (tabId !== this.activeTabId && !conn.unread) {
         conn.unread = true;
         this.refreshAll();
       }
     };
-    conn.client.onState = (st: BlinkdState, detail: string) => {
+    client.onState = (st: BlinkdState, detail: string) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.onConnState(tabId, st, detail);
     };
     this.webCtl.runJavaScript(`term_create('${tabId}')`);
     conn.state = 'connecting';
     this.tick++;
-    conn.client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
+    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
   }
 
   /** brain 公网 SSH 直连的地址：设置里的 brainSshHost → 机器的 host2 → 机器的 host。
@@ -1181,6 +1192,8 @@ struct PadHome {
         setTimeout((): void => { this.attach(tabId, true); }, 0);
         return;
       }
+      // blinkd 也最终失败了：directState 复位成 new，下次重连会重新先试直连（同手机端 onConnState 末段）。
+      conn.directState = 'new';
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;
       conn.state = st;
@@ -1431,6 +1444,8 @@ struct PadHome {
     if (conn !== null) {
       conn.failCount = 0;
       conn.cooldownUntil = 0;
+      // 手动重连 = 重新开始：directState 复位，下一跳重新先试直连（同手机端 reconnectActive）。
+      conn.directState = 'new';
       conn.client.close();
     }
     this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);
