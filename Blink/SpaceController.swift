@@ -77,6 +77,8 @@ class SpaceController: UIViewController {
       if let key = _currentKey {
         let term: TermController = SessionRegistry.shared[key]
         term.meta.hasUnread = false
+        // 切到前台显示的标签：让 tmux 按本机尺寸重排（#101）
+        term.nudgeTmuxFocusIfNeeded()
       }
       // 公用标签不是账号的数据：停在它上面也不写 currentId（否则会把公用标签的 ID
       // 当成自己的选中项回传）。当前选中项保持在上一个自有标签。
@@ -1089,6 +1091,9 @@ Please go to your subscriptions and cancel one of them!
     }
     
     _focusOnShell()
+    // App 窗口重新获得焦点（回前台）：当前标签补发一次焦点进入序列，
+    // 免得在别的设备上操作过后，这台还要先敲一下键才恢复成自己的尺寸（#101）。
+    currentTerm()?.nudgeTmuxFocusIfNeeded()
   }
   
   func _createTerminal(
