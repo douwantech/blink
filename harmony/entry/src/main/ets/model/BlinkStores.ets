@@ -328,6 +328,11 @@ export class BlinkStore {
   // Tab title, iOS style (SpaceController.swift:1722): "<workDirName>:<sessionPart>"
   // sessionPart = last '-' segment of tmuxSession; dropped if equal to dir name.
   tabTitle(t: TabModel): string {
+    // iOS public tabs have no workDirId in the UI; their chip shows the full
+    // employee-project session name even though the server provides workDir.
+    if (this.isShared(t.id)) {
+      return t.tmuxSession;
+    }
     const w = this.workDirById(t.workDirId);
     const wn: string = w !== null ? w.name : '?';
     let sp: string = t.tmuxSession;
@@ -433,15 +438,11 @@ export class BlinkStore {
   // 坞 = 在岗的公用标签（自有标签退场）。**不再按机器收窄** —— iOS 手机端同一口径：
   // `let machineId = _macRail != nil ? _tabFilterMachineId : nil`（SpaceController.swift:715），
   // 手机上恒为 nil，否则 selection 回读来的 machineId 会把坞锁死在一台机器上。
-  // resting (😴) 的公用标签永不进坞；当前标签例外，坞不会空（iOS _hiddenByWorkMode 同）。
+  // 休息中的公用标签不进坞，旧自有标签也不因“当前”身份漏进来。
   visibleTabs(): TabModel[] {
     const out: TabModel[] = [];
     for (let i = 0; i < this.tabs.length; i++) {
       const t: TabModel = this.tabs[i];
-      if (t.id === this.currentTabId) {
-        out.push(t);
-        continue;
-      }
       if (!this.isShared(t.id)) {
         continue;
       }
@@ -450,6 +451,12 @@ export class BlinkStore {
       }
       out.push(t);
     }
+    // iOS _sortTabsByMachineAndDir sorts public tabs by tmuxSession.
+    out.sort((a: TabModel, b: TabModel): number => {
+      const aa: string = a.tmuxSession.toLowerCase();
+      const bb: string = b.tmuxSession.toLowerCase();
+      return aa < bb ? -1 : (aa > bb ? 1 : 0);
+    });
     return out;
   }
 
