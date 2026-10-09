@@ -129,6 +129,13 @@ function term_show(id) {
   }
 }
 
+function term_hide_all() {
+  activeId = null;
+  for (var k in layers) {
+    layers[k].style.visibility = 'hidden';
+  }
+}
+
 // Destroy session `id`'s terminal + layer (tab closed).
 function term_dispose(id) {
   try {

@@ -341,6 +341,13 @@ struct PadHome {
     this.uiPrefs = await preferences.getPreferences(ctx, 'ui_prefs');
     // 服务器配置（唯一权威）：本机有没有 session 决定进主界面还是只显示登录页
     const server = new ServerConfig(ctx, this.store);
+    // 服务器快照采纳完（15s 轮询 / 回前台）→ 刷新侧栏与当前标签；
+    // 当前标签被休息/移出可见集就切到第一个可见标签，一个都没有就空状态。
+    server.onApplied = (): void => {
+      if (this.storeReady) {
+        this.syncActiveAfterServerApply();
+      }
+    };
     this.serverConfig = server;
     const hasSession: boolean = await server.hasSession();
     if (!hasSession) {
@@ -445,11 +452,8 @@ struct PadHome {
         continue;
       }
       // 侧栏 = 在岗的公用标签（自有标签退场，iOS _sharedKeys 口径）；
-      // 当前选中的即使在休息也留着，不让终端悬空。
-      if (t.id === this.activeTabId) {
-        out.push(t);
-        continue;
-      }
+      // 休息中的不留侧栏（iOS visibleTabs 同）——当前标签也不例外，
+      // 被休息后由 syncActiveAfterServerApply 切到第一个可见标签。
       if (!this.store.isShared(t.id)) {
         continue;
       }
@@ -458,20 +462,13 @@ struct PadHome {
       }
       out.push(t);
     }
-    // 排序跟 macOS 侧栏 / iOS tab 栏一致：按 (项目, 员工)，完全相同保持原序
-    const keyed: TabModel[] = out.slice();
-    keyed.sort((a: TabModel, b: TabModel) => {
-      const ka: string[] = this.projectOwner(a);
-      const kb: string[] = this.projectOwner(b);
-      if (ka[0] !== kb[0]) {
-        return ka[0] < kb[0] ? -1 : 1;
-      }
-      if (ka[1] !== kb[1]) {
-        return ka[1] < kb[1] ? -1 : 1;
-      }
-      return out.indexOf(a) - out.indexOf(b);
+    // 对齐 iOS：公用标签按 tmuxSession 小写排序
+    out.sort((a: TabModel, b: TabModel): number => {
+      const aa: string = a.tmuxSession.toLowerCase();
+      const bb: string = b.tmuxSession.toLowerCase();
+      return aa < bb ? -1 : (aa > bb ? 1 : 0);
     });
-    return keyed;
+    return out;
   }
 
   /// [项目, 员工]：cc 标题按 iOS BlinkMachineStore.ccTitle 的规则算（工作目录显示名小写 + 会话名），
@@ -568,6 +565,10 @@ struct PadHome {
     const avatars: Map<string, string> = new Map();
     for (let i = 0; i < this.store.tabs.length; i++) {
       const t = this.store.tabs[i];
+      // 团队面板只列公用标签（自有标签不再入场，iOS 同口径）
+      if (!this.store.isShared(t.id)) {
+        continue;
+      }
       // 三档都跨机器列全（团队栏是「看所有人在干嘛」，不该被当前机器挡住）
       const row: SessRow = this.rowFor(t);
       let key: string;
@@ -1248,32 +1249,34 @@ struct PadHome {
   /// 服务器快照可能删掉了当前机器/标签：清掉它们的连接与终端图层，退回该机器的第一篇会话。
   /// （老 applySyncedConfig 的文件同步版整段删除；采纳本身由 ServerConfig.apply() 做）
   private syncActiveAfterServerApply(): void {
+    if (this.store.machineById(this.activeMachineId) === null) {
+      this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
+    }
+    // 当前机器的可见集：决定当前标签落哪 / 是否进空状态（rowsForMachine 已按在岗公用过滤）
+    const rows: TabModel[] = this.rowsForMachine(this.activeMachineId);
+    // 清理集合用**全局**在岗公用标签（visibleTabs，所有机器）。
+    // 只按本机 rows 清，会把其他机器上在岗标签的连接/图层每 15 秒清掉一次，切回去又要重连。
+    const keepIds: string[] = this.store.visibleTabs().map((t: TabModel): string => t.id);
     this.pool.all().forEach((c: SessionConn) => {
-      if (this.store.tabById(c.tabId) === null) {
+      if (keepIds.indexOf(c.tabId) < 0) {
         this.pool.remove(c.tabId);
         this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
       }
     });
-    if (this.store.machineById(this.activeMachineId) === null) {
-      this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
-    }
-    if (this.activeTabId.length === 0) {
-      // 登录后第一次拿到服务器标签：自动落到第一条会话并连上（「登录后马上能用」）。
-      // 以前只在「当前 tab 已失效」时才切，首登 activeTabId 为空 → 永远不 attach → 白屏。
-      const rows = this.rowsForMachine(this.activeMachineId);
-      if (rows.length > 0) {
-        this.switchTab(rows[0].id);
-      }
+    if (this.activeTabId.length > 0 &&
+      rows.findIndex((t: TabModel): boolean => t.id === this.activeTabId) >= 0) {
       this.refreshAll();
       return;
     }
-    if (this.store.tabById(this.activeTabId) === null) {
-      this.activeTabId = '';
-      const rows = this.rowsForMachine(this.activeMachineId);
-      if (rows.length > 0) {
-        this.switchTab(rows[0].id);
-      }
+    // 当前标签被休息/被删：切到第一个可见标签；一个都没有就空状态（藏掉所有终端图层）。
+    this.activeTabId = '';
+    if (rows.length > 0) {
+      this.switchTab(rows[0].id);
+      return;
     }
+    this.store.currentTabId = '';
+    this.store.saveCurrent();
+    this.webCtl.runJavaScript('term_hide_all()');
     this.refreshAll();
     this.preloadAvatars(this.getUIContext().getHostContext() as common.UIAbilityContext);
     if (this.browserOpened) {
@@ -2391,8 +2394,6 @@ struct PadHome {
         .onClick(() => this.setAgentByTab(tabId, 'codex'))
       MenuItem({ content: this.agentOfTab(tabId) === 'deepseek' ? 'DeepSeek（当前）' : '打开时进 DeepSeek' })
         .onClick(() => this.setAgentByTab(tabId, 'deepseek'))
-      MenuItem({ content: '关闭标签' })
-        .onClick(() => this.confirmClose(tabId))
     }
   }
 
@@ -2457,17 +2458,6 @@ struct PadHome {
         }
         .layoutWeight(1).width('100%').padding({ left: 8, right: 8 }).scrollBar(BarState.Off)
       }
-
-      Row({ space: 6 }) {
-        SymbolGlyph($r('sys.symbol.plus')).fontSize(14).fontColor([TEAL])
-        Text('新会话').fontSize(13).fontWeight(FontWeight.Medium).fontColor(TEAL)
-      }
-      .width('100%').height(34).justifyContent(FlexAlign.Center).borderRadius(9)
-      .border({ width: 1, color: this.tint(TEAL, '66') })
-      .margin({ top: 8, bottom: 12 })
-      .onClick(() => this.openNewTab())
-      .padding({ left: 12, right: 12 })
-      .constraintSize({ maxWidth: width - 24 })
     }
     .width(width).height('100%').backgroundColor(FILL)
   }
