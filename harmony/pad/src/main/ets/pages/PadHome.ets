@@ -25,11 +25,11 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util, buffer } from '@kit.ArkTS';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
-import { pasteboard } from '@kit.BasicServicesKit';
+import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
-import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore } from 'tsvpn';
+import { BlinkdClient, BlinkdState, TailscaleCore, StatusStore, SshDirectClient, SshIdentity } from 'tsvpn';
 import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from '../model/BlinkStores';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS } from '../model/GlmVoice';
@@ -96,6 +96,11 @@ const CHAT_DARK_CSS: string =
 type Sheet = 'none' | 'settings' | 'newTab' | 'favorites' | 'claude' | 'history' | 'aiConfig' | 'machines' | 'workDirs' | 'pinEdit' | 'protoAuth';
 type Mode = 'terminal' | 'chat' | 'browser';
 type Inspector = 'employee' | 'project' | 'machine';
+
+interface DirectSshEndpoint {
+  host: string;
+  port: number;
+}
 
 interface MachineVM {
   id: string;
@@ -211,6 +216,12 @@ struct PadHome {
   // 终端
   @State cols: number = 80;
   @State rows: number = 24;
+  // brain 公网 SSH 直连（与手机端同一套）：地址/端口在设置里填，私钥在系统密钥库，
+  // 主机指纹首次确认后固定。Tailscale 挂了也能直连。
+  @State brainSshHost: string = '';
+  @State brainSshPort: string = '22';
+  @State sshPublicKey: string = '';
+  @State sshKeyError: string = '';
   @State fontSize: number = 12;
   @State inputBuf: string = '';
   // 语音条（沿用手机版 dock 的按住说话 / 轻点打字）
@@ -384,6 +395,8 @@ struct PadHome {
     this.fontSize = await this.uiPrefs!.get('fontSize', 12) as number;
     this.showTeam = await this.uiPrefs!.get('showTeam', false) as boolean;
     this.fabY = await this.uiPrefs!.get('fabY', -1) as number;
+    this.brainSshHost = await this.uiPrefs!.get('brainSshHost', '') as string;
+    this.brainSshPort = await this.uiPrefs!.get('brainSshPort', '22') as string;
     await this.store.load(ctx);
     // 本地个人状态一变（save* 落盘）→ 防抖 PUT 回服务器（不再往任何机器写文件）
     this.store.onLocalChange = (): void => {
@@ -979,33 +992,181 @@ struct PadHome {
     }
     const conn = this.pool.getOrCreate(tabId);
     const m = this.store.machineById(tab.machineId);
-    const ep = this.store.blinkdEndpoint(m);
-    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
-      this.note(tabId, conn, '\u001b[33m⚠ 这台机器没配 blinkd 端点，去设置里填 host / token\u001b[0m', true);
-      return;
-    }
     if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
       return;
     }
     if (!force && Date.now() < conn.cooldownUntil) {
       return;
     }
+    // brain 公网 SSH 直连优先（同手机端）：拿到了就先用它；直连失败在 onConnState 里
+    // 转成 tried 并重连一次，那一次会跳过直连、走 blinkd。
+    const direct = this.brainDirectEndpoint(m);
+    if (direct !== null && conn.directState === 'new' && m !== null) {
+      conn.directState = 'active';
+      this.attachDirect(tabId, tab, m, direct.host, direct.port, conn);
+      return;
+    }
+    const ep = this.store.blinkdEndpoint(m);
+    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+      if (conn.directState === 'tried') {
+        conn.directState = 'new';
+      }
+      this.note(tabId, conn, '\u001b[33m⚠ 这台机器没配 blinkd 端点，去设置里填 host / token\u001b[0m', true);
+      return;
+    }
     const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
     this.note(tabId, conn, '\u001b[90m[blink] 连接 ' + ep.blinkdHost + ':' + port + ' …\u001b[0m', false);
-    conn.client.onData = (bytes: Uint8Array) => {
+    // 直连失败过的话 conn.client 里还是那个 SshDirectClient —— 先关掉、换一个干净的 BlinkdClient，
+    // 否则会拿 SSH 通道去跑 blinkd 协议（同手机端 attach 的 blinkd 分支）。
+    conn.client.close();
+    const client = new BlinkdClient();
+    conn.client = client;
+    client.onData = (bytes: Uint8Array) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.writeBytes(tabId, bytes);
       if (tabId !== this.activeTabId && !conn.unread) {
         conn.unread = true;
         this.refreshAll();
       }
     };
-    conn.client.onState = (st: BlinkdState, detail: string) => {
+    client.onState = (st: BlinkdState, detail: string) => {
+      if (conn.client !== client) {
+        return;
+      }
       this.onConnState(tabId, st, detail);
     };
     this.webCtl.runJavaScript(`term_create('${tabId}')`);
     conn.state = 'connecting';
     this.tick++;
-    conn.client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
+    client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab));
+  }
+
+  /** brain 公网 SSH 直连的地址：设置里的 brainSshHost → 机器的 host2 → 机器的 host。
+   *  brain 的 host2 常为空，少了最后一层回落，Tailscale 一挂就找不到直连地址（同手机端 #104）。 */
+  private brainDirectEndpoint(m: Machine | null): DirectSshEndpoint | null {
+    if (m === null || m.name.toLowerCase() !== 'brain' || m.user.length === 0) {
+      return null;
+    }
+    const setting: string = this.brainSshHost.trim();
+    const host2: string = (m.host2 || '').trim();
+    const host: string = setting.length > 0 ? setting : (host2.length > 0 ? host2 : (m.host || '').trim());
+    const port = Number(this.brainSshPort);
+    if (host.length === 0 || new RegExp('[\\s/@]').test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+    const endpoint: DirectSshEndpoint = { host: host, port: port };
+    return endpoint;
+  }
+
+  private saveBrainSsh(): void {
+    const host = this.brainSshHost.trim();
+    const port = Number(this.brainSshPort);
+    if (host.length > 0 && new RegExp('[\\s/@]').test(host)) {
+      this.toast('SSH 地址格式不正确');
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      this.toast('SSH 端口需为 1–65535');
+      return;
+    }
+    const prefs = this.uiPrefs;
+    if (prefs === null) {
+      return;
+    }
+    prefs.put('brainSshHost', host).then((): Promise<void> => prefs.put('brainSshPort', String(port)))
+      .then((): Promise<void> => prefs.flush()).then((): void => {
+        this.pool.all().forEach((c: SessionConn): void => {
+          const tab = this.store.tabById(c.tabId);
+          const machine = tab !== null ? this.store.machineById(tab.machineId) : null;
+          if (machine !== null && machine.name.toLowerCase() === 'brain') {
+            c.client.close();
+            c.state = 'idle';
+            c.directState = 'new';
+            c.cooldownUntil = 0;
+          }
+        });
+        this.toast('已保存 brain SSH 地址');
+        if (this.activeTabId.length > 0) {
+          this.attach(this.activeTabId, true);
+        }
+      }).catch((): void => this.toast('保存 SSH 地址失败'));
+  }
+
+  private showSshPublicKey(): void {
+    SshIdentity.authorizedKey().then((key: string): void => {
+      this.sshPublicKey = key;
+      this.sshKeyError = '';
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, key);
+      pasteboard.getSystemPasteboard().setData(data)
+        .then((): void => this.toast('公钥已复制，可加入 brain 的 authorized_keys'))
+        .catch((): void => this.toast('公钥已显示，复制失败'));
+    }).catch((e: Object): void => {
+      const error = e as BusinessError;
+      const code: string = error.code !== undefined ? (error.code + ' ') : '';
+      this.sshKeyError = '无法生成 SSH 公钥：' + code + error.message;
+    });
+  }
+
+  private attachDirect(tabId: string, tab: TabModel, m: Machine,
+                       host: string, port: number, conn: SessionConn): void {
+    this.note(tabId, conn, '\u001b[90m[SSH 直连] 连接 ' + host + ':' + port + ' …\u001b[0m', false);
+    conn.client.close();
+    const client = new SshDirectClient();
+    conn.client = client;
+    client.onData = (bytes: Uint8Array): void => {
+      if (conn.client !== client) {
+        return;
+      }
+      this.writeBytes(tabId, bytes);
+      if (tabId !== this.activeTabId && !conn.unread) {
+        conn.unread = true;
+        this.refreshAll();
+      }
+    };
+    client.onState = (st: BlinkdState, detail: string): void => {
+      if (conn.client === client) {
+        this.onConnState(tabId, st, detail);
+      }
+    };
+    client.onHostKey = (keyHost: string, keyPort: number, key: Uint8Array, fp: string): Promise<boolean> =>
+      this.confirmSshHostKey(m.id, keyHost, keyPort, key, fp);
+    this.webCtl.runJavaScript(`term_create('${tabId}')`);
+    conn.state = 'connecting';
+    this.tick++;
+    client.connect(host, port, m.user, this.rows, this.cols, this.store.execForTab(tab, false, true));
+  }
+
+  /** 主机指纹：预存一致→直接用；变了→拒绝；没存过→弹框让用户核对后固定。 */
+  private confirmSshHostKey(machineId: string, host: string, port: number,
+                            key: Uint8Array, fingerprint: string): Promise<boolean> {
+    const prefs = this.uiPrefs;
+    if (prefs === null) {
+      return Promise.resolve(false);
+    }
+    const name = 'sshHostKey:' + machineId + '@' + host + ':' + port;
+    const encoded = buffer.from(key).toString('base64');
+    return prefs.get(name, '').then((saved: preferences.ValueType): Promise<boolean> => {
+      if (saved === encoded) {
+        return Promise.resolve(true);
+      }
+      if (saved !== '') {
+        this.toast('SSH 主机密钥发生变化，连接已拒绝');
+        return Promise.resolve(false);
+      }
+      return new Promise<boolean>((resolve: (trusted: boolean) => void): void => {
+        this.getUIContext().showAlertDialog({
+          title: '确认 brain 的 SSH 主机密钥',
+          message: host + ':' + port + '\n' + fingerprint + '\n请与服务器上的指纹核对。',
+          primaryButton: { value: '信任并连接', action: (): void => {
+            prefs.put(name, encoded).then((): Promise<void> => prefs.flush())
+              .then((): void => resolve(true)).catch((): void => resolve(false));
+          } },
+          secondaryButton: { value: '取消', action: (): void => resolve(false) }
+        });
+      });
+    });
   }
 
   private onConnState(tabId: string, st: BlinkdState, detail: string): void {
@@ -1021,6 +1182,18 @@ struct PadHome {
       conn.everConnected = true;
       this.note(tabId, conn, '\u001b[32m✓ 已连接\u001b[0m' + (detail.length > 0 ? ' \u001b[2m· ' + detail + '\u001b[0m' : ''), false);
     } else if (st === 'closed' || st === 'error') {
+      // 直连失败：标成 tried 后重连一次，这一次 attach 会跳过直连、走 blinkd（同手机端）。
+      // 同一次失败可能同时发 error + close，先摘掉 onState 保证只处理一次。
+      if (conn.directState === 'active') {
+        conn.client.onState = (_next: BlinkdState, _detail: string): void => {};
+        conn.directState = 'tried';
+        conn.state = 'idle';
+        this.note(tabId, conn, '\u001b[33m⚠ SSH 直连失败：' + detail + '，尝试 blinkd…\u001b[0m', false);
+        setTimeout((): void => { this.attach(tabId, true); }, 0);
+        return;
+      }
+      // blinkd 也最终失败了：directState 复位成 new，下次重连会重新先试直连（同手机端 onConnState 末段）。
+      conn.directState = 'new';
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;
       conn.state = st;
@@ -1096,7 +1269,7 @@ struct PadHome {
     conn.client.sendBytes(new Uint8Array(FOCUS_IN_BYTES));
   }
 
-  private activeClient(): BlinkdClient | null {
+  private activeClient(): BlinkdClient | SshDirectClient | null {
     const c = this.pool.get(this.activeTabId);
     return (c !== null && c.state === 'connected') ? c.client : null;
   }
@@ -1271,6 +1444,8 @@ struct PadHome {
     if (conn !== null) {
       conn.failCount = 0;
       conn.cooldownUntil = 0;
+      // 手动重连 = 重新开始：directState 复位，下一跳重新先试直连（同手机端 reconnectActive）。
+      conn.directState = 'new';
       conn.client.close();
     }
     this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);
@@ -3608,6 +3783,30 @@ struct PadHome {
             .fontSize(14).width('100%').height(38)
             .backgroundColor(this.tsConnected ? PANEL3 : C_WORK).fontColor(this.tsConnected ? FG : '#0B1B14')
             .onClick(() => { this.tsConnected ? this.tsDisconnect() : this.tsConnect(); })
+        }.padding(14).backgroundColor(PANEL2).borderRadius(12)
+
+        this.sectionHeader('brain · 公网 SSH 直连')
+        Column({ space: 9 }) {
+          Text('填公网 IP 或域名。留空则用服务器下发的 host2 / host（公网）；端口默认 22。')
+            .fontSize(11).fontColor(SUB).width('100%')
+          TextInput({ text: this.brainSshHost, placeholder: '公网 IP / 域名' })
+            .fontSize(13).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+            .onChange((v: string): void => { this.brainSshHost = v; })
+          TextInput({ text: this.brainSshPort, placeholder: 'SSH 端口（默认 22）' })
+            .fontSize(13).type(InputType.Number).backgroundColor(PANEL3).fontColor(FG).borderRadius(8)
+            .onChange((v: string): void => { this.brainSshPort = v; })
+          Button('保存并重连').fontSize(14).width('100%').height(38)
+            .backgroundColor(C_WORK).fontColor('#0B1B14').onClick((): void => this.saveBrainSsh())
+          Text('私钥存在系统密钥库（HUKS），不出设备。把下面这行公钥加到 brain 登录用户的 ~/.ssh/authorized_keys。')
+            .fontSize(11).fontColor(SUB).width('100%')
+          Button('生成并复制本机 SSH 公钥').fontSize(14).width('100%').height(38)
+            .backgroundColor(PANEL3).fontColor(FG).onClick((): void => this.showSshPublicKey())
+          if (this.sshPublicKey.length > 0) {
+            Text(this.sshPublicKey).fontSize(10).fontColor(FG).fontFamily(MONO).width('100%')
+          }
+          if (this.sshKeyError.length > 0) {
+            Text(this.sshKeyError).fontSize(11).fontColor(RED)
+          }
         }.padding(14).backgroundColor(PANEL2).borderRadius(12)
 
         this.sectionHeader('机器 · 工作目录')

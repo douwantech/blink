@@ -8,8 +8,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-import { BlinkdClient } from 'tsvpn';
-import { SshDirectClient } from '../ssh/SshDirectClient';
+import { BlinkdClient, SshDirectClient } from 'tsvpn';
 
 export type ConnUiState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 
