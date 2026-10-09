@@ -34,6 +34,8 @@ import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from '../model/Blin
 import { ServerConfig } from '../model/ServerConfig';
 import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
+import { SshDirectClient } from '../ssh/SshDirectClient';
+import { SshIdentity } from '../ssh/SshIdentity';
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
 
 const DOMAIN: number = 0x0B11;
@@ -87,6 +89,11 @@ class BrowserUrl {
 interface ProtoSortRow {
   it: ProtoItem;
   i: number;
+}
+
+interface DirectSshEndpoint {
+  host: string;
+  port: number;
 }
 
 interface Theme {
@@ -231,10 +238,14 @@ struct BlinkTerminal {
   @State loginPwd: string = '';
   @State loginError: string = '';
   @State loginBusy: boolean = false;
+  @State brainSshHost: string = '';
+  @State brainSshPort: string = '22';
+  @State sshPublicKey: string = '';
+  @State sshKeyError: string = '';
   private lastLen: number = 0;
   private skipNext: boolean = false;
   private recorder: VoiceRecorder = new VoiceRecorder();
-  private transcriptClient: BlinkdClient | null = null;
+  private transcriptClient: BlinkdClient | SshDirectClient | null = null;
   // 对话记录页(D 卡片流,与 iOS 一致):本地缓存 + 增量拉取
   private chatWebCtl: webview.WebviewController = new webview.WebviewController();
   private chatUrl: string = 'about:blank';
@@ -275,6 +286,8 @@ struct BlinkTerminal {
     const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.tsPrefs = await preferences.getPreferences(ctx, 'ts_prefs');
     this.uiPrefs = await preferences.getPreferences(ctx, 'ui_prefs');
+    this.brainSshHost = await this.uiPrefs.get('brainSshHost', '') as string;
+    this.brainSshPort = await this.uiPrefs.get('brainSshPort', '22') as string;
     this.authKey = await this.tsPrefs.get('authKey', '') as string;
     this.hostname = await this.tsPrefs.get('hostname', 'harmony') as string;
     this.themeIdx = await this.uiPrefs.get('themeIdx', 0) as number;
@@ -353,7 +366,8 @@ struct BlinkTerminal {
     if (this.authKey.length > 0) {
       this.appendLocal('· 正在连接 tailscale …');
       this.tsConnect();
-    } else {
+    } else if (this.brainDirectEndpoint(this.store.machineById(
+      this.store.tabById(this.activeTabId)?.machineId || '')) === null) {
       this.appendLocal('⚙ 设置里填 tailscale auth key，之后自动连接');
     }
   }
@@ -621,7 +635,7 @@ struct BlinkTerminal {
         // tailscale 状态变化时写一行到终端：VPN 没通时 blinkd 不会 attach，
         // 不提示的话用户根本不知道是卡在 VPN 还是卡在 blinkd。
         this.noteTsState(this.tsState);
-        if (state === 'Running' && this.activeTabId.length > 0) {
+        if (this.activeTabId.length > 0) {
           this.attach(this.activeTabId, false);
         }
         // 配置刷新不再依赖 VPN：ServerConfig 自己的 15s 轮询 + 回前台刷新走 HTTPS
@@ -690,6 +704,18 @@ struct BlinkTerminal {
     }
     const conn = this.pool.getOrCreate(tabId);
     const m = this.store.machineById(tab.machineId);
+    if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
+      return;
+    }
+    if (!force && Date.now() < conn.cooldownUntil) {
+      return;
+    }
+    const direct = this.brainDirectEndpoint(m);
+    if (direct !== null && conn.directState === 'new' && m !== null) {
+      conn.directState = 'active';
+      this.attachDirect(tabId, tab, m, direct.host, direct.port, conn);
+      return;
+    }
     const primary = this.store.blinkdEndpoint(m);
     const relays: Machine[] = this.sshRelays(primary);
     const ep = conn.relayIndex < 0 ? primary : relays[conn.relayIndex];
@@ -699,13 +725,13 @@ struct BlinkTerminal {
         this.attach(tabId, true);
         return;
       }
+      if (conn.directState === 'tried') {
+        conn.directState = 'new';
+        conn.state = 'error';
+        conn.failCount++;
+        conn.cooldownUntil = Date.now() + Math.min(1500 * Math.pow(2, conn.failCount), 30000);
+      }
       this.note(tabId, conn, '\u001b[33m⚠ 没有可用的 blinkd 或 SSH 中转端点\u001b[0m', true);
-      return;
-    }
-    if (!force && (conn.state === 'connected' || conn.state === 'connecting')) {
-      return;
-    }
-    if (!force && Date.now() < conn.cooldownUntil) {
       return;
     }
     const port0: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
@@ -735,6 +761,126 @@ struct BlinkTerminal {
     this.tick++;
     const port: number = ep.blinkdPort !== undefined ? ep.blinkdPort : 7777;
     client.connect(ep.blinkdHost, port, ep.blinkdToken, this.rows, this.cols, this.store.execForTab(tab, viaSSH));
+  }
+
+  private brainDirectEndpoint(m: Machine | null): DirectSshEndpoint | null {
+    if (m === null || m.name.toLowerCase() !== 'brain' || m.user.length === 0) {
+      return null;
+    }
+    const host = this.brainSshHost.trim().length > 0 ? this.brainSshHost.trim() : (m.host2 || '').trim();
+    const port = Number(this.brainSshPort);
+    if (host.length === 0 || new RegExp('[\\s/@]').test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+    const endpoint: DirectSshEndpoint = { host: host, port: port };
+    return endpoint;
+  }
+
+  private saveBrainSsh(): void {
+    const host = this.brainSshHost.trim();
+    const port = Number(this.brainSshPort);
+    if (host.length > 0 && new RegExp('[\\s/@]').test(host)) {
+      this.toast('SSH 地址格式不正确');
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      this.toast('SSH 端口需为 1–65535');
+      return;
+    }
+    const prefs = this.uiPrefs;
+    if (prefs === null) {
+      return;
+    }
+    prefs.put('brainSshHost', host).then((): Promise<void> => prefs.put('brainSshPort', String(port)))
+      .then((): Promise<void> => prefs.flush()).then((): void => {
+        this.pool.all().forEach((c: SessionConn): void => {
+          const tab = this.store.tabById(c.tabId);
+          const machine = tab !== null ? this.store.machineById(tab.machineId) : null;
+          if (machine !== null && machine.name.toLowerCase() === 'brain') {
+            c.client.close();
+            c.state = 'idle';
+            c.relayIndex = -1;
+            c.directState = 'new';
+            c.cooldownUntil = 0;
+          }
+        });
+        this.toast('已保存 brain SSH 地址');
+        if (this.activeTabId.length > 0) {
+          this.attach(this.activeTabId, true);
+        }
+      }).catch((): void => this.toast('保存 SSH 地址失败'));
+  }
+
+  private showSshPublicKey(): void {
+    SshIdentity.authorizedKey().then((key: string): void => {
+      this.sshPublicKey = key;
+      this.sshKeyError = '';
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, key);
+      pasteboard.getSystemPasteboard().setData(data)
+        .then((): void => this.toast('公钥已复制，可加入 brain 的 authorized_keys'))
+        .catch((): void => this.toast('公钥已显示，复制失败'));
+    }).catch((e: Object): void => {
+      this.sshKeyError = '无法生成 SSH 公钥：' + `${e}`;
+    });
+  }
+
+  private attachDirect(tabId: string, tab: TabModel, m: Machine,
+                       host: string, port: number, conn: SessionConn): void {
+    this.note(tabId, conn, '\u001b[90m[SSH 直连] 连接 ' + host + ':' + port + ' …\u001b[0m', false);
+    conn.client.close();
+    const client = new SshDirectClient();
+    conn.client = client;
+    client.onData = (bytes: Uint8Array): void => {
+      if (conn.client !== client) {
+        return;
+      }
+      this.writeBytes(tabId, bytes);
+      if (tabId !== this.activeTabId && !conn.unread) {
+        conn.unread = true;
+        this.refreshTabs();
+      }
+    };
+    client.onState = (st: BlinkdState, detail: string): void => {
+      if (conn.client === client) {
+        this.onConnState(tabId, st, detail);
+      }
+    };
+    client.onHostKey = (keyHost: string, keyPort: number, key: Uint8Array, fp: string): Promise<boolean> =>
+      this.confirmSshHostKey(m.id, keyHost, keyPort, key, fp);
+    this.webCtl.runJavaScript(`term_create('${tabId}')`);
+    conn.state = 'connecting';
+    this.tick++;
+    client.connect(host, port, m.user, this.rows, this.cols, this.store.execForTab(tab, false, true));
+  }
+
+  private confirmSshHostKey(machineId: string, host: string, port: number,
+                            key: Uint8Array, fingerprint: string): Promise<boolean> {
+    const prefs = this.uiPrefs;
+    if (prefs === null) {
+      return Promise.resolve(false);
+    }
+    const name = 'sshHostKey:' + machineId + '@' + host + ':' + port;
+    const encoded = buffer.from(key).toString('base64');
+    return prefs.get(name, '').then((saved: preferences.ValueType): Promise<boolean> => {
+      if (saved === encoded) {
+        return Promise.resolve(true);
+      }
+      if (saved !== '') {
+        this.toast('SSH 主机密钥发生变化，连接已拒绝');
+        return Promise.resolve(false);
+      }
+      return new Promise<boolean>((resolve: (trusted: boolean) => void): void => {
+        this.getUIContext().showAlertDialog({
+          title: '确认 brain 的 SSH 主机密钥',
+          message: host + ':' + port + '\n' + fingerprint + '\n请与服务器上的指纹核对。',
+          primaryButton: { value: '信任并连接', action: (): void => {
+            prefs.put(name, encoded).then((): Promise<void> => prefs.flush())
+              .then((): void => resolve(true)).catch((): void => resolve(false));
+          } },
+          secondaryButton: { value: '取消', action: (): void => resolve(false) }
+        });
+      });
+    });
   }
 
   private sshRelays(primary: Machine | null): Machine[] {
@@ -768,6 +914,13 @@ struct BlinkTerminal {
     } else if (st === 'closed' || st === 'error') {
       // The socket may emit error and close for one failure; handle it once.
       conn.client.onState = (_next: BlinkdState, _detail: string): void => {};
+      if (conn.directState === 'active') {
+        conn.directState = 'tried';
+        conn.state = 'idle';
+        this.note(tabId, conn, '\u001b[33m⚠ SSH 直连失败：' + detail + '，尝试 blinkd…\u001b[0m', false);
+        setTimeout((): void => { this.attach(tabId, true); }, 0);
+        return;
+      }
       const tab = this.store.tabById(tabId);
       const machine = tab !== null ? this.store.machineById(tab.machineId) : null;
       const relays = this.sshRelays(this.store.blinkdEndpoint(machine));
@@ -780,6 +933,7 @@ struct BlinkTerminal {
         return;
       }
       conn.relayIndex = -1;
+      conn.directState = 'new';
       const lasted: number = conn.connectedAt > 0 ? (Date.now() - conn.connectedAt) : 0;
       conn.connectedAt = 0;
       conn.state = st;
@@ -945,6 +1099,7 @@ struct BlinkTerminal {
       conn.failCount = 0;
       conn.cooldownUntil = 0;
       conn.relayIndex = -1;
+      conn.directState = 'new';
       conn.client.close();
     }
     this.webCtl.runJavaScript(`term_clear('${this.activeTabId}')`);
@@ -953,7 +1108,7 @@ struct BlinkTerminal {
 
   // ---- input ----
 
-  private activeClient(): BlinkdClient | null {
+  private activeClient(): BlinkdClient | SshDirectClient | null {
     const c = this.pool.get(this.activeTabId);
     return (c !== null && c.state === 'connected') ? c.client : null;
   }
@@ -1329,7 +1484,11 @@ struct BlinkTerminal {
     }
     const m = this.store.machineById(tab.machineId);
     const ep = this.store.blinkdEndpoint(m);
-    if (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined) {
+    const direct = this.brainDirectEndpoint(m);
+    const current = this.pool.get(tab.id);
+    const useDirect = direct !== null && current !== null && current.client instanceof SshDirectClient &&
+      current.state === 'connected';
+    if (!useDirect && (ep === null || ep.blinkdHost === undefined || ep.blinkdToken === undefined)) {
       this.toast('机器未配置 blinkd');
       return;
     }
@@ -1348,9 +1507,14 @@ struct BlinkTerminal {
     this.chatRefreshing = true;
     this.renderChat(cached !== null ? cached.body : '');
     this.showTranscript = true;
-    this.fetchChatDelta(tab, ep.blinkdHost,
-      ep.blinkdPort !== undefined ? ep.blinkdPort : 7777, ep.blinkdToken,
-      cached !== null ? cached.file : '', cached !== null ? cached.lines : 0);
+    if (useDirect && direct !== null && m !== null) {
+      this.fetchChatDelta(tab, direct.host, direct.port, m.user,
+        cached !== null ? cached.file : '', cached !== null ? cached.lines : 0, true);
+    } else if (ep !== null && ep.blinkdHost !== undefined && ep.blinkdToken !== undefined) {
+      this.fetchChatDelta(tab, ep.blinkdHost,
+        ep.blinkdPort !== undefined ? ep.blinkdPort : 7777, ep.blinkdToken,
+        cached !== null ? cached.file : '', cached !== null ? cached.lines : 0, false);
+    }
   }
 
   // 页内 <img> 加载失败(多半是门禁 401——Web 的 auth 挑战对子资源不生效):
@@ -1423,15 +1587,15 @@ struct BlinkTerminal {
     }
   }
 
-  private fetchChatDelta(tab: TabModel, host: string, port: number, token: string,
-                          cachedFile: string, cachedLines: number): void {
+  private fetchChatDelta(tab: TabModel, host: string, port: number, tokenOrUser: string,
+                          cachedFile: string, cachedLines: number, direct: boolean): void {
     let script = this.store.transcriptDeltaScriptForTab(tab, cachedFile, cachedLines);
     if (script === null) {
       this.chatRefreshing = false;
       return;
     }
     const m = this.store.machineById(tab.machineId);
-    if (m !== null && m.transport !== 'blinkd') {
+    if (!direct && m !== null && m.transport !== 'blinkd') {
       // ssh 机器:脚本经中转机 blinkd 再 ssh 过去跑
       const sb64: string = this.b64.encodeToStringSync(new util.TextEncoder().encodeInto(script));
       script = 'ssh ' + m.user + '@' + m.host + ' -- ' + BlinkStore.shq('echo ' + sb64 + ' | base64 -d | bash');
@@ -1439,7 +1603,7 @@ struct BlinkTerminal {
     let buf: string = '';
     let done: boolean = false;
     const dec = util.TextDecoder.create('utf-8');
-    const client = new BlinkdClient();
+    const client: BlinkdClient | SshDirectClient = direct ? new SshDirectClient() : new BlinkdClient();
     this.transcriptClient = client;
     const finish = (): void => {
       if (done) {
@@ -1462,7 +1626,13 @@ struct BlinkTerminal {
         finish();
       }
     };
-    client.connect(host, port, token, 24, 80, script);
+    if (client instanceof SshDirectClient) {
+      client.onHostKey = (keyHost: string, keyPort: number, key: Uint8Array, fp: string): Promise<boolean> =>
+        this.confirmSshHostKey(tab.machineId, keyHost, keyPort, key, fp);
+      client.connect(host, port, tokenOrUser, 24, 80, 'bash -lc ' + BlinkStore.shq(script));
+    } else {
+      client.connect(host, port, tokenOrUser, 24, 80, script);
+    }
     setTimeout(finish, 20000);
   }
 
@@ -2741,6 +2911,30 @@ struct BlinkTerminal {
             .fontSize(14).width('100%').height(40)
             .backgroundColor(this.tsConnected ? '#3A3A3C' : '#34C759')
             .onClick(() => { this.tsConnected ? this.tsDisconnect() : this.tsConnect(); })
+        }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
+
+        this.sectionHeader('brain · 公网 SSH 直连')
+        Column({ space: 9 }) {
+          Text('填公网 IP 或域名。留空时用服务器下发的 host2；端口默认 22。')
+            .fontSize(11).fontColor('#8E8E93').width('100%')
+          TextInput({ text: this.brainSshHost, placeholder: '公网 IP / 域名' })
+            .fontSize(13).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+            .onChange((v: string): void => { this.brainSshHost = v; })
+          TextInput({ text: this.brainSshPort, placeholder: 'SSH 端口（默认 22）' })
+            .fontSize(13).type(InputType.Number).backgroundColor('#2A2A2C').fontColor('#FFFFFF').borderRadius(8)
+            .onChange((v: string): void => { this.brainSshPort = v; })
+          Button('保存并重连').fontSize(14).width('100%').height(38)
+            .backgroundColor('#0A84FF').onClick((): void => this.saveBrainSsh())
+          Text('手机私钥保存在系统密钥库。将下方公钥加入 brain 登录用户的 ~/.ssh/authorized_keys。')
+            .fontSize(11).fontColor('#8E8E93').width('100%')
+          Button('生成并复制本机 SSH 公钥').fontSize(14).width('100%').height(38)
+            .backgroundColor('#3A3A3C').onClick((): void => this.showSshPublicKey())
+          if (this.sshPublicKey.length > 0) {
+            Text(this.sshPublicKey).fontSize(10).fontColor('#D4DAE0').width('100%')
+          }
+          if (this.sshKeyError.length > 0) {
+            Text(this.sshKeyError).fontSize(11).fontColor('#FF5A5C')
+          }
         }.padding(14).backgroundColor('#1C1C1E').borderRadius(12)
 
         this.sectionHeader('外观 · 主题')

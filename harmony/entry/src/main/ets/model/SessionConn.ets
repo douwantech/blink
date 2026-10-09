@@ -8,13 +8,14 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-import { BlinkdClient, BlinkdState } from 'tsvpn';
+import { BlinkdClient } from 'tsvpn';
+import { SshDirectClient } from '../ssh/SshDirectClient';
 
 export type ConnUiState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 
 export class SessionConn {
   tabId: string;
-  client: BlinkdClient = new BlinkdClient();
+  client: BlinkdClient | SshDirectClient = new BlinkdClient();
   state: ConnUiState = 'idle';
   failCount: number = 0;
   cooldownUntil: number = 0;
@@ -23,6 +24,7 @@ export class SessionConn {
   everConnected: boolean = false;
   lastNote: string = '';         // 去重：同一条连接状态行不重复刷（轮询每 1.5s 会重进 attach）
   relayIndex: number = -1;       // -1 = configured route; >=0 = alternate blinkd relay
+  directState: string = 'new';    // new | active | tried; only used for brain's public SSH endpoint
 
   constructor(tabId: string) {
     this.tabId = tabId;
