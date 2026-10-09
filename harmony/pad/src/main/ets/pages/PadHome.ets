@@ -444,8 +444,16 @@ struct PadHome {
       if (t.machineId !== mid) {
         continue;
       }
-      // 侧栏只放在岗会话（同 mac sidebarSessions）；当前选中的即使在休息也留着，不让终端悬空
-      if (this.store.isResting(t.id) && t.id !== this.activeTabId) {
+      // 侧栏 = 在岗的公用标签（自有标签退场，iOS _sharedKeys 口径）；
+      // 当前选中的即使在休息也留着，不让终端悬空。
+      if (t.id === this.activeTabId) {
+        out.push(t);
+        continue;
+      }
+      if (!this.store.isShared(t.id)) {
+        continue;
+      }
+      if (this.store.isResting(t.id)) {
         continue;
       }
       out.push(t);

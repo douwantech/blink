@@ -1062,6 +1062,16 @@ struct BlinkTerminal {
     const remembered: string | undefined = machineId.length > 0 ? this.lastTabPerMachine[machineId] : undefined;
     if (remembered !== undefined && filtered.some((t: TabModel) => t.id === remembered)) {
       target = remembered;
+    } else if (machineId.length > 0) {
+      // 坞不再按机器收窄（iOS 手机端口径），所以不能拿 filtered[0] 当该机器的第一条。
+      // 自己从该机器里挑：优先在岗公用标签，退而求其任意标签。
+      const ofMachine: TabModel[] = this.store.tabs.filter((t: TabModel) => t.machineId === machineId);
+      const onDuty: TabModel[] = ofMachine.filter((t: TabModel) => this.store.isShared(t.id) && this.store.isOnDuty(t));
+      if (onDuty.length > 0) {
+        target = onDuty[0].id;
+      } else if (ofMachine.length > 0) {
+        target = ofMachine[0].id;
+      }
     } else if (filtered.some((t: TabModel) => t.id === this.activeTabId)) {
       target = this.activeTabId;
     } else if (filtered.length > 0) {
