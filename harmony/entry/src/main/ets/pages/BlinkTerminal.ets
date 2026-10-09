@@ -374,6 +374,11 @@ struct BlinkTerminal {
 
   /// 服务器快照可能删掉了当前 tab：清掉它的连接/终端图层，退回第一篇可见标签
   private syncActiveAfterServerApply(): void {
+    // 服务器快照可能换了「后台」书签：浏览器开着就把书签栏刷成 store 里刚采纳的那份
+    // （没开的话 openBrowser() 会从 store 重新取，不必在这儿刷）。
+    if (this.browserOpened) {
+      this.browserPinned = this.store.pinned.slice();
+    }
     this.refreshTabs();
     const visibleIds: string[] = this.visTabs.map((t: TabModel): string => t.id);
     this.pool.all().forEach((c: SessionConn) => {

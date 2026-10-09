@@ -1249,6 +1249,11 @@ struct PadHome {
   /// 服务器快照可能删掉了当前机器/标签：清掉它们的连接与终端图层，退回该机器的第一篇会话。
   /// （老 applySyncedConfig 的文件同步版整段删除；采纳本身由 ServerConfig.apply() 做）
   private syncActiveAfterServerApply(): void {
+    // 服务器快照可能换了「后台」书签：浏览器开着就把书签栏刷成 store 里刚采纳的那份。
+    // 放在函数最前面：下面有早退路径（当前标签仍有效就直接 return），放末尾会刷不到。
+    if (this.browserOpened) {
+      this.browserPinned = this.store.pinned.slice();
+    }
     if (this.store.machineById(this.activeMachineId) === null) {
       this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
     }
@@ -1279,9 +1284,6 @@ struct PadHome {
     this.webCtl.runJavaScript('term_hide_all()');
     this.refreshAll();
     this.preloadAvatars(this.getUIContext().getHostContext() as common.UIAbilityContext);
-    if (this.browserOpened) {
-      this.browserPinned = this.store.pinned.slice();   // 服务器改了后台列表
-    }
   }
 
   // ===========================================================================
