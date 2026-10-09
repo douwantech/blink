@@ -1,4 +1,4 @@
-import { BlinkdState } from 'tsvpn';
+import { BlinkdState } from '../blinkd/BlinkdClient';
 import { SshSession, SshTarget } from './SshSession';
 
 // Same terminal-facing contract as BlinkdClient; the transport is an SSH PTY.

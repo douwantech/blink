@@ -34,8 +34,8 @@ import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from '../model/Blin
 import { ServerConfig } from '../model/ServerConfig';
 import { ProtoCatalog, ProtoCache, ProtoItem, ProtoFetchResult, PROTO_HOST } from '../model/ProtoCatalog';
 import { ConnPool, SessionConn, ConnUiState } from '../model/SessionConn';
-import { SshDirectClient } from '../ssh/SshDirectClient';
-import { SshIdentity } from '../ssh/SshIdentity';
+import { SshDirectClient, SshIdentity } from 'tsvpn';
+
 import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '../model/GlmVoice';
 
 const DOMAIN: number = 0x0B11;

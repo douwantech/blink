@@ -8,14 +8,15 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-import { BlinkdClient, BlinkdState } from 'tsvpn';
+import { BlinkdClient, BlinkdState, SshDirectClient } from 'tsvpn';
 
 export type ConnUiState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 
 export class SessionConn {
   tabId: string;
-  client: BlinkdClient = new BlinkdClient();
+  client: BlinkdClient | SshDirectClient = new BlinkdClient();
   state: ConnUiState = 'idle';
+  directState: string = 'new';    // new | active | tried；只给 brain 的公网 SSH 直连用
   failCount: number = 0;
   cooldownUntil: number = 0;
   connectedAt: number = 0;
