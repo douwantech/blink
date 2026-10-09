@@ -126,9 +126,9 @@ export class ServerConfig {
   private tabVersion: number = 0;          // tabs PUT 的自增版本计数（服务器形状需要）
   private uploadTimer: number = -1;
   private pollTimer: number = -1;
-  // 休息名单（restSessions）是否已物化：服务器给过这个键、或用户在本机动过休息开关。
-  // **没物化就绝不上传**——传空集会把服务器「默认只有 tom 在岗」的规则清掉。
-  private restLoaded: boolean = false;
+  // 「在岗名单是否已物化」的在岗状态统一放在 store（restLoaded / restActive），
+  // 这里不再另存一份，避免两处不同步。**没物化就绝不上传**——传空集会把服务器
+  // 「默认只有 tom 在岗」的规则清掉。
 
   constructor(ctx: common.UIAbilityContext, store: BlinkStore) {
     this.ctx = ctx;
@@ -145,7 +145,6 @@ export class ServerConfig {
     this.version = await this.prefs.get('appliedVersion', '') as string;
     this.dirty = await this.prefs.get('dirty', false) as boolean;
     this.tabVersion = await this.prefs.get('tabsVersion', 0) as number;
-    this.restLoaded = await this.prefs.get('restLoaded', false) as boolean;
     this.hasCachedSnapshot = this.readCache() !== null;
     this.token = await this.readToken();
     return this.token.length > 0;
@@ -308,6 +307,11 @@ export class ServerConfig {
         personal.push(model);
       }
       this.sharedTabs = shared;
+      const sharedKeys: string[] = [];
+      for (let i = 0; i < shared.length; i++) {
+        sharedKeys.push(shared[i].id);
+      }
+      this.store.sharedIds = sharedKeys;
       this.store.workDirs = dirs;
       this.store.tabs = display.concat(personal);
       // 公用标签不进个人墓碑（本地关一次不能把它记成「已关」回传）
@@ -330,6 +334,8 @@ export class ServerConfig {
         }
         // restSessions = 在岗的 tmuxSession 集合（逗号拼接）。**键不在就不物化**，
         // 保持「默认只有 tom 在岗」的规则；键在了才以服务器为准。
+        // 集合按 **tmuxSession** 记并套在**公用标签**上（iOS SharedRestStore 口径）。
+        // 旧写法只把 personal 标休息 → 公用标签永远不休息 → 坞里全铺，与 iOS 不一致。
         const joined: string | undefined = sel['restSessions'];
         if (joined !== undefined) {
           const active: string[] = [];
@@ -340,14 +346,8 @@ export class ServerConfig {
               active.push(p);
             }
           }
-          const rest: string[] = [];
-          for (let i = 0; i < personal.length; i++) {
-            if (active.indexOf(personal[i].tmuxSession) < 0) {
-              rest.push(personal[i].id);
-            }
-          }
-          this.store.resting = rest;
-          this.restLoaded = true;
+          this.store.restActive = active;
+          this.store.restLoaded = true;
         }
       }
       if (snap.agents !== undefined) {
@@ -399,11 +399,11 @@ export class ServerConfig {
 
   /** 用户在本机动了休息开关：从此 restSessions 已物化，可以随 selection 上传。 */
   markRestLoaded(): void {
-    if (this.restLoaded) {
+    if (this.store.restLoaded) {
       return;
     }
-    this.restLoaded = true;
-    this.persistMeta();
+    this.store.restLoaded = true;
+    this.store.saveResting();
   }
 
   private scheduleUpload(): void {
@@ -470,11 +470,13 @@ export class ServerConfig {
       closedIds: this.store.closedIds,
     };
 
-    // selection：机器维度 + 当前 tab；restSessions 只在已物化时带上
+    // selection：当前 tab；restSessions 只在已物化时带上。
+    // **不上传 machineId**：本机机器筛选不再影响坞（见 BlinkStore.visibleTabs），传上去只会
+    // 让别的客户端跟着收窄。iOS 手机上也不拿 selection 回读的 machineId 收窄坞
+    // （SpaceController.swift:715 `let machineId = _macRail != nil ? _tabFilterMachineId : nil`）。
     const selection: Record<string, string> = {};
-    selection['machineId'] = this.store.filterMachineId;
     selection['tabId'] = this.store.currentTabId;
-    if (this.restLoaded) {
+    if (this.store.restLoaded) {
       selection['restSessions'] = this.joinedActive();
     }
 
@@ -511,16 +513,9 @@ export class ServerConfig {
     this.scheduleUpload();
   }
 
-  /** 在岗的 tmuxSession 集合（逗号拼接）：休息名单的反面，服务器 selection 的形状。 */
+  /** 在岗的 tmuxSession 集合（逗号拼接）。稳定排序，diff 友好（iOS joinedActive 同）。 */
   private joinedActive(): string {
-    const out: string[] = [];
-    for (let i = 0; i < this.store.tabs.length; i++) {
-      const t: TabModel = this.store.tabs[i];
-      if (!this.store.isResting(t.id)) {
-        out.push(t.tmuxSession);
-      }
-    }
-    return out.join(',');
+    return this.store.restActive.slice().sort().join(',');
   }
 
   // ---- 轮询 ----
@@ -562,7 +557,6 @@ export class ServerConfig {
     await p.put('appliedVersion', this.version);
     await p.put('dirty', this.dirty);
     await p.put('tabsVersion', this.tabVersion);
-    await p.put('restLoaded', this.restLoaded);
     await p.flush();
   }
 

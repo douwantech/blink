@@ -83,6 +83,10 @@ export interface VoiceConfig {
 
 const P_KEY: string = 'blink_store';   // preferences file name
 
+// 默认在岗的员工段（iOS SharedTabLayout.dockEmployee，单一常量来源）。
+// 没物化过在岗名单时（从未切过开关、服务器也没给 restSessions）= 「只有 tom 在岗」。
+const DOCK_EMPLOYEE: string = 'tom';
+
 // DeepSeek 的 Anthropic 兼容端点与模型（/models 实测可用的两个 id）
 
 export class BlinkStore {
@@ -101,7 +105,12 @@ export class BlinkStore {
   history: string[] = [];
   corrections: string[][] = [];        // [asrRaw, final] pairs
   terms: Record<string, Record<string, number>> = {};  // wrong -> {correct: count}
-  resting: string[] = [];              // resting tab ids (TabRestStore)
+  // 在岗集合：**tmuxSession**（与服务器 selection.restSessions 同形）。
+  // restLoaded=false（从未物化）时走默认规则：员工段 == 'tom' 在岗（iOS SharedRestStore 口径）。
+  restActive: string[] = [];
+  restLoaded: boolean = false;
+  // 公用标签 id（服务器注入的只读影子）。坞只铺这些，自有标签退出坞（iOS _sharedKeys 口径）。
+  sharedIds: string[] = [];
   closedIds: string[] = [];            // 关过的 tab 墓碑（同 iOS TabState.closedIds）
   workMode: boolean = false;           // "只显示工作中"
   autoReconnect: boolean = true;       // BlinkAutoReconnect
@@ -141,7 +150,8 @@ export class BlinkStore {
     this.history = this.readJson<string[]>('history', []);
     this.corrections = this.readJson<string[][]>('corrections', []);
     this.terms = this.readJson<Record<string, Record<string, number>>>('terms', {});
-    this.resting = this.readJson<string[]>('resting', []);
+    this.restActive = this.readJson<string[]>('restActive', []);
+    this.restLoaded = this.readJson<boolean>('restLoaded', false);
     this.closedIds = this.readJson<string[]>('closedIds', []);
     const v = this.readJson<VoiceConfig | null>('voice', null);
     if (v !== null) {
@@ -214,7 +224,8 @@ export class BlinkStore {
     await p.put('history', JSON.stringify(this.history));
     await p.put('corrections', JSON.stringify(this.corrections));
     await p.put('terms', JSON.stringify(this.terms));
-    await p.put('resting', JSON.stringify(this.resting));
+    await p.put('restActive', JSON.stringify(this.restActive));
+    await p.put('restLoaded', JSON.stringify(this.restLoaded));
     await p.put('closedIds', JSON.stringify(this.closedIds));
     await p.put('voice', JSON.stringify(this.voice));
     await p.put('currentTabId', this.currentTabId);
@@ -260,7 +271,10 @@ export class BlinkStore {
   saveHistory(): void { this.putJson('history', this.history); }
   saveCorrections(): void { this.putJson('corrections', this.corrections); }
   saveTerms(): void { this.putJson('terms', this.terms); }
-  saveResting(): void { this.putJson('resting', this.resting); }
+  saveResting(): void {
+    this.putJson('restActive', this.restActive);
+    this.putJson('restLoaded', this.restLoaded);
+  }
   saveClosed(): void { this.putJson('closedIds', this.closedIds); }
   saveVoice(): void { this.putJson('voice', this.voice); }
   saveCurrent(): void { this.putVal('currentTabId', this.currentTabId); }
@@ -318,32 +332,79 @@ export class BlinkStore {
     return wn + ':' + sp;
   }
 
+  // ---- 在岗 / 休息 / 坞 ----
+  // 对齐 iOS SharedRestStore + SharedTabLayout（老板报「鸿蒙和 iOS 标签不一样」）：
+  //   • 在岗集合按 **tmuxSession** 记（服务器 selection.restSessions 同形）。
+  //   • 未物化时走默认规则：员工段 == 'tom' 在岗（iOS SharedRestStore.isDefaultActive）。
+  //   • 坞里只铺「在岗的公用标签」，自有标签退场（iOS _sharedKeys 一刀切口径）。
+  /// 员工段：第一个 '-' 之前（`tom-ben` → `tom`，转小写）。
+  /// 与 iOS SharedTabLayout.employee(ofTmuxSession:) 同一套拆法。
+  static employeeOf(session: string): string {
+    const i: number = session.indexOf('-');
+    const head: string = i >= 0 ? session.substring(0, i) : session;
+    return head.length > 0 ? head.toLowerCase() : '';
+  }
+
+  static isDefaultOnDuty(session: string): boolean {
+    return session.length > 0 && BlinkStore.employeeOf(session) === DOCK_EMPLOYEE;
+  }
+
+  isShared(tabId: string): boolean {
+    return this.sharedIds.indexOf(tabId) >= 0;
+  }
+
+  isOnDuty(t: TabModel): boolean {
+    if (this.restLoaded) {
+      return this.restActive.indexOf(t.tmuxSession) >= 0;
+    }
+    return BlinkStore.isDefaultOnDuty(t.tmuxSession);
+  }
+
+  /// 休息 = 公用标签且不在岗。自有标签不在坞里，也不叫「休息」。
   isResting(tabId: string): boolean {
-    return this.resting.indexOf(tabId) >= 0;
+    const t: TabModel | null = this.tabById(tabId);
+    if (t === null || !this.isShared(tabId)) {
+      return false;
+    }
+    return !this.isOnDuty(t);
+  }
+
+  /// 首次改动前把默认集合物化成显式集合（iOS SharedRestStore.materializeDefault）。
+  /// 不先物化就记一条，会把「默认 tom 在岗」换成一份残缺的显式集合。
+  private materializeDefaultOnDuty(): void {
+    const out: string[] = [];
+    for (let i = 0; i < this.tabs.length; i++) {
+      const t: TabModel = this.tabs[i];
+      if (this.isShared(t.id) && BlinkStore.isDefaultOnDuty(t.tmuxSession)) {
+        out.push(t.tmuxSession);
+      }
+    }
+    this.restActive = out;
+    this.restLoaded = true;
   }
 
   toggleResting(tabId: string): boolean {
-    const i: number = this.resting.indexOf(tabId);
-    if (i >= 0) {
-      this.resting.splice(i, 1);
-    } else {
-      this.resting.push(tabId);
-    }
-    this.saveResting();
-    if (this.onRestChange !== null) {
-      this.onRestChange();
-    }
-    return i < 0;
+    const nowResting: boolean = !this.isResting(tabId);
+    this.setResting(tabId, nowResting);
+    return nowResting;
   }
 
   // Explicit set (rest-panel switches): true = resting/hidden, false = on-duty/shown.
   setResting(tabId: string, resting: boolean): void {
-    const i: number = this.resting.indexOf(tabId);
-    if (resting && i < 0) {
-      this.resting.push(tabId);
-    } else if (!resting && i >= 0) {
-      this.resting.splice(i, 1);
+    const t: TabModel | null = this.tabById(tabId);
+    if (t === null || t.tmuxSession.length === 0 || !this.isShared(tabId)) {
+      return;
     }
+    if (!this.restLoaded) {
+      this.materializeDefaultOnDuty();
+    }
+    const i: number = this.restActive.indexOf(t.tmuxSession);
+    if (resting && i >= 0) {
+      this.restActive.splice(i, 1);
+    } else if (!resting && i < 0) {
+      this.restActive.push(t.tmuxSession);
+    }
+    this.restLoaded = true;
     this.saveResting();
     if (this.onRestChange !== null) {
       this.onRestChange();
@@ -360,17 +421,22 @@ export class BlinkStore {
     return n;
   }
 
-  // Tabs visible in the strip. Resting (😴) tabs are ALWAYS hidden — iOS keeps
-  // _workModeOn constant-true (SpaceController.swift:525) — except the current tab,
-  // which is never hidden (_hiddenByWorkMode:1616) so the strip is never left empty.
+  // 坞 = 在岗的公用标签（自有标签退场）。**不再按机器收窄** —— iOS 手机端同一口径：
+  // `let machineId = _macRail != nil ? _tabFilterMachineId : nil`（SpaceController.swift:715），
+  // 手机上恒为 nil，否则 selection 回读来的 machineId 会把坞锁死在一台机器上。
+  // resting (😴) 的公用标签永不进坞；当前标签例外，坞不会空（iOS _hiddenByWorkMode 同）。
   visibleTabs(): TabModel[] {
     const out: TabModel[] = [];
     for (let i = 0; i < this.tabs.length; i++) {
-      const t = this.tabs[i];
-      if (this.filterMachineId.length > 0 && t.machineId !== this.filterMachineId) {
+      const t: TabModel = this.tabs[i];
+      if (t.id === this.currentTabId) {
+        out.push(t);
         continue;
       }
-      if (this.isResting(t.id) && t.id !== this.currentTabId) {
+      if (!this.isShared(t.id)) {
+        continue;
+      }
+      if (!this.isOnDuty(t)) {
         continue;
       }
       out.push(t);
