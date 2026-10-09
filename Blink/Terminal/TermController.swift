@@ -160,6 +160,7 @@ class TermController: UIViewController {
   private var _sceneRole: UISceneSession.Role? = nil
   private var _bgColor: UIColor? = nil
   private var _fontSizeBeforeScaling: Int? = nil
+  private var _lastFocusNudge: Date = .distantPast   // #101：同一标签 1s 内最多发一次焦点进入序列
 
   @objc public var viewIsLoaded: Bool = false
 
@@ -525,6 +526,25 @@ extension TermController: TermDeviceDelegate {
 
   public func deviceFocused() {
     view.setNeedsLayout()
+  }
+
+  // MARK: - tmux 焦点提示（#101）
+
+  /// 让 tmux 把这台设备记为「最近活跃的客户端」、按本机尺寸重排。
+  ///
+  /// tmux 的 `window-size latest` 只看哪个客户端最近有活动：别的设备一操作（比如手机 65 列），
+  /// 窗口就缩成它的尺寸，本机 137 列只能用点填满，得等本机敲一下键才抢得回来。客户端发一次
+  /// 焦点进入序列 `ESC [ I`，tmux 立刻把自己记成 latest（tmux 3.4 / 3.7 实测都认），而且这条
+  /// 序列不会落进窗格里的应用 —— 实测窗格应用一个字节都收不到，tmux 自己吃掉了。
+  ///
+  /// 只对 tmux 会话发：不在 tmux 里的会话，这三个字节会直接变成远端应用的 stdin。
+  /// 同一标签 1 秒内最多发一次（切标签 / 回前台可能连着来）。
+  @objc public func nudgeTmuxFocusIfNeeded() {
+    guard let p = mcpParams, p.useTmux, let s = p.tmuxSession, !s.isEmpty else { return }
+    let now = Date()
+    guard now.timeIntervalSince(_lastFocusNudge) >= 1 else { return }
+    _lastFocusNudge = now
+    _termDevice.write(inDirectly: "\u{1b}[I")
   }
 
   public func viewController() -> UIViewController! {
