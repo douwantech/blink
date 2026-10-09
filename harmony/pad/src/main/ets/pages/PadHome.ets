@@ -1252,16 +1252,19 @@ struct PadHome {
     if (this.store.machineById(this.activeMachineId) === null) {
       this.activeMachineId = this.store.machines.length > 0 ? this.store.machines[0].id : '';
     }
-    // 可见集 = 当前机器的在岗公用标签（rowsForMachine 已按此过滤，休息的/自有的都不在内）
+    // 当前机器的可见集：决定当前标签落哪 / 是否进空状态（rowsForMachine 已按在岗公用过滤）
     const rows: TabModel[] = this.rowsForMachine(this.activeMachineId);
-    const visibleIds: string[] = rows.map((t: TabModel): string => t.id);
+    // 清理集合用**全局**在岗公用标签（visibleTabs，所有机器）。
+    // 只按本机 rows 清，会把其他机器上在岗标签的连接/图层每 15 秒清掉一次，切回去又要重连。
+    const keepIds: string[] = this.store.visibleTabs().map((t: TabModel): string => t.id);
     this.pool.all().forEach((c: SessionConn) => {
-      if (visibleIds.indexOf(c.tabId) < 0) {
+      if (keepIds.indexOf(c.tabId) < 0) {
         this.pool.remove(c.tabId);
         this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
       }
     });
-    if (this.activeTabId.length > 0 && visibleIds.indexOf(this.activeTabId) >= 0) {
+    if (this.activeTabId.length > 0 &&
+      rows.findIndex((t: TabModel): boolean => t.id === this.activeTabId) >= 0) {
       this.refreshAll();
       return;
     }
