@@ -123,6 +123,7 @@ export class ServerConfig {
   private token: string = '';
   private dirty: boolean = false;          // 本地个人状态未上传
   private applying: boolean = false;       // 正在采纳服务器快照（期间的落盘不算本地改动）
+  onApplied: (() => void) | null = null;   // 快照采纳完的回调：页面据此刷新坞/当前标签
   private uploading: boolean = false;
   private tabVersion: number = 0;          // tabs PUT 的自增版本计数（服务器形状需要）
   private uploadTimer: number = -1;
@@ -354,9 +355,11 @@ export class ServerConfig {
       if (snap.agents !== undefined) {
         this.store.agents = snap.agents;
       }
-      // 当前 tab：服务器快照里没有这个概念，保住本机的（仍在列表里就留着）
-      if (this.store.tabById(this.store.currentTabId) === null) {
-        this.store.currentTabId = personal.length > 0 ? personal[0].id : '';
+      // 当前 tab：服务器快照里没有这个概念，保住本机的（仍在**可见坞**里就留着）。
+      // 用 visibleTabs 而不是 tabById：被休息/被移出坞的标签不能继续占着当前位。
+      const visible: TabModel[] = this.store.visibleTabs();
+      if (visible.findIndex((t: TabModel) => t.id === this.store.currentTabId) < 0) {
+        this.store.currentTabId = visible.length > 0 ? visible[0].id : '';
       }
       this.version = snap.version;
       this.dirty = false;   // 服务器版本已采纳：本地未上传的改动放弃（绝不被回传覆盖服务器）
@@ -368,6 +371,9 @@ export class ServerConfig {
       await this.persistMeta();
     } finally {
       this.applying = false;
+    }
+    if (this.onApplied !== null) {
+      this.onApplied();
     }
   }
 

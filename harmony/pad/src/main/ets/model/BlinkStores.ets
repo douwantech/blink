@@ -319,6 +319,11 @@ export class BlinkStore {
   // Tab title, iOS style (SpaceController.swift:1722): "<workDirName>:<sessionPart>"
   // sessionPart = last '-' segment of tmuxSession; dropped if equal to dir name.
   tabTitle(t: TabModel): string {
+    // iOS public tabs have no workDirId in the UI; their chip shows the full
+    // employee-project session name even though the server provides workDir.
+    if (this.isShared(t.id)) {
+      return t.tmuxSession;
+    }
     const w = this.workDirById(t.workDirId);
     const wn: string = w !== null ? w.name : '?';
     let sp: string = t.tmuxSession;
@@ -429,10 +434,6 @@ export class BlinkStore {
     const out: TabModel[] = [];
     for (let i = 0; i < this.tabs.length; i++) {
       const t: TabModel = this.tabs[i];
-      if (t.id === this.currentTabId) {
-        out.push(t);
-        continue;
-      }
       if (!this.isShared(t.id)) {
         continue;
       }
@@ -441,6 +442,12 @@ export class BlinkStore {
       }
       out.push(t);
     }
+    // iOS _sortTabsByMachineAndDir sorts public tabs by tmuxSession.
+    out.sort((a: TabModel, b: TabModel): number => {
+      const aa: string = a.tmuxSession.toLowerCase();
+      const bb: string = b.tmuxSession.toLowerCase();
+      return aa < bb ? -1 : (aa > bb ? 1 : 0);
+    });
     return out;
   }
 
