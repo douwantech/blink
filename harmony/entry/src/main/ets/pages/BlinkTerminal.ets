@@ -41,6 +41,10 @@ import { GlmClient, VoiceRecorder, Uploader, CLAUDE_COMMANDS, TermEntry } from '
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'BlinkTerminal';
 const BUNDLE: string = 'com.douwantech.blink';
+// tmux 焦点进入序列：ESC [ I。tmux 收到后会把发它的客户端记为「最近活跃」并按它的尺寸重排——
+// 别的设备操作完，本机切回这个标签 / 回前台时补发一次，把画面抢回本机尺寸。只对 tmux 标签发。
+const FOCUS_IN_BYTES: number[] = [0x1b, 0x5b, 0x49];
+const FOCUS_IN_MIN_MS: number = 1000;   // 同一标签 1s 内最多一次（不是每次按键都发）
 
 // palette
 const TEAL: string = '#3DD9C4';
@@ -212,6 +216,7 @@ struct BlinkTerminal {
 
   private store: BlinkStore = new BlinkStore();
   private pool: ConnPool = new ConnPool();
+  private focusInAt: Record<string, number> = {};   // tabId → 上次发焦点进入的时刻（节流用）
   private tabScroller: Scroller = new Scroller();   // scroll the tab strip to the active tab on switch/swipe
   private panMode: string = '';   // active terminal drag axis: '' undecided | 'h' switch tab | 'v' scroll
   private lastPanY: number = 0;   // last vertical offset seen this drag (for incremental scroll)
@@ -651,6 +656,8 @@ struct BlinkTerminal {
 
   // 回前台：立即向服务器要一次最新配置（版本没变就是 304，什么都不做）
   onPageShow(): void {
+    // 回前台：把 tmux 的活跃客户端抢回本机（别的设备操作过就会变成按它尺寸显示）
+    this.sendFocusIn(this.activeTabId);
     const sc = this.serverConfig;
     if (sc !== null) {
       sc.refresh().then((): void => {
@@ -1002,6 +1009,7 @@ struct BlinkTerminal {
     // 不再等 VPN：服务器下发的机器（公网/内网地址）直接试连，连不上会自己报错重试。
     // 老逻辑等 tsState==='Running'（tailscale）——没开 VPN 时切标签永远白屏（#74 同一课）。
     this.attach(tabId, false);
+    this.sendFocusIn(tabId);
     this.refreshTabs();
     this.scrollToActiveTab();
   }
@@ -1114,6 +1122,30 @@ struct BlinkTerminal {
   }
 
   // ---- input ----
+
+  /** tmux 焦点进入：切到这个标签 / 回前台时补发一次 ESC [ I，让 tmux 把这台设备当成最近活跃的
+   *  客户端、按它的尺寸重排（别的设备操作完、本机被缩成一小块的那次）。
+   *  只对 tmux 标签发；同一标签 1s 内最多一次；没连上就不发（连上时 attach 本身就会成为活跃客户端）。 */
+  private sendFocusIn(tabId: string): void {
+    if (tabId.length === 0) {
+      return;
+    }
+    const tab = this.store.tabById(tabId);
+    if (tab === null || !tab.useTmux) {
+      return;
+    }
+    const now: number = Date.now();
+    const last: number | undefined = this.focusInAt[tabId];
+    if (last !== undefined && now - last < FOCUS_IN_MIN_MS) {
+      return;
+    }
+    const conn = this.pool.get(tabId);
+    if (conn === null || conn.state !== 'connected') {
+      return;
+    }
+    this.focusInAt[tabId] = now;
+    conn.client.sendBytes(new Uint8Array(FOCUS_IN_BYTES));
+  }
 
   private activeClient(): BlinkdClient | SshDirectClient | null {
     const c = this.pool.get(this.activeTabId);
