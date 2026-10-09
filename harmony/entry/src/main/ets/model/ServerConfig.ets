@@ -59,10 +59,20 @@ export interface ServerTabsState {
   closedIds?: string[];
 }
 
+/** 快照里的原始书签条目（服务器 /v1/config 的 pinned）：position 是显示顺序。 */
+export interface ServerPinnedRaw {
+  id?: string;
+  title?: string;
+  url?: string;
+  authUser?: string;
+  authPassword?: string;
+  position?: number;
+}
+
 export interface ServerSnapshot {
   version: string;
   machines: Machine[];
-  pinned?: PinnedTab[];
+  pinned?: ServerPinnedRaw[];
   tabs: ServerTabsState;
   recentSelection?: Record<string, string>;
   agents?: Record<string, string>;
@@ -353,6 +363,35 @@ export class ServerConfig {
       }
       if (snap.agents !== undefined) {
         this.store.agents = snap.agents;
+      }
+      // 书签（浏览器「后台」）：快照带 pinned 就是权威 —— 按 position 排序后整份替换本地，
+      // 保留 authUser/authPassword，随即落盘（同 iOS ServerPinnedStore）。书签条本身是
+      // 全局共享数据（不进 user_configs），所以这里不需要回传。
+      // 快照里没有 pinned 键就保持本地不动（老快照 / 离线缓存）。
+      if (snap.pinned !== undefined) {
+        const rawPins: ServerPinnedRaw[] = snap.pinned.slice();
+        rawPins.sort((a: ServerPinnedRaw, b: ServerPinnedRaw): number => {
+          const pa: number = a.position !== undefined ? a.position : 0;
+          const pb: number = b.position !== undefined ? b.position : 0;
+          return pa - pb;
+        });
+        const pins: PinnedTab[] = [];
+        for (let i = 0; i < rawPins.length; i++) {
+          const p: ServerPinnedRaw = rawPins[i];
+          const item: PinnedTab = {
+            title: p.title !== undefined ? p.title : '',
+            url: p.url !== undefined ? p.url : '',
+          } as PinnedTab;
+          if (p.authUser !== undefined) {
+            item.authUser = p.authUser;
+          }
+          if (p.authPassword !== undefined) {
+            item.authPassword = p.authPassword;
+          }
+          pins.push(item);
+        }
+        this.store.pinned = pins;
+        this.store.savePinned();
       }
       // 当前 tab：服务器快照里没有这个概念，保住本机的（仍在列表里就留着）
       const visible: TabModel[] = this.store.visibleTabs();
