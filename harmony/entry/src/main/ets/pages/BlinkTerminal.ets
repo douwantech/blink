@@ -291,6 +291,11 @@ struct BlinkTerminal {
     // 服务器配置（唯一权威）：本机有没有 session 决定进主界面还是只显示登录页
     const server = new ServerConfig(ctx, this.store);
     this.serverConfig = server;
+    server.onApplied = (): void => {
+      if (this.storeReady) {
+        this.syncActiveAfterServerApply();
+      }
+    };
     const hasSession: boolean = await server.hasSession();
     if (!hasSession) {
       // issue #77：没有 session 时**只显示登录页** —— 不加载 store、不连 VPN、不起轮询。
@@ -355,24 +360,23 @@ struct BlinkTerminal {
 
   /// 服务器快照可能删掉了当前 tab：清掉它的连接/终端图层，退回第一篇可见标签
   private syncActiveAfterServerApply(): void {
+    this.refreshTabs();
+    const visibleIds: string[] = this.visTabs.map((t: TabModel): string => t.id);
     this.pool.all().forEach((c: SessionConn) => {
-      if (this.store.tabById(c.tabId) === null) {
+      if (visibleIds.indexOf(c.tabId) < 0) {
         this.pool.remove(c.tabId);
         this.webCtl.runJavaScript(`term_dispose('${c.tabId}')`);
       }
     });
-    this.refreshTabs();
-    if (this.activeTabId.length === 0 && this.visTabs.length > 0) {
-      // 登录后第一次拿到服务器标签：自动落到第一条可见标签并连上（「登录后马上能用」）。
-      // 以前这里只在「当前 tab 已失效」时才切，首登 activeTabId 为空 → 永远不 attach → 白屏。
-      this.switchTab(this.visTabs[0].id);
+    if (this.activeTabId.length > 0 && visibleIds.indexOf(this.activeTabId) >= 0) {
       return;
     }
-    if (this.activeTabId.length > 0 && this.store.tabById(this.activeTabId) === null) {
-      this.activeTabId = '';
-      if (this.visTabs.length > 0) {
-        this.switchTab(this.visTabs[0].id);
-      }
+    this.activeTabId = '';
+    if (this.visTabs.length > 0) {
+      this.switchTab(this.visTabs[0].id);
+    } else {
+      this.webCtl.runJavaScript('term_hide_all()');
+      this.refreshTabs();
     }
   }
 
@@ -853,20 +857,9 @@ struct BlinkTerminal {
   // Horizontal swipe over the terminal switches session (mirrors iOS SpaceController's
   // page-swipe between shells): swipe left → next tab, swipe right → previous, wrapping
   // around so a continued swipe cycles through EVERY open session — across machines too.
-  // We walk the full tab list (not the filtered visTabs), skipping resting tabs, so a
-  // machine filter can't trap the swipe on one machine. When the next tab lives on a
-  // different machine we carry the filter onto it (same cross-machine jump toggleRest
-  // does), so the strip + filter pill follow the swipe across the boundary instead of
-  // leaving the highlighted tab off-strip.
+  // The swipe set is exactly the same on-duty public list as the dock.
   private swipeTab(dir: number): void {
-    const all: TabModel[] = [];
-    for (let i = 0; i < this.store.tabs.length; i++) {
-      const t = this.store.tabs[i];
-      if (this.store.isResting(t.id) && t.id !== this.activeTabId) {
-        continue;
-      }
-      all.push(t);
-    }
+    const all: TabModel[] = this.store.visibleTabs();
     if (all.length <= 1) {
       return;
     }
@@ -880,12 +873,7 @@ struct BlinkTerminal {
     } else if (n >= all.length) {
       n = 0;
     }
-    const target: TabModel = all[n];
-    if (this.store.filterMachineId.length > 0 && target.machineId !== this.store.filterMachineId) {
-      this.store.filterMachineId = target.machineId;
-      this.store.saveFilter();
-    }
-    this.switchTab(target.id);
+    this.switchTab(all[n].id);
   }
 
   private newTab(machineId: string, workDirId: string, session: string): void {
@@ -1614,10 +1602,6 @@ struct BlinkTerminal {
             this.sessionTab(t)
           }
         }, (t: TabModel) => t.id + '_' + this.connState(t.id) + '_' + (t.id === this.activeTabId ? '1' : '0') + '_' + (this.tabUnread(t) ? 'u' : '') + '_' + this.agentOf(t) + '_' + this.avatarCache.size)
-        ListItem() {
-          Text('＋').fontSize(18).fontColor('#5A5A5E').padding({ left: 6, right: 8 })
-            .onClick(() => this.openNewTab())
-        }
       }
       .listDirection(Axis.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
       .layoutWeight(1).height(40)
@@ -1632,13 +1616,11 @@ struct BlinkTerminal {
     .backgroundColor('#0b0c0e')
   }
 
-  // ⋯ 菜单：设置 / 机器 / 新建 / 在岗休息
+  // iOS phone dock exposes public tabs only; team panel manages on-duty state.
   @Builder
   moreBody() {
     Column({ space: 2 }) {
       this.navRow('⚙ 设置', '', () => { this.sheet = 'settings'; })
-      this.navRow('🖥 选择机器', this.filterLabel, () => { this.sheet = 'machinePicker'; })
-      this.navRow('＋ 新建会话', '', () => this.openNewTab())
       this.navRow('👥 团队（在岗 / 休息）', this.restCount + ' 人休息', () => { this.sheet = 'restPanel'; })
     }.width('100%').padding({ left: 16, right: 16 })
   }
@@ -1661,7 +1643,6 @@ struct BlinkTerminal {
     .borderRadius(21)
     .border({ width: 1, color: t.id === this.activeTabId ? '#2EFFFFFF' : '#14FFFFFF' })
     .onClick(() => this.switchTab(t.id))
-    .gesture(LongPressGesture().onAction(() => this.confirmCloseTab(t)))
   }
 
   private tabUnread(t: TabModel): boolean {
@@ -2080,10 +2061,7 @@ struct BlinkTerminal {
   }
 
   // dock 🌙: toggle the current tab's rest flag. Mirrors iOS _toggleRestForCurrentTab —
-  // resting tabs are always hidden from the strip, so after parking one we jump to the
-  // next working tab (same machine first, following the machine filter if it lives
-  // elsewhere) so the strip isn't left showing only the tab just parked. Un-resting
-  // just re-renders in place.
+  // Resting public tabs leave the dock immediately.
   private toggleRest(): void {
     if (this.activeTabId.length === 0) {
       return;
@@ -2093,17 +2071,16 @@ struct BlinkTerminal {
     this.toast(nowResting ? '已标记休息 😴' : '已标记在岗');
     if (nowResting) {
       const target: string = this.nextWorkingTab(key);
+      this.pool.remove(key);
+      this.webCtl.runJavaScript(`term_dispose('${key}')`);
       if (target.length > 0) {
-        const cur = this.store.tabById(key);
-        const tgt = this.store.tabById(target);
-        if (this.store.filterMachineId.length > 0 && cur !== null && tgt !== null &&
-          tgt.machineId !== cur.machineId) {
-          this.store.filterMachineId = tgt.machineId;
-          this.store.saveFilter();
-        }
         this.switchTab(target);
         return;
       }
+      this.activeTabId = '';
+      this.store.currentTabId = '';
+      this.store.saveCurrent();
+      this.webCtl.runJavaScript('term_hide_all()');
     }
     this.refreshTabs();
   }
@@ -2123,7 +2100,7 @@ struct BlinkTerminal {
     const n: number = tabs.length;
     for (let step = 1; step < n; step++) {
       const cand = tabs[(pos + step) % n];
-      if (cand.id === key || this.store.isResting(cand.id)) {
+      if (cand.id === key || !this.store.isShared(cand.id) || this.store.isResting(cand.id)) {
         continue;
       }
       if (cand.machineId === curM) {
@@ -2542,7 +2519,7 @@ struct BlinkTerminal {
 
   private sheetHeight(): string {
     if (this.sheet === 'more') {
-      return '42%';
+      return '30%';
     } else if (this.sheet === 'settings') {
       return '86%';
     } else if (this.sheet === 'machinePicker') {
@@ -3012,7 +2989,7 @@ struct BlinkTerminal {
     const out: TeamEntry[] = [];
     const seen: string[] = [];
     // 先按机器/标题排序，让分组稳定：机器按 store.machines 位次，其余按标题
-    const tabs: TabModel[] = this.store.tabs.slice();
+    const tabs: TabModel[] = this.store.tabs.filter((t: TabModel): boolean => this.store.isShared(t.id));
     const rank = (t: TabModel): number => {
       const i: number = this.store.machines.findIndex((m: Machine) => m.id === t.machineId);
       return i < 0 ? 999 : i;
@@ -3082,7 +3059,10 @@ struct BlinkTerminal {
             .bindMenu(this.agentMenu(e.tab))
             Toggle({ type: ToggleType.Switch, isOn: !this.store.isResting(e.tab.id) })
               .selectedColor('#34C759')
-              .onChange((on: boolean) => { this.store.setResting(e.tab.id, !on); this.refreshTabs(); this.tick++; })
+              .onChange((on: boolean) => {
+                this.store.setResting(e.tab.id, !on);
+                this.syncActiveAfterServerApply();
+              })
           }.width('100%').padding({ top: 10, bottom: 10 })
           }
         }
