@@ -25,7 +25,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util, buffer } from '@kit.ArkTS';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
-import { pasteboard } from '@kit.BasicServicesKit';
+import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
@@ -820,7 +820,9 @@ struct BlinkTerminal {
         .then((): void => this.toast('公钥已复制，可加入 brain 的 authorized_keys'))
         .catch((): void => this.toast('公钥已显示，复制失败'));
     }).catch((e: Object): void => {
-      this.sshKeyError = '无法生成 SSH 公钥：' + `${e}`;
+      const error = e as BusinessError;
+      const code: string = error.code !== undefined ? (error.code + ' ') : '';
+      this.sshKeyError = '无法生成 SSH 公钥：' + code + error.message;
     });
   }
 

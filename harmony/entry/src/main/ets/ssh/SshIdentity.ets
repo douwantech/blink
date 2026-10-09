@@ -1,4 +1,5 @@
 import { huks } from '@kit.UniversalKeystoreKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { base64, ByteWriter } from './SshBytes';
 
 // HUKS owns the private key. Only the X.509 public key leaves the keystore.
@@ -13,16 +14,36 @@ export class SshIdentity {
       return SshIdentity.publicBytes;
     }
     const empty: huks.HuksOptions = { properties: [] };
-    if (!await huks.isKeyItemExist(ALIAS, empty)) {
+    let exists: boolean = false;
+    try {
+      exists = await huks.isKeyItemExist(ALIAS, empty);
+    } catch (e) {
+      const error = e as BusinessError;
+      if (error.code !== 12000011) {
+        throw new Error('查询 SSH 密钥失败：' + error.code + ' ' + error.message);
+      }
+    }
+    if (!exists) {
       const options: huks.HuksOptions = { properties: [
         { tag: huks.HuksTag.HUKS_TAG_ALGORITHM, value: huks.HuksKeyAlg.HUKS_ALG_ED25519 },
         { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: 256 },
         { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_SIGN },
         { tag: huks.HuksTag.HUKS_TAG_DIGEST, value: huks.HuksKeyDigest.HUKS_DIGEST_NONE }
       ] };
-      await huks.generateKeyItem(ALIAS, options);
+      try {
+        await huks.generateKeyItem(ALIAS, options);
+      } catch (e) {
+        const error = e as BusinessError;
+        throw new Error('生成 SSH 密钥失败：' + error.code + ' ' + error.message);
+      }
     }
-    const exported = await huks.exportKeyItem(ALIAS, empty);
+    let exported: huks.HuksReturnResult;
+    try {
+      exported = await huks.exportKeyItem(ALIAS, empty);
+    } catch (e) {
+      const error = e as BusinessError;
+      throw new Error('导出 SSH 公钥失败：' + error.code + ' ' + error.message);
+    }
     const der = exported.outData;
     if (der === undefined || der.length !== PUB_PREFIX.length + 32) {
       throw new Error('SSH 公钥格式不支持');
