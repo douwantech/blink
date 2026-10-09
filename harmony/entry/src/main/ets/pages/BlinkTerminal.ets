@@ -779,7 +779,12 @@ struct BlinkTerminal {
     if (m === null || m.name.toLowerCase() !== 'brain' || m.user.length === 0) {
       return null;
     }
-    const host = this.brainSshHost.trim().length > 0 ? this.brainSshHost.trim() : (m.host2 || '').trim();
+    // 地址优先级：设置里的 brainSshHost → 机器的 host2 → 机器的 host。
+    // brain 的 host2 经常是空的（快照里只有 host=公网 47.237.122.99 / blinkdHost=Tailscale）；
+    // 少了最后一层回落，Tailscale 一挂就找不到直连地址、直接跳过直连去连 blinkdHost，等于连不上。
+    const setting: string = this.brainSshHost.trim();
+    const host2: string = (m.host2 || '').trim();
+    const host: string = setting.length > 0 ? setting : (host2.length > 0 ? host2 : (m.host || '').trim());
     const port = Number(this.brainSshPort);
     if (host.length === 0 || new RegExp('[\\s/@]').test(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
       return null;
