@@ -65,6 +65,7 @@ final class AppState: ObservableObject {
 
     private var toastTask: Task<Void, Never>?
     private var directoryCheckSerial = 0
+    private var lastFocusEnterBySession: [String: TimeInterval] = [:]
     private let localBlinkdConfig: (host: String, port: UInt16, token: String)?
     /// 本机那台机器（只有配了 ~/.config/blinkmac/config.json 才有）；没配就是 nil。
     private let initialMachine: Machine?
@@ -700,6 +701,19 @@ final class AppState: ObservableObject {
     }
 
     // MARK: Actions
+
+    /// 当前 tmux 标签进入前台时通知它重新按这台 Mac 的终端尺寸排版。
+    /// 窗口和 App 焦点事件可能连着到达，因此每个标签一秒内只发一次。
+    func focusActiveTmuxSession() {
+        guard mode == .terminal,
+              let session = sessions.first(where: { $0.id == activeSessionID }),
+              session.machineID == activeMachineID,
+              !session.placeholder, session.tmuxName != nil else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastFocusEnterBySession[session.id], now - last < 1 { return }
+        guard term.focusEnter(session.id) else { return }
+        lastFocusEnterBySession[session.id] = now
+    }
 
     /// 每台机器上次选的 tab（machineID → sessionID）：切回该机器时恢复，不再总跳第一个。
     /// 落 UserDefaults，重启也记得。didSet 里同步写盘。

@@ -123,6 +123,7 @@ final class RemoteBackend: TerminalBackend {
     }
 
     func sendText(_ s: String) { client?.sendData([UInt8](s.utf8)[...]) }
+    func sendFocusEnter() { client?.sendFocusEnter() }
     func clear() { client?.sendData([0x0c as UInt8][...]) }
     func restart() { client?.stop(); connect() }
     func stop() { client?.stop() }
@@ -254,6 +255,15 @@ final class TerminalManager {
     }
 
     func send(_ sessionID: String, text: String) { backends[sessionID]?.sendText(text) }
+    func focusEnter(_ sessionID: String) -> Bool {
+        guard let backend = backends[sessionID] else { return false }
+        if let remote = backend as? RemoteBackend {
+            remote.sendFocusEnter()
+        } else {
+            backend.sendText("\u{1B}[I")
+        }
+        return true
+    }
     func clear(_ sessionID: String) { backends[sessionID]?.clear() }
     func restart(_ sessionID: String) { backends[sessionID]?.restart() }
 
@@ -300,6 +310,11 @@ struct TerminalContainer: NSViewRepresentable {
             context.coordinator.lastSessionID = session.id
             tv.scroll(toPosition: 1)
             tv.needsDisplay = true
+            DispatchQueue.main.async { [weak nsView, weak state, sessionID = session.id] in
+                guard NSApp.isActive, nsView?.window?.isKeyWindow == true,
+                      state?.activeSessionID == sessionID else { return }
+                state?.focusActiveTmuxSession()
+            }
         }
     }
 }

@@ -49,6 +49,15 @@ struct RootView: View {
                 closeMainWindow()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard !showBrowser, let window = notification.object as? NSWindow,
+                  window === mainWindow.window else { return }
+            state.focusActiveTmuxSession()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard !showBrowser, mainWindow.window?.isKeyWindow == true else { return }
+            state.focusActiveTmuxSession()
+        }
         .onAppear {
             if !ServerSync.shared.hasSession && !state.allowOfflineSession {
                 openWindow(id: "login")

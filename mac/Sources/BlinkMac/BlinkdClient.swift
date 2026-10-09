@@ -24,6 +24,8 @@ final class BlinkdClient {
     private var handshakeSent = false
     private var ready = false                 // auth 已发出，之后才允许发其它帧
     private var receiveStarted = false
+    private var pendingFocusEnter = false
+    private var lastFocusEnterSentAt: TimeInterval = -.infinity
     private var pendingSize: (cols: Int, rows: Int)?
 
     // 候选通道：LAN 直连优先、Tailscale 兜底。逐个试，第一个 .ready 的用它。
@@ -156,6 +158,15 @@ final class BlinkdClient {
         sendFrame(0x02, Array(data))
     }
 
+    /// 等 tmux 第一次画屏后再发，避免新连接握手或 attach 尚未完成时吞掉焦点事件。
+    func sendFocusEnter() {
+        guard ready, receivedOutput else { pendingFocusEnter = true; return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastFocusEnterSentAt >= 1 else { return }
+        lastFocusEnterSentAt = now
+        sendFrame(0x02, [0x1b, 0x5b, 0x49])
+    }
+
     /// resize：0x03 + u16 rows + u16 cols（定长，无 len）。auth 前先缓存，握手后补发。
     func sendResize(cols: Int, rows: Int) {
         guard ready else { pendingSize = (cols, rows); return }
@@ -182,6 +193,10 @@ final class BlinkdClient {
                     self.receivedOutput = true
                     self.firstOutputTimeout?.cancel()
                     self.terminal?.feed(byteArray: [UInt8](d)[...])
+                    if self.pendingFocusEnter {
+                        self.pendingFocusEnter = false
+                        self.sendFocusEnter()
+                    }
                 }
                 if isComplete || error != nil {
                     self.onStatus?("会话结束")
