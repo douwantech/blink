@@ -44,16 +44,24 @@ export class SshIdentity {
       const error = e as BusinessError;
       throw new Error('导出 SSH 公钥失败：' + error.code + ' ' + error.message);
     }
-    const der = exported.outData;
-    if (der === undefined || der.length !== PUB_PREFIX.length + 32) {
-      throw new Error('SSH 公钥格式不支持');
+    const encoded = exported.outData;
+    if (encoded === undefined) {
+      throw new Error('SSH 公钥为空');
     }
-    for (let i = 0; i < PUB_PREFIX.length; i++) {
-      if (der[i] !== PUB_PREFIX[i]) {
-        throw new Error('SSH 公钥格式不支持');
+    if (encoded.length === 32) {
+      // HarmonyOS on CLS-AL00 exports the Ed25519 public material directly.
+      SshIdentity.publicBytes = encoded;
+    } else if (encoded.length === PUB_PREFIX.length + 32) {
+      // Other HUKS providers use the documented X.509 SubjectPublicKeyInfo DER.
+      for (let i = 0; i < PUB_PREFIX.length; i++) {
+        if (encoded[i] !== PUB_PREFIX[i]) {
+          throw new Error('SSH 公钥 DER 格式不支持');
+        }
       }
+      SshIdentity.publicBytes = encoded.slice(PUB_PREFIX.length);
+    } else {
+      throw new Error('SSH 公钥格式不支持（' + encoded.length + ' 字节）');
     }
-    SshIdentity.publicBytes = der.slice(PUB_PREFIX.length);
     return SshIdentity.publicBytes;
   }
 
