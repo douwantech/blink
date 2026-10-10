@@ -107,7 +107,7 @@ import Foundation
       "the header floor must protect pending personal edits when the +1 rule misses")
 
     // ⑦ 宿主同步入口的门（iOS syncFromServer 的顺序：先判旧不旧，再写 cache /
-    //    更新 appliedVersion / 采纳 rest·agents）。假 cache 就是离线兼底那份文件。
+    //    更新 appliedVersion / 采纳 rest·agents）。假 cache 就是离线兜底那份文件。
     var offlineCache: (version: String, favorites: [String]) = ("7:13", ["old", "new favorite"])
     var appliedVersion = "7:13"
     var adoptedAgents = ["old-agent"]

@@ -372,7 +372,7 @@ final class ServerConfigSync: ObservableObject {
     applying = true
     defer { applying = false }
     // 旧快照一律不采纳：不推共享标签、不动机器/书签、不清 dirty、不采纳 agents /
-    // restSessions、不更新 appliedVersion。catch 里的 cached 兼底路径也会走到这里。
+    // restSessions、不更新 appliedVersion。catch 里的 cached 兜底路径也会走到这里。
     guard VoiceInputAccount.shared.adopt(snapshot.voiceInput, version: snapshot.version,
                                          username: snapshot.user.username) else { return }
     // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
