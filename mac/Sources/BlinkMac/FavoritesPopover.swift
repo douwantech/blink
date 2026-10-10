@@ -1,18 +1,23 @@
 import SwiftUI
 
 /// 收藏短语弹窗（同手机）：列出收藏短语，点一条=发到当前终端并回车；可删、可加。
-/// 数据走 FavoritesStore（正式版 iCloud 同步）。
+/// 收藏和历史使用当前 Blink 账号的缓存。
 struct FavoritesPopover: View {
     @EnvironmentObject var state: AppState
     @State private var newText = ""
+    @State private var showingHistory = false
+    @ObservedObject private var account = ServerSync.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "star.fill").font(.system(size: 12)).foregroundColor(Color(hex: 0xf5c451))
-                Text("收藏短语").font(Theme.ui(14, .bold))
+                Picker("记录", selection: $showingHistory) {
+                    Text("收藏").tag(false)
+                    Text("历史").tag(true)
+                }.pickerStyle(.segmented).frame(width: 140)
                 Spacer()
-                Text(state.cloudAvailable ? "iCloud 同步" : "本地")
+                Text(account.hasSession ? "账号同步" : "离线缓存")
                     .font(Theme.mono(10)).foregroundColor(Theme.dim)
             }
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 10)
@@ -20,15 +25,15 @@ struct FavoritesPopover: View {
 
             ScrollView {
                 VStack(spacing: 4) {
-                    if state.favorites.isEmpty {
-                        Text("还没有收藏。下面加一条，或在手机上收藏会同步过来。")
+                    if (showingHistory ? state.history : state.favorites).isEmpty {
+                        Text(showingHistory ? "还没有发送历史。" : "还没有收藏。下面加一条，或在手机上收藏会同步过来。")
                             .font(Theme.ui(12)).foregroundColor(Theme.dim)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12).padding(.vertical, 16)
                     }
-                    ForEach(state.favorites, id: \.self) { fav in
-                        FavoriteRow(text: fav)
+                    ForEach(showingHistory ? state.history : state.favorites, id: \.self) { fav in
+                        FavoriteRow(text: fav, isHistory: showingHistory)
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
@@ -36,7 +41,7 @@ struct FavoritesPopover: View {
             .frame(maxHeight: 300)
 
             Divider().overlay(Theme.hair)
-            HStack(spacing: 8) {
+            if !showingHistory { HStack(spacing: 8) {
                 TextField("新增收藏短语…", text: $newText, onCommit: addNew)
                     .textFieldStyle(.plain)
                     .font(Theme.ui(13))
@@ -50,7 +55,7 @@ struct FavoritesPopover: View {
                 .buttonStyle(.plain)
                 .disabled(newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .padding(12)
+            .padding(12) }
         }
         .frame(width: 360)
         .background(Theme.bg)
@@ -67,6 +72,7 @@ struct FavoritesPopover: View {
 private struct FavoriteRow: View {
     @EnvironmentObject var state: AppState
     let text: String
+    var isHistory = false
     @State private var hovering = false
 
     var body: some View {
@@ -83,13 +89,23 @@ private struct FavoriteRow: View {
             .buttonStyle(.plain)
             .help("发到当前终端并回车")
 
-            Button { state.removeFavorite(text) } label: {
+            if isHistory {
+                Button { state.addFavorite(text) } label: {
+                    Image(systemName: "star").font(.system(size: 11)).foregroundColor(Theme.dim)
+                }.buttonStyle(.plain).help("收藏")
+            }
+            Button {
+                if isHistory {
+                    VoiceInputAccount.shared.perform("removeHistory", text: text)
+                    state.loadFavorites()
+                } else { state.removeFavorite(text) }
+            } label: {
                 Image(systemName: "trash").font(.system(size: 11)).foregroundColor(Theme.dim)
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0.35)
-            .help("删除收藏")
+            .help(isHistory ? "删除历史" : "删除收藏")
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Color.white.opacity(0.05) : .clear))

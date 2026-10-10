@@ -25,6 +25,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { asset } from '@kit.AssetStoreKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from './BlinkStores';
+import { AccountVoiceInput, AccountVoiceOperation, AccountVoiceRequest } from './VoiceInputAccount';
 
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'PadServerConfig';
@@ -77,6 +78,7 @@ export interface ServerSnapshot {
   tabs: ServerTabsState;
   recentSelection?: Record<string, string>;
   agents?: Record<string, string>;
+  voiceInput?: AccountVoiceInput | null;
   user: ServerUser;
 }
 
@@ -138,6 +140,9 @@ export class ServerConfig {
   private tabVersion: number = 0;          // tabs PUT 的自增版本计数（服务器形状需要）
   private uploadTimer: number = -1;
   private pollTimer: number = -1;
+  private voiceUploadTimer: number = -1;
+  private uploadingVoiceInput: boolean = false;
+  private voicePreviousAccount: string = "";
   // 「在岗名单是否已物化」的在岗状态统一放在 store（restLoaded / restActive），
   // 这里不再另存一份，避免两处不同步。**没物化就绝不上传**——传空集会把服务器
   // 「默认只有 tom 在岗」的规则清掉。
@@ -145,6 +150,7 @@ export class ServerConfig {
   constructor(ctx: common.UIAbilityContext, store: BlinkStore) {
     this.ctx = ctx;
     this.store = store;
+    store.onVoiceInputChange = (): void => { this.scheduleVoiceInputUpload(); };
   }
 
   // ---- 启动 / 会话 ----
@@ -183,10 +189,16 @@ export class ServerConfig {
     const login: ServerLoginResponse = JSON.parse(rsp.body) as ServerLoginResponse;
     // 换账号：清掉上一个账号的缓存与采纳版本，避免把别人的机器/标签当自己的
     const cached: ServerSnapshot | null = this.readCache();
+    this.voicePreviousAccount = this.username.length > 0 ? this.username : (cached !== null ? cached.user.username : "");
     if (cached !== null && cached.user !== undefined && cached.user.id !== login.user.id) {
       this.removeCache();
       this.version = '';
       this.dirty = false;
+    }
+    if (this.store.voiceInputAccount !== null) {
+      this.store.voiceInputAccount.prepareAccount(login.user.username,
+        this.username.length > 0 ? this.username : (cached !== null ? cached.user.username : ''));
+      this.store.syncVoiceInputCache();
     }
     await this.saveToken(login.token);
     this.token = login.token;
@@ -200,6 +212,7 @@ export class ServerConfig {
     // 登录成功即拉全量（force：不带 version，拿整份快照无条件采纳）。
     // 这里失败了也绝不回滚 session —— token 已在安全存储里，下次启动/轮询会重拉。
     await this.syncFromServer(true);
+    this.scheduleVoiceInputUpload();
   }
 
   /**
@@ -207,6 +220,7 @@ export class ServerConfig {
    * 重新登录会被服务器快照覆盖回来）。调用方负责切回登录页。
    */
   async logout(): Promise<void> {
+    if (this.voiceUploadTimer >= 0) { clearTimeout(this.voiceUploadTimer); this.voiceUploadTimer = -1; }
     this.stopPolling();
     await this.clearSession();
   }
@@ -220,6 +234,7 @@ export class ServerConfig {
     }
     try {
       await this.syncFromServer(false);
+      this.scheduleVoiceInputUpload();
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'refresh: %{public}s', `${e}`);
     }
@@ -233,14 +248,18 @@ export class ServerConfig {
     if (this.token.length === 0) {
       return;
     }
+    const bearer: string = this.token;
+    const account: string = this.username;
     let path: string = '/v1/config';
     if (!force && this.version.length > 0) {
       path = path + '?version=' + encodeURIComponent(this.version);
     }
     let rsp: HttpResult;
     try {
-      rsp = await this.send('GET', path, '', this.token);
+      rsp = await this.send('GET', path, '', bearer);
+      if (this.token !== bearer || this.username !== account) { return; }
     } catch (e) {
+      if (this.token !== bearer || this.username !== account) { return; }
       // 网络抖动：不清界面，退回上一次缓存（已登录时才有意义）
       this.isOnline = false;
       await this.restoreCache();
@@ -274,6 +293,11 @@ export class ServerConfig {
   private async apply(snap: ServerSnapshot): Promise<void> {
     this.applying = true;
     try {
+      if (this.store.voiceInputAccount !== null) {
+        this.store.voiceInputAccount.prepareAccount(snap.user.username, this.voicePreviousAccount);
+        this.store.voiceInputAccount.adopt(snap.voiceInput, snap.user.username);
+        this.store.syncVoiceInputCache();
+      }
       // 机器：字段名与 Machine 一致，直接整份采纳
       this.store.machines = snap.machines !== undefined ? snap.machines : [];
 
@@ -426,6 +450,39 @@ export class ServerConfig {
       return;   // 缓存属于别的账号，不动
     }
     await this.apply(snap);
+  }
+
+  // Favorites/history use their own queue; adopting a newer tab version cannot discard them.
+  private scheduleVoiceInputUpload(): void {
+    if (this.token.length === 0 || !this.isOnline || this.store.voiceInputPending(this.username).length === 0) { return; }
+    if (this.voiceUploadTimer >= 0) { clearTimeout(this.voiceUploadTimer); }
+    this.voiceUploadTimer = setTimeout(() => {
+      this.voiceUploadTimer = -1;
+      this.uploadVoiceInput();
+    }, 800);
+  }
+
+  private async uploadVoiceInput(): Promise<void> {
+    if (this.uploadingVoiceInput || this.token.length === 0) { return; }
+    const account: string = this.username;
+    const bearer: string = this.token;
+    const pending: AccountVoiceOperation[] = this.store.voiceInputPending(account);
+    if (pending.length === 0) { return; }
+    this.uploadingVoiceInput = true;
+    try {
+      const body: AccountVoiceRequest = { operations: pending };
+      const rsp: HttpResult = await this.send('POST', '/v1/config/voice-input', JSON.stringify(body), bearer);
+      if (this.username !== account || this.token !== bearer) { return; }
+      if (rsp.code !== 200) { this.isOnline = false; return; }
+      const state: AccountVoiceInput = JSON.parse(rsp.body) as AccountVoiceInput;
+      if (this.store.voiceInputAccount !== null) {
+        this.store.voiceInputAccount.acknowledge(pending, state, account);
+        this.store.syncVoiceInputCache();
+      }
+      await this.syncFromServer(true);
+    } catch (e) { this.isOnline = false; }
+    finally { this.uploadingVoiceInput = false; }
+    this.scheduleVoiceInputUpload();
   }
 
   // ---- 上传（个人状态）----

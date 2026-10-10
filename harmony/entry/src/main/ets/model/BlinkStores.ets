@@ -17,6 +17,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
+import { VoiceInputAccount, AccountVoiceInput, AccountVoiceOperation } from './VoiceInputAccount';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { buffer } from '@kit.ArkTS';
@@ -133,6 +134,28 @@ export class BlinkStore {
   };
 
   private prefs: preferences.Preferences | null = null;
+  voiceInputAccount: VoiceInputAccount | null = null;
+  onVoiceInputChange: (() => void) | null = null;
+
+  syncVoiceInputCache(): void {
+    if (this.voiceInputAccount === null) { return; }
+    const state: AccountVoiceInput = this.voiceInputAccount.state;
+    this.favorites = state.favorites;
+    this.favoriteCounts = state.favoriteCounts;
+    this.history = state.history;
+  }
+
+  performVoiceInput(kind: string, text: string = ''): void {
+    if (this.voiceInputAccount === null) { return; }
+    this.voiceInputAccount.perform(kind, text);
+    this.syncVoiceInputCache();
+    if (this.onVoiceInputChange !== null) { this.onVoiceInputChange(); }
+  }
+
+  voiceInputPending(username: string): AccountVoiceOperation[] {
+    return this.voiceInputAccount !== null ? this.voiceInputAccount.pending(username) : [];
+  }
+
 
   /// 本地个人状态（选中的机器 / agents / 休息开关…）真的变了（save* 落盘时触发）。
   /// BlinkTerminal 挂上防抖上传，把个人状态 PUT 回服务器（ServerConfig.markDirty）。
@@ -157,6 +180,11 @@ export class BlinkStore {
     this.favorites = this.readJson<string[]>('favorites', []);
     this.favoriteCounts = this.readJson<Record<string, number>>('favoriteCounts', {});
     this.history = this.readJson<string[]>('history', []);
+    const legacyVoice: AccountVoiceInput = {
+      favorites: this.favorites, history: this.history, favoriteCounts: this.favoriteCounts
+    };
+    this.voiceInputAccount = new VoiceInputAccount(this.prefs!, legacyVoice);
+
     this.corrections = this.readJson<string[][]>('corrections', []);
     this.terms = this.readJson<Record<string, Record<string, number>>>('terms', {});
     this.restActive = this.readJson<string[]>('restActive', []);

@@ -252,6 +252,8 @@ func TestConfigSnapshotShipsPinnedToEveryAccount(t *testing.T) {
 		// #43 起快照还带个人语音纠正与共享 AI 配置；共享那份必须有一行（ErrNoRows 会 500）。
 		mock.ExpectQuery("SELECT data FROM voice_corrections").WithArgs(viewer.ID).
 			WillReturnRows(sqlmock.NewRows([]string{"data"}))
+		mock.ExpectQuery("SELECT data FROM voice_input_configs").WithArgs(viewer.ID).
+			WillReturnRows(sqlmock.NewRows([]string{"data"}))
 		mock.ExpectQuery("SELECT data FROM shared_ai_config").
 			WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow([]byte(`{}`)))
 		mock.ExpectRollback()

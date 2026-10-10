@@ -413,6 +413,7 @@
 		D2BB88AC2E45A12400000001 /* AgentMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB88AC2E45A12400000002 /* AgentMark.swift */; };
 		D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A52297230D279B0010CC02 /* CloudConfigSync.swift */; };
 		B34C0F010000000000000002 /* ServerConfigSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34C0F010000000000000001 /* ServerConfigSync.swift */; };
+		B34C0F010000000000000004 /* VoiceInputAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34C0F010000000000000003 /* VoiceInputAccount.swift */; };
 		D2A52299230D279B0010AC04 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229A230D279B0010AC04 /* VoiceInputView.swift */; };
 		D2A5229B230D279B0010AC04 /* BlinkImageViewerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */; };
 		D2A5229D230D279B0010AC04 /* BlinkMachineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */; };
@@ -1210,6 +1211,7 @@
 		D2BB88AC2E45A12400000002 /* AgentMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMark.swift; sourceTree = "<group>"; };
 		D2A52297230D279B0010CC02 /* CloudConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConfigSync.swift; sourceTree = "<group>"; };
 		B34C0F010000000000000001 /* ServerConfigSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigSync.swift; sourceTree = "<group>"; };
+		B34C0F010000000000000003 /* VoiceInputAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputAccount.swift; sourceTree = "<group>"; };
 		D2A5229A230D279B0010AC04 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
 		D2A5229C230D279B0010AC04 /* BlinkImageViewerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkImageViewerController.swift; sourceTree = "<group>"; };
 		D2A5229E230D279B0010AC04 /* BlinkMachineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlinkMachineStore.swift; sourceTree = "<group>"; };
@@ -2336,6 +2338,7 @@
 				D2BB88AC2E45A12400000002 /* AgentMark.swift */,
 				D2A52297230D279B0010CC02 /* CloudConfigSync.swift */,
 				B34C0F010000000000000001 /* ServerConfigSync.swift */,
+				B34C0F010000000000000003 /* VoiceInputAccount.swift */,
 				D2B1F8DC23265A0600634D67 /* CommandsHUDView.swift */,
 				D2B1F8DE23265A4700634D67 /* CommandControl.swift */,
 			);
@@ -3767,6 +3770,7 @@
 				D2BB88AC2E45A12400000001 /* AgentMark.swift in Sources */,
 				D2A52297230D279B0010CC01 /* CloudConfigSync.swift in Sources */,
 				B34C0F010000000000000002 /* ServerConfigSync.swift in Sources */,
+				B34C0F010000000000000004 /* VoiceInputAccount.swift in Sources */,
 				D2AB5DE5C0DE000000000001 /* RustDeskCore.swift in Sources */,
 				D2AB5DE5C0DE000000000007 /* RustDeskStub.swift in Sources */,
 				D2AB5DE5C0DE000000000011 /* RemoteShell.swift in Sources */,

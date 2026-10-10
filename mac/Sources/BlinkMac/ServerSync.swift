@@ -29,10 +29,16 @@ final class ServerSync: ObservableObject {
   private var updatingPersonal = false
   private var activeRefreshes = 0
   private var foregroundPoll: Timer?
+  private var voiceUploadWork: DispatchWorkItem?
+  private var uploadingVoiceInput = false
 
   var hasSession: Bool { defaults.string(forKey: tokenKey) != nil }
 
-  private init() { username = defaults.string(forKey: userKey) }
+  private init() {
+    username = defaults.string(forKey: userKey)
+    VoiceInputAccount.shared.migrateLegacyCloud()
+    VoiceInputAccount.shared.onChange = { [weak self] in self?.scheduleVoiceInputUpload() }
+  }
 
   private struct SyncError: LocalizedError {
     let message: String
@@ -57,6 +63,7 @@ final class ServerSync: ObservableObject {
           let token = obj["token"] as? String,
           let user = obj["user"] as? [String: Any],
           let name = user["username"] as? String else { throw SyncError(message: "登录响应异常") }
+    VoiceInputAccount.shared.prepareAccount(name, previous: username)
     defaults.set(token, forKey: tokenKey)
     defaults.set(name, forKey: userKey)
     self.username = name
@@ -65,6 +72,7 @@ final class ServerSync: ObservableObject {
   }
 
   @MainActor func logout() {
+    voiceUploadWork?.cancel()
     defaults.removeObject(forKey: tokenKey)
     defaults.removeObject(forKey: userKey)
     defaults.removeObject(forKey: versionKey)
@@ -88,6 +96,40 @@ final class ServerSync: ObservableObject {
     case .offline: isOnline = false   // 网络不通：读链路还有 sync 文件 / KV 兜底，静默
     case .noSession: break
     }
+    scheduleVoiceInputUpload()
+  }
+
+  private func scheduleVoiceInputUpload() {
+    guard hasSession, isOnline, let username,
+          !VoiceInputAccount.shared.pending(username: username).isEmpty else { return }
+    voiceUploadWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      Task { @MainActor in await self?.uploadVoiceInput() }
+    }
+    voiceUploadWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+  }
+
+  @MainActor private func uploadVoiceInput() async {
+    guard !uploadingVoiceInput, let bearer = defaults.string(forKey: tokenKey), let account = username else { return }
+    let pending = VoiceInputAccount.shared.pending(username: account)
+    guard !pending.isEmpty else { return }
+    uploadingVoiceInput = true
+    defer { uploadingVoiceInput = false }
+    var request = URLRequest(url: baseURL.appendingPathComponent("v1/config/voice-input"))
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+    do {
+      request.httpBody = try JSONEncoder().encode(["operations": pending])
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard defaults.string(forKey: tokenKey) == bearer, username == account else { return }
+      guard (response as? HTTPURLResponse)?.statusCode == 200 else { isOnline = false; return }
+      let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
+      VoiceInputAccount.shared.acknowledge(pending, remote: state, username: account)
+      defaults.removeObject(forKey: versionKey)
+      await refresh()
+    } catch { isOnline = false }
   }
 
   /// 前台定期对齐同一账号的标签及团队状态；无变化时 GET 只返回 304。
@@ -172,6 +214,8 @@ final class ServerSync: ObservableObject {
     guard let token = defaults.string(forKey: tokenKey) else { return .noSession }
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
     if SyncConfig.read()?["sharedTabs"] != nil,
+       let account = defaults.string(forKey: userKey),
+       !VoiceInputAccount.shared.needsInitialSnapshot(username: account),
        let applied = defaults.string(forKey: versionKey) {
       components.queryItems = [URLQueryItem(name: "version", value: applied)]
     }
@@ -180,11 +224,15 @@ final class ServerSync: ObservableObject {
     do {
       let (data, response) = try await URLSession.shared.data(for: request)
       guard let http = response as? HTTPURLResponse else { return .offline }
+      guard defaults.string(forKey: tokenKey) == token else { return .noSession }
       if http.statusCode == 304 { return .notModified }
       if http.statusCode == 401 { return .unauthorized }
       guard http.statusCode == 200 else { return .offline }
-      applySnapshot(data)
-      return .ok
+      return await MainActor.run {
+        guard defaults.string(forKey: self.tokenKey) == token else { return .noSession }
+        self.applySnapshot(data)
+        return .ok
+      }
     } catch {
       return .offline
     }
@@ -197,7 +245,7 @@ final class ServerSync: ObservableObject {
   /// 采纳语义（iOS 认 harmony*、鸿蒙手机只挡 harmony、平板只挡 harmony-pad）——服务器化
   /// 后这文件的主要消费方是 Mac 自己，但别弄脏还在读它的端。写法照 SyncConfig.patch：
   /// 临时文件 + rename，让 watchSyncFile() 的 inode 监听触发 UI reload。
-  private func applySnapshot(_ data: Data) {
+  @MainActor private func applySnapshot(_ data: Data) {
     guard let snap = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let version = snap["version"] as? String else { return }
     let machines = snap["machines"] as? [[String: Any]] ?? []
@@ -209,6 +257,16 @@ final class ServerSync: ObservableObject {
     let agents = snap["agents"] as? [String: String] ?? [:]
 
     var obj = SyncConfig.read() ?? [:]
+    if let user = snap["user"] as? [String: Any], let account = user["username"] as? String {
+      let state = (snap["voiceInput"] as? [String: Any]).flatMap {
+        try? JSONDecoder().decode(AccountVoiceInput.self, from: JSONSerialization.data(withJSONObject: $0))
+      }
+      VoiceInputAccount.shared.adopt(state, username: account)
+      let local = VoiceInputAccount.shared.snapshot
+      obj["favorites"] = local.favorites
+      obj["favoriteCounts"] = local.favoriteCounts
+      obj["history"] = local.history
+    }
     obj["machines"] = machines
     // 共享书签（浏览器「后台」）：服务器快照带 pinned 就是权威，PinnedLinksStore
     // 直接从这个文件读；不带（老快照）就保留文件里的存量，别清掉离线兜底。

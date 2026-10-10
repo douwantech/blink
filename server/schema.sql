@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS voice_corrections (
   CONSTRAINT voice_corrections_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Favorites/history are personal, separate from shared browser bookmarks.
+CREATE TABLE IF NOT EXISTS voice_input_configs (
+  user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  data JSON NOT NULL,
+  CONSTRAINT voice_input_configs_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS voice_input_operations (
+  user_id BIGINT UNSIGNED NOT NULL,
+  operation_id VARCHAR(100) NOT NULL,
+  PRIMARY KEY (user_id, operation_id),
+  CONSTRAINT voice_input_operations_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- AI configuration is shared by every account. These idempotent statements run
 -- on every startup, so an existing database gets the table and singleton seed
 -- row during upgrade without overwriting an already configured document.

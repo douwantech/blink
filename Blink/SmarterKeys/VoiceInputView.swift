@@ -1616,7 +1616,7 @@ final class AITextPolisher {
   private let kFavoriteCounts = "VoiceInputView.aiFavoriteCounts"  // 每条收藏的使用次数
   private let kCorrections = "VoiceInputView.aiCorrections"
   private let kTerms = "VoiceInputView.aiTerms"  // 词级错→对映射，{wrong: {correct: count}}
-  private let maxHistory = 30
+  private let maxHistory = 40
   private let maxCorrections = 30
   private let maxTermsInPrompt = 40
 
@@ -1768,15 +1768,7 @@ final class AITextPolisher {
   }
 
   func recordHistory(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    var arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
-    arr.removeAll { $0 == trimmed }  // 去重：已有就移除，再追加到末尾
-    arr.append(trimmed)
-    if arr.count > maxHistory {
-      arr.removeFirst(arr.count - maxHistory)
-    }
-    UserDefaults.standard.set(arr, forKey: kHistory)
+    VoiceInputAccount.shared.perform("recordHistory", text: text)
   }
 
   var historyEntries: [String] {
@@ -1791,20 +1783,17 @@ final class AITextPolisher {
   }
 
   func deleteHistory(at index: Int) {
-    var arr = historyEntries
+    let arr = historyEntries
     guard arr.indices.contains(index) else { return }
-    arr.remove(at: index)
-    UserDefaults.standard.set(arr, forKey: kHistory)
+    VoiceInputAccount.shared.perform("removeHistory", text: arr[index])
   }
 
   func deleteHistory(text: String) {
-    var arr = UserDefaults.standard.stringArray(forKey: kHistory) ?? []
-    arr.removeAll { $0 == text }
-    UserDefaults.standard.set(arr, forKey: kHistory)
+    VoiceInputAccount.shared.perform("removeHistory", text: text)
   }
 
   func clearHistory() {
-    UserDefaults.standard.removeObject(forKey: kHistory)
+    VoiceInputAccount.shared.perform("clearHistory")
   }
 
   // MARK: - 收藏（手动收藏的输入，去重，无上限）
@@ -1841,20 +1830,13 @@ final class AITextPolisher {
   func addFavorite(_ text: String) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !t.isEmpty else { return }
-    var arr = rawFavorites
-    guard !arr.contains(t) else { return }
-    arr.append(t)
-    UserDefaults.standard.set(arr, forKey: kFavorites)
+    guard !rawFavorites.contains(t) else { return }
+    VoiceInputAccount.shared.perform("addFavorite", text: t)
   }
 
   func removeFavorite(_ text: String) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    var arr = rawFavorites
-    arr.removeAll { $0 == t }
-    UserDefaults.standard.set(arr, forKey: kFavorites)
-    var counts = favoriteCounts
-    counts.removeValue(forKey: t)
-    UserDefaults.standard.set(counts, forKey: kFavoriteCounts)
+    VoiceInputAccount.shared.perform("removeFavorite", text: t)
   }
 
   func toggleFavorite(_ text: String) {
@@ -1862,17 +1844,14 @@ final class AITextPolisher {
   }
 
   func clearFavorites() {
-    UserDefaults.standard.removeObject(forKey: kFavorites)
-    UserDefaults.standard.removeObject(forKey: kFavoriteCounts)
+    VoiceInputAccount.shared.perform("clearFavorites")
   }
 
   /// 标记一条收藏被使用过一次，用于排序。
   func incrementFavoriteUseCount(_ text: String) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !t.isEmpty, rawFavorites.contains(t) else { return }
-    var counts = favoriteCounts
-    counts[t, default: 0] += 1
-    UserDefaults.standard.set(counts, forKey: kFavoriteCounts)
+    VoiceInputAccount.shared.perform("useFavorite", text: t)
   }
 
   func recordCorrection(asrRaw: String, final: String) {
@@ -2457,6 +2436,8 @@ final class AIHistoryViewController: UITableViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     title = "个人纠正词"
+    NotificationCenter.default.addObserver(self, selector: #selector(accountHistoryChanged),
+      name: VoiceInputAccount.didChange, object: nil)
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       title: "清空", style: .plain, target: self, action: #selector(clearTapped))
   }
@@ -2465,6 +2446,8 @@ final class AIHistoryViewController: UITableViewController {
     super.viewWillAppear(animated)
     tableView.reloadData()
   }
+
+  @objc private func accountHistoryChanged() { tableView.reloadData() }
 
   private let sections = PersonalCorrectionsSection.allCases
 
@@ -2891,9 +2874,16 @@ final class VoiceHistoryPickerViewController: UITableViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     title = mode == .history ? "历史记录" : "收藏"
+    NotificationCenter.default.addObserver(self, selector: #selector(accountEntriesChanged),
+      name: VoiceInputAccount.didChange, object: nil)
     tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       barButtonSystemItem: .done, target: self, action: #selector(doneTapped))
+    updateClearButton()
+  }
+
+  @objc private func accountEntriesChanged() {
+    tableView.reloadData()
     updateClearButton()
   }
 

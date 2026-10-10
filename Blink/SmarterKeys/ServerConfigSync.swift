@@ -39,6 +39,7 @@ struct ServerSnapshot: Codable {
   let agents: [String: String]
   let aiConfig: ServerAIConfig?
   let voiceCorrections: [String: [String: Int]]?
+  let voiceInput: AccountVoiceInput?
   let user: ServerUser
 }
 
@@ -146,8 +147,14 @@ final class ServerConfigSync: ObservableObject {
   private var activeRefreshes = 0
   private var foregroundPoll: Timer?
   private var uploadWork: DispatchWorkItem?
+  private var voiceUploadWork: DispatchWorkItem?
+  private var uploadingVoiceInput = false
+  private var sessionGeneration = 0
 
-  private init() { username = defaults.string(forKey: "BlinkServer.username") }
+  private init() {
+    username = defaults.string(forKey: "BlinkServer.username")
+    VoiceInputAccount.shared.onChange = { [weak self] in self?.scheduleVoiceInputUpload() }
+  }
 
   var hasSession: Bool { token != nil }
   var hasCachedSnapshot: Bool {
@@ -223,6 +230,9 @@ final class ServerConfigSync: ObservableObject {
       throw NSError(domain: "BlinkServer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
     }
     let login = try JSONDecoder().decode(ServerLoginResponse.self, from: data)
+    sessionGeneration += 1
+    VoiceInputAccount.shared.prepareAccount(login.user.username,
+      previous: username ?? cachedSnapshot()?.snapshot.user.username)
     if cachedSnapshot()?.snapshot.user.id != login.user.id {
       try? FileManager.default.removeItem(at: cacheURL)
       defaults.removeObject(forKey: dirtyKey)
@@ -260,6 +270,7 @@ final class ServerConfigSync: ObservableObject {
     defer { activeRefreshes -= 1 }
     try await syncFromServer(replaceTabs: replaceTabs, force: force, bearer: bearer)
     schedulePendingUpload()
+    scheduleVoiceInputUpload()
   }
 
   /// 两台设备都保持前台时也能看到对方改过的标签；版本未变时服务器只返回 304。
@@ -269,6 +280,7 @@ final class ServerConfigSync: ObservableObject {
       Task { @MainActor [weak self] in
         guard let self, UIApplication.shared.applicationState == .active,
               self.hasSession, !self.isUploading, self.activeRefreshes == 0,
+              !self.uploadingVoiceInput,
               !self.defaults.bool(forKey: self.dirtyKey) else { return }
         try? await self.refresh()
       }
@@ -279,11 +291,12 @@ final class ServerConfigSync: ObservableObject {
   /// 优先采纳。这里故意不安排上传：uploadPersonal() 上传前也调本方法对齐版本，
   /// 若在这里 schedule 会互相触发成环。
   @MainActor private func syncFromServer(replaceTabs: Bool = false, force: Bool = false,
-                                         bearer: String? = nil) async throws {
+                                         bearer: String? = nil, preservingOwnVoiceVersion: String? = nil) async throws {
     // token 为 nil 时绝不发请求：Optional 插值会把请求头拼成 "Bearer nil"（3 字节，
     // 不是 64 hex），服务器必然 401，用户侧表现成「登录已过期」——2026-10-05 Mac
     // 登录循环就是这么来的。静默跳过，等下次启动/回前台有 token 再拉。
     guard let auth = bearer ?? token else { return }
+    let generation = sessionGeneration
     var components = URLComponents(url: baseURL.appendingPathComponent("v1/config"), resolvingAgainstBaseURL: false)!
     if !force, let cached = cachedSnapshot(), cached.snapshot.user.username == username {
       let version = cached.snapshot.version
@@ -293,6 +306,7 @@ final class ServerConfigSync: ObservableObject {
     request.setValue("Bearer \(auth)", forHTTPHeaderField: "Authorization")
     do {
       let (data, response) = try await URLSession.shared.data(for: request)
+      guard sessionGeneration == generation else { return }
       guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
       if http.statusCode == 304 {
         isOnline = true
@@ -311,9 +325,11 @@ final class ServerConfigSync: ObservableObject {
       // 复原同一份公用标签。它是「服务器说了算」的只读副本，不是用户状态。
       try data.write(to: cacheURL, options: .atomic)
       try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: cacheURL.path)
-      apply(decoded.snapshot, shared: decoded.shared, replaceTabs: replaceTabs)
+      apply(decoded.snapshot, shared: decoded.shared, replaceTabs: replaceTabs,
+        preservingOwnVoiceVersion: preservingOwnVoiceVersion)
       isOnline = true
     } catch {
+      guard sessionGeneration == generation else { return }
       isOnline = false
       if let cached = cachedSnapshot(), cached.snapshot.user.username == username {
         apply(cached.snapshot, shared: cached.shared, replaceTabs: replaceTabs)
@@ -323,6 +339,8 @@ final class ServerConfigSync: ObservableObject {
   }
 
   private func clearSession() {
+    sessionGeneration += 1
+    voiceUploadWork?.cancel()
     let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: tokenService,
                                 kSecAttrAccount as String: tokenAccount,
@@ -334,12 +352,14 @@ final class ServerConfigSync: ObservableObject {
     defaults.removeObject(forKey: appliedVersionKey)
   }
 
-  private func apply(_ snapshot: ServerSnapshot, shared: [SharedTab], replaceTabs: Bool) {
+  private func apply(_ snapshot: ServerSnapshot, shared: [SharedTab], replaceTabs: Bool,
+                     preservingOwnVoiceVersion: String? = nil) {
     applying = true
     defer { applying = false }
     // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
     // snapshot.tabs 已在解码边界摘干净，下面对它的每一次写都不会带上公用标签。
     sharedTabs = shared
+    VoiceInputAccount.shared.adopt(snapshot.voiceInput, username: snapshot.user.username)
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
     }
@@ -349,6 +369,7 @@ final class ServerConfigSync: ObservableObject {
       ServerPinnedStore.apply(pinned, to: defaults)
     }
     let localDirty = defaults.bool(forKey: dirtyKey)
+    let keepPendingPersonal = localDirty && snapshot.version == preservingOwnVoiceVersion
     let localTabs = TabStateStore.shared.snapshot()
     let localTime = localTabs.updatedAt ?? 0
     let remoteTime = snapshot.tabs.updatedAt ?? 0
@@ -357,10 +378,10 @@ final class ServerConfigSync: ObservableObject {
     // 服务器时钟不可比，updatedAt 比较拦不住这个场景。本地未上传的 pending
     // 此刻放弃（dirty 清掉），也绝不会被回传覆盖服务器（见 uploadPersonal）。
     let serverAdvanced = defaults.string(forKey: appliedVersionKey) != snapshot.version
-    let retainLocalTabs = !serverAdvanced &&
+    let retainLocalTabs = keepPendingPersonal || (!serverAdvanced &&
       ((localDirty && localTime >= remoteTime) ||
-        (!replaceTabs && localTime > remoteTime))
-    if serverAdvanced {
+        (!replaceTabs && localTime > remoteTime)))
+    if serverAdvanced && !keepPendingPersonal {
       defaults.set(false, forKey: dirtyKey)
     }
     defaults.set(snapshot.version, forKey: appliedVersionKey)
@@ -383,7 +404,7 @@ final class ServerConfigSync: ObservableObject {
     // 版本前进时个人配置（agents/selection/语音纠正词）同样以服务器为准；只有
     // 服务器版本没动、本地确有未上传改动时才保留本地。voiceCorrections 是
     // 按账号隔离的个人数据，跟随 agents 的同一套版本采纳语义，不另发明规则。
-    if serverAdvanced || !localDirty {
+    if !keepPendingPersonal && (serverAdvanced || !localDirty) {
       TabAgentStore.shared.replaceAll(snapshot.agents)
       if let terms = snapshot.voiceCorrections {
         AITextPolisher.shared.replaceTerms(terms)
@@ -419,6 +440,50 @@ final class ServerConfigSync: ObservableObject {
     schedulePendingUpload()
   }
 
+  /// Independent durable queue: advancing the tab/selection version must never
+  /// discard a favorite or a just-submitted history entry.
+  private func scheduleVoiceInputUpload() {
+    guard hasSession, isOnline, let username,
+          !VoiceInputAccount.shared.pending(username: username).isEmpty else { return }
+    voiceUploadWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      Task { @MainActor in await self?.uploadVoiceInput() }
+    }
+    voiceUploadWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+  }
+
+  @MainActor private func uploadVoiceInput() async {
+    guard !isUploading else { return }
+    if defaults.bool(forKey: dirtyKey) { await uploadPersonal() }
+    guard isOnline else { return }
+    guard !uploadingVoiceInput, let bearer = token, let account = username else { return }
+    let pending = VoiceInputAccount.shared.pending(username: account)
+    guard !pending.isEmpty else { return }
+    uploadingVoiceInput = true
+    let before = defaults.string(forKey: appliedVersionKey)
+    defer { uploadingVoiceInput = false }
+    var request = URLRequest(url: baseURL.appendingPathComponent("v1/config/voice-input"))
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+    do {
+      request.httpBody = try JSONEncoder().encode(["operations": pending])
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard token == bearer, username == account else { return }
+      guard (response as? HTTPURLResponse)?.statusCode == 200 else { isOnline = false; return }
+      let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
+      VoiceInputAccount.shared.acknowledge(pending, remote: state, username: account)
+      // Cache the acknowledged document and current config version for offline
+      // startup. A fresh edit made during the request is replayed by adopt().
+      let expected = VoiceInputAccount.ownConfigVersion(previous: before,
+        personal: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
+      try? await syncFromServer(force: true, preservingOwnVoiceVersion: expected)
+      schedulePendingUpload()
+      scheduleVoiceInputUpload()
+    } catch { isOnline = false }
+  }
+
   private func schedulePendingUpload() {
     guard hasSession, isOnline, defaults.bool(forKey: dirtyKey) else { return }
     uploadWork?.cancel()
@@ -431,7 +496,7 @@ final class ServerConfigSync: ObservableObject {
   }
 
   @MainActor private func uploadPersonal() async {
-    guard let token, isOnline, !isUploading, defaults.bool(forKey: dirtyKey) else { return }
+    guard let token, isOnline, !isUploading, !uploadingVoiceInput, defaults.bool(forKey: dirtyKey) else { return }
     isUploading = true
     // 上传前先向服务器对齐版本：若服务器版本已前进（别处在服务端改过），apply()
     // 会采纳服务器快照并清掉 dirty，下面的 guard 直接退出 —— 本地旧快照永远不会
@@ -442,11 +507,11 @@ final class ServerConfigSync: ObservableObject {
       isOnline = false
       return
     }
-    guard defaults.bool(forKey: dirtyKey) else { isUploading = false; return }
+    guard defaults.bool(forKey: dirtyKey) else { isUploading = false; scheduleVoiceInputUpload(); return }
     defaults.set(false, forKey: dirtyKey)
     defer {
       isUploading = false
-      if isOnline { schedulePendingUpload() }
+      if isOnline { schedulePendingUpload(); scheduleVoiceInputUpload() }
     }
     let tabs = TabStateStore.shared.snapshot()
     // selection 里只剩机器维度（Mac rail 的导航记忆）、当前 tab 与公用标签的休息名单

@@ -129,7 +129,7 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "internal error", 500)
 		return
 	}
-	var tabs, selection, agents, voiceCorrections, aiConfig []byte
+	var tabs, selection, agents, voiceCorrections, voiceInput, aiConfig []byte
 	err = tx.QueryRowContext(r.Context(), `SELECT tabs,recent_selection,agents FROM user_configs WHERE user_id=?`, u.ID).Scan(&tabs, &selection, &agents)
 	if err != nil && err != sql.ErrNoRows {
 		http.Error(w, "internal error", 500)
@@ -164,12 +164,19 @@ func (a *app) config(w http.ResponseWriter, r *http.Request, u user) {
 	if len(voiceCorrections) == 0 {
 		voiceCorrections = []byte(`{}`)
 	}
+	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM voice_input_configs WHERE user_id=?`, u.ID).Scan(&voiceInput); err != nil && err != sql.ErrNoRows {
+		http.Error(w, "internal error", 500)
+		return
+	}
+	if len(voiceInput) == 0 {
+		voiceInput = []byte(`null`)
+	}
 	if err = tx.QueryRowContext(r.Context(), `SELECT data FROM shared_ai_config WHERE id=1`).Scan(&aiConfig); err != nil {
 		http.Error(w, "internal error", 500)
 		return
 	}
 	w.Header().Set("X-Config-Version", version)
-	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "pinned": pinned, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "voiceCorrections": json.RawMessage(voiceCorrections), "aiConfig": json.RawMessage(aiConfig), "user": u})
+	writeJSON(w, 200, map[string]any{"version": version, "machines": machines, "pinned": pinned, "tabs": json.RawMessage(tabs), "recentSelection": json.RawMessage(selection), "agents": json.RawMessage(agents), "voiceCorrections": json.RawMessage(voiceCorrections), "voiceInput": json.RawMessage(voiceInput), "aiConfig": json.RawMessage(aiConfig), "user": u})
 }
 
 func (a *app) sharedAIConfig(w http.ResponseWriter, r *http.Request, _ user) {

@@ -29,14 +29,18 @@ final class AppState: ObservableObject {
     var cloudMapping = CloudRestStore.Mapping()
     @Published var sharedActive: Set<String>? = nil
 
-    // 收藏短语（跟手机同一套 iCloud KV，正式版跨设备同步）
+    // 收藏与提交历史随 Blink 登录账号同步；本地仅用于离线缓存。
     @Published var favorites: [String] = []
+    @Published var history: [String] = []
     @Published var showFavorites = false
 
     // 已关闭的会话 cc-<title>（本地记录 ∪ KV 全关墓碑）减去「手机又开了同名」的，隐藏它们。
     @Published var closedCC: Set<String> = []
 
-    func loadFavorites() { favorites = FavoritesStore.entries(cloud: cloudAvailable) }
+    func loadFavorites() {
+        favorites = FavoritesStore.entries(cloud: cloudAvailable)
+        history = Array(VoiceInputAccount.shared.snapshot.history.reversed())
+    }
 
     /// 发一条收藏到当前终端并回车（同手机 dock 收藏钮）。
     func sendFavorite(_ text: String) {
@@ -44,6 +48,7 @@ final class AppState: ObservableObject {
         guard !t.isEmpty else { return }
         guard !activeSession.placeholder, !activeSessionID.isEmpty else { showToast("先选一个会话"); return }
         term.send(activeSessionID, text: t + "\r")
+        VoiceInputAccount.shared.perform("recordHistory", text: t)
         FavoritesStore.incrementUse(t, cloud: cloudAvailable)
         loadFavorites()
         showFavorites = false
@@ -500,6 +505,10 @@ final class AppState: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main, using: reload)
+        NotificationCenter.default.addObserver(forName: VoiceInputAccount.didChange,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.loadFavorites() }
+            }
         watchSyncFile()
     }
 
@@ -807,7 +816,9 @@ final class AppState: ObservableObject {
 
     func send() {
         guard !draft.isEmpty else { return }
+        guard !activeSession.placeholder, !activeSessionID.isEmpty else { showToast("先选一个会话"); return }
         term.send(activeSessionID, text: draft + "\r")   // 注入真实 PTY
+        VoiceInputAccount.shared.perform("recordHistory", text: draft)
         draft = ""
     }
 

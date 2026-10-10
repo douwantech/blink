@@ -1373,11 +1373,7 @@ struct BlinkTerminal {
         c.sendInput('\r');
       }
     }, 400);
-    this.store.history.push(t);
-    if (this.store.history.length > 40) {
-      this.store.history.shift();
-    }
-    this.store.saveHistory();
+    this.store.performVoiceInput('recordHistory', t);
   }
 
   private sendReview(): void {
@@ -1417,9 +1413,8 @@ struct BlinkTerminal {
 
   private useFavorite(text: string): void {
     this.sendLine(text);
-    const c = this.store.favoriteCounts[text];
-    this.store.favoriteCounts[text] = (c !== undefined ? c : 0) + 1;
-    this.store.saveFavorites();
+    this.store.performVoiceInput('useFavorite', text);
+    this.store.performVoiceInput('recordHistory', text);
     this.sheet = 'none';
   }
 
