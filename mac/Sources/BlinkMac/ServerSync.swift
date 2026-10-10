@@ -283,6 +283,11 @@ final class ServerSync: ObservableObject {
   @MainActor private func applySnapshot(_ data: Data) {
     guard let snap = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let version = snap["version"] as? String else { return }
+    // 旧快照门：比本账号已见个人版本下限旧的响应，在写 sync 文件（离线兼底）、更新
+    // versionKey、采纳 agents / recentSelection 之前就丢掉 —— 离线缓存不许倒退。
+    // 与 iOS ServerConfigSync.syncFromServer 同一道门。
+    if let account = (snap["user"] as? [String: Any])?["username"] as? String,
+       VoiceInputAccount.shared.isStaleSnapshot(version: version, username: account) { return }
     let machines = snap["machines"] as? [[String: Any]] ?? []
     let tabsState = snap["tabs"] as? [String: Any] ?? [:]
     let tabs = tabsState["tabs"] as? [[String: Any]] ?? []

@@ -110,6 +110,19 @@ final class VoiceInputAccount {
     personalBound = incoming
   }
 
+  /// **只读**判定：这份快照的个人版本是否比本账号已见下限旧。
+  ///
+  /// 同步入口用它把旧快照（在途 GET 在 POST 之后才回来、两个 refresh 乱序回包）挡在
+  /// 写离线缓存 / 更新已采纳版本 / 采纳 rest·agents **之前** —— 离线兜底那份缓存也
+  /// 不许倒退。只读，不改任何状态。
+  func isStaleSnapshot(version: String?, username: String) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    guard defaults.string(forKey: ownerKey) == username,
+          let incoming = Self.personalComponent(version),
+          let bound = personalBound else { return false }
+    return incoming < bound
+  }
+
   var snapshot: AccountVoiceInput {
     lock.lock(); defer { lock.unlock() }
     return AccountVoiceInput(favorites: defaults.stringArray(forKey: favoritesKey) ?? [],

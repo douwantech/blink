@@ -324,6 +324,14 @@ final class ServerConfigSync: ObservableObject {
       }
       guard http.statusCode == 200 else { throw URLError(.badServerResponse) }
       let decoded = try ServerSnapshotDecoder.decode(data)
+      // 旧快照门：比本账号已见个人版本下限旧的响应（在途 GET 在 POST 之后才回来、
+      // 两个 refresh 乱序回包）在**写离线缓存之前**就丢掉 —— 缓存、appliedVersion、
+      // rest/agents 一个都不跟着倒退。请求本身成功了，所以不算离线。
+      guard !VoiceInputAccount.shared.isStaleSnapshot(version: decoded.snapshot.version,
+                                                       username: decoded.snapshot.user.username) else {
+        isOnline = true
+        return
+      }
       let directory = cacheURL.deletingLastPathComponent()
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       // 缓存写的是服务器响应的原始字节（含公用标签）——离线冷启动时再解码一次即可
@@ -363,10 +371,13 @@ final class ServerConfigSync: ObservableObject {
                      acknowledgedPersonal: UInt64? = nil) {
     applying = true
     defer { applying = false }
+    // 旧快照一律不采纳：不推共享标签、不动机器/书签、不清 dirty、不采纳 agents /
+    // restSessions、不更新 appliedVersion。catch 里的 cached 兼底路径也会走到这里。
+    guard VoiceInputAccount.shared.adopt(snapshot.voiceInput, version: snapshot.version,
+                                         username: snapshot.user.username) else { return }
     // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
     // snapshot.tabs 已在解码边界摘干净，下面对它的每一次写都不会带上公用标签。
     sharedTabs = shared
-    VoiceInputAccount.shared.adopt(snapshot.voiceInput, version: snapshot.version, username: snapshot.user.username)
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
     }

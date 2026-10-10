@@ -106,7 +106,38 @@ import Foundation
       localDirty: true, snapshotVersion: "7:13", ownVersion: nil, acknowledgedPersonal: 13),
       "the header floor must protect pending personal edits when the +1 rule misses")
 
-    // ⑦ 有 refresh 在途：让位并重排，不能把待发队列丢掉
+    // ⑦ 宿主同步入口的门（iOS syncFromServer 的顺序：先判旧不旧，再写 cache /
+    //    更新 appliedVersion / 采纳 rest·agents）。假 cache 就是离线兼底那份文件。
+    var offlineCache: (version: String, favorites: [String]) = ("7:13", ["old", "new favorite"])
+    var appliedVersion = "7:13"
+    var adoptedAgents = ["old-agent"]
+    var appliedSnapshots = 0
+
+    func hostApply(version: String, favorites: [String], agents: [String]) {
+      // ← 这一行是产品代码（VoiceInputAccount.isStaleSnapshot），其余是同序的假宿主
+      //   （真实宿主在这道门之后就写 cache / 更新 appliedVersion / adopt()）
+      guard !account.isStaleSnapshot(version: version, username: "alice") else { return }
+      appliedSnapshots += 1
+      offlineCache = (version, favorites)
+      appliedVersion = version
+      adoptedAgents = agents
+    }
+
+    // 在途 GET / 乱序回包带着旧快照回来：一道都不能进
+    hostApply(version: "7:12", favorites: ["old"], agents: ["stale-agent"])
+    precondition(appliedSnapshots == 0, "旧快照不能进采纳路径")
+    precondition(appliedVersion == "7:13", "旧快照不许回退 appliedVersion")
+    precondition(offlineCache.favorites == ["old", "new favorite"], "离线缓存不能倒退")
+    precondition(adoptedAgents == ["old-agent"], "旧快照不许采纳 rest/agents")
+
+    // 正常前进的快照照旧采纳
+    hostApply(version: "7:14", favorites: ["old", "new favorite", "other"], agents: ["new-agent"])
+    precondition(appliedSnapshots == 1)
+    precondition(appliedVersion == "7:14")
+    precondition(offlineCache.favorites == ["old", "new favorite", "other"])
+    precondition(adoptedAgents == ["new-agent"])
+
+    // ⑧ 有 refresh 在途：让位并重排，不能把待发队列丢掉
     account.perform("recordHistory", text: "typed while refresh in flight")
     precondition(account.pending(username: "alice").count == 1)
     let deferred = await core.runUpload(
@@ -119,6 +150,6 @@ import Foundation
     precondition(host.postCalls == 1, "让位时不能真的发 POST")
     precondition(account.pending(username: "alice").count == 1, "让位不能把待发队列丢掉")
 
-    print("PASS: in-flight voice POST → personal edit stays pending → actually re-sent; header floor + defer")
+    print("PASS: in-flight voice POST → personal edit stays pending → actually re-sent; header floor + defer; host stale-snapshot/cache gate")
   }
 }

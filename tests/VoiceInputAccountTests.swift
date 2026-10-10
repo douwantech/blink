@@ -169,6 +169,23 @@ import Foundation
                  "a genuinely newer snapshot is still adopted")
     precondition(c4.snapshot.favorites == ["v15"])
 
-    print("PASS: migration, offline/restart, concurrent devices, in-flight edits, account isolation, stale in-flight snapshot, pending-personal rule, header-floor (+2 / retry / out-of-order)")
+    // --- 同步入口的旧快照门（只读判定）：比已见下限旧的快照，在写离线 cache / 更新
+    // appliedVersion / 采纳 rest·agents 之前就要被挡下。只读，不动状态。
+    let c5Name = "BlinkVoiceInputStaleGate.\(UUID().uuidString)"
+    let c5Defaults = UserDefaults(suiteName: c5Name)!
+    defer { c5Defaults.removePersistentDomain(forName: c5Name) }
+    let c5 = VoiceInputAccount(defaults: c5Defaults)
+    c5.prepareAccount("hugo")
+    c5.noteAcknowledged(personalHeader: "13", username: "hugo")
+    precondition(c5.isStaleSnapshot(version: "7:12", username: "hugo"))
+    precondition(!c5.isStaleSnapshot(version: "7:13", username: "hugo"))
+    precondition(!c5.isStaleSnapshot(version: "7:14", username: "hugo"))
+    precondition(!c5.isStaleSnapshot(version: nil, username: "hugo"))
+    precondition(c5.isStaleSnapshot(version: "7:12", username: "hugo"),
+                 "the read-only gate must not change state")
+    precondition(!c5.isStaleSnapshot(version: "3:1", username: "ivan"),
+                 "another account is not judged against this account's floor")
+
+    print("PASS: migration, offline/restart, concurrent devices, in-flight edits, account isolation, stale in-flight snapshot, pending-personal rule, header-floor (+2 / retry / out-of-order), read-only stale gate")
   }
 }
