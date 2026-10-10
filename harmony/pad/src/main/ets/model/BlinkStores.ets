@@ -541,7 +541,7 @@ export class BlinkStore {
   // fullAccessNudge 补一下。
   static agentArgs(agent: string): string {
     if (agent === 'codex') {
-      return ' --dangerously-bypass-approvals-and-sandbox';
+      return ' --dangerously-bypass-approvals-and-sandbox --no-daemon';
     }
     if (agent === 'deepseek') {
       return ' --sandbox-mode danger-full-access';
