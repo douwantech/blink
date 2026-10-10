@@ -149,6 +149,7 @@ final class ServerConfigSync: ObservableObject {
   private var uploadWork: DispatchWorkItem?
   private var voiceUploadWork: DispatchWorkItem?
   private var uploadingVoiceInput = false
+  private let voiceCore = VoiceSyncCore.shared
   private var sessionGeneration = 0
 
   private init() {
@@ -294,7 +295,8 @@ final class ServerConfigSync: ObservableObject {
   /// 优先采纳。这里故意不安排上传：uploadPersonal() 上传前也调本方法对齐版本，
   /// 若在这里 schedule 会互相触发成环。
   @MainActor private func syncFromServer(replaceTabs: Bool = false, force: Bool = false,
-                                         bearer: String? = nil, preservingOwnVoiceVersion: String? = nil) async throws {
+                                         bearer: String? = nil, preservingOwnVoiceVersion: String? = nil,
+                                         acknowledgedPersonal: UInt64? = nil) async throws {
     // token 为 nil 时绝不发请求：Optional 插值会把请求头拼成 "Bearer nil"（3 字节，
     // 不是 64 hex），服务器必然 401，用户侧表现成「登录已过期」——2026-10-05 Mac
     // 登录循环就是这么来的。静默跳过，等下次启动/回前台有 token 再拉。
@@ -329,7 +331,8 @@ final class ServerConfigSync: ObservableObject {
       try data.write(to: cacheURL, options: .atomic)
       try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: cacheURL.path)
       apply(decoded.snapshot, shared: decoded.shared, replaceTabs: replaceTabs,
-        preservingOwnVoiceVersion: preservingOwnVoiceVersion)
+        preservingOwnVoiceVersion: preservingOwnVoiceVersion,
+        acknowledgedPersonal: acknowledgedPersonal)
       isOnline = true
     } catch {
       guard sessionGeneration == generation else { return }
@@ -356,7 +359,8 @@ final class ServerConfigSync: ObservableObject {
   }
 
   private func apply(_ snapshot: ServerSnapshot, shared: [SharedTab], replaceTabs: Bool,
-                     preservingOwnVoiceVersion: String? = nil) {
+                     preservingOwnVoiceVersion: String? = nil,
+                     acknowledgedPersonal: UInt64? = nil) {
     applying = true
     defer { applying = false }
     // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
@@ -374,7 +378,7 @@ final class ServerConfigSync: ObservableObject {
     let localDirty = defaults.bool(forKey: dirtyKey)
     let keepPendingPersonal = VoiceInputAccount.keepPendingPersonal(
       localDirty: localDirty, snapshotVersion: snapshot.version,
-      ownVersion: preservingOwnVoiceVersion)
+      ownVersion: preservingOwnVoiceVersion, acknowledgedPersonal: acknowledgedPersonal)
     let localTabs = TabStateStore.shared.snapshot()
     let localTime = localTabs.updatedAt ?? 0
     let remoteTime = snapshot.tabs.updatedAt ?? 0
@@ -463,39 +467,64 @@ final class ServerConfigSync: ObservableObject {
     if defaults.bool(forKey: dirtyKey) { await uploadPersonal() }
     guard isOnline else { return }
     guard !uploadingVoiceInput, let bearer = token, let account = username else { return }
-    // 有 refresh 在途就先让位：它在 POST 之前发出的 GET 会在 ack 之后才回来，
-    // 带着旧收藏。adopt 里的「已确认版本」守卫会兑底，这里再减少窗口。
-    // 不能就把这次上传丢了 —— 重新排一次（voiceUploadWork 会 cancel 前一发）。
-    if activeRefreshes > 0 {
-      scheduleVoiceInputUpload()
-      return
-    }
-    let pending = VoiceInputAccount.shared.pending(username: account)
-    guard !pending.isEmpty else { return }
-    uploadingVoiceInput = true
+    // 宿主的 dirty 镜像给 core（core 只做时序，不读 UserDefaults）。
+    voiceCore.pendingPersonal = defaults.bool(forKey: dirtyKey)
+    let uploadingBefore = uploadingVoiceInput   // gate 的入参：此刻还没置位
     let before = defaults.string(forKey: appliedVersionKey)
+    uploadingVoiceInput = true
     defer { uploadingVoiceInput = false }
+    // 序列（让位 / 先推个人改动 / POST / 记下限 / ack）与测试跑的是同一份 VoiceSyncCore：
+    // 在途 refresh 就让位并重排（不能把这次上传丢了）；比已见下限旧的快照由 adopt 挡掉。
+    let outcome = await voiceCore.runUpload(
+      username: account,
+      activeRefreshes: activeRefreshes,
+      uploading: uploadingBefore,
+      pending: { VoiceInputAccount.shared.pending(username: account) },
+      uploadPersonalIfNeeded: { [weak self] in await self?.uploadPersonal() },
+      post: { [weak self] ops in
+        guard let self else { throw URLError(.cancelled) }
+        return try await self.postVoiceInput(ops, bearer: bearer)
+      },
+      acknowledge: { ops, document, _ in
+        VoiceInputAccount.shared.acknowledge(ops, remote: document, username: account)
+      })
+    switch outcome {
+    case .uploaded(let personalHeader):
+      // 中途登出/换账号：别拿旧账号的回包去推新账号的版本。
+      guard token == bearer, username == account else { return }
+      // 两个用途分开用（#101）：
+      //  · expected（previous+1）只判断「这一版是不是我自己推的」→ 保住 pending-personal；
+      //  · acknowledgedPersonal（响应头真值）是快照下限 —— 并发另一台设备写入 / 幂等
+      //    重试时 +1 不成立，但头里的值仍可靠，在途 GET 的旧收藏照样挡得住。
+      let expected = VoiceInputAccount.ownConfigVersion(previous: before, personal: personalHeader)
+      let acknowledgedPersonal = VoiceSyncCore.personalFromHeader(personalHeader)
+      try? await syncFromServer(force: true, preservingOwnVoiceVersion: expected,
+                                acknowledgedPersonal: acknowledgedPersonal)
+      schedulePendingUpload()
+      scheduleVoiceInputUpload()
+    case .deferred:
+      scheduleVoiceInputUpload()
+    case .empty:
+      schedulePendingUpload()
+      scheduleVoiceInputUpload()
+    case .failed:
+      isOnline = false
+    }
+  }
+
+  /// POST /v1/config/voice-input。抽成独立方法给 VoiceSyncCore 注入 —— 测试用假网络
+  /// 替掉的正是这一步，其余序列全是产品代码。返回 (服务器文档, X-Personal-Version 响应头)。
+  @MainActor private func postVoiceInput(_ ops: [AccountVoiceOperation],
+                                         bearer: String) async throws -> (AccountVoiceInput, String?) {
     var request = URLRequest(url: baseURL.appendingPathComponent("v1/config/voice-input"))
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-    do {
-      request.httpBody = try JSONEncoder().encode(["operations": pending])
-      let (data, response) = try await URLSession.shared.data(for: request)
-      guard token == bearer, username == account else { return }
-      guard (response as? HTTPURLResponse)?.statusCode == 200 else { isOnline = false; return }
-      let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
-      VoiceInputAccount.shared.acknowledge(pending, remote: state, username: account)
-      // Cache the acknowledged document and current config version for offline
-      // startup. A fresh edit made during the request is replayed by adopt().
-      let expected = VoiceInputAccount.ownConfigVersion(previous: before,
-        personal: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
-      // 记下「服务器已到这一版」：比它旧的快照（在途 GET）以后不许再采纳。
-      VoiceInputAccount.shared.markAcknowledged(version: expected, username: account)
-      try? await syncFromServer(force: true, preservingOwnVoiceVersion: expected)
-      schedulePendingUpload()
-      scheduleVoiceInputUpload()
-    } catch { isOnline = false }
+    request.httpBody = try JSONEncoder().encode(["operations": ops])
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+    let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
+    return (state, (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
   }
 
   private func schedulePendingUpload() {

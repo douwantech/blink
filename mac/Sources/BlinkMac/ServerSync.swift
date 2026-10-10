@@ -31,6 +31,7 @@ final class ServerSync: ObservableObject {
   private var foregroundPoll: Timer?
   private var voiceUploadWork: DispatchWorkItem?
   private var uploadingVoiceInput = false
+  private let voiceCore = VoiceSyncCore.shared
 
   var hasSession: Bool { defaults.string(forKey: tokenKey) != nil }
 
@@ -112,43 +113,57 @@ final class ServerSync: ObservableObject {
 
   @MainActor private func uploadVoiceInput() async {
     guard !uploadingVoiceInput, let bearer = defaults.string(forKey: tokenKey), let account = username else { return }
-    // 有 refresh 在途就让位：它 POST 之前发的 GET 会在 ack 之后回来，带着旧收藏。
-    // adopt 的「已确认版本」守卫兑底，这里减少窗口。不能把上传丢了 —— 重新排一次。
-    if activeRefreshes > 0 {
-      scheduleVoiceInputUpload()
-      return
-    }
-    let pending = VoiceInputAccount.shared.pending(username: account)
-    guard !pending.isEmpty else { return }
+    // Mac 的个人配置是直写（setAgent / setResting 立即 PUT），没有离线队列要预推；
+    // 共享序列的让位 / 记下限 / ack 步骤与 iOS 跑的是同一份 VoiceSyncCore。
+    voiceCore.pendingPersonal = false
+    let uploadingBefore = uploadingVoiceInput
+    let before = defaults.string(forKey: versionKey)
     uploadingVoiceInput = true
     defer { uploadingVoiceInput = false }
+    let outcome = await voiceCore.runUpload(
+      username: account,
+      activeRefreshes: activeRefreshes,
+      uploading: uploadingBefore,
+      pending: { VoiceInputAccount.shared.pending(username: account) },
+      uploadPersonalIfNeeded: {},
+      post: { [weak self] ops in
+        guard let self else { throw URLError(.cancelled) }
+        return try await self.postVoiceInput(ops, bearer: bearer)
+      },
+      acknowledge: { ops, document, _ in
+        VoiceInputAccount.shared.acknowledge(ops, remote: document, username: account)
+      })
+    switch outcome {
+    case .uploaded(let personalHeader):
+      guard defaults.string(forKey: tokenKey) == bearer, username == account else { return }
+      // 版本缓存用 +1 判定：认得出「这一版是我自己推出来的」就存下，下一次条件 GET 才能
+      // 拿 304（不会把服务器快照整个拉下来）。快照下限已由 core 用**响应头真值**推进
+      // （`noteAcknowledged`）——并发另一台设备写入 / 幂等重试时 +1 不成立，下限也照旧可靠。
+      let acknowledged = VoiceInputAccount.ownConfigVersion(
+        previous: before, personal: personalHeader)
+      if let acknowledged { defaults.set(acknowledged, forKey: versionKey) }
+      else { defaults.removeObject(forKey: versionKey) }
+      await refresh()
+    case .deferred, .empty:
+      scheduleVoiceInputUpload()
+    case .failed:
+      isOnline = false
+    }
+  }
+
+  /// POST /v1/config/voice-input。抽成独立方法给 VoiceSyncCore 注入 —— 测试用假网络
+  /// 替掉的正是这一步，其余序列全是产品代码。返回 (服务器文档, X-Personal-Version 响应头)。
+  @MainActor private func postVoiceInput(_ ops: [AccountVoiceOperation],
+                                         bearer: String) async throws -> (AccountVoiceInput, String?) {
     var request = URLRequest(url: baseURL.appendingPathComponent("v1/config/voice-input"))
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-    do {
-      request.httpBody = try JSONEncoder().encode(["operations": pending])
-      let (data, response) = try await URLSession.shared.data(for: request)
-      guard defaults.string(forKey: tokenKey) == bearer, username == account else { return }
-      guard (response as? HTTPURLResponse)?.statusCode == 200 else { isOnline = false; return }
-      let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
-      VoiceInputAccount.shared.acknowledge(pending, remote: state, username: account)
-      // 收藏 POST 会把个人版本推进 1。识别出「这是我自己刚推出来的那一版」就把它记成已采纳，
-      // 后面那次 refresh 带上它会得到 304 —— 不会把服务器快照整个拉下来盖掉本地还没上传的
-      // 个人状态（休息开关 / agents）。识别不出来（说明同时有别处改过）才退回全量重拉。
-      // 与 iOS ServerConfigSync.uploadVoiceInput 同一套（#101 的 X-Personal-Version 保护）。
-      let acknowledged = VoiceInputAccount.ownConfigVersion(
-        previous: defaults.string(forKey: versionKey),
-        personal: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
-      if let acknowledged {
-        defaults.set(acknowledged, forKey: versionKey)
-      } else {
-        defaults.removeObject(forKey: versionKey)
-      }
-      // 记下「服务器已到这一版」：比它旧的快照（在途 GET）以后不许再采纳。
-      VoiceInputAccount.shared.markAcknowledged(version: acknowledged, username: account)
-      await refresh()
-    } catch { isOnline = false }
+    request.httpBody = try JSONEncoder().encode(["operations": ops])
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+    let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
+    return (state, (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
   }
 
   /// 前台定期对齐同一账号的标签及团队状态；无变化时 GET 只返回 304。
@@ -157,7 +172,8 @@ final class ServerSync: ObservableObject {
     foregroundPoll = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in
         guard let self, NSApp.isActive, self.hasSession,
-              !self.updatingPersonal, self.activeRefreshes == 0 else { return }
+              !self.updatingPersonal, self.activeRefreshes == 0,
+              !self.uploadingVoiceInput else { return }
         await self.refresh()
       }
     }

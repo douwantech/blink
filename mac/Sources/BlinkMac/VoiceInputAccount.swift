@@ -43,7 +43,7 @@ final class VoiceInputAccount {
   private let ownerKey = "BlinkServer.voiceInputOwner"
   private let migratedKey = "BlinkServer.voiceInputMigrated"
   private let queueKey = "BlinkServer.voiceInputOperations"
-  private let ackedVersionKey = "BlinkServer.voiceInputAckedVersion"
+  private let boundKey = "BlinkServer.voiceInputPersonalBound"   // 已见个人版本下限（UInt64 文本）
   private let favoritesKey = "VoiceInputView.aiFavorites"
   private let historyKey = "VoiceInputView.aiHistory"
   private let countsKey = "VoiceInputView.aiFavoriteCounts"
@@ -67,22 +67,47 @@ final class VoiceInputAccount {
 
   /// 收藏 POST 推进的版本回包不能算「服务器前进」，否则本地还没上传的个人状态
   /// （休息开关 / agents）会被服务器快照盖掉。#101 的 keepPendingPersonal。
+  ///
+  /// 两个判据是**分开**的，任一成立即保住本地未上传的个人改动：
+  ///  1. `ownVersion` —— 本次回包正好是「我自己推的那一版」（previous+1）。精确，
+  ///     但只在没有并发写入、也没有重试时成立；
+  ///  2. `acknowledgedPersonal` —— 回包头 `X-Personal-Version` 的真值下限。并发另一台
+  ///     设备写入（+2）或幂等重试（不 +1）时判据 1 落空，但拉回来的快照个人版本只要
+  ///     没超过这个下限，就不含比本次上传更新的外部改动，本地改动必须留着、发了再采纳。
   static func keepPendingPersonal(localDirty: Bool, snapshotVersion: String,
-                                  ownVersion: String?) -> Bool {
-    guard localDirty, let ownVersion else { return false }
-    return snapshotVersion == ownVersion
+                                  ownVersion: String?,
+                                  acknowledgedPersonal: UInt64?) -> Bool {
+    guard localDirty else { return false }
+    if let ownVersion, snapshotVersion == ownVersion { return true }
+    guard let acknowledgedPersonal, let incoming = personalComponent(snapshotVersion) else {
+      return false
+    }
+    return incoming <= acknowledgedPersonal
   }
 
-  /// 记下「服务器已经到这一版了」。比它旧的快照回包不许再采纳 —— 一个在 POST
-  /// 之前发出、POST 之后才回来的 GET（在途 refresh）会带着旧收藏，采纳回去就把
-  /// 刚上传的结果冲掉了（review 指出的竞态）。
-  func markAcknowledged(version: String?, username: String) {
+  /// 已见个人版本下限（只前进）。比它旧的快照回包一律不采纳。
+  private var personalBound: UInt64? {
+    get { defaults.string(forKey: boundKey).flatMap(UInt64.init) }
+    set { defaults.set(newValue.map(String.init), forKey: boundKey) }
+  }
+
+  /// 记下「服务器已到这个个人版本」。
+  ///
+  /// 直接用**有效响应头** `X-Personal-Version`（那一刻服务端的真值），**不是**
+  /// previous+1 —— 并发别的设备写入、或幂等重试回包时 +1 不成立，但头里的值仍然
+  /// 是可靠下限。+1 只用来判断「这一版是不是我自己推的」（保护 pending-personal），
+  /// 两件事分开。
+  func noteAcknowledged(personalHeader: String?, username: String) {
     lock.lock(); defer { lock.unlock() }
     guard defaults.string(forKey: ownerKey) == username,
-          let incoming = Self.personalComponent(version) else { return }
-    if let current = Self.personalComponent(defaults.string(forKey: ackedVersionKey)),
-       current >= incoming { return }
-    defaults.set(version, forKey: ackedVersionKey)
+          let header = personalHeader, let incoming = UInt64(header) else { return }
+    advanceBound(incoming)
+  }
+
+  /// 已见下限只前进。
+  private func advanceBound(_ incoming: UInt64) {
+    if let current = personalBound, current >= incoming { return }
+    personalBound = incoming
   }
 
   var snapshot: AccountVoiceInput {
@@ -113,7 +138,7 @@ final class VoiceInputAccount {
     if let owner, owner != username {
       write(AccountVoiceInput()); queue = []
       defaults.set(false, forKey: migratedKey)
-      defaults.removeObject(forKey: ackedVersionKey)   // 已确认版本也是上一个账号的
+      defaults.removeObject(forKey: boundKey)   // 已见下限也是上一个账号的
     }
     defaults.set(username, forKey: ownerKey)
   }
@@ -133,16 +158,15 @@ final class VoiceInputAccount {
   /// is deliberate and must clear a newly signed-in device's old cache.
   ///
   /// `version` is the config version this snapshot was cut from. A snapshot older
-  /// than what we already acknowledged (an in-flight GET that started before our
-  /// POST and landed after it) is ignored outright.
-  func adopt(_ remote: AccountVoiceInput?, version: String? = nil, username: String) {
+  /// than the seen personal version bound (an in-flight GET that started before our
+  /// POST and landed after it, or two refreshes answering out of order) is ignored.
+  /// Returns true when the snapshot was adopted.
+  @discardableResult
+  func adopt(_ remote: AccountVoiceInput?, version: String? = nil, username: String) -> Bool {
     lock.lock(); defer { lock.unlock() }
     prepareAccount(username)
-    if let stale = Self.personalComponent(version),
-       let acked = Self.personalComponent(defaults.string(forKey: ackedVersionKey)),
-       stale < acked {
-      return
-    }
+    let incoming = Self.personalComponent(version)
+    if let incoming, let bound = personalBound, incoming < bound { return false }
     if !defaults.bool(forKey: migratedKey) {
       if remote == nil {
         // Pre-migration edits are already reflected in the local snapshot.
@@ -153,6 +177,10 @@ final class VoiceInputAccount {
     var state = remote ?? queue.first(where: { $0.kind == "seed" })?.data ?? snapshot
     for op in queue { state.apply(op) }
     write(state)
+    // 采纳成功（正常 GET 也走这里）就把下限推到这份快照的版本：两个 refresh 乱序
+    // 回包时，先到的那份（版本高）推高下限，后到的那份（版本低）就不会把状态退回去。
+    if let incoming { advanceBound(incoming) }
+    return true
   }
 
   func needsInitialSnapshot(username: String) -> Bool {
