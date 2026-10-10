@@ -1643,6 +1643,35 @@ struct PadHome {
     this.focusTerm();
   }
 
+  // 删除/清空：都进账号队列（performVoiceInput），不只改本地 —— 否则下一轮回读会把删掉的又拿回来。
+  private removeFavorite(text: string): void {
+    this.store.performVoiceInput('removeFavorite', text);
+  }
+
+  private confirmClearFavorites(): void {
+    if (this.store.favorites.length === 0) { return; }
+    this.getUIContext().showAlertDialog({
+      title: '清空收藏',
+      message: '清空本账号的全部收藏短语？删除会同步到其它设备。',
+      primaryButton: { value: '清空', fontColor: RED, action: () => this.store.performVoiceInput('clearFavorites') },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
+  private removeHistory(text: string): void {
+    this.store.performVoiceInput('removeHistory', text);
+  }
+
+  private confirmClearHistory(): void {
+    if (this.store.history.length === 0) { return; }
+    this.getUIContext().showAlertDialog({
+      title: '清空历史',
+      message: '清空本账号的全部发送历史？删除会同步到其它设备。',
+      primaryButton: { value: '清空', fontColor: RED, action: () => this.store.performVoiceInput('clearHistory') },
+      secondaryButton: { value: '取消', action: () => {} },
+    });
+  }
+
   private sortedFavorites(): string[] {
     const out: string[] = this.store.favorites.slice();
     out.sort((a: string, b: string) => {
@@ -3660,6 +3689,15 @@ struct PadHome {
             Text('发送历史').fontSize(13).fontColor(TEAL).margin({ right: 14 })
               .onClick(() => { this.sheet = 'history'; })
           }
+          // 删除/清空入口：列表项长按可以删单条，这里给一个整表清空（同 iOS 的「清空」）。
+          if (this.sheet === 'favorites' && this.store.favorites.length > 0) {
+            Text('清空').fontSize(13).fontColor(RED).margin({ right: 14 })
+              .onClick(() => this.confirmClearFavorites())
+          }
+          if (this.sheet === 'history' && this.store.history.length > 0) {
+            Text('清空').fontSize(13).fontColor(RED).margin({ right: 14 })
+              .onClick(() => this.confirmClearHistory())
+          }
           this.iconBtn($r('sys.symbol.xmark'), SUB, 15, () => { this.sheet = 'none'; if (this.mode !== 'browser') { this.focusTerm(); } })
         }
         .width('100%').height(52).padding({ left: 20, right: 10 })
@@ -3670,11 +3708,11 @@ struct PadHome {
         } else if (this.sheet === 'newTab') {
           this.newTabBody()
         } else if (this.sheet === 'favorites') {
-          this.listBody(this.sortedFavorites(), '还没有收藏短语（手机端/iOS 添加后会同步过来）', (s: string) => this.useFavorite(s))
+          this.favoritesBody()
         } else if (this.sheet === 'claude') {
           this.listBody(CLAUDE_COMMANDS, '', (s: string) => { this.sendLine(s); this.sheet = 'none'; this.focusTerm(); })
         } else if (this.sheet === 'history') {
-          this.listBody(this.reversedHistory(), '还没有发送历史', (s: string) => { this.sendLine(s); this.sheet = 'none'; this.focusTerm(); })
+          this.historyBody()
         } else if (this.sheet === 'aiConfig') {
           this.aiConfigBody()
         } else if (this.sheet === 'machines') {
@@ -3719,6 +3757,70 @@ struct PadHome {
         }, (it: string, i: number) => i + '_' + it)
       }
       .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).divider({ strokeWidth: 1, color: HAIR })
+    }
+  }
+
+  // 收藏：点一下用（并记一次使用次数 + 进历史）；长按删单条。
+  @Builder
+  favoritesBody() {
+    if (this.store.favorites.length === 0) {
+      Column({ space: 8 }) {
+        Text('还没有收藏短语').fontSize(13).fontColor(DIM)
+        Text('在语音条里收藏后会同步到登录账号').fontSize(12).fontColor(DIM)
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List() {
+        ForEach(this.store.favorites, (it: string) => {
+          ListItem() {
+            Text(it).fontSize(14).fontColor(FG).fontFamily(MONO)
+              .width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 }).maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .onClick(() => this.useFavorite(it))
+          .bindContextMenu(this.favMenu(it), ResponseType.LongPress)
+        }, (it: string, i: number) => i + '_' + it)
+      }
+      .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).divider({ strokeWidth: 1, color: HAIR })
+    }
+  }
+
+  @Builder
+  favMenu(text: string) {
+    Menu() {
+      MenuItem({ content: '删除' }).onClick(() => this.removeFavorite(text))
+      MenuItem({ content: '清空收藏' }).onClick(() => this.confirmClearFavorites())
+    }
+  }
+
+  // 历史：点一下发出去（并记一次历史）；长按删单条。
+  @Builder
+  historyBody() {
+    if (this.store.history.length === 0) {
+      Column({ space: 8 }) {
+        Text('还没有发送历史').fontSize(13).fontColor(DIM)
+        Text('说出去的话会记在这里，跟着账号走').fontSize(12).fontColor(DIM)
+      }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+    } else {
+      List() {
+        ForEach(this.reversedHistory(), (it: string) => {
+          ListItem() {
+            Text(it).fontSize(14).fontColor(FG).fontFamily(MONO)
+              .width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 }).maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .onClick(() => { this.sendLine(it); this.sheet = 'none'; this.focusTerm(); })
+          .bindContextMenu(this.histMenu(it), ResponseType.LongPress)
+        }, (it: string, i: number) => i + '_' + it)
+      }
+      .layoutWeight(1).width('100%').padding({ left: 20, right: 20 }).divider({ strokeWidth: 1, color: HAIR })
+    }
+  }
+
+  @Builder
+  histMenu(text: string) {
+    Menu() {
+      MenuItem({ content: '删除这条' }).onClick(() => this.removeHistory(text))
+      MenuItem({ content: '清空历史' }).onClick(() => this.confirmClearHistory())
     }
   }
 

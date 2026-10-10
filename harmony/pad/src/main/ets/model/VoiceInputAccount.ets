@@ -64,6 +64,21 @@ export class VoiceInputAccount {
   private migrated: boolean;
   private queue: AccountVoiceOperation[];
 
+  /** 只认自己写入的那一次版本推进（iOS VoiceInputAccount.ownConfigVersion 同一套）：
+   *  版本串是 `<shared>:<personal>`，只有 personal 恰好 = 旧 +1 才算「这轮前进是我干的」。
+   *  并发改动（别的设备/服务端）返回空串，调用方照旧走「服务器权威」。 */
+  static ownConfigVersion(previous: string, personal: string): string {
+    const parts: string[] = previous.split(':');
+    // 两段都得是非负十进制整数（对齐 iOS 的 UInt64 解析）：'5:' + '1' 这种
+    // 残缺版本串不能算成「自己写入」，否则会误判为自己的推进。
+    const digits: RegExp = new RegExp('^[0-9]+$');
+    if (parts.length !== 2 || !digits.test(parts[1]) || !digits.test(personal)) { return ''; }
+    const old: number = Number(parts[1]);
+    const next: number = Number(personal);
+    if (next !== old + 1) { return ''; }
+    return parts[0] + ':' + next;
+  }
+
   constructor(prefs: preferences.Preferences, legacy: AccountVoiceInput) {
     this.prefs = prefs;
     this.state = legacy;

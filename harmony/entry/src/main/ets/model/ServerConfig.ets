@@ -24,7 +24,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { asset } from '@kit.AssetStoreKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BlinkStore, Machine, WorkDir, TabModel, PinnedTab } from './BlinkStores';
-import { AccountVoiceInput, AccountVoiceOperation, AccountVoiceRequest } from './VoiceInputAccount';
+import { AccountVoiceInput, AccountVoiceOperation, AccountVoiceRequest, VoiceInputAccount } from './VoiceInputAccount';
 
 const DOMAIN: number = 0x0B11;
 const TAG: string = 'ServerConfig';
@@ -108,10 +108,13 @@ interface PutTabsBody {
   closedIds: string[];
 }
 
-/** 一次 HTTP 往返的结果：只暴露状态码与字符串体。 */
+/** 一次 HTTP 往返的结果：状态码 + 字符串体 + 响应头（小写键）。
+ *  响应头是必需的：voice-input POST 用 X-Personal-Version 告诉客户端这次写入把
+ *  个人版本推进到了几（配合版本串里的 personal 段做「自己写入」识别）。 */
 interface HttpResult {
   code: number;
   body: string;
+  header: Record<string, string>;
 }
 
 export class ServerConfig {
@@ -243,7 +246,7 @@ export class ServerConfig {
    * GET /v1/config 并采纳。304 = 服务器版本未变（不动本地）；200 = 版本前进/本机首次，
    * 整份快照无条件生效并清 dirty；401 = 清 session 回登录页；网络失败 → 用缓存继续展示。
    */
-  private async syncFromServer(force: boolean): Promise<void> {
+  private async syncFromServer(force: boolean, preservingOwnVoiceVersion: string = ''): Promise<void> {
     if (this.token.length === 0) {
       return;
     }
@@ -281,7 +284,7 @@ export class ServerConfig {
     // 缓存写的是服务器响应的原始字节（含公用标签与机器 token，所以绝不打印）
     this.writeCache(rsp.body);
     const snap: ServerSnapshot = JSON.parse(rsp.body) as ServerSnapshot;
-    await this.apply(snap);
+    await this.apply(snap, preservingOwnVoiceVersion);
     this.isOnline = true;
   }
 
@@ -289,7 +292,7 @@ export class ServerConfig {
    * 采纳服务器快照。服务器数组顺序权威：machines/workDirs/tabs 整份替换。
    * `shared:true` 的标签只进 sharedTabs（只读影子），不落盘、不回传。
    */
-  private async apply(snap: ServerSnapshot): Promise<void> {
+  private async apply(snap: ServerSnapshot, preservingOwnVoiceVersion: string = ''): Promise<void> {
     this.applying = true;
     try {
       if (this.store.voiceInputAccount !== null) {
@@ -360,33 +363,46 @@ export class ServerConfig {
       }
       this.store.closedIds = closedFiltered;
 
+      // 「自己写入」保护（iOS ServerConfigSync 同一套）：voice-input 的 POST 会推进本账号的
+      // 配置版本，如果这时无脑清 dirty + 采纳服务器值，就会把**同时改的**休息名单/agents
+      // 抹掉。只有「本机确有未上传改动」且「这份快照的版本正好等于自己写入后应该得到的版本」
+      // （preservingOwnVoiceVersion，由 ownConfigVersion 按 personal 恰好 +1 算出）时，
+      // 才保留本地未上传的个人改动；其它情况（别的设备/服务端改的）仍然服务器权威。
+      const localDirty: boolean = this.dirty;
+      const keepPendingPersonal: boolean = localDirty && preservingOwnVoiceVersion.length > 0 &&
+        snap.version === preservingOwnVoiceVersion;
+      const serverAdvanced: boolean = this.version !== snap.version;
+      const adoptPersonal: boolean = !keepPendingPersonal && (serverAdvanced || !localDirty);
+
       // selection.machineId → 机器筛选；键不在就保持原样（对齐 iOS 只在有值时覆盖）
-      const sel: Record<string, string> | undefined = snap.recentSelection;
-      if (sel !== undefined) {
-        const mid: string | undefined = sel['machineId'];
-        if (mid !== undefined) {
-          this.store.filterMachineId = mid;
-        }
-        // restSessions = 在岗的 tmuxSession 集合（逗号拼接）。**键不在就不物化**，
-        // 保持「默认只有 tom 在岗」的规则；键在了才以服务器为准。
-        // 集合按 **tmuxSession** 记并套在**公用标签**上（iOS SharedRestStore 口径）。
-        // 旧写法只把 personal 标休息 → 公用标签永远不休息 → 坞里全铺，与 iOS 不一致。
-        const joined: string | undefined = sel['restSessions'];
-        if (joined !== undefined) {
-          const active: string[] = [];
-          const parts: string[] = joined.split(',');
-          for (let i = 0; i < parts.length; i++) {
-            const p: string = parts[i].trim();
-            if (p.length > 0) {
-              active.push(p);
-            }
+      if (adoptPersonal) {
+        const sel: Record<string, string> | undefined = snap.recentSelection;
+        if (sel !== undefined) {
+          const mid: string | undefined = sel['machineId'];
+          if (mid !== undefined) {
+            this.store.filterMachineId = mid;
           }
-          this.store.restActive = active;
-          this.store.restLoaded = true;
+          // restSessions = 在岗的 tmuxSession 集合（逗号拼接）。**键不在就不物化**，
+          // 保持「默认只有 tom 在岗」的规则；键在了才以服务器为准。
+          // 集合按 **tmuxSession** 记并套在**公用标签**上（iOS SharedRestStore 口径）。
+          // 旧写法只把 personal 标休息 → 公用标签永远不休息 → 坞里全铺，与 iOS 不一致。
+          const joined: string | undefined = sel['restSessions'];
+          if (joined !== undefined) {
+            const active: string[] = [];
+            const parts: string[] = joined.split(',');
+            for (let i = 0; i < parts.length; i++) {
+              const p: string = parts[i].trim();
+              if (p.length > 0) {
+                active.push(p);
+              }
+            }
+            this.store.restActive = active;
+            this.store.restLoaded = true;
+          }
         }
-      }
-      if (snap.agents !== undefined) {
-        this.store.agents = snap.agents;
+        if (snap.agents !== undefined) {
+          this.store.agents = snap.agents;
+        }
       }
       // 书签（浏览器「后台」）：快照带 pinned 就是权威 —— 按 position 排序后整份替换本地，
       // 保留 authUser/authPassword，随即落盘（同 iOS ServerPinnedStore）。书签条本身是
@@ -423,7 +439,11 @@ export class ServerConfig {
         this.store.currentTabId = visible.length > 0 ? visible[0].id : '';
       }
       this.version = snap.version;
-      this.dirty = false;   // 服务器版本已采纳：本地未上传的改动放弃（绝不被回传覆盖服务器）
+      // 只有「不是保留自己写入」时才放弃本地未上传改动；keepPendingPersonal 时
+      // dirty 保持真，等下一条队列自己传上去（同 iOS apply）。
+      if (serverAdvanced && !keepPendingPersonal) {
+        this.dirty = false;   // 服务器版本已采纳：本地未上传的改动放弃（绝不被回传覆盖服务器）
+      }
       if (snap.user !== undefined) {
         this.username = snap.user.username;
         this.canWrite = snap.user.isAdmin && snap.user.canWrite;
@@ -466,6 +486,9 @@ export class ServerConfig {
     const bearer: string = this.token;
     const pending: AccountVoiceOperation[] = this.store.voiceInputPending(account);
     if (pending.length === 0) { return; }
+    // 上传前的版本 + 服务器回的 X-Personal-Version → 自己这次写入应该得到的版本。
+    // 回读时只有快照版本正好等于它，才认为「这轮前进是我自己造成的」、保留未上传的个人改动。
+    const before: string = this.version;
     this.uploadingVoiceInput = true;
     try {
       const body: AccountVoiceRequest = { operations: pending };
@@ -477,7 +500,9 @@ export class ServerConfig {
         this.store.voiceInputAccount.acknowledge(pending, state, account);
         this.store.syncVoiceInputCache();
       }
-      await this.syncFromServer(true);
+      const personal: string = rsp.header['x-personal-version'] !== undefined ? rsp.header['x-personal-version'] : '';
+      const expected: string = VoiceInputAccount.ownConfigVersion(before, personal);
+      await this.syncFromServer(true, expected);
     } catch (e) { this.isOnline = false; }
     finally { this.uploadingVoiceInput = false; }
     this.scheduleVoiceInputUpload();
@@ -788,7 +813,16 @@ export class ServerConfig {
     return req.request(BASE + path, options).then((rsp: http.HttpResponse): HttpResult => {
       req.destroy();
       const text: string = typeof rsp.result === 'string' ? rsp.result as string : '';
-      return { code: rsp.responseCode, body: text } as HttpResult;
+      // 响应头统一收成小写键的扁平表；拿不到就给空对象（调用方按缺键处理）。
+      const hdr: Record<string, string> = {};
+      if (rsp.header !== undefined && rsp.header !== null) {
+        const raw: Record<string, string> = rsp.header as Record<string, string>;
+        const keys: string[] = Object.keys(raw);
+        for (let i = 0; i < keys.length; i++) {
+          hdr[keys[i].toLowerCase()] = String(raw[keys[i]]);
+        }
+      }
+      return { code: rsp.responseCode, body: text, header: hdr } as HttpResult;
     }).catch((e: Object): HttpResult => {
       req.destroy();
       throw new Error(`网络错误：${JSON.stringify(e)}`);
