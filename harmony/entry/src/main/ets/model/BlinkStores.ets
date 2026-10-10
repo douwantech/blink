@@ -564,7 +564,7 @@ export class BlinkStore {
   // fullAccessNudge 补一下。
   static agentArgs(agent: string): string {
     if (agent === 'codex') {
-      return ' -c "tui.status_line=[\\"model\\",\\"context-used\\",\\"five-hour-limit\\",\\"weekly-limit\\"]" --dangerously-bypass-approvals-and-sandbox';
+      return ' -c "tui.status_line=[\\"model\\",\\"context-used\\",\\"five-hour-limit\\",\\"weekly-limit\\"]" --dangerously-bypass-approvals-and-sandbox --no-daemon';
     }
     if (agent === 'deepseek') {
       return ' --provider deepseek --model deepseek-flash --sandbox-mode danger-full-access';

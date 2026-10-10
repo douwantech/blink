@@ -229,7 +229,7 @@ enum AgentKind: String, CaseIterable, Identifiable {
     var args: String {
         switch self {
         case .claude: return " --settings ~/.blink/statusline-settings.json --setting-sources project,local --dangerously-skip-permissions"
-        case .codex: return " -c \"tui.status_line=[\\\"model\\\",\\\"context-used\\\",\\\"five-hour-limit\\\",\\\"weekly-limit\\\"]\" --dangerously-bypass-approvals-and-sandbox"
+        case .codex: return " -c \"tui.status_line=[\\\"model\\\",\\\"context-used\\\",\\\"five-hour-limit\\\",\\\"weekly-limit\\\"]\" --dangerously-bypass-approvals-and-sandbox --no-daemon"
         case .deepseek: return " --provider deepseek --model deepseek-flash --sandbox-mode danger-full-access"
         case .glm: return " --settings ~/.blink/statusline-settings.json --dangerously-skip-permissions"
         }
