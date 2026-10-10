@@ -362,7 +362,7 @@ final class ServerConfigSync: ObservableObject {
     // 公用标签只在这里更新，供 UI 渲染（SpaceController 监听 didApply）。
     // snapshot.tabs 已在解码边界摘干净，下面对它的每一次写都不会带上公用标签。
     sharedTabs = shared
-    VoiceInputAccount.shared.adopt(snapshot.voiceInput, username: snapshot.user.username)
+    VoiceInputAccount.shared.adopt(snapshot.voiceInput, version: snapshot.version, username: snapshot.user.username)
     if let data = try? JSONEncoder().encode(snapshot.machines) {
       defaults.set(data, forKey: "BlinkMachineStore.machines")
     }
@@ -372,7 +372,9 @@ final class ServerConfigSync: ObservableObject {
       ServerPinnedStore.apply(pinned, to: defaults)
     }
     let localDirty = defaults.bool(forKey: dirtyKey)
-    let keepPendingPersonal = localDirty && snapshot.version == preservingOwnVoiceVersion
+    let keepPendingPersonal = VoiceInputAccount.keepPendingPersonal(
+      localDirty: localDirty, snapshotVersion: snapshot.version,
+      ownVersion: preservingOwnVoiceVersion)
     let localTabs = TabStateStore.shared.snapshot()
     let localTime = localTabs.updatedAt ?? 0
     let remoteTime = snapshot.tabs.updatedAt ?? 0
@@ -461,6 +463,13 @@ final class ServerConfigSync: ObservableObject {
     if defaults.bool(forKey: dirtyKey) { await uploadPersonal() }
     guard isOnline else { return }
     guard !uploadingVoiceInput, let bearer = token, let account = username else { return }
+    // 有 refresh 在途就先让位：它在 POST 之前发出的 GET 会在 ack 之后才回来，
+    // 带着旧收藏。adopt 里的「已确认版本」守卫会兑底，这里再减少窗口。
+    // 不能就把这次上传丢了 —— 重新排一次（voiceUploadWork 会 cancel 前一发）。
+    if activeRefreshes > 0 {
+      scheduleVoiceInputUpload()
+      return
+    }
     let pending = VoiceInputAccount.shared.pending(username: account)
     guard !pending.isEmpty else { return }
     uploadingVoiceInput = true
@@ -481,6 +490,8 @@ final class ServerConfigSync: ObservableObject {
       // startup. A fresh edit made during the request is replayed by adopt().
       let expected = VoiceInputAccount.ownConfigVersion(previous: before,
         personal: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
+      // 记下「服务器已到这一版」：比它旧的快照（在途 GET）以后不许再采纳。
+      VoiceInputAccount.shared.markAcknowledged(version: expected, username: account)
       try? await syncFromServer(force: true, preservingOwnVoiceVersion: expected)
       schedulePendingUpload()
       scheduleVoiceInputUpload()

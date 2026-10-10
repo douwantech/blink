@@ -43,6 +43,7 @@ final class VoiceInputAccount {
   private let ownerKey = "BlinkServer.voiceInputOwner"
   private let migratedKey = "BlinkServer.voiceInputMigrated"
   private let queueKey = "BlinkServer.voiceInputOperations"
+  private let ackedVersionKey = "BlinkServer.voiceInputAckedVersion"
   private let favoritesKey = "VoiceInputView.aiFavorites"
   private let historyKey = "VoiceInputView.aiHistory"
   private let countsKey = "VoiceInputView.aiFavoriteCounts"
@@ -56,6 +57,32 @@ final class VoiceInputAccount {
           let old = UInt64(parts[1]), let personal, let new = UInt64(personal),
           new == old + 1 else { return nil }
     return "\(parts[0]):\(new)"
+  }
+
+  /// personal 段（`"7:12"` → 12）。版本是 `"<shared>:<personal>"`（服务端 config.go 同形）。
+  static func personalComponent(_ version: String?) -> UInt64? {
+    guard let parts = version?.split(separator: ":"), parts.count == 2 else { return nil }
+    return UInt64(parts[1])
+  }
+
+  /// 收藏 POST 推进的版本回包不能算「服务器前进」，否则本地还没上传的个人状态
+  /// （休息开关 / agents）会被服务器快照盖掉。#101 的 keepPendingPersonal。
+  static func keepPendingPersonal(localDirty: Bool, snapshotVersion: String,
+                                  ownVersion: String?) -> Bool {
+    guard localDirty, let ownVersion else { return false }
+    return snapshotVersion == ownVersion
+  }
+
+  /// 记下「服务器已经到这一版了」。比它旧的快照回包不许再采纳 —— 一个在 POST
+  /// 之前发出、POST 之后才回来的 GET（在途 refresh）会带着旧收藏，采纳回去就把
+  /// 刚上传的结果冲掉了（review 指出的竞态）。
+  func markAcknowledged(version: String?, username: String) {
+    lock.lock(); defer { lock.unlock() }
+    guard defaults.string(forKey: ownerKey) == username,
+          let incoming = Self.personalComponent(version) else { return }
+    if let current = Self.personalComponent(defaults.string(forKey: ackedVersionKey)),
+       current >= incoming { return }
+    defaults.set(version, forKey: ackedVersionKey)
   }
 
   var snapshot: AccountVoiceInput {
@@ -86,6 +113,7 @@ final class VoiceInputAccount {
     if let owner, owner != username {
       write(AccountVoiceInput()); queue = []
       defaults.set(false, forKey: migratedKey)
+      defaults.removeObject(forKey: ackedVersionKey)   // 已确认版本也是上一个账号的
     }
     defaults.set(username, forKey: ownerKey)
   }
@@ -103,9 +131,18 @@ final class VoiceInputAccount {
 
   /// Only a null server document triggers legacy migration. An empty document
   /// is deliberate and must clear a newly signed-in device's old cache.
-  func adopt(_ remote: AccountVoiceInput?, username: String) {
+  ///
+  /// `version` is the config version this snapshot was cut from. A snapshot older
+  /// than what we already acknowledged (an in-flight GET that started before our
+  /// POST and landed after it) is ignored outright.
+  func adopt(_ remote: AccountVoiceInput?, version: String? = nil, username: String) {
     lock.lock(); defer { lock.unlock() }
     prepareAccount(username)
+    if let stale = Self.personalComponent(version),
+       let acked = Self.personalComponent(defaults.string(forKey: ackedVersionKey)),
+       stale < acked {
+      return
+    }
     if !defaults.bool(forKey: migratedKey) {
       if remote == nil {
         // Pre-migration edits are already reflected in the local snapshot.

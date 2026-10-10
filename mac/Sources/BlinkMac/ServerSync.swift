@@ -112,6 +112,12 @@ final class ServerSync: ObservableObject {
 
   @MainActor private func uploadVoiceInput() async {
     guard !uploadingVoiceInput, let bearer = defaults.string(forKey: tokenKey), let account = username else { return }
+    // 有 refresh 在途就让位：它 POST 之前发的 GET 会在 ack 之后回来，带着旧收藏。
+    // adopt 的「已确认版本」守卫兑底，这里减少窗口。不能把上传丢了 —— 重新排一次。
+    if activeRefreshes > 0 {
+      scheduleVoiceInputUpload()
+      return
+    }
     let pending = VoiceInputAccount.shared.pending(username: account)
     guard !pending.isEmpty else { return }
     uploadingVoiceInput = true
@@ -139,6 +145,8 @@ final class ServerSync: ObservableObject {
       } else {
         defaults.removeObject(forKey: versionKey)
       }
+      // 记下「服务器已到这一版」：比它旧的快照（在途 GET）以后不许再采纳。
+      VoiceInputAccount.shared.markAcknowledged(version: acknowledged, username: account)
       await refresh()
     } catch { isOnline = false }
   }
@@ -272,7 +280,7 @@ final class ServerSync: ObservableObject {
       let state = (snap["voiceInput"] as? [String: Any]).flatMap {
         try? JSONDecoder().decode(AccountVoiceInput.self, from: JSONSerialization.data(withJSONObject: $0))
       }
-      VoiceInputAccount.shared.adopt(state, username: account)
+      VoiceInputAccount.shared.adopt(state, version: version, username: account)
       let local = VoiceInputAccount.shared.snapshot
       obj["favorites"] = local.favorites
       obj["favoriteCounts"] = local.favoriteCounts
