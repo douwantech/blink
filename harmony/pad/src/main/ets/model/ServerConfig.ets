@@ -345,24 +345,15 @@ export class ServerConfig {
         }
         personal.push(model);
       }
+      // 采纳前的公用标签集合：下面判定「本地哪些是个人标签」要用它 —— 不能用刚被
+      // 覆盖过的 store.sharedIds。
+      const prevSharedIds: string[] = this.store.sharedIds.slice();
       this.sharedTabs = shared;
       const sharedKeys: string[] = [];
       for (let i = 0; i < shared.length; i++) {
         sharedKeys.push(shared[i].id);
       }
       this.store.sharedIds = sharedKeys;
-      this.store.workDirs = dirs;
-      this.store.tabs = display.concat(personal);
-      // 公用标签不进个人墓碑（本地关一次不能把它记成「已关」回传）
-      const closedFiltered: string[] = [];
-      for (let i = 0; i < closedIds.length; i++) {
-        let isShared: boolean = false;
-        for (let k = 0; k < shared.length; k++) {
-          if (shared[k].id === closedIds[i]) { isShared = true; break; }
-        }
-        if (!isShared) { closedFiltered.push(closedIds[i]); }
-      }
-      this.store.closedIds = closedFiltered;
 
       // 「自己写入」保护（iOS ServerConfigSync 同一套）：voice-input 的 POST 会推进本账号的
       // 配置版本，如果这时无脑清 dirty + 采纳服务器值，就会把**同时改的**休息名单/agents
@@ -374,6 +365,33 @@ export class ServerConfig {
         snap.version === preservingOwnVoiceVersion;
       const serverAdvanced: boolean = this.version !== snap.version;
       const adoptPersonal: boolean = !keepPendingPersonal && (serverAdvanced || !localDirty);
+
+      // 公用标签不进个人墓碑（本地关一次不能把它记成「已关」回传）
+      const closedFiltered: string[] = [];
+      for (let i = 0; i < closedIds.length; i++) {
+        let isShared: boolean = false;
+        for (let k = 0; k < shared.length; k++) {
+          if (shared[k].id === closedIds[i]) { isShared = true; break; }
+        }
+        if (!isShared) { closedFiltered.push(closedIds[i]); }
+      }
+      // 个人标签 / 墓碑 / 工作目录也只在 adoptPersonal 时才被服务器快照整份替换：
+      // keepPendingPersonal 时这份快照是**旧**的（本轮版本前进是自己刚写的 voice POST
+      // 造成的），采纳它会把在途期间新建/关闭的标签一起冲掉（iOS retainLocalTabs 同口径）。
+      // 公用标签不受这条影响 —— 坞里铺的 display 永远跟服务器走。
+      if (adoptPersonal) {
+        this.store.workDirs = dirs;
+        this.store.tabs = display.concat(personal);
+        this.store.closedIds = closedFiltered;
+      } else {
+        const localPersonal: TabModel[] = [];
+        for (let i = 0; i < this.store.tabs.length; i++) {
+          const t: TabModel = this.store.tabs[i];
+          if (prevSharedIds.indexOf(t.id) < 0) { localPersonal.push(t); }
+        }
+        this.store.tabs = display.concat(localPersonal);
+        // workDirs / closedIds 保持本地不动：本地未上传的改动优先，随后由 PUT 回传。
+      }
 
       // selection.machineId → 机器筛选；键不在就保持原样（对齐 iOS 只在有值时覆盖）
       if (adoptPersonal) {
@@ -483,7 +501,22 @@ export class ServerConfig {
   }
 
   private async uploadVoiceInput(): Promise<void> {
+    // 互斥（iOS uploadVoiceInput 同口径）：personal PUT 在途时让路 —— 两个上传同时推
+    // 版本会让回读的 expected 不再匹配，可能在途期间的新改动被旧快照顶掉。让路也要
+    // 留个续传，别把队列忘了。
+    if (this.uploading) {
+      this.scheduleVoiceInputUpload();
+      return;
+    }
     if (this.uploadingVoiceInput || this.token.length === 0) { return; }
+    if (!this.isOnline) { return; }
+    // 先把积压的个人改动 flush 上去（iOS：dirty 就先 await uploadPersonal）——
+    // 这样下面记的 before 已经含了这轮 PUT 的版本推进，expected 才算得准。
+    if (this.dirty) {
+      await this.uploadPersonal();
+      if (!this.isOnline) { return; }
+      if (this.uploadingVoiceInput || this.token.length === 0) { return; }
+    }
     const account: string = this.username;
     const bearer: string = this.token;
     const pending: AccountVoiceOperation[] = this.store.voiceInputPending(account);
@@ -507,7 +540,10 @@ export class ServerConfig {
       await this.syncFromServer(true, expected);
     } catch (e) { this.isOnline = false; }
     finally { this.uploadingVoiceInput = false; }
+    // 两条队列各自续传（iOS uploadVoiceInput 尾部同）：voice 还有积压就再来一轮，
+    // 个人状态在 POST 期间又被改过也立刻补一轮 PUT。
     this.scheduleVoiceInputUpload();
+    this.scheduleUpload();
   }
 
   // ---- 上传（个人状态）----
@@ -554,7 +590,10 @@ export class ServerConfig {
    * 不拉回来下一轮同步会误判「服务器前进」），竞态消除。
    */
   private async uploadPersonal(): Promise<void> {
-    if (this.token.length === 0 || !this.isOnline || !this.dirty || this.uploading) {
+    // 让路 voice POST（iOS uploadPersonal 的 !uploadingVoiceInput 同一道门）：
+    // 两个上传绝不能同时推版本。
+    if (this.token.length === 0 || !this.isOnline || !this.dirty || this.uploading ||
+      this.uploadingVoiceInput) {
       return;
     }
     this.uploading = true;
@@ -566,6 +605,7 @@ export class ServerConfig {
     }
     if (!this.dirty) {
       this.uploading = false;
+      this.scheduleVoiceInputUpload();   // 个人没事了，把 voice 队列接力下去
       return;
     }
     this.dirty = false;
@@ -639,6 +679,7 @@ export class ServerConfig {
     }
     this.uploading = false;
     this.scheduleUpload();
+    this.scheduleVoiceInputUpload();   // 个人传完，voice 队列别断
   }
 
   /** 在岗的 tmuxSession 集合（逗号拼接）。稳定排序，diff 友好（iOS joinedActive 同）。 */

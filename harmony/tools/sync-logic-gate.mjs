@@ -254,5 +254,40 @@ for (const [name, p] of Object.entries(ends)) {
     !/this\.version = snap\.version;\s*\n\s*this\.dirty = false;/.test(src));
 }
 
+console.log('\n=== 8) 上传互斥 / flush-first / 个人段守卫（复审要求，两端都要有） ===');
+for (const [name, p] of Object.entries(ends)) {
+  const src = readFileSync(p.cfg, 'utf8');
+
+  const vi = extractFn(src, 'private async uploadVoiceInput(');
+  const pi = extractFn(src, 'private async uploadPersonal(');
+
+  ok(`[${name}] voice 上传让路 personal PUT（uploading 门）`,
+    /if \(this\.uploading\) \{[\s\S]{0,200}this\.scheduleVoiceInputUpload\(\);[\s\S]{0,40}return;/.test(vi),
+    vi.replace(/\s+/g, ' ').slice(0, 160));
+  ok(`[${name}] voice 上传先 flush personal（dirty → await uploadPersonal()）`,
+    /if \(this\.dirty\) \{[\s\S]{0,120}await this\.uploadPersonal\(\);[\s\S]{0,200}\n\s{4}\}/.test(vi));
+  ok(`[${name}] before 记在 flush 之后（POST 前）`,
+    vi.indexOf('await this.uploadPersonal();') < vi.indexOf('const before: string = this.version;'));
+  ok(`[${name}] voice 尾部两条队列都续传（scheduleVoiceInputUpload + scheduleUpload）`,
+    /finally \{ this\.uploadingVoiceInput = false; \}[\s\S]{0,300}this\.scheduleVoiceInputUpload\(\);[\s\S]{0,80}this\.scheduleUpload\(\);/.test(vi),
+    vi.replace(/\s+/g, ' ').slice(-200));
+
+  ok(`[${name}] personal 上传让路 voice POST（uploadingVoiceInput 门）`,
+    /!this\.uploading\s*\|\|\s*this\.uploadingVoiceInput/.test(pi) || /this\.uploading\s*&&\s*!this\.uploadingVoiceInput/.test(pi) ||
+    /!this\.dirty \|\| this\.uploading \|\|[\s\S]{0,40}this\.uploadingVoiceInput/.test(pi),
+    pi.replace(/\s+/g, ' ').slice(0, 200));
+  ok(`[${name}] personal 尾部补 voice 续传`,
+    (pi.match(/this\.scheduleVoiceInputUpload\(\);/g) || []).length >= 2,
+    '出现次数=' + (pi.match(/this\.scheduleVoiceInputUpload\(\);/g) || []).length);
+
+  ok(`[${name}] 个人标签/墓碑/工作目录的替换被包进采纳分支`,
+    /if \(adoptPersonal\) \{[\s\S]{0,200}this\.store\.workDirs = dirs;[\s\S]{0,200}this\.store\.tabs = display\.concat\(personal\);[\s\S]{0,200}this\.store\.closedIds = closedFiltered;[\s\S]{0,600}\} else \{/.test(src));
+  ok(`[${name}] 不采纳时的分支保住本地个人标签（且用采纳前的公用集合判定）`,
+    /else \{[\s\S]{0,300}prevSharedIds\.indexOf\(t\.id\) < 0[\s\S]{0,200}this\.store\.tabs = display\.concat\(localPersonal\);/.test(src));
+  ok(`[${name}] prevSharedIds 在覆盖 store.sharedIds 之前取`,
+    src.indexOf('const prevSharedIds: string[] = this.store.sharedIds.slice();') <
+    src.indexOf('this.store.sharedIds = sharedKeys;'));
+}
+
 console.log(`\n===== 结果：${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail === 0 ? 0 : 1);
