@@ -83,6 +83,13 @@ func TestVoiceInputSignedInAccountAndRetry(t *testing.T) {
 			if doc.FavoriteCounts["hello"] != want {
 				t.Fatal("retry incremented twice")
 			}
+			wantVersion := "13"
+			if retry {
+				wantVersion = "12"
+			}
+			if got := w.Header().Get("X-Personal-Version"); got != wantVersion {
+				t.Fatalf("account=%d retry=%v: version header %q, want %q", account, retry, got, wantVersion)
+			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
 			}
@@ -125,6 +132,37 @@ func TestVoiceInputMigrationDoesNotRestoreClearedAccount(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.Close()
+	}
+}
+
+func TestVoiceInputEditBeforeSeedDoesNotRestoreOldData(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT config_version FROM users").WithArgs(uint64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"config_version"}).AddRow(2))
+	mock.ExpectQuery("SELECT data FROM voice_input_configs").WithArgs(uint64(7)).WillReturnError(sql.ErrNoRows)
+	for _, id := range []string{"clear-id-0000001", "seed-id-00000001"} {
+		mock.ExpectExec("INSERT IGNORE INTO voice_input_operations").WithArgs(uint64(7), id).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	want := `{"favorites":[],"history":[],"favoriteCounts":{}}`
+	mock.ExpectExec("INSERT INTO voice_input_configs").WithArgs(uint64(7), jsonArg(want)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE users SET config_version").WithArgs(uint64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	body := `{"operations":[{"id":"clear-id-0000001","kind":"clearFavorites"},` +
+		`{"id":"seed-id-00000001","kind":"seed","data":{"favorites":["old"],"history":[],"favoriteCounts":{"old":4}}}]}`
+	w := httptest.NewRecorder()
+	(&app{db}).writeVoiceInput(w, httptest.NewRequest("POST", "/v1/config/voice-input", strings.NewReader(body)), user{ID: 7})
+	if w.Code != 200 || !jsonArg(want).Match(w.Body.Bytes()) {
+		t.Fatalf("late seed restored cleared data: %d %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

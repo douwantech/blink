@@ -185,6 +185,9 @@ func (a *app) writeVoiceInput(w http.ResponseWriter, r *http.Request, u user) {
 			}
 		} else {
 			doc.apply(op)
+			// Any accepted edit establishes the account document. A stale seed
+			// later in this batch must not restore data that edit removed.
+			newAccountData = false
 		}
 		changed = true
 	}
