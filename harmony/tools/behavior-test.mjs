@@ -15,6 +15,10 @@
 //   3. 切账号旧回包：旧账号的 POST 回执到达时不能污染新账号
 //   4. rest 在 voice POST 在途：personal PUT 必须先 flush、绝不与 POST 并发
 //   5. 端到端不丢：keepPendingPersonal 时个人改动保留并最终上传
+//   6. 乱序迟到的旧 GET 不得回退已确认状态（个人版本下限，取 X-Personal-Version 原始值）
+//   7. ack 前进幅度不是 +1（另一台设备并发写过）时，下限照样护住已确认收藏
+//   8. 普通 GET 采纳也记已见版本 → 新的先到、旧的后到不得回退
+//   9. 切账号清本账号下限（不能拿 alice 的下限拒 bob 的快照）
 //
 // 跑法（退出码 0 = 全绿）：
 //   node harmony/tools/behavior-test.mjs
@@ -125,15 +129,14 @@ class FakePrefs {
 // ---- 假 HTTP ----
 const BASE = 'https://blink-api.douwantech.com';
 
-class HttpGate {
-  constructor(match) { this.match = match; this.open = false; this.entered = 0; this._resolve = null; }
-  wait(rec) {
-    if (!this.match(rec)) { return null; }
-    this.entered++;
-    if (this.open) { return null; }
-    return new Promise((r) => { this._resolve = r; });
+// 卡住「一发」请求：匹配到的第一个请求在发出时就把响应冻结下来（所以交付的是
+// 那一瞬间的旧内容），由 release() 决定什么时候交付 —— 用来造「在途」和「迟到旧 GET」。
+class Hold {
+  constructor(match) {
+    this.match = match; this.entered = 0; this.captured = false; this.open = false; this._release = null;
+    this.promise = new Promise((r) => { this._release = r; });
   }
-  release() { this.open = true; const r = this._resolve; this._resolve = null; if (r) { r(); } }
+  release() { this.open = true; const r = this._release; this._release = null; if (r) { r(); } }
 }
 
 function makeHttp(env) {
@@ -146,11 +149,21 @@ function makeHttp(env) {
         t: env.clock.now, tEnd: -1,
       };
       env.httpLog.push(rec);
-      const gate = env.gate !== null ? env.gate.wait(rec) : null;
-      const go = gate !== null ? gate : Promise.resolve();
+      const wrap = (r) => ({ responseCode: r.code, result: r.body === undefined ? '' : r.body, header: r.header || {} });
+      const hold = env.holds.find((h) => !h.captured && h.match(rec));
+      if (hold) {
+        // 关键：在「请求发出」这一瞬间就把响应体算出来冻住，交付推迟到 release()
+        hold.captured = true; hold.entered++;
+        env.server.clockNow = env.clock.now;
+        return env.server.handle(rec).then((r) => hold.promise.then(() => {
+          rec.tEnd = env.clock.now;
+          return wrap(r);
+        }), (e) => { rec.tEnd = env.clock.now; throw e; });
+      }
+      const go = Promise.resolve();
       return go.then(() => { env.server.clockNow = env.clock.now; return env.server.handle(rec); }).then((r) => {
         rec.tEnd = env.clock.now;
-        return { responseCode: r.code, result: r.body === undefined ? '' : r.body, header: r.header || {} };
+        return wrap(r);
       }, (e) => { rec.tEnd = env.clock.now; throw e; });
     }
     destroy() { }
@@ -272,7 +285,7 @@ class FakeServer {
 class Env {
   constructor(backing) {
     this.clock = new Clock();
-    this.gate = null;
+    this.holds = [];
     this.httpLog = [];
     this.server = new FakeServer();
     this.server.clockNow = 0;
@@ -294,6 +307,8 @@ class Env {
     e.clock = this.clock;
     return e;
   }
+  /** 卡住一发匹配的请求（发出即冻结响应，release 才交付）。 */
+  hold(match) { const h = new Hold(match); this.holds.push(h); return h; }
   installClock() { this.clock.install(); this.installed = true; }
   uninstall() { if (this.installed) { this.clock.uninstall(); this.installed = false; } }
 
@@ -459,16 +474,16 @@ function suiteFor(end) {
 
           store.performVoiceInput('addFavorite', 'A');
           // 卡住 POST
-          env.gate = new HttpGate((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
+          const gate = env.hold((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
           await env.clock.advance(1000);
-          ok('voice POST 已发出并在途', env.gate.entered === 1 && voicePosts(env).some((r) => r.tEnd < 0));
+          ok('voice POST 已发出并在途', gate.entered === 1 && voicePosts(env).some((r) => r.tEnd < 0));
 
           // 在途期间又加一条
           store.performVoiceInput('addFavorite', 'B');
           await env.clock.advance(3000);
 
           // 放行：回执只含 A
-          env.gate.release();
+          gate.release();
           await micro(); await env.clock.advance(3000);
 
           ok('在途期间加的 B 没被回执抹掉', store.favorites.indexOf('B') >= 0,
@@ -499,9 +514,9 @@ function suiteFor(end) {
           cfg.isOnline = true;
 
           store.performVoiceInput('addFavorite', 'alice 的收藏');
-          env.gate = new HttpGate((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
+          const gate = env.hold((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
           await env.clock.advance(1000);
-          ok('alice 的 POST 在途', env.gate.entered === 1);
+          ok('alice 的 POST 在途', gate.entered === 1);
 
           // 切账号：登出 + 登 bob
           await cfg.logout();
@@ -510,7 +525,7 @@ function suiteFor(end) {
           const bobBefore = JSON.stringify(store.favorites);
 
           // 现在放行 alice 的旧回执
-          env.gate.release();
+          gate.release();
           await micro(); await env.clock.advance(3000);
 
           ok('旧回执没有把 alice 的收藏塞进 bob 的界面', JSON.stringify(store.favorites) === bobBefore,
@@ -535,9 +550,9 @@ function suiteFor(end) {
           env.server.clockNow = 0;
 
           store.performVoiceInput('addFavorite', 'A');
-          env.gate = new HttpGate((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
+          const gate = env.hold((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
           await env.clock.advance(1000);
-          ok('voice POST 在途', env.gate.entered === 1);
+          ok('voice POST 在途', gate.entered === 1);
 
           // 在途期间用户动了休息开关 → markDirty → personal 定时器
           store.restActive = ['tom-markmini-2'];
@@ -552,7 +567,7 @@ function suiteFor(end) {
             JSON.stringify(inFlight.map((r) => r.method + ' ' + r.path)));
 
           // 放行 POST：回执版本 = 自己写入 +1
-          env.gate.release();
+          gate.release();
           await micro(); await env.clock.advance(6000);
 
           const post = voicePosts(env)[0];
@@ -624,9 +639,9 @@ function suiteFor(end) {
           cfg.isOnline = true;
 
           store.performVoiceInput('addFavorite', 'A');
-          env.gate = new HttpGate((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
+          const gate = env.hold((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
           await env.clock.advance(1000);
-          ok('voice POST 在途', env.gate.entered === 1);
+          ok('voice POST 在途', gate.entered === 1);
 
           // 在途期间把本地 tabs 也改了（模拟新建/关闭标签）+ rest
           store.tabs = [{ id: 'local-1', machineId: 'markmini', workDirId: '/w', tmuxSession: 'tom-markmini-9', useTmux: true }];
@@ -636,7 +651,7 @@ function suiteFor(end) {
           store.saveResting();
           await env.clock.advance(3000);
 
-          env.gate.release();
+          gate.release();
           await micro(); await env.clock.advance(6000);
 
           ok('回读没有把本地刚建的标签冲掉',
@@ -654,8 +669,139 @@ function suiteFor(end) {
         } finally { env.uninstall(); }
       },
     },
+
+    {
+      name: '7. 迟到旧 GET 不得抹掉已确认收藏（ack 的版本不是 +1：另一台设备并发写过）',
+      async run() {
+        const env = new Env();
+        env.installClock();
+        try {
+          env.server.addUser('alice', 'pw');
+          const w = env.loadWorld(modelDir);
+          const { store, cfg } = await boot(env, w, 'alice');
+          cfg.isOnline = true;
+          ok('起始版本 7:40', cfg.version === '7:40', cfg.version);
+
+          // 让这发 GET 一定返 200，并把它冻在「ack 之前」的内容上（收藏还是空的）
+          env.server.global = 8;
+          const late = env.hold((r) => r.method === 'GET' && r.path.startsWith('/v1/config'));
+          const inflight = cfg.refresh();
+          await micro();
+          ok('旧 GET 发出且被冻住在途（未交付）',
+            late.entered === 1 && netLog(env).some((r) => r.method === 'GET' && r.tEnd < 0),
+            JSON.stringify(netLog(env).map((r) => r.method + ' ' + r.path + ' [' + r.t + ',' + r.tEnd + ']')));
+
+          // 另一台设备先写过一次：personal 40 → 41
+          env.server.personal.set('alice', 41);
+          // 本机再写收藏 → POST 之后 personal = 42（前进 2，不是 +1）
+          store.performVoiceInput('addFavorite', 'ack 后的收藏');
+          await env.clock.advance(2000);
+
+          const acked = env.server.voicePostLog[env.server.voicePostLog.length - 1];
+          ok('本轮 ack 的 personal 前进幅度是 2（不是 +1）',
+            acked !== undefined && acked.personal === 42, JSON.stringify(acked));
+          ok('ownConfigVersion 对 7:40→42 返回空（只靠 +1 认不出自己这次写入）',
+            w.VoiceInputAccount.ownConfigVersion('7:40', '42') === '');
+          ok('下限被抬到**原始** X-Personal-Version 42（不靠 +1）',
+            cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+          ok('已确认的收藏在服务器上',
+            env.server.voice.get('alice').favorites.indexOf('ack 后的收藏') >= 0,
+            JSON.stringify(env.server.voice.get('alice').favorites));
+          ok('本机也已确认', store.favorites.indexOf('ack 后的收藏') >= 0, JSON.stringify(store.favorites));
+
+          // 现在才交付那发迟到的旧 GET（内容是 ack 之前的：收藏为空、personal 40）
+          late.release();
+          await micro(); await env.clock.advance(3000);
+          await inflight;
+
+          ok('迟到旧 GET 没有抹掉已确认的收藏', store.favorites.indexOf('ack 后的收藏') >= 0,
+            JSON.stringify(store.favorites));
+          ok('收藏没被清空', store.favorites.length === 1, JSON.stringify(store.favorites));
+          ok('下限没被旧快照拉低', cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+        } finally { env.uninstall(); }
+      },
+    },
+
+    {
+      name: '8. GET 乱序：新快照先采纳、旧快照后到不得回退（普通 GET 采纳也记已见版本）',
+      async run() {
+        const env = new Env();
+        env.installClock();
+        try {
+          env.server.addUser('alice', 'pw');
+          const w = env.loadWorld(modelDir);
+          const { store, cfg } = await boot(env, w, 'alice');
+          cfg.isOnline = true;
+
+          store.performVoiceInput('addFavorite', 'A');
+          await env.clock.advance(2000);
+          ok('A 已 ack', env.server.voice.get('alice').favorites.join(',') === 'A',
+            JSON.stringify(env.server.voice.get('alice').favorites));
+          ok('ack 后下限是 41', cfg.voiceFloorPersonal === 41, 'floor=' + cfg.voiceFloorPersonal);
+
+          // G1：冻在「现在」的内容上（9:41、只有 A），先不交付
+          env.server.global = 9;
+          const g1 = env.hold((r) => r.method === 'GET' && r.path.startsWith('/v1/config'));
+          const p1 = cfg.refresh();
+          await micro();
+          ok('G1 冻住在途', g1.entered === 1);
+
+          // 另一台设备写入：personal 41 → 42，收藏多一条 B
+          env.server.personal.set('alice', 42);
+          env.server.voice.set('alice', { favorites: ['A', 'B'], history: [], favoriteCounts: {} });
+
+          // G2 拿到新内容并被采纳
+          await cfg.refresh();
+          await env.clock.advance(3000);
+          ok('G2 被采纳：本机看到 B', store.favorites.indexOf('B') >= 0, JSON.stringify(store.favorites));
+          ok('普通 GET 采纳把下限抬到 42（不只 ack 抬）',
+            cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+
+          // 现在交付迟到的 G1（9:41、只有 A）
+          g1.release();
+          await micro(); await env.clock.advance(3000);
+          await p1;
+          ok('迟到的旧 GET 没把 B 回退掉', store.favorites.indexOf('B') >= 0, JSON.stringify(store.favorites));
+          ok('收藏仍是两条', store.favorites.length === 2, JSON.stringify(store.favorites));
+          ok('下限仍是 42', cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+        } finally { env.uninstall(); }
+      },
+    },
+
+    {
+      name: '9. 切账号清本账号下限：新账号的快照不被上一个账号的下限拒掉',
+      async run() {
+        const env = new Env();
+        env.installClock();
+        try {
+          env.server.addUser('alice', 'pw');
+          env.server.addUser('bob', 'pw');
+          env.server.voice.set('bob', { favorites: ['bob 的收藏'], history: [], favoriteCounts: {} });
+          const w = env.loadWorld(modelDir);
+          const { store, cfg } = await boot(env, w, 'alice');
+          cfg.isOnline = true;
+
+          store.performVoiceInput('addFavorite', 'alice 的收藏');
+          await env.clock.advance(2000);
+          ok('alice 的下限已经抬起来', cfg.voiceFloorPersonal > 0, 'floor=' + cfg.voiceFloorPersonal);
+
+          await cfg.logout();
+          ok('登出立刻清空下限', cfg.voiceFloorPersonal === -1, 'floor=' + cfg.voiceFloorPersonal);
+
+          await cfg.login('bob', 'pw');
+          cfg.isOnline = true;
+          ok('bob 的下限是自己的（bob 自己的 personal = 40），不是 alice 的 41',
+            cfg.voiceFloorPersonal === 40, 'floor=' + cfg.voiceFloorPersonal);
+          ok('bob 的快照真被采纳了（看得到 bob 自己的收藏）',
+            store.favorites.indexOf('bob 的收藏') >= 0, JSON.stringify(store.favorites));
+          ok('bob 看不到 alice 的收藏', store.favorites.indexOf('alice 的收藏') < 0,
+            JSON.stringify(store.favorites));
+        } finally { env.uninstall(); }
+      },
+    },
   ];
 }
+
 
 // ---------------------------------------------------------------------------
 const ends = ['entry', 'pad'];

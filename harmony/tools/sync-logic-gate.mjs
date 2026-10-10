@@ -289,5 +289,38 @@ for (const [name, p] of Object.entries(ends)) {
     src.indexOf('this.store.sharedIds = sharedKeys;'));
 }
 
+console.log('\n=== 9) 乱序旧 GET 的个人版本下限（复审补充，两端都要有） ===');
+for (const [name, p] of Object.entries(ends)) {
+  const src = readFileSync(p.cfg, 'utf8');
+  const ap = extractFn(src, 'private async apply(');
+  const up = extractFn(src, 'private async uploadVoiceInput(');
+
+  ok(`[${name}] 有 per-account 个人版本下限字段`,
+    /private voiceFloorPersonal: number = -1;/.test(src));
+  ok(`[${name}] 版本解析 helper：personalOf / rawPersonal`,
+    /private static rawPersonal\(value: string\): number/.test(src) &&
+    /private static personalOf\(version: string\): number/.test(src));
+  ok(`[${name}] 下限判定：personal 段严格小于下限即为乱序旧快照`,
+    /private isStaleSnapshot\(version: string\): boolean \{[\s\S]{0,240}return p >= 0 && p < this\.voiceFloorPersonal;/.test(src));
+  ok(`[${name}] 旧快照在采纳任何东西之前就被放过（含 voiceInput）`,
+    ap.indexOf('if (this.isStaleSnapshot(snap.version))') >= 0 &&
+    ap.indexOf('if (this.isStaleSnapshot(snap.version))') < ap.indexOf('voiceInputAccount.adopt('),
+    '门槛必须排在 adopt 之前');
+  ok(`[${name}] 采纳成功也抬下限（普通 GET 采纳也算）`,
+    /this\.version = snap\.version;[\s\S]{0,300}const snapPersonal: number = ServerConfig\.personalOf\(snap\.version\);[\s\S]{0,160}this\.voiceFloorPersonal = snapPersonal;/.test(ap));
+  ok(`[${name}] ack 用**原始** X-Personal-Version 抬下限（不是 ownConfigVersion 的 +1）`,
+    /const raw: number = ServerConfig\.rawPersonal\(personal\);[\s\S]{0,200}raw > this\.voiceFloorPersonal[\s\S]{0,120}this\.voiceFloorPersonal = raw;/.test(up) &&
+    up.indexOf('ServerConfig.rawPersonal(personal)') > up.indexOf('ownConfigVersion(before, personal)'),
+    'raw 抬限必须在 expected 之后');
+  ok(`[${name}] 下限持久化（重启不丢）`,
+    /await p\.put\('voiceFloorPersonal', this\.voiceFloorPersonal\);/.test(src) &&
+    /this\.voiceFloorPersonal = await this\.prefs\.get\('voiceFloorPersonal', -1\)/.test(src));
+  ok(`[${name}] 切账号清下限：login 与 clearSession 都清成 -1`,
+    /const login: ServerLoginResponse = JSON\.parse\(rsp\.body\) as ServerLoginResponse;[\s\S]{0,300}this\.voiceFloorPersonal = -1;/.test(src) &&
+    /this\.dirty = false;\s*\n\s*this\.voiceFloorPersonal = -1;/.test(src));
+  ok(`[${name}] 轮询也给 voice POST 让路`,
+    /this\.uploading \|\| this\.dirty \|\| this\.uploadingVoiceInput/.test(src));
+}
+
 console.log(`\n===== 结果：${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail === 0 ? 0 : 1);

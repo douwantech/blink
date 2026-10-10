@@ -143,6 +143,10 @@ export class ServerConfig {
   private pollTimer: number = -1;
   private voiceUploadTimer: number = -1;
   private uploadingVoiceInput: boolean = false;
+  // 「收藏/发送历史」本账号已确认到的个人版本下限。voice ack 拿 X-Personal-Version 的
+  // **原始**值抬它，每个被采纳的快照也抬它。比它旧的快照（乱序迟到的旧 GET）一律不采纳
+  // —— 否则会把已经确认的收藏/历史（以及个人段）回退。切账号 / 登出清成 -1。
+  private voiceFloorPersonal: number = -1;
   private voicePreviousAccount: string = "";
   onApplied: (() => void) | null = null;
   // 「在岗名单是否已物化」的在岗状态统一放在 store（restLoaded / restActive），
@@ -165,6 +169,7 @@ export class ServerConfig {
     this.version = await this.prefs.get('appliedVersion', '') as string;
     this.dirty = await this.prefs.get('dirty', false) as boolean;
     this.tabVersion = await this.prefs.get('tabsVersion', 0) as number;
+    this.voiceFloorPersonal = await this.prefs.get('voiceFloorPersonal', -1) as number;
     this.hasCachedSnapshot = this.readCache() !== null;
     this.token = await this.readToken();
     return this.token.length > 0;
@@ -189,6 +194,8 @@ export class ServerConfig {
       throw new Error('服务器暂不可用（HTTP ' + rsp.code + '）');
     }
     const login: ServerLoginResponse = JSON.parse(rsp.body) as ServerLoginResponse;
+    // 换账号：上一个账号的个人版本下限立刻作废 —— 不能拿 alice 的下限去拒 bob 的快照
+    this.voiceFloorPersonal = -1;
     // 换账号：清掉上一个账号的缓存与采纳版本，避免把别人的机器/标签当自己的
     const cached: ServerSnapshot | null = this.readCache();
     this.voicePreviousAccount = this.username.length > 0 ? this.username : (cached !== null ? cached.user.username : "");
@@ -295,6 +302,12 @@ export class ServerConfig {
   private async apply(snap: ServerSnapshot, preservingOwnVoiceVersion: string = ''): Promise<void> {
     this.applying = true;
     try {
+      // 乱序迟到的旧快照：personal 段比本账号已确认的下限还旧，采纳它会把刚 ack 的
+      // 收藏/历史（连同个人段标签、休息名单）一起回退。当 304 放过 —— version 不动，
+      // 下一轮刷新自然会重拉，旧快照永远回退不了已确认状态。
+      if (this.isStaleSnapshot(snap.version)) {
+        return;
+      }
       if (this.store.voiceInputAccount !== null) {
         this.store.voiceInputAccount.prepareAccount(snap.user.username, this.voicePreviousAccount);
         this.store.voiceInputAccount.adopt(snap.voiceInput, snap.user.username);
@@ -457,6 +470,9 @@ export class ServerConfig {
         this.store.currentTabId = visible.length > 0 ? visible[0].id : '';
       }
       this.version = snap.version;
+      // 采纳成功：这份快照的 personal 就是本账号「已确认」到的新下限（普通 GET 采纳也算）。
+      const snapPersonal: number = ServerConfig.personalOf(snap.version);
+      if (snapPersonal > this.voiceFloorPersonal) { this.voiceFloorPersonal = snapPersonal; }
       // 只有「不是保留自己写入」时才放弃本地未上传改动；keepPendingPersonal 时
       // dirty 保持真，等下一条队列自己传上去（同 iOS apply）。
       if (serverAdvanced && !keepPendingPersonal) {
@@ -535,6 +551,15 @@ export class ServerConfig {
       }
       const personal: string = rsp.header['x-personal-version'] !== undefined ? rsp.header['x-personal-version'] : '';
       const expected: string = VoiceInputAccount.ownConfigVersion(before, personal);
+      // ack 已落定：本账号的个人配置至少到这个**原始**版本 —— 直接当硬下限。只靠
+      // ownConfigVersion 的 +1 不够：并发另一台设备写入、或幂等重试时，服务端前进的
+      // 幅度不一定是 1，但「至少到 raw」永远成立。抬完之后，任何 personal 更低的快照
+      // （ack 之前发出、ack 之后才到的旧 GET）都不能再覆盖已确认的收藏/历史。
+      const raw: number = ServerConfig.rawPersonal(personal);
+      if (raw > this.voiceFloorPersonal) {
+        this.voiceFloorPersonal = raw;
+        await this.persistMeta();
+      }
       await this.syncFromServer(true, expected);
     } catch (e) { this.isOnline = false; }
     finally { this.uploadingVoiceInput = false; }
@@ -693,8 +718,8 @@ export class ServerConfig {
       return;
     }
     this.pollTimer = setInterval(() => {
-      if (this.token.length === 0 || this.uploading || this.dirty) {
-        return;   // 本地有未上传改动 / 正在传：这一轮跳过，别和上传互相踩
+      if (this.token.length === 0 || this.uploading || this.dirty || this.uploadingVoiceInput) {
+        return;   // 本地有未上传改动 / 正在传（个人或 voice）：这一轮跳过，别和上传互相踩
       }
       this.refresh();
     }, POLL_MS);
@@ -724,6 +749,7 @@ export class ServerConfig {
     await p.put('appliedVersion', this.version);
     await p.put('dirty', this.dirty);
     await p.put('tabsVersion', this.tabVersion);
+    await p.put('voiceFloorPersonal', this.voiceFloorPersonal);
     await p.flush();
   }
 
@@ -733,12 +759,14 @@ export class ServerConfig {
     this.sharedTabs = [];
     this.version = '';
     this.dirty = false;
+    this.voiceFloorPersonal = -1;
     await this.removeToken();
     const p = this.prefs;
     if (p !== null) {
       await p.put('username', '');
       await p.put('appliedVersion', '');
       await p.put('dirty', false);
+      await p.put('voiceFloorPersonal', -1);
       await p.flush();
     }
   }
@@ -868,6 +896,26 @@ export class ServerConfig {
       req.destroy();
       throw new Error(`网络错误：${JSON.stringify(e)}`);
     });
+  }
+
+  /** X-Personal-Version 的原始数值：拿不到 / 不是非负十进制都给 -1。 */
+  private static rawPersonal(value: string): number {
+    const digits: RegExp = new RegExp('^[0-9]+$');
+    return digits.test(value) ? Number(value) : -1;
+  }
+
+  /** 版本串 <shared>:<personal> 里的 personal 段（缺段 / 非十进制给 -1）。 */
+  private static personalOf(version: string): number {
+    const parts: string[] = version.split(':');
+    if (parts.length !== 2) { return -1; }
+    return ServerConfig.rawPersonal(parts[1]);
+  }
+
+  /** 快照的 personal 段低于本账号已确认下限 → 乱序迟到的旧快照（-1 = 还没下限）。 */
+  private isStaleSnapshot(version: string): boolean {
+    if (this.voiceFloorPersonal < 0) { return false; }
+    const p: number = ServerConfig.personalOf(version);
+    return p >= 0 && p < this.voiceFloorPersonal;
   }
 
   /** 路径最后一段作为工作目录显示名（快照只给绝对路径，没有名字）。 */
