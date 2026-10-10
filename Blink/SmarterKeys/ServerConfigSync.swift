@@ -153,6 +153,9 @@ final class ServerConfigSync: ObservableObject {
 
   private init() {
     username = defaults.string(forKey: "BlinkServer.username")
+    // 已有数据迁移：老版本把收藏/历史存在 iCloud KV 或本地早期 key 里。
+    // 只在「还没归属过任何账号」时搬一次（Mac 侧 ServerSync.init 同）。
+    VoiceInputAccount.shared.migrateLegacyCloud()
     VoiceInputAccount.shared.onChange = { [weak self] in self?.scheduleVoiceInputUpload() }
   }
 

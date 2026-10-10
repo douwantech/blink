@@ -127,7 +127,18 @@ final class ServerSync: ObservableObject {
       guard (response as? HTTPURLResponse)?.statusCode == 200 else { isOnline = false; return }
       let state = try JSONDecoder().decode(AccountVoiceInput.self, from: data)
       VoiceInputAccount.shared.acknowledge(pending, remote: state, username: account)
-      defaults.removeObject(forKey: versionKey)
+      // 收藏 POST 会把个人版本推进 1。识别出「这是我自己刚推出来的那一版」就把它记成已采纳，
+      // 后面那次 refresh 带上它会得到 304 —— 不会把服务器快照整个拉下来盖掉本地还没上传的
+      // 个人状态（休息开关 / agents）。识别不出来（说明同时有别处改过）才退回全量重拉。
+      // 与 iOS ServerConfigSync.uploadVoiceInput 同一套（#101 的 X-Personal-Version 保护）。
+      let acknowledged = VoiceInputAccount.ownConfigVersion(
+        previous: defaults.string(forKey: versionKey),
+        personal: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Personal-Version"))
+      if let acknowledged {
+        defaults.set(acknowledged, forKey: versionKey)
+      } else {
+        defaults.removeObject(forKey: versionKey)
+      }
       await refresh()
     } catch { isOnline = false }
   }
