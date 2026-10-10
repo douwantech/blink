@@ -206,6 +206,7 @@ class FakeServer {
     this.putLog = [];                // 每次 PUT 的记录（路径 + body）
     this.voicePostLog = [];          // 每次 voice POST 的记录
     this.throwOnRequest = false;
+    this.failIf = null;              // (rec) => true 时这一发按网络失败处理（其余照常）
   }
   addUser(username, password) {
     this.users.set(username, { id: this.nextUid++, username, password, isAdmin: true, canWrite: true });
@@ -236,6 +237,7 @@ class FakeServer {
   async handle(rec) {
     if (this.throwOnRequest) { throw new Error('offline'); }
     if (!this.online) { throw new Error('offline'); }
+    if (this.failIf !== null && this.failIf(rec)) { throw new Error('offline'); }
     if (rec.method === 'POST' && rec.path === '/v1/login') {
       const b = JSON.parse(rec.body);
       const u = this.users.get(b.username);
@@ -392,6 +394,11 @@ class Env {
 const netLog = (env) => env.httpLog.filter((r) => r.path !== '/v1/login');
 const voicePosts = (env) => env.httpLog.filter((r) => r.method === 'POST' && r.path === '/v1/config/voice-input');
 const personalPuts = (env) => env.httpLog.filter((r) => r.method === 'PUT');
+
+// 离线缓存（ServerConfig.cachePath() = ctx.filesDir + '/blink_server_config.json'）
+const CACHE_PATH = '/mem/files/blink_server_config.json';
+const cacheRaw = (env) => env.backing.files.get(CACHE_PATH);
+const cacheSnap = (env) => { const r = cacheRaw(env); return r === undefined ? null : JSON.parse(r); };
 
 // ---- 装配一台「手机」----
 async function boot(env, world, username, opts = {}) {
@@ -709,6 +716,11 @@ function suiteFor(end) {
             JSON.stringify(env.server.voice.get('alice').favorites));
           ok('本机也已确认', store.favorites.indexOf('ack 后的收藏') >= 0, JSON.stringify(store.favorites));
 
+          const cacheAfterAck = cacheRaw(env);
+          const snapAfterAck = cacheSnap(env);
+          ok('ack 后离线缓存里就是刚采纳的版本', snapAfterAck !== null && snapAfterAck.version === '8:42',
+            snapAfterAck === null ? '没有缓存' : snapAfterAck.version);
+
           // 现在才交付那发迟到的旧 GET（内容是 ack 之前的：收藏为空、personal 40）
           late.release();
           await micro(); await env.clock.advance(3000);
@@ -718,6 +730,25 @@ function suiteFor(end) {
             JSON.stringify(store.favorites));
           ok('收藏没被清空', store.favorites.length === 1, JSON.stringify(store.favorites));
           ok('下限没被旧快照拉低', cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+          ok('被拒的旧 GET 一个字节都没写进离线缓存', cacheRaw(env) === cacheAfterAck,
+            '缓存被旧 GET 覆盖了：' + String(cacheRaw(env)).slice(0, 120));
+          const cacheNow = cacheSnap(env);
+          ok('缓存里仍是 ack 之后的版本、收藏仍在',
+            cacheNow !== null && cacheNow.version === '8:42' &&
+            cacheNow.voiceInput.favorites.indexOf('ack 后的收藏') >= 0,
+            JSON.stringify(cacheNow === null ? null : { v: cacheNow.version, f: cacheNow.voiceInput.favorites }));
+
+          // 反证：同账号重登（login 把下限清成 -1）+ 网络抖动 → restoreCache() 回读缓存。
+          // 缓存若被旧 GET 覆盖过，这里就会把已确认的收藏倒回旧版。
+          await cfg.logout();
+          ok('登出后下限清空（正是重登回读的薄弱点）', cfg.voiceFloorPersonal === -1,
+            'floor=' + cfg.voiceFloorPersonal);
+          env.server.failIf = (r) => r.method === 'GET' && r.path.startsWith('/v1/config');
+          await cfg.login('alice', 'pw').catch(() => { });   // 登录 POST 成功、config GET 抖动
+          env.server.failIf = null;
+          ok('重登 + 离线回读：已确认的收藏没有被倒回旧版',
+            store.favorites.indexOf('ack 后的收藏') >= 0, JSON.stringify(store.favorites));
+          ok('重登 + 离线回读：收藏没被清空', store.favorites.length === 1, JSON.stringify(store.favorites));
         } finally { env.uninstall(); }
       },
     },
@@ -764,6 +795,12 @@ function suiteFor(end) {
           ok('迟到的旧 GET 没把 B 回退掉', store.favorites.indexOf('B') >= 0, JSON.stringify(store.favorites));
           ok('收藏仍是两条', store.favorites.length === 2, JSON.stringify(store.favorites));
           ok('下限仍是 42', cfg.voiceFloorPersonal === 42, 'floor=' + cfg.voiceFloorPersonal);
+          const c8 = cacheSnap(env);
+          ok('离线缓存是 G2 那份（迟到的 G1 没写缓存）',
+            c8 !== null && c8.version === '9:42', c8 === null ? '没有缓存' : c8.version);
+          ok('缓存里的收藏是 G2 的两条',
+            c8 !== null && c8.voiceInput.favorites.join(',') === 'A,B',
+            JSON.stringify(c8 === null ? null : c8.voiceInput.favorites));
         } finally { env.uninstall(); }
       },
     },

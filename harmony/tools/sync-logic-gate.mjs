@@ -318,6 +318,9 @@ for (const [name, p] of Object.entries(ends)) {
   ok(`[${name}] 切账号清下限：login 与 clearSession 都清成 -1`,
     /const login: ServerLoginResponse = JSON\.parse\(rsp\.body\) as ServerLoginResponse;[\s\S]{0,300}this\.voiceFloorPersonal = -1;/.test(src) &&
     /this\.dirty = false;\s*\n\s*this\.voiceFloorPersonal = -1;/.test(src));
+  ok(`[${name}] 被拒的旧快照不写离线缓存（parse → 判旧 → 才 writeCache）`,
+    /const snap: ServerSnapshot = JSON\.parse\(rsp\.body\) as ServerSnapshot;[\s\S]{0,400}if \(this\.isStaleSnapshot\(snap\.version\)\) \{[\s\S]{0,120}\}[\s\S]{0,200}this\.writeCache\(rsp\.body\);/.test(extractFn(src, 'private async syncFromServer(')),
+    'writeCache 必须排在 isStaleSnapshot 之后');
   ok(`[${name}] 轮询也给 voice POST 让路`,
     /this\.uploading \|\| this\.dirty \|\| this\.uploadingVoiceInput/.test(src));
 }

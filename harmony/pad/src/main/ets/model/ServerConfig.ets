@@ -289,9 +289,17 @@ export class ServerConfig {
       await this.restoreCache();
       throw new Error('服务器暂不可用（HTTP ' + rsp.code + '）');
     }
+    const snap: ServerSnapshot = JSON.parse(rsp.body) as ServerSnapshot;
+    // 乱序迟到的旧快照：连离线缓存都不许写。writeCache 原来排在 apply 的同一道守卫
+    // **之前**，旧 GET 会「不显示、却已经落进缓存」；随后同账号重登（login 把下限清成
+    // -1）再遇上网络抖动，restoreCache() 就会把已确认的收藏倒回旧版。先 parse、先判旧，
+    // 被拒的旧 GET 一律不写缓存（CTO 复审 69fd9818）。
+    if (this.isStaleSnapshot(snap.version)) {
+      this.isOnline = true;
+      return;
+    }
     // 缓存写的是服务器响应的原始字节（含公用标签与机器 token，所以绝不打印）
     this.writeCache(rsp.body);
-    const snap: ServerSnapshot = JSON.parse(rsp.body) as ServerSnapshot;
     await this.apply(snap, preservingOwnVoiceVersion);
     this.isOnline = true;
   }
